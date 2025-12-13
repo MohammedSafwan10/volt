@@ -4,48 +4,12 @@
  */
 
 import type * as Monaco from 'monaco-editor';
+import { voltDarkMonacoTheme } from '$lib/themes/dark';
+import { voltLightMonacoTheme } from '$lib/themes/light';
 
 // Singleton instance - null until first load
 let monacoInstance: typeof Monaco | null = null;
 let loadPromise: Promise<typeof Monaco> | null = null;
-
-// Volt dark theme definition (Catppuccin-inspired)
-const voltDarkTheme: Monaco.editor.IStandaloneThemeData = {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: 'comment', foreground: '6c7086', fontStyle: 'italic' },
-    { token: 'keyword', foreground: 'cba6f7', fontStyle: 'bold' },
-    { token: 'string', foreground: 'a6e3a1' },
-    { token: 'number', foreground: 'fab387' },
-    { token: 'type', foreground: 'f9e2af' },
-    { token: 'function', foreground: '89b4fa' },
-    { token: 'variable', foreground: 'cdd6f4' },
-    { token: 'constant', foreground: 'fab387' },
-    { token: 'operator', foreground: '89dceb' },
-    { token: 'delimiter', foreground: '9399b2' },
-    { token: 'tag', foreground: 'f38ba8' },
-    { token: 'attribute.name', foreground: 'f9e2af' },
-    { token: 'attribute.value', foreground: 'a6e3a1' }
-  ],
-  colors: {
-    'editor.background': '#1e1e2e',
-    'editor.foreground': '#cdd6f4',
-    'editor.lineHighlightBackground': '#313244',
-    'editor.selectionBackground': '#45475a',
-    'editor.inactiveSelectionBackground': '#313244',
-    'editorCursor.foreground': '#f5e0dc',
-    'editorWhitespace.foreground': '#45475a',
-    'editorLineNumber.foreground': '#6c7086',
-    'editorLineNumber.activeForeground': '#cdd6f4',
-    'editorIndentGuide.background': '#313244',
-    'editorIndentGuide.activeBackground': '#45475a',
-    'editor.findMatchBackground': '#f9e2af40',
-    'editor.findMatchHighlightBackground': '#f9e2af20',
-    'editorBracketMatch.background': '#45475a',
-    'editorBracketMatch.border': '#89b4fa'
-  }
-};
 
 /**
  * Configure Monaco environment for Vite
@@ -123,8 +87,9 @@ export async function loadMonaco(): Promise<typeof Monaco> {
     // Dynamic import - this is where the actual loading happens
     const monaco = await import('monaco-editor');
 
-    // Define custom theme
-    monaco.editor.defineTheme('volt-dark', voltDarkTheme);
+    // Define custom themes
+    monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
+    monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
 
     // Cache the instance
     monacoInstance = monaco;

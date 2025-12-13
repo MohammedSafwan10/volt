@@ -1,5 +1,40 @@
 <script lang="ts">
   import { uiStore } from '$lib/stores/ui.svelte';
+  import { invoke } from '@tauri-apps/api/core';
+
+  interface SystemInfo {
+    os_name: string | null;
+    os_version: string | null;
+    kernel_version: string | null;
+    host_name: string | null;
+    total_memory: number;
+    cpu_count: number;
+    cpu_brand: string | null;
+  }
+
+  let systemInfo = $state<SystemInfo | null>(null);
+  let loadingSystemInfo = $state(false);
+
+  $effect(() => {
+    if (uiStore.aboutModalOpen && !systemInfo && !loadingSystemInfo) {
+      loadingSystemInfo = true;
+      invoke<SystemInfo>('get_system_info')
+        .then((info) => {
+          systemInfo = info;
+        })
+        .catch((err) => {
+          console.error('Failed to get system info:', err);
+        })
+        .finally(() => {
+          loadingSystemInfo = false;
+        });
+    }
+  });
+
+  function formatBytes(bytes: number): string {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${gb.toFixed(1)} GB`;
+  }
 
   function handleClose() {
     uiStore.closeAboutModal();
@@ -41,39 +76,56 @@
       aria-labelledby="about-title"
       tabindex="0"
     >
-      <div class="modal-header">
-        <h2 id="about-title">About Volt</h2>
-        <button class="close-btn" onclick={handleClose} aria-label="Close">
-          ✕
-        </button>
-      </div>
+      <button class="close-btn" onclick={handleClose} aria-label="Close">✕</button>
 
       <div class="modal-body">
-        <div class="logo">⚡</div>
-        <h1 class="app-title">Volt</h1>
-        <p class="version">Version 0.1.0</p>
-        <p class="description">
-          A lightweight, fast code editor for web development.
-        </p>
-
-        <div class="tech-stack">
-          <h3>Built with</h3>
-          <ul>
-            <li>Tauri v2 + Rust</li>
-            <li>Svelte 5 + TypeScript</li>
-            <li>Tailwind CSS</li>
-          </ul>
+        <div class="header-section">
+          <div class="logo">⚡</div>
+          <div class="title-group">
+            <h1 id="about-title" class="app-title">Volt</h1>
+            <span class="version">v0.1.0</span>
+          </div>
         </div>
 
-        <p class="copyright">
-          © 2025 Volt. All rights reserved.
-        </p>
-      </div>
+        <p class="description">A lightweight, fast code editor for web development.</p>
 
-      <div class="modal-footer">
-        <button class="btn-primary" onclick={handleClose}>
-          OK
-        </button>
+        <div class="info-grid">
+          <div class="info-card">
+            <h3>Built With</h3>
+            <div class="tech-list">
+              <span class="tech-tag">Tauri v2</span>
+              <span class="tech-tag">Rust</span>
+              <span class="tech-tag">Svelte 5</span>
+              <span class="tech-tag">TypeScript</span>
+            </div>
+          </div>
+
+          <div class="info-card">
+            <h3>System</h3>
+            {#if loadingSystemInfo}
+              <p class="loading">Loading...</p>
+            {:else if systemInfo}
+              <div class="system-list">
+                <div class="sys-row">
+                  <span class="sys-label">OS</span>
+                  <span class="sys-value">{systemInfo.os_name ?? 'Unknown'}</span>
+                </div>
+                <div class="sys-row">
+                  <span class="sys-label">Memory</span>
+                  <span class="sys-value">{formatBytes(systemInfo.total_memory)}</span>
+                </div>
+                <div class="sys-row">
+                  <span class="sys-label">CPU</span>
+                  <span class="sys-value">{systemInfo.cpu_count} cores</span>
+                </div>
+              </div>
+            {:else}
+              <p class="error">Unable to load</p>
+            {/if}
+          </div>
+        </div>
+
+        <p class="copyright">© 2025 Volt</p>
       </div>
     </div>
   </div>
@@ -83,46 +135,40 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.6);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 2000;
+    padding: 16px;
   }
 
   .modal-content {
+    position: relative;
     background: var(--color-bg);
     border: 1px solid var(--color-border);
-    border-radius: 8px;
-    width: 420px;
-    max-width: 90vw;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  }
-
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .modal-header h2 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--color-text);
-    margin: 0;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 360px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   }
 
   .close-btn {
-    width: 28px;
-    height: 28px;
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--color-text-secondary);
     border-radius: 4px;
-    transition: all 0.1s ease;
+    font-size: 12px;
+    transition: all 0.15s ease;
+    z-index: 1;
   }
 
   .close-btn:hover {
@@ -131,91 +177,126 @@
   }
 
   .modal-body {
-    padding: 24px 20px;
-    text-align: center;
+    padding: 24px;
   }
 
-  .logo {
-    font-size: 48px;
+  .header-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin-bottom: 12px;
   }
 
+  .logo {
+    font-size: 36px;
+    line-height: 1;
+  }
+
+  .title-group {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
   .app-title {
-    font-size: 24px;
+    font-size: 22px;
     font-weight: 700;
     color: var(--color-text);
-    margin: 0 0 8px 0;
+    margin: 0;
   }
 
   .version {
-    font-size: 14px;
+    font-size: 12px;
     color: var(--color-text-secondary);
-    margin: 0 0 16px 0;
+    background: var(--color-bg-sidebar);
+    padding: 2px 6px;
+    border-radius: 4px;
   }
 
   .description {
-    font-size: 14px;
-    color: var(--color-text);
-    margin: 0 0 20px 0;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    margin: 0 0 16px 0;
+    line-height: 1.4;
   }
 
-  .tech-stack {
-    text-align: left;
-    background: var(--color-bg-sidebar);
-    border-radius: 6px;
-    padding: 12px 16px;
+  .info-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
     margin-bottom: 16px;
   }
 
-  .tech-stack h3 {
-    font-size: 12px;
+  .info-card {
+    background: var(--color-bg-sidebar);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .info-card h3 {
+    font-size: 10px;
     font-weight: 600;
     color: var(--color-text-secondary);
     text-transform: uppercase;
+    letter-spacing: 0.5px;
     margin: 0 0 8px 0;
   }
 
-  .tech-stack ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
+  .tech-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .tech-stack li {
-    font-size: 13px;
+  .tech-tag {
+    font-size: 11px;
     color: var(--color-text);
-    padding: 4px 0;
+    background: var(--color-bg);
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--color-border);
+  }
+
+  .system-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .sys-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .sys-label {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+  }
+
+  .sys-value {
+    font-size: 12px;
+    color: var(--color-text);
+    font-weight: 500;
+  }
+
+  .loading,
+  .error {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    margin: 0;
   }
 
   .copyright {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--color-text-disabled);
     margin: 0;
+    text-align: center;
   }
 
-  .modal-footer {
-    padding: 16px 20px;
-    border-top: 1px solid var(--color-border);
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .btn-primary {
-    padding: 8px 20px;
-    background: var(--color-accent);
-    color: var(--color-bg);
-    font-size: 13px;
-    font-weight: 500;
-    border-radius: 4px;
-    transition: opacity 0.1s ease;
-  }
-
-  .btn-primary:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  .btn-primary:hover {
-    opacity: 0.9;
+  @media (max-width: 400px) {
+    .modal-content {
+      max-width: 100%;
+    }
   }
 </style>

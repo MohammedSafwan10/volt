@@ -30,6 +30,7 @@
     notifySvelteDocumentOpened,
     notifySvelteDocumentChanged
   } from '$lib/services/lsp/svelte-sidecar';
+  import { themeStore, getMonacoThemeName } from '$lib/stores/theme.svelte';
   import EditorPlaceholder from './EditorPlaceholder.svelte';
 
   interface Props {
@@ -98,7 +99,7 @@
         editor = monaco.editor.create(containerRef, {
           value: '',
           language: 'plaintext',
-          theme: 'volt-dark',
+          theme: getMonacoThemeName(),
           readOnly: readonly,
           automaticLayout: true,
           fontSize: 14,
@@ -240,6 +241,14 @@
   $effect(() => {
     if (editor) {
       editor.updateOptions({ readOnly: readonly });
+    }
+  });
+
+  // Update theme when theme store changes
+  $effect(() => {
+    const theme = themeStore.resolvedTheme;
+    if (editor && monaco) {
+      monaco.editor.setTheme(theme === 'dark' ? 'volt-dark' : 'volt-light');
     }
   });
 </script>

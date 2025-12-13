@@ -3,6 +3,7 @@
   import { editorStore } from '$lib/stores/editor.svelte';
   import { projectStore } from '$lib/stores/project.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
+  import { themeStore } from '$lib/stores/theme.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
   import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
@@ -218,6 +219,42 @@
       category: 'View',
       action: () => {
         if (typeof window !== 'undefined') window.location.reload();
+      }
+    },
+    {
+      id: 'view.theme.dark',
+      label: 'Preferences: Color Theme - Dark',
+      category: 'View',
+      action: () => {
+        themeStore.setMode('dark');
+        showToast({ message: 'Theme set to Dark', type: 'info' });
+      }
+    },
+    {
+      id: 'view.theme.light',
+      label: 'Preferences: Color Theme - Light',
+      category: 'View',
+      action: () => {
+        themeStore.setMode('light');
+        showToast({ message: 'Theme set to Light', type: 'info' });
+      }
+    },
+    {
+      id: 'view.theme.system',
+      label: 'Preferences: Color Theme - System',
+      category: 'View',
+      action: () => {
+        themeStore.setMode('system');
+        showToast({ message: `Theme set to System (${themeStore.resolvedTheme === 'dark' ? 'Dark' : 'Light'})`, type: 'info' });
+      }
+    },
+    {
+      id: 'view.theme.toggle',
+      label: 'Preferences: Toggle Color Theme',
+      category: 'View',
+      action: () => {
+        themeStore.toggle();
+        showToast({ message: `Theme: ${themeStore.displayName}`, type: 'info' });
       }
     }
   ];

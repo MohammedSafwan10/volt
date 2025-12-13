@@ -5,6 +5,7 @@
   import { projectStore } from '$lib/stores/project.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
 	import { terminalStore } from '$lib/stores/terminal.svelte';
+  import { themeStore } from '$lib/stores/theme.svelte';
   import { openFileDialog, openFolderDialog } from '$lib/services/file-system';
   import { formatCurrentDocument } from '$lib/services/prettier';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -21,12 +22,31 @@
     action?: () => void;
     separator?: boolean;
     checked?: boolean;
+    submenu?: MenuItem[];
   }
 
   interface Menu {
     id: string;
     label: string;
     items: MenuItem[];
+  }
+
+  function handleSetThemeDark() {
+    uiStore.closeMenus();
+    themeStore.setMode('dark');
+    showToast({ message: 'Theme set to Dark', type: 'info' });
+  }
+
+  function handleSetThemeLight() {
+    uiStore.closeMenus();
+    themeStore.setMode('light');
+    showToast({ message: 'Theme set to Light', type: 'info' });
+  }
+
+  function handleSetThemeSystem() {
+    uiStore.closeMenus();
+    themeStore.setMode('system');
+    showToast({ message: `Theme set to System (${themeStore.resolvedTheme === 'dark' ? 'Dark' : 'Light'})`, type: 'info' });
   }
 
   async function handleOpenFile() {
@@ -179,7 +199,14 @@
         { label: 'Zoom Out', shortcut: 'Ctrl+-', action: handleZoomOut },
         { label: 'Reset Zoom', shortcut: 'Ctrl+0', action: handleResetZoom },
         { separator: true, label: '' },
-        { label: 'Theme', action: comingSoon('Theme') }
+        { 
+          label: 'Theme', 
+          submenu: [
+            { label: 'Dark', action: handleSetThemeDark, checked: themeStore.mode === 'dark' },
+            { label: 'Light', action: handleSetThemeLight, checked: themeStore.mode === 'light' },
+            { label: 'System', action: handleSetThemeSystem, checked: themeStore.mode === 'system' }
+          ]
+        }
       ]
     },
     {
@@ -236,6 +263,27 @@
           {#each menu.items as item, index (index)}
             {#if item.separator}
               <div class="menu-separator"></div>
+            {:else if item.submenu}
+              <div class="menu-item-with-submenu">
+                <span class="menu-item-label">{item.label}</span>
+                <span class="submenu-arrow">▶</span>
+                <div class="submenu">
+                  {#each item.submenu as subitem, subindex (subindex)}
+                    <button
+                      class="menu-item"
+                      onclick={subitem.action}
+                      role="menuitem"
+                    >
+                      <span class="menu-item-label">
+                        {#if subitem.checked !== undefined}
+                          <span class="menu-check">{subitem.checked ? '✓' : ''}</span>
+                        {/if}
+                        {subitem.label}
+                      </span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
             {:else}
               <button
                 class="menu-item"
@@ -349,5 +397,48 @@
     height: 1px;
     background: var(--color-border);
     margin: 4px 8px;
+  }
+
+  .menu-item-with-submenu {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: calc(100% - 8px);
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--color-text);
+    text-align: left;
+    transition: background-color 0.1s ease;
+    border-radius: 4px;
+    margin: 0 4px;
+    position: relative;
+    cursor: default;
+  }
+
+  .menu-item-with-submenu:hover {
+    background: var(--color-hover);
+  }
+
+  .submenu-arrow {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+  }
+
+  .submenu {
+    position: absolute;
+    left: 100%;
+    top: 0;
+    min-width: 160px;
+    background: var(--color-bg-sidebar);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 6px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 1001;
+    display: none;
+  }
+
+  .menu-item-with-submenu:hover .submenu {
+    display: block;
   }
 </style>

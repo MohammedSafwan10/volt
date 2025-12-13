@@ -9,6 +9,7 @@ use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
     lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
 };
+use commands::system::get_system_info;
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_list, terminal_resize, terminal_write,
 };
@@ -47,6 +48,8 @@ pub fn run() {
             lsp_list_servers,
             lsp_get_server_info,
             lsp_is_server_running,
+            // System
+            get_system_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
