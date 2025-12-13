@@ -120,11 +120,6 @@
 			return true; // Allow default handling
 		});
 
-		// Set up data handler from backend
-		session.onData((data) => {
-			writeToTerminal(data);
-		});
-
 		// Set up input handler to backend
 		terminal.onData((data) => {
 			void session.write(data);
@@ -139,12 +134,25 @@
 		});
 		resizeObserver.observe(containerRef);
 
+		// Now set up data handler from backend AFTER terminal is ready
+		// This ensures buffered data is written to a fully initialized terminal
+		session.onData((data) => {
+			writeToTerminal(data);
+		});
+
 		// Re-fit after a short delay to ensure container has final dimensions
-		// This fixes the issue where first terminal doesn't show full prompt
+		// and send a resize to the backend to trigger prompt redraw
 		requestAnimationFrame(() => {
-			setTimeout(() => {
-				void fitTerminal();
-			}, 50);
+			setTimeout(async () => {
+				await fitTerminal();
+				// Force a resize notification to backend to ensure prompt is drawn
+				if (terminal) {
+					const { cols, rows } = terminal;
+					if (cols > 0 && rows > 0) {
+						await session.resize(cols, rows);
+					}
+				}
+			}, 100);
 		});
 	}
 

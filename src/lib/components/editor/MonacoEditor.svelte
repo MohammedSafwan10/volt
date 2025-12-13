@@ -2,12 +2,29 @@
   /**
    * MonacoEditor - Lazy-loaded Monaco Editor wrapper
    * Loads Monaco only when first file opens
+   * 
+   * Integrates with TypeScript LSP sidecar for full-project intelligence
    */
   import { onMount } from 'svelte';
   import type * as Monaco from 'monaco-editor';
   import { loadMonaco, detectLanguage } from '$lib/services/monaco-loader';
   import { getOrCreateModel } from '$lib/services/monaco-models';
-	import { notifyFileOpened } from '$lib/services/lsp/client';
+  import { notifyFileOpened } from '$lib/services/lsp/client';
+  import {
+    isTsJsFile,
+    notifyDocumentOpened,
+    notifyDocumentChanged
+  } from '$lib/services/lsp/typescript-sidecar';
+  import {
+    isTailwindFile,
+    notifyTailwindDocumentOpened,
+    notifyTailwindDocumentChanged
+  } from '$lib/services/lsp/tailwind-sidecar';
+  import {
+    isEslintFile,
+    notifyEslintDocumentOpened,
+    notifyEslintDocumentChanged
+  } from '$lib/services/lsp/eslint-sidecar';
   import EditorPlaceholder from './EditorPlaceholder.svelte';
 
   interface Props {
@@ -104,10 +121,29 @@
 
         // Listen for content changes (debounced to avoid reactivity overhead on every keystroke)
         changeDisposable = editor.onDidChangeModelContent(() => {
-          if (!editor || !onchange) return;
+          if (!editor) return;
           if (changeTimer) clearTimeout(changeTimer);
           changeTimer = setTimeout(() => {
-            if (editor && onchange) onchange(editor.getValue());
+            if (!editor) return;
+            const newValue = editor.getValue();
+            
+            // Notify parent component
+            if (onchange) onchange(newValue);
+            
+            // Notify TypeScript LSP sidecar about the change
+            if (filepath && isTsJsFile(filepath)) {
+              notifyDocumentChanged(filepath, newValue);
+            }
+            
+            // Notify Tailwind LSP sidecar about the change
+            if (filepath && isTailwindFile(filepath)) {
+              notifyTailwindDocumentChanged(filepath, newValue);
+            }
+            
+            // Notify ESLint LSP sidecar about the change
+            if (filepath && isEslintFile(filepath)) {
+              notifyEslintDocumentChanged(filepath, newValue);
+            }
           }, 75);
         });
 
@@ -155,7 +191,7 @@
     const path = filepath;
     const lang = detectedLanguage;
 
-    // Notify LSP client about the file being opened
+    // Notify Monaco LSP client about the file being opened
     notifyFileOpened(lang);
 
     void (async () => {
@@ -167,6 +203,21 @@
 
       if (!editor) return;
       editor.setModel(model);
+
+      // Notify TypeScript LSP sidecar about the file being opened
+      if (isTsJsFile(path)) {
+        await notifyDocumentOpened(path, value);
+      }
+      
+      // Notify Tailwind LSP sidecar about the file being opened
+      if (isTailwindFile(path)) {
+        await notifyTailwindDocumentOpened(path, value);
+      }
+      
+      // Notify ESLint LSP sidecar about the file being opened
+      if (isEslintFile(path)) {
+        await notifyEslintDocumentOpened(path, value);
+      }
     })();
   });
 

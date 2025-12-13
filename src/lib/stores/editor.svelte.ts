@@ -6,9 +6,24 @@
 import { readFile } from '$lib/services/file-system';
 import { disposeAllModels, disposeModel } from '$lib/services/monaco-models';
 import { notifyFileClosed } from '$lib/services/lsp/client';
+import {
+  isTsJsFile,
+  notifyDocumentClosed as notifyTsDocumentClosed,
+  notifyDocumentSaved as notifyTsDocumentSaved
+} from '$lib/services/lsp/typescript-sidecar';
+import {
+  isTailwindFile,
+  notifyTailwindDocumentClosed,
+  notifyTailwindDocumentSaved
+} from '$lib/services/lsp/tailwind-sidecar';
+import {
+  isEslintFile,
+  notifyEslintDocumentClosed,
+  notifyEslintDocumentSaved
+} from '$lib/services/lsp/eslint-sidecar';
 
 export interface OpenFile {
-  /** Full file path */
+  /** Full file path (normalized with forward slashes) */
   path: string;
   /** File name (for display) */
   name: string;
@@ -18,6 +33,14 @@ export interface OpenFile {
   originalContent: string;
   /** Language for syntax highlighting */
   language: string;
+}
+
+/**
+ * Normalize file path to use forward slashes consistently.
+ * This prevents duplicate tabs when the same file is opened with different slash styles.
+ */
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/');
 }
 
 class EditorStore {
@@ -35,7 +58,8 @@ class EditorStore {
 
   /** Check if a file is dirty (has unsaved changes) */
   isDirty(path: string): boolean {
-    const file = this.openFiles.find(f => f.path === path);
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
     if (!file) return false;
     return file.content !== file.originalContent;
   }
@@ -50,14 +74,17 @@ class EditorStore {
    * If already open, just switch to it
    */
   async openFile(path: string): Promise<boolean> {
+    // Normalize path to prevent duplicate tabs with different slash styles
+    const normalizedPath = normalizePath(path);
+    
     // Check if already open
-    const existing = this.openFiles.find(f => f.path === path);
+    const existing = this.openFiles.find(f => f.path === normalizedPath);
     if (existing) {
-      this.activeFilePath = path;
+      this.activeFilePath = normalizedPath;
       return true;
     }
 
-    // Read file content
+    // Read file content (use original path for file system access)
     const content = await readFile(path);
     if (content === null) {
       // Error already shown via toast in readFile
@@ -65,14 +92,14 @@ class EditorStore {
     }
 
     // Extract filename
-    const name = path.split(/[/\\]/).pop() || path;
+    const name = normalizedPath.split('/').pop() || normalizedPath;
 
     // Detect language from extension
     const language = this.detectLanguage(name);
 
     // Add to open files
     const newFile: OpenFile = {
-      path,
+      path: normalizedPath,
       name,
       content,
       originalContent: content,
@@ -80,7 +107,7 @@ class EditorStore {
     };
 
     this.openFiles = [...this.openFiles, newFile];
-    this.activeFilePath = path;
+    this.activeFilePath = normalizedPath;
 
     return true;
   }
@@ -91,20 +118,21 @@ class EditorStore {
    * Selects the nearest neighbor (prefer right, then left) when closing active tab
    */
   closeFile(path: string, force = false): boolean {
-    const fileIndex = this.openFiles.findIndex(f => f.path === path);
+    const normalizedPath = normalizePath(path);
+    const fileIndex = this.openFiles.findIndex(f => f.path === normalizedPath);
     if (fileIndex === -1) return true;
 
     const file = this.openFiles[fileIndex];
 
     // Check for unsaved changes
-    if (!force && this.isDirty(path)) {
+    if (!force && this.isDirty(normalizedPath)) {
       const confirmed = confirm(`"${file.name}" has unsaved changes. Close anyway?`);
       if (!confirmed) return false;
     }
 
     // Determine next active file before removing (VS Code behavior: prefer right neighbor, then left)
     let nextActivePath: string | null = null;
-    if (this.activeFilePath === path && this.openFiles.length > 1) {
+    if (this.activeFilePath === normalizedPath && this.openFiles.length > 1) {
       if (fileIndex < this.openFiles.length - 1) {
         // There's a tab to the right - select it
         nextActivePath = this.openFiles[fileIndex + 1].path;
@@ -115,12 +143,27 @@ class EditorStore {
     }
 
     // Remove from open files
-    this.openFiles = this.openFiles.filter(f => f.path !== path);
-    disposeModel(path);
-		notifyFileClosed(file.language);
+    this.openFiles = this.openFiles.filter(f => f.path !== normalizedPath);
+    disposeModel(normalizedPath);
+    notifyFileClosed(file.language);
+    
+    // Notify TypeScript LSP sidecar about the file being closed
+    if (isTsJsFile(normalizedPath)) {
+      notifyTsDocumentClosed(normalizedPath);
+    }
+    
+    // Notify Tailwind LSP sidecar about the file being closed
+    if (isTailwindFile(normalizedPath)) {
+      notifyTailwindDocumentClosed(normalizedPath);
+    }
+    
+    // Notify ESLint LSP sidecar about the file being closed
+    if (isEslintFile(normalizedPath)) {
+      notifyEslintDocumentClosed(normalizedPath);
+    }
 
     // Update active file
-    if (this.activeFilePath === path) {
+    if (this.activeFilePath === normalizedPath) {
       this.activeFilePath = nextActivePath;
     }
 
@@ -137,9 +180,24 @@ class EditorStore {
       if (!confirmed) return false;
     }
 
-		for (const file of this.openFiles) {
-			notifyFileClosed(file.language);
-		}
+    for (const file of this.openFiles) {
+      notifyFileClosed(file.language);
+      
+      // Notify TypeScript LSP sidecar about the file being closed
+      if (isTsJsFile(file.path)) {
+        notifyTsDocumentClosed(file.path);
+      }
+      
+      // Notify Tailwind LSP sidecar about the file being closed
+      if (isTailwindFile(file.path)) {
+        notifyTailwindDocumentClosed(file.path);
+      }
+      
+      // Notify ESLint LSP sidecar about the file being closed
+      if (isEslintFile(file.path)) {
+        notifyEslintDocumentClosed(file.path);
+      }
+    }
     this.openFiles = [];
     this.activeFilePath = null;
     disposeAllModels();
@@ -150,8 +208,9 @@ class EditorStore {
    * Set the active file
    */
   setActiveFile(path: string): void {
-    if (this.openFiles.some(f => f.path === path)) {
-      this.activeFilePath = path;
+    const normalizedPath = normalizePath(path);
+    if (this.openFiles.some(f => f.path === normalizedPath)) {
+      this.activeFilePath = normalizedPath;
     }
   }
 
@@ -181,7 +240,8 @@ class EditorStore {
    * Update file content (called when editor content changes)
    */
   updateContent(path: string, content: string): void {
-    const file = this.openFiles.find(f => f.path === path);
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.content = content;
     }
@@ -191,9 +251,25 @@ class EditorStore {
    * Mark file as saved (update original content to match current)
    */
   markSaved(path: string): void {
-    const file = this.openFiles.find(f => f.path === path);
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.originalContent = file.content;
+      
+      // Notify TypeScript LSP sidecar about the file being saved
+      if (isTsJsFile(normalizedPath)) {
+        notifyTsDocumentSaved(normalizedPath, file.content);
+      }
+      
+      // Notify Tailwind LSP sidecar about the file being saved
+      if (isTailwindFile(normalizedPath)) {
+        notifyTailwindDocumentSaved(normalizedPath, file.content);
+      }
+      
+      // Notify ESLint LSP sidecar about the file being saved
+      if (isEslintFile(normalizedPath)) {
+        notifyEslintDocumentSaved(normalizedPath, file.content);
+      }
     }
   }
 
@@ -201,9 +277,11 @@ class EditorStore {
    * Reload file content from disk
    */
   async reloadFile(path: string): Promise<boolean> {
-    const file = this.openFiles.find(f => f.path === path);
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
     if (!file) return false;
 
+    // Use original path for file system access
     const content = await readFile(path);
     if (content === null) return false;
 

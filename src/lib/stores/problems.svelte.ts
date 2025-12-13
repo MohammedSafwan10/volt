@@ -65,27 +65,61 @@ class ProblemsStore {
 
   /**
    * Set problems for a specific file
-   * Replaces all existing problems for that file
+   * If source is provided, only replaces problems from that source
+   * Otherwise replaces all existing problems for that file
    */
-  setProblemsForFile(filePath: string, problems: Problem[]): void {
-    if (problems.length === 0) {
-      // Remove file entry if no problems
-      const { [filePath]: _, ...rest } = this.problemsByFile;
-      this.problemsByFile = rest;
+  setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
+    if (source) {
+      // Merge with existing problems from other sources
+      const existingProblems = this.problemsByFile[filePath] || [];
+      const otherSourceProblems = existingProblems.filter(p => p.source !== source);
+      const mergedProblems = [...otherSourceProblems, ...problems];
+      
+      if (mergedProblems.length === 0) {
+        const { [filePath]: _, ...rest } = this.problemsByFile;
+        this.problemsByFile = rest;
+      } else {
+        this.problemsByFile = {
+          ...this.problemsByFile,
+          [filePath]: mergedProblems
+        };
+      }
     } else {
-      this.problemsByFile = {
-        ...this.problemsByFile,
-        [filePath]: problems
-      };
+      // Replace all problems for the file
+      if (problems.length === 0) {
+        const { [filePath]: _, ...rest } = this.problemsByFile;
+        this.problemsByFile = rest;
+      } else {
+        this.problemsByFile = {
+          ...this.problemsByFile,
+          [filePath]: problems
+        };
+      }
     }
   }
 
   /**
    * Clear problems for a specific file
+   * If source is provided, only clears problems from that source
    */
-  clearProblemsForFile(filePath: string): void {
-    const { [filePath]: _, ...rest } = this.problemsByFile;
-    this.problemsByFile = rest;
+  clearProblemsForFile(filePath: string, source?: string): void {
+    if (source) {
+      const existingProblems = this.problemsByFile[filePath] || [];
+      const remainingProblems = existingProblems.filter(p => p.source !== source);
+      
+      if (remainingProblems.length === 0) {
+        const { [filePath]: _, ...rest } = this.problemsByFile;
+        this.problemsByFile = rest;
+      } else {
+        this.problemsByFile = {
+          ...this.problemsByFile,
+          [filePath]: remainingProblems
+        };
+      }
+    } else {
+      const { [filePath]: _, ...rest } = this.problemsByFile;
+      this.problemsByFile = rest;
+    }
   }
 
   /**

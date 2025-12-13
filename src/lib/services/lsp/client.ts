@@ -122,6 +122,15 @@ function getFilePathFromUri(uri: Monaco.Uri): string {
 }
 
 /**
+ * Check if a file is a TypeScript/JavaScript file
+ * These files are handled by the TypeScript sidecar, not Monaco markers
+ */
+function isTsJsFile(filepath: string): boolean {
+  const ext = filepath.split('.').pop()?.toLowerCase() || '';
+  return ['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext);
+}
+
+/**
  * Extract file name from path
  */
 function getFileName(filePath: string): string {
@@ -130,23 +139,34 @@ function getFileName(filePath: string): string {
 
 /**
  * Process markers from Monaco and update problems store
+ * 
+ * NOTE: TypeScript/JavaScript files are handled by the TypeScript sidecar,
+ * so we skip Monaco markers for those files to avoid conflicts.
  */
 function processMarkers(monaco: typeof Monaco): void {
   // Get all markers from Monaco
   const allMarkers = monaco.editor.getModelMarkers({});
   
-  // Group markers by file
+  // Group markers by file (excluding TS/JS files which are handled by sidecar)
   const markersByFile = new Map<string, Monaco.editor.IMarker[]>();
   
   for (const marker of allMarkers) {
     const filePath = getFilePathFromUri(marker.resource);
+    
+    // Skip TS/JS files - they're handled by the TypeScript sidecar
+    if (isTsJsFile(filePath)) {
+      continue;
+    }
+    
     const existing = markersByFile.get(filePath) || [];
     existing.push(marker);
     markersByFile.set(filePath, existing);
   }
   
-  // Get all files that currently have problems
-  const currentFiles = new Set(problemsStore.filesWithProblems);
+  // Get all files that currently have problems (excluding TS/JS files)
+  const currentFiles = new Set(
+    problemsStore.filesWithProblems.filter(f => !isTsJsFile(f))
+  );
   
   // Update problems for each file with markers
   for (const [filePath, markers] of markersByFile) {
@@ -160,7 +180,7 @@ function processMarkers(monaco: typeof Monaco): void {
       endColumn: marker.endColumn,
       message: marker.message,
       severity: mapSeverity(monaco, marker.severity),
-      source: marker.source || 'typescript',
+      source: marker.source || 'monaco',
       code: marker.code?.toString()
     }));
     
@@ -168,7 +188,7 @@ function processMarkers(monaco: typeof Monaco): void {
     currentFiles.delete(filePath);
   }
   
-  // Clear problems for files that no longer have markers
+  // Clear problems for non-TS/JS files that no longer have markers
   for (const filePath of currentFiles) {
     problemsStore.clearProblemsForFile(filePath);
   }
@@ -205,6 +225,10 @@ function resetIdleTimer(): void {
 /**
  * Configure TypeScript compiler options for better IDE experience
  * Uses dynamic access to avoid TypeScript type issues with Monaco's deprecated namespace
+ * 
+ * NOTE: We DISABLE Monaco's built-in TS diagnostics because we use the real
+ * typescript-language-server sidecar for diagnostics. This prevents conflicts
+ * where Monaco squiggles show different errors than the Problems panel.
  */
 function configureTypeScript(monaco: typeof Monaco): void {
   // Access TypeScript defaults through dynamic property access
@@ -254,11 +278,12 @@ function configureTypeScript(monaco: typeof Monaco): void {
   typescript.typescriptDefaults.setCompilerOptions(compilerOptions);
   typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
 
-  // Enable diagnostics
+  // DISABLE Monaco's built-in TS diagnostics - we use the real TS server sidecar instead
+  // This prevents conflicts between Monaco squiggles and Problems panel
   const diagnosticsOptions = {
-    noSemanticValidation: false,
-    noSyntaxValidation: false,
-    noSuggestionDiagnostics: false
+    noSemanticValidation: true,  // Disable - handled by TS sidecar
+    noSyntaxValidation: true,    // Disable - handled by TS sidecar
+    noSuggestionDiagnostics: true // Disable - handled by TS sidecar
   };
 
   typescript.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);

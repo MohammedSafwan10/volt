@@ -1,11 +1,29 @@
 /**
  * Project state store using Svelte 5 runes
  * Manages the currently open project/folder and file tree state
+ * 
+ * Features:
+ * - File tree management
+ * - Package manager auto-detection (npm/yarn/pnpm)
+ * - File watching for lock files (VS Code-like behavior)
  */
 
-import { listDirectory } from '$lib/services/file-system';
+import { listDirectory, getFileInfo } from '$lib/services/file-system';
 import { initLspRegistry, disposeLspRegistry } from '$lib/services/lsp/sidecar';
+import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
+import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
+import { stopEslintLsp, pushEslintConfig } from '$lib/services/lsp/eslint-sidecar';
+import { editorStore } from './editor.svelte';
+import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
+
+// Tauri FS plugin for file watching
+import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
+
+export type PackageManager = 'npm' | 'yarn' | 'pnpm';
+
+/** Lock files to watch for package manager detection */
+const LOCK_FILES = ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json'];
 
 const RECENT_PROJECTS_KEY = 'volt.recentProjects';
 const MAX_RECENT_PROJECTS = 10;
@@ -34,6 +52,17 @@ class ProjectStore {
   
   // Currently selected file path
   selectedPath = $state<string | null>(null);
+  
+  // Detected package manager for the project
+  packageManager = $state<PackageManager>('npm');
+  
+  // File watcher cleanup function
+  private unwatchLockFiles: UnwatchFn | null = null;
+
+  // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
+  private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
+  private lockFileLastModified = new Map<string, number | null>();
+  private lockFilePollInFlight = false;
 
   constructor() {
     this.loadRecentProjects();
@@ -64,6 +93,12 @@ class ProjectStore {
     this.loading = false;
     this.addToRecentProjects(path);
 
+    // Detect package manager from lock files
+    this.packageManager = await this.detectPackageManager(path);
+
+    // Start watching lock files for changes (VS Code-like behavior)
+    await this.startWatchingLockFiles(path);
+
     // Initialize LSP registry with new project root
     initLspRegistry(path);
 
@@ -71,16 +106,193 @@ class ProjectStore {
   }
 
   /**
+   * Start watching lock files for package manager changes
+   * This enables VS Code-like behavior where running npm/yarn/pnpm install
+   * automatically updates the detected package manager
+   */
+  private async startWatchingLockFiles(projectPath: string): Promise<void> {
+    // Stop any existing watcher
+    await this.stopWatchingLockFiles();
+
+    try {
+      const sep = projectPath.includes('\\') ? '\\' : '/';
+      const lockFilePaths = LOCK_FILES.map(f => `${projectPath}${sep}${f}`);
+
+      // Watch the project root for lock file changes
+      // Using debounce of 1000ms to avoid rapid re-detection during install
+      this.unwatchLockFiles = await watch(
+        projectPath,
+        (event: WatchEvent) => {
+          this.handleLockFileChange(event, projectPath);
+        },
+        {
+          recursive: false, // Only watch root level
+          delayMs: 1000 // Debounce for 1 second
+        }
+      );
+
+      console.log('[ProjectStore] Started watching lock files:', lockFilePaths);
+    } catch (error) {
+      console.error('[ProjectStore] Failed to start lock file watcher:', error);
+      // Fallback: poll lock files periodically so package manager detection still updates.
+      await this.startPollingLockFiles(projectPath);
+    }
+  }
+
+  /**
+   * Handle lock file changes
+   */
+  private handleLockFileChange(event: WatchEvent, projectPath: string): void {
+    // Check if any of the changed paths are lock files
+    const changedLockFiles = event.paths.filter((p: string) => {
+      const fileName = p.split(/[/\\]/).pop() || '';
+      return LOCK_FILES.includes(fileName);
+    });
+
+    if (changedLockFiles.length > 0) {
+      console.log('[ProjectStore] Lock file changed:', changedLockFiles, 'Event:', event.type);
+      
+      // Re-detect package manager
+      void this.refreshPackageManager();
+    }
+  }
+
+  /**
+   * Stop watching lock files
+   */
+  private async stopWatchingLockFiles(): Promise<void> {
+    if (this.unwatchLockFiles) {
+      try {
+        this.unwatchLockFiles();
+        this.unwatchLockFiles = null;
+        console.log('[ProjectStore] Stopped watching lock files');
+      } catch (error) {
+        console.error('[ProjectStore] Error stopping lock file watcher:', error);
+      }
+    }
+
+    // Always stop polling fallback too
+    this.stopPollingLockFiles();
+  }
+
+  private getLockFilePaths(projectPath: string): string[] {
+    const sep = projectPath.includes('\\') ? '\\' : '/';
+    return LOCK_FILES.map((f) => `${projectPath}${sep}${f}`);
+  }
+
+  private async startPollingLockFiles(projectPath: string): Promise<void> {
+    this.stopPollingLockFiles();
+
+    const lockFilePaths = this.getLockFilePaths(projectPath);
+    this.lockFileLastModified.clear();
+
+    // Prime state
+    for (const p of lockFilePaths) {
+      const info = await getFileInfo(p);
+      this.lockFileLastModified.set(p, info?.modified ?? null);
+    }
+
+    this.lockFilePollTimer = setInterval(() => {
+      if (!this.rootPath || this.lockFilePollInFlight) return;
+      this.lockFilePollInFlight = true;
+
+      void (async () => {
+        try {
+          let changed = false;
+
+          for (const p of lockFilePaths) {
+            const info = await getFileInfo(p);
+            const next = info?.modified ?? null;
+            const prev = this.lockFileLastModified.get(p) ?? null;
+            if (next !== prev) {
+              this.lockFileLastModified.set(p, next);
+              changed = true;
+            }
+          }
+
+          if (changed) {
+            console.log('[ProjectStore] Lock files changed (polling fallback)');
+            await this.refreshPackageManager();
+          }
+        } catch (e) {
+          console.error('[ProjectStore] Lock file polling error:', e);
+        } finally {
+          this.lockFilePollInFlight = false;
+        }
+      })();
+    }, 2000);
+
+    console.log('[ProjectStore] Started polling lock files (fallback)');
+  }
+
+  private stopPollingLockFiles(): void {
+    if (this.lockFilePollTimer) {
+      clearInterval(this.lockFilePollTimer);
+      this.lockFilePollTimer = null;
+      this.lockFilePollInFlight = false;
+      this.lockFileLastModified.clear();
+      console.log('[ProjectStore] Stopped polling lock files');
+    }
+  }
+
+  /**
+   * Detect package manager by checking for lock files
+   * Priority: pnpm > yarn > npm (check in order of specificity)
+   */
+  private async detectPackageManager(projectPath: string): Promise<PackageManager> {
+    const sep = projectPath.includes('\\') ? '\\' : '/';
+    
+    // Check for pnpm-lock.yaml first (most specific)
+    const pnpmLock = `${projectPath}${sep}pnpm-lock.yaml`;
+    const pnpmInfo = await getFileInfo(pnpmLock);
+    if (pnpmInfo !== null) {
+      console.log('[ProjectStore] Detected package manager: pnpm');
+      return 'pnpm';
+    }
+    
+    // Check for yarn.lock
+    const yarnLock = `${projectPath}${sep}yarn.lock`;
+    const yarnInfo = await getFileInfo(yarnLock);
+    if (yarnInfo !== null) {
+      console.log('[ProjectStore] Detected package manager: yarn');
+      return 'yarn';
+    }
+    
+    // Check for package-lock.json (npm)
+    const npmLock = `${projectPath}${sep}package-lock.json`;
+    const npmInfo = await getFileInfo(npmLock);
+    if (npmInfo !== null) {
+      console.log('[ProjectStore] Detected package manager: npm');
+      return 'npm';
+    }
+    
+    // Default to npm if no lock file found
+    console.log('[ProjectStore] No lock file found, defaulting to npm');
+    return 'npm';
+  }
+
+  /**
    * Close the current project
+   * VS Code behavior: closes all open files and kills all terminals
    */
   async closeProject(): Promise<void> {
+    // Stop watching lock files
+    await this.stopWatchingLockFiles();
+
     // Stop all LSP servers when closing project
     await this.stopLspServers();
+
+    // Close all open editor tabs (VS Code behavior)
+    editorStore.closeAllFiles(true);
+
+    // Kill all terminals (VS Code behavior - terminals are project-specific)
+    await terminalStore.killAll();
 
     this.rootPath = null;
     this.projectName = '';
     this.tree = [];
     this.selectedPath = null;
+    this.packageManager = 'npm';
   }
 
   /**
@@ -88,6 +300,13 @@ class ProjectStore {
    */
   private async stopLspServers(): Promise<void> {
     try {
+      // Stop TypeScript LSP sidecar first
+      await stopTsLsp();
+      // Stop Tailwind LSP sidecar
+      await stopTailwindLsp();
+      // Stop ESLint LSP sidecar
+      await stopEslintLsp();
+      // Then dispose the registry
       await disposeLspRegistry();
     } catch (e) {
       console.error('[ProjectStore] Error stopping LSP servers:', e);
@@ -150,6 +369,24 @@ class ProjectStore {
   async refreshTree(): Promise<void> {
     if (!this.rootPath) return;
     await this.openProject(this.rootPath);
+  }
+
+  /**
+   * Re-detect package manager (call after npm/yarn/pnpm install)
+   * Useful when lock files are created after project was opened
+   * Also notifies running ESLint server of the change
+   */
+  async refreshPackageManager(): Promise<void> {
+    if (!this.rootPath) return;
+    const detected = await this.detectPackageManager(this.rootPath);
+    if (detected !== this.packageManager) {
+      console.log(`[ProjectStore] Package manager changed: ${this.packageManager} → ${detected}`);
+      this.packageManager = detected;
+      
+      // Notify ESLint server of the configuration change
+      // This avoids a full server restart while updating the packageManager setting
+      await pushEslintConfig();
+    }
   }
 
   /**
