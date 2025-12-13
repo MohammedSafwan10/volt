@@ -1,0 +1,122 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+/* Catppuccin Mocha-inspired theme colors */
+:root {
+  /* Background colors */
+  --color-bg: #1e1e2e;
+  --color-bg-sidebar: #181825;
+  --color-bg-panel: #1e1e2e;
+  --color-bg-header: #181825;
+  --color-bg-input: #313244;
+  
+  /* Text colors */
+  --color-text: #cdd6f4;
+  --color-text-secondary: #a6adc8;
+  --color-text-disabled: #585b70;
+  
+  /* Accent colors */
+  --color-accent: #89b4fa;
+  --color-success: #a6e3a1;
+  --color-warning: #f9e2af;
+  --color-error: #f38ba8;
+  
+  /* UI colors */
+  --color-border: #313244;
+  --color-hover: #313244;
+  --color-active: #45475a;
+  
+  /* Additional Catppuccin colors */
+  --color-surface0: #313244;
+  --color-surface1: #45475a;
+  --color-surface2: #585b70;
+  --color-overlay0: #6c7086;
+  --color-overlay1: #7f849c;
+  --color-overlay2: #9399b2;
+  
+  /* Syntax highlighting colors */
+  --color-pink: #f5c2e7;
+  --color-mauve: #cba6f7;
+  --color-red: #f38ba8;
+  --color-maroon: #eba0ac;
+  --color-peach: #fab387;
+  --color-yellow: #f9e2af;
+  --color-green: #a6e3a1;
+  --color-teal: #94e2d5;
+  --color-sky: #89dceb;
+  --color-sapphire: #74c7ec;
+  --color-blue: #89b4fa;
+  --color-lavender: #b4befe;
+}
+
+/* Base styles */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prevent text selection on UI elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface1);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-surface2);
+}
+
+/* Focus styles */
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Button reset */
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+/* Input reset */
+input, textarea {
+  background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font: inherit;
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+input:focus, textarea:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
