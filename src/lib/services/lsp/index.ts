@@ -175,3 +175,36 @@ export {
   type WorkspaceEdit as EslintWorkspaceEdit,
   type TextEdit as EslintTextEdit,
 } from './eslint-sidecar';
+
+// Svelte LSP Sidecar (real language server for Svelte files)
+export {
+  isSvelteFile as isSvelteLspFile,
+  notifySvelteDocumentOpened,
+  notifySvelteDocumentChanged,
+  notifySvelteDocumentSaved,
+  notifySvelteDocumentClosed,
+  getSvelteCompletions,
+  getSvelteHover,
+  getSvelteDefinition,
+  getSvelteReferences,
+  getSvelteSignatureHelp,
+  formatSvelteDocument,
+  getSvelteCodeActions,
+  isSvelteLspInitialized,
+  isSvelteLspConnected,
+  stopSvelteLsp,
+  restartSvelteLsp,
+  type CompletionItem as SvelteCompletionItem,
+  type HoverResult as SvelteHoverResult,
+  type Location as SvelteLocation,
+  type SignatureHelp as SvelteSignatureHelp,
+  type TextEdit as SvelteTextEdit,
+  type CodeAction as SvelteCodeAction,
+  type WorkspaceEdit as SvelteWorkspaceEdit,
+} from './svelte-sidecar';
+
+// Svelte Monaco Providers (connects Monaco to the Svelte sidecar)
+export {
+  registerSvelteMonacoProviders,
+  disposeSvelteMonacoProviders
+} from './svelte-monaco-providers';

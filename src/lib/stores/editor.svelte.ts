@@ -21,6 +21,11 @@ import {
   notifyEslintDocumentClosed,
   notifyEslintDocumentSaved
 } from '$lib/services/lsp/eslint-sidecar';
+import {
+  isSvelteFile,
+  notifySvelteDocumentClosed,
+  notifySvelteDocumentSaved
+} from '$lib/services/lsp/svelte-sidecar';
 
 export interface OpenFile {
   /** Full file path (normalized with forward slashes) */
@@ -161,6 +166,11 @@ class EditorStore {
     if (isEslintFile(normalizedPath)) {
       notifyEslintDocumentClosed(normalizedPath);
     }
+    
+    // Notify Svelte LSP sidecar about the file being closed
+    if (isSvelteFile(normalizedPath)) {
+      notifySvelteDocumentClosed(normalizedPath);
+    }
 
     // Update active file
     if (this.activeFilePath === normalizedPath) {
@@ -196,6 +206,11 @@ class EditorStore {
       // Notify ESLint LSP sidecar about the file being closed
       if (isEslintFile(file.path)) {
         notifyEslintDocumentClosed(file.path);
+      }
+      
+      // Notify Svelte LSP sidecar about the file being closed
+      if (isSvelteFile(file.path)) {
+        notifySvelteDocumentClosed(file.path);
       }
     }
     this.openFiles = [];
@@ -269,6 +284,11 @@ class EditorStore {
       // Notify ESLint LSP sidecar about the file being saved
       if (isEslintFile(normalizedPath)) {
         notifyEslintDocumentSaved(normalizedPath, file.content);
+      }
+      
+      // Notify Svelte LSP sidecar about the file being saved
+      if (isSvelteFile(normalizedPath)) {
+        notifySvelteDocumentSaved(normalizedPath, file.content);
       }
     }
   }
@@ -357,7 +377,7 @@ class EditorStore {
       'gql': 'graphql',
       
       // Svelte/Vue
-      'svelte': 'html',
+      'svelte': 'svelte',
       'vue': 'html'
     };
 

@@ -13,6 +13,7 @@ import { initLspRegistry, disposeLspRegistry } from '$lib/services/lsp/sidecar';
 import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
 import { stopEslintLsp, pushEslintConfig } from '$lib/services/lsp/eslint-sidecar';
+import { stopSvelteLsp } from '$lib/services/lsp/svelte-sidecar';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
@@ -306,6 +307,8 @@ class ProjectStore {
       await stopTailwindLsp();
       // Stop ESLint LSP sidecar
       await stopEslintLsp();
+      // Stop Svelte LSP sidecar
+      await stopSvelteLsp();
       // Then dispose the registry
       await disposeLspRegistry();
     } catch (e) {

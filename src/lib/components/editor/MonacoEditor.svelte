@@ -25,6 +25,11 @@
     notifyEslintDocumentOpened,
     notifyEslintDocumentChanged
   } from '$lib/services/lsp/eslint-sidecar';
+  import {
+    isSvelteFile,
+    notifySvelteDocumentOpened,
+    notifySvelteDocumentChanged
+  } from '$lib/services/lsp/svelte-sidecar';
   import EditorPlaceholder from './EditorPlaceholder.svelte';
 
   interface Props {
@@ -144,6 +149,11 @@
             if (filepath && isEslintFile(filepath)) {
               notifyEslintDocumentChanged(filepath, newValue);
             }
+            
+            // Notify Svelte LSP sidecar about the change
+            if (filepath && isSvelteFile(filepath)) {
+              notifySvelteDocumentChanged(filepath, newValue);
+            }
           }, 75);
         });
 
@@ -217,6 +227,11 @@
       // Notify ESLint LSP sidecar about the file being opened
       if (isEslintFile(path)) {
         await notifyEslintDocumentOpened(path, value);
+      }
+      
+      // Notify Svelte LSP sidecar about the file being opened
+      if (isSvelteFile(path)) {
+        await notifySvelteDocumentOpened(path, value);
       }
     })();
   });
