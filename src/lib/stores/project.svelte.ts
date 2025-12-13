@@ -8,7 +8,7 @@
  * - File watching for lock files (VS Code-like behavior)
  */
 
-import { listDirectory, getFileInfo } from '$lib/services/file-system';
+import { listDirectory, getFileInfoQuiet } from '$lib/services/file-system';
 import { initLspRegistry, disposeLspRegistry } from '$lib/services/lsp/sidecar';
 import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
@@ -188,7 +188,7 @@ class ProjectStore {
 
     // Prime state
     for (const p of lockFilePaths) {
-      const info = await getFileInfo(p);
+      const info = await getFileInfoQuiet(p);
       this.lockFileLastModified.set(p, info?.modified ?? null);
     }
 
@@ -201,7 +201,7 @@ class ProjectStore {
           let changed = false;
 
           for (const p of lockFilePaths) {
-            const info = await getFileInfo(p);
+            const info = await getFileInfoQuiet(p);
             const next = info?.modified ?? null;
             const prev = this.lockFileLastModified.get(p) ?? null;
             if (next !== prev) {
@@ -244,7 +244,7 @@ class ProjectStore {
     
     // Check for pnpm-lock.yaml first (most specific)
     const pnpmLock = `${projectPath}${sep}pnpm-lock.yaml`;
-    const pnpmInfo = await getFileInfo(pnpmLock);
+    const pnpmInfo = await getFileInfoQuiet(pnpmLock);
     if (pnpmInfo !== null) {
       console.log('[ProjectStore] Detected package manager: pnpm');
       return 'pnpm';
@@ -252,7 +252,7 @@ class ProjectStore {
     
     // Check for yarn.lock
     const yarnLock = `${projectPath}${sep}yarn.lock`;
-    const yarnInfo = await getFileInfo(yarnLock);
+    const yarnInfo = await getFileInfoQuiet(yarnLock);
     if (yarnInfo !== null) {
       console.log('[ProjectStore] Detected package manager: yarn');
       return 'yarn';
@@ -260,7 +260,7 @@ class ProjectStore {
     
     // Check for package-lock.json (npm)
     const npmLock = `${projectPath}${sep}package-lock.json`;
-    const npmInfo = await getFileInfo(npmLock);
+    const npmInfo = await getFileInfoQuiet(npmLock);
     if (npmInfo !== null) {
       console.log('[ProjectStore] Detected package manager: npm');
       return 'npm';

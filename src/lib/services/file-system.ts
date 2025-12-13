@@ -228,6 +228,27 @@ export async function getFileInfo(path: string): Promise<FileInfo | null> {
   }
 }
 
+/**
+ * Get detailed file information, but treat NotFound as a normal "null" result
+ * and do not show toast notifications.
+ *
+ * This is useful for probing existence (e.g. lockfile/package manager detection)
+ * without spamming the user.
+ */
+export async function getFileInfoQuiet(path: string): Promise<FileInfo | null> {
+  try {
+    return await invoke<FileInfo>('get_file_info', { path });
+  } catch (error) {
+    if (isFileError(error) && error.type === 'NotFound') {
+      return null;
+    }
+
+    console.error(`[FileSystem] Get file info (quiet) error for ${path}:`, error);
+    logOutput('File System', `Get file info (quiet) error: ${path}`);
+    return null;
+  }
+}
+
 // ============================================================================
 // Dialog Functions (using Tauri dialog plugin)
 // ============================================================================
