@@ -18,6 +18,7 @@
   import { editorStore } from '$lib/stores/editor.svelte';
   import { terminalStore } from '$lib/stores/terminal.svelte';
   import { logOutput } from '$lib/stores/output.svelte';
+  import { settingsStore } from '$lib/stores/settings.svelte';
   import { openFolderDialog, writeFile } from '$lib/services/file-system';
   import { 
     initAutoSave, 
@@ -26,6 +27,7 @@
     triggerImmediateAutoSave 
   } from '$lib/services/auto-save';
   import { disposeLspRegistry } from '$lib/services/lsp/sidecar';
+  import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -119,11 +121,20 @@
     // Prefer saving the live Monaco model value to avoid any lag from debounced store updates.
     let contentToSave = activeFile.content;
     try {
-      const { getModelValue } = await import('$lib/services/monaco-models');
+      const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
       const modelValue = getModelValue(activeFile.path);
       if (typeof modelValue === 'string') {
         contentToSave = modelValue;
         editorStore.updateContent(activeFile.path, modelValue);
+      }
+
+      if (settingsStore.formatOnSaveEnabled && isPrettierFile(activeFile.path)) {
+        const formatted = await formatBeforeSave(contentToSave, activeFile.path);
+        if (formatted !== contentToSave) {
+          contentToSave = formatted;
+          setModelValue(activeFile.path, formatted);
+          editorStore.updateContent(activeFile.path, formatted);
+        }
       }
     } catch {
       // ignore
@@ -207,6 +218,13 @@
       e.preventDefault();
       uiStore.closeMenus();
       void handleSave();
+    }
+
+    // Ctrl+Shift+I to format document
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'i') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      void formatCurrentDocument();
     }
 
     if (isMod && !e.altKey && (e.code === 'Equal' || e.code === 'NumpadAdd' || e.key === '=' || e.key === '+')) {

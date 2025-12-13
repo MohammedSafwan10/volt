@@ -6,6 +6,7 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
 	import { terminalStore } from '$lib/stores/terminal.svelte';
   import { openFileDialog, openFolderDialog } from '$lib/services/file-system';
+  import { formatCurrentDocument } from '$lib/services/prettier';
   import { getCurrentWindow } from '@tauri-apps/api/window';
 
   interface Props {
@@ -63,6 +64,19 @@
     settingsStore.toggleAutoSave();
     showToast({
       message: `Auto-save ${settingsStore.autoSaveEnabled ? 'enabled' : 'disabled'}`,
+      type: 'info'
+    });
+  }
+
+  function handleFormatDocument() {
+    uiStore.closeMenus();
+    void formatCurrentDocument();
+  }
+
+  function handleToggleFormatOnSave() {
+    settingsStore.toggleFormatOnSave();
+    showToast({
+      message: `Format on save ${settingsStore.formatOnSaveEnabled ? 'enabled' : 'disabled'}`,
       type: 'info'
     });
   }
@@ -143,7 +157,10 @@
         { label: 'Copy', shortcut: 'Ctrl+C', action: comingSoon('Copy') },
         { label: 'Paste', shortcut: 'Ctrl+V', action: comingSoon('Paste') },
         { separator: true, label: '' },
-        { label: 'Find', shortcut: 'Ctrl+F', action: comingSoon('Find') }
+        { label: 'Find', shortcut: 'Ctrl+F', action: comingSoon('Find') },
+        { separator: true, label: '' },
+        { label: 'Format Document', shortcut: 'Ctrl+Shift+I', action: handleFormatDocument },
+        { label: 'Format on Save', action: handleToggleFormatOnSave, checked: settingsStore.formatOnSaveEnabled }
       ]
     },
     {

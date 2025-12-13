@@ -5,6 +5,7 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
+  import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     type Command,
@@ -64,12 +65,21 @@
         }
         let contentToSave = activeFile.content;
         try {
-          const { getModelValue } = await import('$lib/services/monaco-models');
+          const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
           const modelValue = getModelValue(activeFile.path);
           if (typeof modelValue === 'string') {
             contentToSave = modelValue;
-            editorStore.updateContent(activeFile.path, modelValue);
           }
+
+          if (settingsStore.formatOnSaveEnabled && isPrettierFile(activeFile.path)) {
+            const formatted = await formatBeforeSave(contentToSave, activeFile.path);
+            if (formatted !== contentToSave) {
+              contentToSave = formatted;
+              setModelValue(activeFile.path, formatted);
+            }
+          }
+
+          editorStore.updateContent(activeFile.path, contentToSave);
         } catch { /* ignore */ }
         const success = await writeFile(activeFile.path, contentToSave);
         if (success) editorStore.markSaved(activeFile.path);
@@ -104,6 +114,31 @@
         settingsStore.toggleAutoSave();
         showToast({
           message: `Auto-save ${settingsStore.autoSaveEnabled ? 'enabled' : 'disabled'}`,
+          type: 'info'
+        });
+      }
+    },
+    {
+      id: 'edit.formatDocument',
+      label: 'Format Document',
+      category: 'Edit',
+      shortcut: 'Ctrl+Shift+I',
+      action: async () => {
+        await formatCurrentDocument();
+      },
+      enabled: () => {
+        const activeFile = editorStore.activeFile;
+        return activeFile !== null && isPrettierFile(activeFile.path);
+      }
+    },
+    {
+      id: 'edit.toggleFormatOnSave',
+      label: 'Toggle Format on Save',
+      category: 'Edit',
+      action: () => {
+        settingsStore.toggleFormatOnSave();
+        showToast({
+          message: `Format on save ${settingsStore.formatOnSaveEnabled ? 'enabled' : 'disabled'}`,
           type: 'info'
         });
       }

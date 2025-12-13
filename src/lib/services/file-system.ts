@@ -249,6 +249,24 @@ export async function getFileInfoQuiet(path: string): Promise<FileInfo | null> {
   }
 }
 
+/**
+ * Delete a file or directory without showing success toasts.
+ * Useful for internal temp files.
+ */
+export async function deletePathQuiet(path: string): Promise<boolean> {
+  try {
+    await invoke('delete_path', { path });
+    return true;
+  } catch (error) {
+    if (isFileError(error) && error.type === 'NotFound') {
+      return true;
+    }
+    console.error(`[FileSystem] Delete (quiet) error for ${path}:`, error);
+    logOutput('File System', `Delete (quiet) error: ${path}`);
+    return false;
+  }
+}
+
 // ============================================================================
 // Dialog Functions (using Tauri dialog plugin)
 // ============================================================================

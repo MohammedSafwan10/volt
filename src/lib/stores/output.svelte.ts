@@ -3,7 +3,7 @@
  * Provides real log output for Volt, Terminal, and File System channels
  */
 
-export type OutputChannel = 'Volt' | 'Terminal' | 'File System';
+export type OutputChannel = 'Volt' | 'Terminal' | 'File System' | 'Prettier';
 
 interface OutputLine {
   timestamp: Date;
@@ -20,7 +20,8 @@ class OutputStore {
   private channels = $state<Record<OutputChannel, ChannelData>>({
     'Volt': { lines: [] },
     'Terminal': { lines: [] },
-    'File System': { lines: [] }
+    'File System': { lines: [] },
+    'Prettier': { lines: [] }
   });
 
   activeChannel = $state<OutputChannel>('Volt');
@@ -29,7 +30,7 @@ class OutputStore {
    * Get all available channel names
    */
   get channelNames(): OutputChannel[] {
-    return ['Volt', 'Terminal', 'File System'];
+    return ['Volt', 'Terminal', 'File System', 'Prettier'];
   }
 
   /**

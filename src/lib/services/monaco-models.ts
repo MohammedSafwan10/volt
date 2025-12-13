@@ -46,6 +46,25 @@ export function getModelValue(path: string): string | null {
   return model ? model.getValue() : null;
 }
 
+/**
+ * Set the value of a model (used for formatting)
+ * Preserves undo history by using pushEditOperations
+ */
+export function setModelValue(path: string, value: string): boolean {
+  const model = models.get(path);
+  if (!model) return false;
+  
+  // Use pushEditOperations to preserve undo history
+  const fullRange = model.getFullModelRange();
+  model.pushEditOperations(
+    [],
+    [{ range: fullRange, text: value }],
+    () => null
+  );
+  
+  return true;
+}
+
 export function disposeModel(path: string): void {
   const model = models.get(path);
   if (!model) return;

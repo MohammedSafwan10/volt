@@ -10,11 +10,14 @@ interface Settings {
   autoSaveEnabled: boolean;
   /** Auto-save delay in milliseconds */
   autoSaveDelay: number;
+  /** Format on save enabled state */
+  formatOnSaveEnabled: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
   autoSaveEnabled: false,
-  autoSaveDelay: 1000
+  autoSaveDelay: 1000,
+  formatOnSaveEnabled: false
 };
 
 class SettingsStore {
@@ -23,6 +26,9 @@ class SettingsStore {
   
   /** Auto-save delay in milliseconds */
   autoSaveDelay = $state(DEFAULT_SETTINGS.autoSaveDelay);
+  
+  /** Format on save enabled state */
+  formatOnSaveEnabled = $state(DEFAULT_SETTINGS.formatOnSaveEnabled);
 
   constructor() {
     this.loadFromStorage();
@@ -53,6 +59,22 @@ class SettingsStore {
   }
 
   /**
+   * Toggle format on save on/off
+   */
+  toggleFormatOnSave(): void {
+    this.formatOnSaveEnabled = !this.formatOnSaveEnabled;
+    this.saveToStorage();
+  }
+
+  /**
+   * Set format on save enabled state
+   */
+  setFormatOnSaveEnabled(enabled: boolean): void {
+    this.formatOnSaveEnabled = enabled;
+    this.saveToStorage();
+  }
+
+  /**
    * Load settings from localStorage
    */
   private loadFromStorage(): void {
@@ -70,6 +92,9 @@ class SettingsStore {
       if (typeof parsed.autoSaveDelay === 'number') {
         this.autoSaveDelay = parsed.autoSaveDelay;
       }
+      if (typeof parsed.formatOnSaveEnabled === 'boolean') {
+        this.formatOnSaveEnabled = parsed.formatOnSaveEnabled;
+      }
     } catch {
       // Ignore parse errors, use defaults
     }
@@ -84,7 +109,8 @@ class SettingsStore {
     try {
       const settings: Settings = {
         autoSaveEnabled: this.autoSaveEnabled,
-        autoSaveDelay: this.autoSaveDelay
+        autoSaveDelay: this.autoSaveDelay,
+        formatOnSaveEnabled: this.formatOnSaveEnabled
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     } catch {

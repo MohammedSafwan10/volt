@@ -6,19 +6,24 @@
  * - After typing stops (configurable delay, default 1 second)
  * - On tab switch
  * - On window blur
+ * 
+ * Features:
+ * - Optional format on save using Prettier
  */
 
 import { editorStore } from '$lib/stores/editor.svelte';
 import { settingsStore } from '$lib/stores/settings.svelte';
 import { writeFile } from '$lib/services/file-system';
+import { formatBeforeSave, isPrettierFile } from '$lib/services/prettier';
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let isInitialized = false;
 
 /**
  * Save a specific file if it has unsaved changes
+ * Optionally formats the file before saving if format on save is enabled
  */
-async function saveFile(path: string): Promise<boolean> {
+async function saveFile(path: string, skipFormat = false): Promise<boolean> {
   const file = editorStore.openFiles.find(f => f.path === path);
   if (!file) return false;
   
@@ -28,12 +33,23 @@ async function saveFile(path: string): Promise<boolean> {
   // Get the latest content from Monaco model if available
   let contentToSave = file.content;
   try {
-    const { getModelValue } = await import('$lib/services/monaco-models');
+    const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
     const modelValue = getModelValue(path);
     if (typeof modelValue === 'string') {
       contentToSave = modelValue;
-      editorStore.updateContent(path, modelValue);
     }
+    
+    // Format on save if enabled and file is supported
+    if (!skipFormat && settingsStore.formatOnSaveEnabled && isPrettierFile(path)) {
+      const formatted = await formatBeforeSave(contentToSave, path);
+      if (formatted !== contentToSave) {
+        contentToSave = formatted;
+        // Update the Monaco model with formatted content
+        setModelValue(path, formatted);
+      }
+    }
+    
+    editorStore.updateContent(path, contentToSave);
   } catch {
     // Use store content if model not available
   }
