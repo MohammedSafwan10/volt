@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { dirname, join } from '@tauri-apps/api/path';
   import { projectStore, type TreeNode } from '$lib/stores/project.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
+  import { ConfirmModal, UIIcon } from '$lib/components/ui';
   import {
     openFolderDialog,
     createFile,
@@ -17,6 +19,79 @@
   }
 
   let { onFileSelect }: Props = $props();
+
+  // Listen for reveal-file events from tab context menu
+  onMount(() => {
+    function handleRevealFile(e: Event) {
+      const customEvent = e as CustomEvent<{ path: string }>;
+      const filePath = customEvent.detail?.path;
+      if (filePath) {
+        void revealFileInTree(filePath);
+      }
+    }
+    
+    window.addEventListener('reveal-file', handleRevealFile);
+    return () => window.removeEventListener('reveal-file', handleRevealFile);
+  });
+
+  /**
+   * Reveal a file in the tree by expanding all parent folders and selecting it
+   */
+  async function revealFileInTree(filePath: string): Promise<void> {
+    if (!projectStore.rootPath) return;
+    
+    // Normalize paths for comparison
+    const normalizedFilePath = filePath.replace(/\\/g, '/');
+    const normalizedRoot = projectStore.rootPath.replace(/\\/g, '/');
+    
+    // Check if file is within project
+    if (!normalizedFilePath.startsWith(normalizedRoot)) return;
+    
+    // Get the relative path parts
+    const relativePath = normalizedFilePath.slice(normalizedRoot.length);
+    const parts = relativePath.split('/').filter(Boolean);
+    
+    // Build up the path and expand each folder
+    let currentPath = projectStore.rootPath;
+    
+    for (let i = 0; i < parts.length - 1; i++) {
+      // Use proper path joining
+      currentPath = await joinPath(currentPath, parts[i]);
+      const node = projectStore.findNode(currentPath);
+      
+      if (node && node.isDir && !node.expanded) {
+        await projectStore.toggleFolder(node);
+      }
+    }
+    
+    // Select the file
+    projectStore.selectItem(filePath);
+    
+    // Scroll to the selected item after a tick
+    setTimeout(() => {
+      scrollToSelectedItem();
+    }, 50);
+  }
+
+  function scrollToSelectedItem(): void {
+    if (!scrollEl || !projectStore.selectedPath) return;
+    
+    // Find the index of the selected item in flatNodes
+    const selectedIndex = flatNodes.findIndex(
+      item => item.node.path === projectStore.selectedPath
+    );
+    
+    if (selectedIndex >= 0) {
+      const targetTop = TOP_PADDING + selectedIndex * ROW_HEIGHT;
+      const viewportTop = scrollEl.scrollTop;
+      const viewportBottom = viewportTop + scrollEl.clientHeight;
+      
+      // Scroll if not in view
+      if (targetTop < viewportTop || targetTop + ROW_HEIGHT > viewportBottom) {
+        scrollEl.scrollTop = targetTop - scrollEl.clientHeight / 2 + ROW_HEIGHT / 2;
+      }
+    }
+  }
 
   type FlatNode = { node: TreeNode; depth: number };
 
@@ -35,17 +110,76 @@
   let contextMenuY = $state(0);
   let contextNode = $state<TreeNode | null>(null); // null => empty area context menu
 
-  function flatten(nodes: TreeNode[], depth = 0, out: FlatNode[] = []): FlatNode[] {
+  type InlineEditState =
+    | {
+        mode: 'rename';
+        targetPath: string;
+        value: string;
+      }
+    | {
+        mode: 'newFile' | 'newFolder';
+        parentPath: string;
+        draftPath: string;
+        value: string;
+      };
+
+  let inlineEdit = $state<InlineEditState | null>(null);
+  let inlineEditCommitting = $state(false);
+  let inlineEditFocusNonce = $state(0);
+
+  let confirmOpen = $state(false);
+  let confirmTitle = $state('');
+  let confirmMessage = $state('');
+  let confirmConfirmLabel = $state('Confirm');
+  let confirmDanger = $state(false);
+  let confirmResolver = $state<((ok: boolean) => void) | null>(null);
+
+  function makeDraftNode(state: Extract<InlineEditState, { mode: 'newFile' | 'newFolder' }>): TreeNode {
+    return {
+      name: state.value,
+      path: state.draftPath,
+      isDir: state.mode === 'newFolder',
+      isFile: state.mode === 'newFile',
+      isSymlink: false,
+      size: 0,
+      modified: null,
+      children: state.mode === 'newFolder' ? null : [],
+      expanded: false,
+      loading: false
+    };
+  }
+
+  function flatten(nodes: TreeNode[], depth = 0, out: FlatNode[] = [], edit: InlineEditState | null): FlatNode[] {
     for (const node of nodes) {
       out.push({ node, depth });
-      if (node.isDir && node.expanded && Array.isArray(node.children) && node.children.length > 0) {
-        flatten(node.children, depth + 1, out);
+
+      if (node.isDir && node.expanded) {
+        if (edit && edit.mode !== 'rename' && edit.parentPath === node.path) {
+          out.push({ node: makeDraftNode(edit), depth: depth + 1 });
+        }
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          flatten(node.children, depth + 1, out, edit);
+        }
       }
     }
     return out;
   }
 
-  const flatNodes = $derived.by(() => flatten(projectStore.tree));
+  const flatNodes = $derived.by(() => {
+    const out: FlatNode[] = [];
+    const edit = inlineEdit;
+
+    if (
+      edit &&
+      edit.mode !== 'rename' &&
+      projectStore.rootPath &&
+      edit.parentPath === projectStore.rootPath
+    ) {
+      out.push({ node: makeDraftNode(edit), depth: 0 });
+    }
+
+    return flatten(projectStore.tree, 0, out, edit);
+  });
 
   const totalHeight = $derived.by(
     () => TOP_PADDING + BOTTOM_PADDING + flatNodes.length * ROW_HEIGHT
@@ -124,10 +258,45 @@
     contextOpen = true;
   }
 
-  function promptForName(label: string, initialValue = ''): string | null {
-    const next = window.prompt(label, initialValue);
-    const trimmed = next?.trim();
-    return trimmed ? trimmed : null;
+  function cancelInlineEdit(): void {
+    if (inlineEdit && inlineEdit.mode !== 'rename') {
+      // Keep selection sensible if the draft row was selected
+      if (projectStore.selectedPath === inlineEdit.draftPath) {
+        projectStore.selectItem(inlineEdit.parentPath);
+      }
+    }
+
+    inlineEdit = null;
+    inlineEditCommitting = false;
+  }
+
+  function requestConfirm(opts: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    danger?: boolean;
+  }): Promise<boolean> {
+    confirmTitle = opts.title;
+    confirmMessage = opts.message;
+    confirmConfirmLabel = opts.confirmLabel ?? 'Confirm';
+    confirmDanger = Boolean(opts.danger);
+    confirmOpen = true;
+
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+    });
+  }
+
+  function handleConfirmCancel(): void {
+    confirmOpen = false;
+    confirmResolver?.(false);
+    confirmResolver = null;
+  }
+
+  function handleConfirmConfirm(): void {
+    confirmOpen = false;
+    confirmResolver?.(true);
+    confirmResolver = null;
   }
 
   async function joinPath(parent: string, name: string): Promise<string> {
@@ -139,105 +308,143 @@
     }
   }
 
-  async function handleNewFile(parentDir: TreeNode | null): Promise<void> {
+  async function beginCreate(mode: 'newFile' | 'newFolder', parentDir: TreeNode | null): Promise<void> {
     closeContextMenu();
-    const base = parentDir?.path ?? projectStore.rootPath;
-    if (!base) return;
-
-    const name = promptForName('New file name');
-    if (!name) return;
-
-    const newPath = await joinPath(base, name);
-    const ok = await createFile(newPath);
-    if (!ok) return;
-
-    const info = await getFileInfo(newPath);
-    if (!info) return;
-
-    const entry = {
-      name: info.name,
-      path: info.path,
-      isDir: info.isDir,
-      isFile: info.isFile,
-      isSymlink: info.isSymlink,
-      size: info.size,
-      modified: info.modified
-    };
+    const parentPath = parentDir?.path ?? projectStore.rootPath;
+    if (!parentPath) return;
 
     if (parentDir) {
-      parentDir.expanded = true;
-      if (Array.isArray(parentDir.children)) {
-        projectStore.addNode(parentDir.path, entry);
-      } else {
-        await projectStore.refreshFolder(parentDir);
+      projectStore.selectItem(parentDir.path);
+      if (!parentDir.expanded) {
+        await projectStore.toggleFolder(parentDir);
       }
-    } else if (projectStore.rootPath) {
-      projectStore.addNode(projectStore.rootPath, entry);
+      if (parentDir.children === null) {
+        await projectStore.refreshFolder(parentDir);
+        parentDir.expanded = true;
+      }
     }
-  }
 
-  async function handleNewFolder(parentDir: TreeNode | null): Promise<void> {
-    closeContextMenu();
-    const base = parentDir?.path ?? projectStore.rootPath;
-    if (!base) return;
-
-    const name = promptForName('New folder name');
-    if (!name) return;
-
-    const newPath = await joinPath(base, name);
-    const ok = await createDirectory(newPath);
-    if (!ok) return;
-
-    const info = await getFileInfo(newPath);
-    if (!info) return;
-
-    const entry = {
-      name: info.name,
-      path: info.path,
-      isDir: info.isDir,
-      isFile: info.isFile,
-      isSymlink: info.isSymlink,
-      size: info.size,
-      modified: info.modified
+    const draftPath = `__draft__:${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    inlineEdit = {
+      mode,
+      parentPath,
+      draftPath,
+      value: ''
     };
-
-    if (parentDir) {
-      parentDir.expanded = true;
-      if (Array.isArray(parentDir.children)) {
-        projectStore.addNode(parentDir.path, entry);
-      } else {
-        await projectStore.refreshFolder(parentDir);
-      }
-    } else if (projectStore.rootPath) {
-      projectStore.addNode(projectStore.rootPath, entry);
-    }
+    projectStore.selectItem(draftPath);
+    inlineEditFocusNonce++;
   }
 
-  async function handleRename(node: TreeNode): Promise<void> {
+  function beginRename(node: TreeNode): void {
     closeContextMenu();
+    inlineEdit = {
+      mode: 'rename',
+      targetPath: node.path,
+      value: node.name
+    };
+    projectStore.selectItem(node.path);
+    inlineEditFocusNonce++;
+  }
 
-    const newName = promptForName('Rename to', node.name);
-    if (!newName || newName === node.name) return;
+  async function commitInlineEdit(): Promise<void> {
+    if (inlineEditCommitting) return;
+    const edit = inlineEdit;
+    if (!edit) return;
 
-    let parent: string;
+    const name = edit.value.trim();
+    if (!name) {
+      cancelInlineEdit();
+      return;
+    }
+
+    inlineEditCommitting = true;
     try {
-      parent = await dirname(node.path);
-    } catch {
-      const normalized = node.path.replace(/\\/g, '/');
-      parent = normalized.slice(0, normalized.lastIndexOf('/'));
-    }
+      if (edit.mode === 'rename') {
+        const node = projectStore.findNode(edit.targetPath);
+        if (!node) {
+          cancelInlineEdit();
+          return;
+        }
 
-    const newPath = await joinPath(parent, newName);
-    const ok = await renamePath(node.path, newPath);
-    if (ok) {
-      projectStore.updateNodePath(node.path, newPath, newName);
-      showToast({ message: 'Renamed successfully', type: 'success' });
+        if (name === node.name) {
+          cancelInlineEdit();
+          return;
+        }
+
+        let parent: string;
+        try {
+          parent = await dirname(node.path);
+        } catch {
+          const normalized = node.path.replace(/\\/g, '/');
+          parent = normalized.slice(0, normalized.lastIndexOf('/'));
+        }
+
+        const newPath = await joinPath(parent, name);
+        const ok = await renamePath(node.path, newPath);
+        if (!ok) {
+          inlineEditFocusNonce++;
+          return;
+        }
+
+        projectStore.updateNodePath(node.path, newPath, name);
+        projectStore.selectItem(newPath);
+        showToast({ message: 'Renamed successfully', type: 'success' });
+        inlineEdit = null;
+        return;
+      }
+
+      const newPath = await joinPath(edit.parentPath, name);
+      const ok =
+        edit.mode === 'newFile' ? await createFile(newPath) : await createDirectory(newPath);
+      if (!ok) {
+        inlineEditFocusNonce++;
+        return;
+      }
+
+      const info = await getFileInfo(newPath);
+      if (!info) {
+        inlineEditFocusNonce++;
+        return;
+      }
+
+      const entry = {
+        name: info.name,
+        path: info.path,
+        isDir: info.isDir,
+        isFile: info.isFile,
+        isSymlink: info.isSymlink,
+        size: info.size,
+        modified: info.modified
+      };
+
+      const parentDir = projectStore.findNode(edit.parentPath);
+      if (parentDir && parentDir.isDir) {
+        parentDir.expanded = true;
+        if (Array.isArray(parentDir.children)) {
+          projectStore.addNode(parentDir.path, entry);
+        } else {
+          await projectStore.refreshFolder(parentDir);
+        }
+      } else if (projectStore.rootPath) {
+        projectStore.addNode(projectStore.rootPath, entry);
+      }
+
+      projectStore.selectItem(newPath);
+      inlineEdit = null;
+    } finally {
+      inlineEditCommitting = false;
     }
   }
 
   async function handleDelete(node: TreeNode): Promise<void> {
     closeContextMenu();
-    const confirmed = confirm(`Delete "${node.name}"?`);
+
+    const confirmed = await requestConfirm({
+      title: 'Delete',
+      message: `Delete "${node.name}"?`,
+      confirmLabel: 'Delete',
+      danger: true
+    });
     if (!confirmed) return;
 
     const ok = await deletePath(node.path);
@@ -252,14 +459,15 @@
 <div class="file-tree" role="tree" aria-label="File explorer">
   {#if projectStore.loading}
     <div class="loading">
-      <span class="loading-icon">⏳</span>
+      <span class="loading-icon"><UIIcon name="spinner" size={16} /></span>
       <span>Loading...</span>
     </div>
   {:else if !projectStore.rootPath}
     <div class="empty-state">
       <p>No folder open</p>
       <button class="open-folder-btn" onclick={handleOpenFolder}>
-        📁 Open Folder
+        <UIIcon name="folder-open" size={16} />
+        <span>Open Folder</span>
       </button>
     </div>
   {:else}
@@ -271,20 +479,20 @@
         <button
           class="toolbar-btn"
           title="New File"
-          onclick={() => void handleNewFile(null)}
+          onclick={() => void beginCreate('newFile', null)}
           aria-label="New File"
           type="button"
         >
-          📄
+          <UIIcon name="file-plus" size={16} />
         </button>
         <button
           class="toolbar-btn"
           title="New Folder"
-          onclick={() => void handleNewFolder(null)}
+          onclick={() => void beginCreate('newFolder', null)}
           aria-label="New Folder"
           type="button"
         >
-          📁
+          <UIIcon name="folder-plus" size={16} />
         </button>
         <button
           class="toolbar-btn"
@@ -293,7 +501,7 @@
           aria-label="Refresh"
           type="button"
         >
-          🔄
+          <UIIcon name="refresh" size={16} />
         </button>
       </div>
     </div>
@@ -316,6 +524,27 @@
               depth={item.depth}
               {onFileSelect}
               onContextMenu={handleNodeContextMenu}
+            isEditing={
+              Boolean(
+                inlineEdit &&
+                  ((inlineEdit.mode === 'rename' && inlineEdit.targetPath === item.node.path) ||
+                    (inlineEdit.mode !== 'rename' && inlineEdit.draftPath === item.node.path))
+              )
+            }
+            editValue={inlineEdit?.value ?? ''}
+            editPlaceholder={
+              inlineEdit?.mode === 'newFolder'
+                ? 'Folder name'
+                : inlineEdit?.mode === 'newFile'
+                  ? 'File name'
+                  : undefined
+            }
+            editFocusNonce={inlineEditFocusNonce}
+            onEditValueChange={(value) => {
+              if (inlineEdit) inlineEdit.value = value;
+            }}
+            onEditCommit={() => void commitInlineEdit()}
+            onEditCancel={cancelInlineEdit}
             />
           </div>
         {/each}
@@ -341,17 +570,19 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void handleNewFile(contextNode)}
+        onclick={() => void beginCreate('newFile', contextNode)}
       >
-        📄 New File
+        <UIIcon name="file-plus" size={16} />
+        <span>New File</span>
       </button>
       <button
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void handleNewFolder(contextNode)}
+        onclick={() => void beginCreate('newFolder', contextNode)}
       >
-        📁 New Folder
+        <UIIcon name="folder-plus" size={16} />
+        <span>New Folder</span>
       </button>
       <div class="context-divider"></div>
     {:else if contextNode === null}
@@ -359,17 +590,19 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void handleNewFile(null)}
+        onclick={() => void beginCreate('newFile', null)}
       >
-        📄 New File
+        <UIIcon name="file-plus" size={16} />
+        <span>New File</span>
       </button>
       <button
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void handleNewFolder(null)}
+        onclick={() => void beginCreate('newFolder', null)}
       >
-        📁 New Folder
+        <UIIcon name="folder-plus" size={16} />
+        <span>New Folder</span>
       </button>
       <div class="context-divider"></div>
       <button
@@ -378,7 +611,8 @@
         type="button"
         onclick={() => void handleRefresh()}
       >
-        🔄 Refresh
+        <UIIcon name="refresh" size={16} />
+        <span>Refresh</span>
       </button>
     {/if}
 
@@ -387,9 +621,10 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => contextNode && void handleRename(contextNode)}
+        onclick={() => contextNode && beginRename(contextNode)}
       >
-        ✏️ Rename
+        <UIIcon name="pencil" size={16} />
+        <span>Rename</span>
       </button>
       <button
         class="context-item danger"
@@ -397,11 +632,22 @@
         type="button"
         onclick={() => contextNode && void handleDelete(contextNode)}
       >
-        🗑️ Delete
+        <UIIcon name="trash" size={16} />
+        <span>Delete</span>
       </button>
     {/if}
   </div>
 {/if}
+
+<ConfirmModal
+  open={confirmOpen}
+  title={confirmTitle}
+  message={confirmMessage}
+  confirmLabel={confirmConfirmLabel}
+  danger={confirmDanger}
+  onCancel={handleConfirmCancel}
+  onConfirm={handleConfirmConfirm}
+/>
 
 <style>
   .file-tree {
@@ -424,7 +670,9 @@
   }
 
   .loading-icon {
-    animation: spin 1s linear infinite;
+    display: grid;
+    place-items: center;
+    animation: spin 0.8s linear infinite;
   }
 
   @keyframes spin {
@@ -473,7 +721,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 4px 8px;
+    padding: 6px 8px;
     border-bottom: 1px solid var(--color-border);
     flex-shrink: 0;
   }
@@ -500,7 +748,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
     color: var(--color-text-secondary);
     border-radius: 4px;
     cursor: pointer;
@@ -550,10 +797,10 @@
     position: fixed;
     z-index: 1000;
     min-width: 160px;
-    background: var(--color-bg-panel);
+    background: var(--color-bg-elevated, var(--color-bg-panel));
     border: 1px solid var(--color-border);
     border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-elevated, 0 10px 32px rgba(0, 0, 0, 0.35));
     padding: 4px 0;
   }
 

@@ -8,6 +8,7 @@
     "core:webview:allow-set-webview-zoom",
     "core:path:default",
     "opener:default",
+    "opener:allow-reveal-item-in-dir",
     "dialog:default",
     "fs:default",
     "fs:allow-watch",

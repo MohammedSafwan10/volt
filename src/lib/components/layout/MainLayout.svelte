@@ -6,7 +6,7 @@
   import AboutModal from './AboutModal.svelte';
   import { ActivityBar, SidePanel } from '$lib/components/sidebar';
   import { WelcomeScreen } from '$lib/components/welcome';
-  import { MonacoEditor } from '$lib/components/editor';
+  import { MonacoEditor, Breadcrumb, EmptyState, GoToLineDialog } from '$lib/components/editor';
   import { TabBar } from '$lib/components/tabs';
   import { CommandPalette } from '$lib/components/command-palette';
   import { BottomPanel } from '$lib/components/panel';
@@ -38,6 +38,10 @@
   // Command palette reference
   let commandPalette: ReturnType<typeof CommandPalette> | undefined = $state();
 
+  // Go to Line dialog state
+  let goToLineOpen = $state(false);
+  let goToLineMax = $state(1);
+
   // Key-chord state (VS Code style, e.g. Ctrl+K Ctrl+O)
   let chordActive = $state(false);
   let chordTimer: ReturnType<typeof setTimeout> | null = $state(null);
@@ -67,6 +71,25 @@
     if (success) {
       uiStore.setActiveSidebarPanel('explorer');
     }
+  }
+
+  function openGoToLine(): void {
+    if (!editorStore.activeFile) return;
+    // Get line count from Monaco model
+    import('$lib/services/monaco-models').then(({ getModelLineCount }) => {
+      const lineCount = getModelLineCount(editorStore.activeFile!.path);
+      goToLineMax = lineCount || 1;
+      goToLineOpen = true;
+    }).catch(() => {
+      goToLineMax = 1000;
+      goToLineOpen = true;
+    });
+  }
+
+  async function handleGoToLine(line: number): Promise<void> {
+    if (!editorStore.activeFile) return;
+    const { revealLine } = await import('$lib/services/monaco-models');
+    revealLine(editorStore.activeFile.path, line);
   }
 
   // VS Code-like: warm Monaco and xterm at app startup so first use feels instant.
@@ -175,7 +198,15 @@
     if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       uiStore.closeMenus();
-      commandPalette?.open();
+      commandPalette?.openCommandMode();
+      return;
+    }
+
+    // Ctrl+P to open quick file search (VS Code)
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      commandPalette?.openFileMode();
       return;
     }
 
@@ -218,6 +249,13 @@
       e.preventDefault();
       uiStore.closeMenus();
       void handleSave();
+    }
+
+    // Ctrl+G to go to line
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'g') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      openGoToLine();
     }
 
     // Ctrl+Shift+I to format document
@@ -267,15 +305,22 @@
       }
     }
 
-    // Ctrl+` to toggle terminal
-    if (isMod && !e.shiftKey && !e.altKey && e.key === '`') {
+    // Ctrl+` to toggle terminal (check both key and code for cross-platform support)
+    if (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote')) {
       e.preventDefault();
       uiStore.closeMenus();
-			if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === 'terminal') {
-				uiStore.toggleBottomPanel();
-			} else {
-				uiStore.openBottomPanelTab('terminal');
-			}
+      if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === 'terminal') {
+        uiStore.toggleBottomPanel();
+      } else {
+        uiStore.openBottomPanelTab('terminal');
+      }
+    }
+
+    // Ctrl+J to toggle bottom panel (VS Code alternative)
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      uiStore.toggleBottomPanel();
     }
   }
 
@@ -287,7 +332,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="main-layout">
-  <MenuBar onOpenCommandPalette={() => commandPalette?.open()} />
+  <MenuBar onOpenCommandPalette={() => commandPalette?.openCommandMode()} />
 
   <div class="content-area">
     <!-- Activity Bar (always visible) -->
@@ -299,6 +344,11 @@
     <div class="main-content">
       <!-- Tab Bar (above editor only) -->
       <TabBar />
+
+      <!-- Breadcrumb navigation -->
+      {#if editorStore.activeFile}
+        <Breadcrumb filepath={editorStore.activeFile.path} />
+      {/if}
 
       <!-- Editor area -->
       <div class="editor-area">
@@ -314,9 +364,7 @@
             onchange={handleEditorChange}
           />
         {:else}
-          <div class="no-file-placeholder">
-            <p>Select a file from the explorer to edit</p>
-          </div>
+          <EmptyState hasProject={true} />
         {/if}
       </div>
 
@@ -343,6 +391,12 @@
   <StatusBar />
   <AboutModal />
   <CommandPalette bind:this={commandPalette} />
+  <GoToLineDialog
+    open={goToLineOpen}
+    maxLine={goToLineMax}
+    onGo={handleGoToLine}
+    onClose={() => (goToLineOpen = false)}
+  />
 </div>
 
 <style>
@@ -375,18 +429,6 @@
     justify-content: center;
     overflow: hidden;
     background: var(--color-bg);
-  }
-
-  .no-file-placeholder {
-    text-align: center;
-    color: var(--color-text-secondary);
-    padding: 24px;
-  }
-
-  .no-file-placeholder p {
-    font-size: 14px;
-    margin: 0;
-    font-style: italic;
   }
 
   .bottom-panel-container {

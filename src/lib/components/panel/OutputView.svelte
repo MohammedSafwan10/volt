@@ -1,5 +1,6 @@
 <script lang="ts">
   import { outputStore, type OutputChannel } from '$lib/stores/output.svelte';
+  import { UIIcon } from '$lib/components/ui';
 
   let outputContainer: HTMLDivElement | undefined = $state();
 
@@ -52,7 +53,7 @@
       title="Clear Output"
       aria-label="Clear Output"
     >
-      🗑️
+      <UIIcon name="trash" size={16} />
     </button>
   </div>
 

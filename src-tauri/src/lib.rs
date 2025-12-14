@@ -5,6 +5,8 @@ use commands::file_ops::{
     create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed, read_file,
     rename_path, write_file,
 };
+use commands::fs_scope::fs_allow_directory;
+use commands::git::{get_git_branch, is_git_repo};
 use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
     lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
@@ -40,6 +42,8 @@ pub fn run() {
             terminal_resize,
             terminal_kill,
             terminal_list,
+            // FS scope helpers
+            fs_allow_directory,
             // LSP
             lsp_start_server,
             lsp_stop_server,
@@ -50,6 +54,9 @@ pub fn run() {
             lsp_is_server_running,
             // System
             get_system_info,
+            // Git
+            get_git_branch,
+            is_git_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

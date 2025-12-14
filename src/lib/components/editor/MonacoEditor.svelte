@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import type * as Monaco from 'monaco-editor';
   import { loadMonaco, detectLanguage } from '$lib/services/monaco-loader';
-  import { getOrCreateModel } from '$lib/services/monaco-models';
+  import { getOrCreateModel, setActiveEditor } from '$lib/services/monaco-models';
   import { notifyFileOpened } from '$lib/services/lsp/client';
   import {
     isTsJsFile,
@@ -31,6 +31,7 @@
     notifySvelteDocumentChanged
   } from '$lib/services/lsp/svelte-sidecar';
   import { themeStore, getMonacoThemeName } from '$lib/stores/theme.svelte';
+  import { editorStore } from '$lib/stores/editor.svelte';
   import EditorPlaceholder from './EditorPlaceholder.svelte';
 
   interface Props {
@@ -65,6 +66,8 @@
 
   let changeTimer: ReturnType<typeof setTimeout> | null = $state(null);
   let changeDisposable: Monaco.IDisposable | null = $state(null);
+  let cursorDisposable: Monaco.IDisposable | null = $state(null);
+  let selectionDisposable: Monaco.IDisposable | null = $state(null);
 
   // Derived language from filepath or explicit prop
   const detectedLanguage = $derived(language || detectLanguage(filepath));
@@ -124,6 +127,35 @@
           parameterHints: { enabled: true },
           wordBasedSuggestions: 'currentDocument'
         });
+
+        // Set active editor for go-to-line functionality
+        setActiveEditor(editor);
+
+        // Update cursor position in store
+        const updateCursorInfo = () => {
+          if (!editor) return;
+          const position = editor.getPosition();
+          const selection = editor.getSelection();
+          const model = editor.getModel();
+
+          if (position) {
+            let selected = 0;
+            if (selection && model && !selection.isEmpty()) {
+              selected = model.getValueInRange(selection).length;
+            }
+            editorStore.setCursorPosition(position.lineNumber, position.column, selected);
+          }
+
+          // Update indentation info from model options
+          if (model) {
+            const options = model.getOptions();
+            editorStore.setEditorOptions(options.tabSize, options.insertSpaces);
+          }
+        };
+
+        // Listen for cursor position changes
+        cursorDisposable = editor.onDidChangeCursorPosition(updateCursorInfo);
+        selectionDisposable = editor.onDidChangeCursorSelection(updateCursorInfo);
 
         // Listen for content changes (debounced to avoid reactivity overhead on every keystroke)
         changeDisposable = editor.onDidChangeModelContent(() => {
@@ -186,6 +218,14 @@
       if (changeDisposable) {
         changeDisposable.dispose();
         changeDisposable = null;
+      }
+      if (cursorDisposable) {
+        cursorDisposable.dispose();
+        cursorDisposable = null;
+      }
+      if (selectionDisposable) {
+        selectionDisposable.dispose();
+        selectionDisposable = null;
       }
       if (editor) {
         editor.dispose();

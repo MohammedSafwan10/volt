@@ -2,6 +2,8 @@
   import { uiStore } from '$lib/stores/ui.svelte';
   import ResizablePanel from '$lib/components/layout/ResizablePanel.svelte';
   import { FileTree } from '$lib/components/file-tree';
+  import { UIIcon } from '$lib/components/ui';
+  import ExtensionsPanel from './ExtensionsPanel.svelte';
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -17,6 +19,8 @@
         return 'SEARCH';
       case 'git':
         return 'SOURCE CONTROL';
+      case 'extensions':
+        return 'EXTENSIONS';
       case 'settings':
         return 'SETTINGS';
       default:
@@ -45,7 +49,7 @@
         title="Close panel"
         type="button"
       >
-        ✕
+        <UIIcon name="close" size={14} />
       </button>
     </div>
     <div class="panel-content">
@@ -55,6 +59,8 @@
         <p class="placeholder-text">Search panel coming soon</p>
       {:else if uiStore.activeSidebarPanel === 'git'}
         <p class="placeholder-text">Git panel coming soon</p>
+      {:else if uiStore.activeSidebarPanel === 'extensions'}
+        <ExtensionsPanel />
       {:else if uiStore.activeSidebarPanel === 'settings'}
         <p class="placeholder-text">Settings panel coming soon</p>
       {/if}
@@ -123,7 +129,7 @@
   .panel-content {
     flex: 1;
     overflow: auto;
-    padding: 12px;
+    padding: 0;
   }
 
   .placeholder-text {
@@ -131,5 +137,6 @@
     font-size: 13px;
     font-style: italic;
     margin: 0;
+    padding: 12px;
   }
 </style>

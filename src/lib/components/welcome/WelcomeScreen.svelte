@@ -1,6 +1,7 @@
 <script lang="ts">
   import { projectStore } from '$lib/stores/project.svelte';
   import { openFolderDialog, openFileDialog } from '$lib/services/file-system';
+  import { UIIcon } from '$lib/components/ui';
 
   async function handleOpenFolder() {
     const path = await openFolderDialog();
@@ -71,12 +72,12 @@
       <h2 class="section-title">Start</h2>
       
       <button class="action-button" onclick={handleOpenFolder}>
-        <span class="action-icon">📁</span>
+        <span class="action-icon"><UIIcon name="folder-open" size={18} /></span>
         <span class="action-text">Open Folder...</span>
       </button>
       
       <button class="action-button" onclick={handleOpenFile}>
-        <span class="action-icon">📄</span>
+        <span class="action-icon"><UIIcon name="file" size={18} /></span>
         <span class="action-text">Open File...</span>
       </button>
     </div>
@@ -93,7 +94,7 @@
               onclick={() => handleOpenRecent(path)}
               title={path}
             >
-              <span class="recent-icon">📁</span>
+              <span class="recent-icon"><UIIcon name="folder" size={18} /></span>
               <div class="recent-info">
                 <span class="recent-name">{extractFolderName(path)}</span>
                 <span class="recent-path">{formatPath(path)}</span>

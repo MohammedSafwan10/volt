@@ -1,6 +1,7 @@
 <script lang="ts">
   import { uiStore } from '$lib/stores/ui.svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { UIIcon } from '$lib/components/ui';
 
   interface SystemInfo {
     os_name: string | null;
@@ -76,11 +77,13 @@
       aria-labelledby="about-title"
       tabindex="0"
     >
-      <button class="close-btn" onclick={handleClose} aria-label="Close">✕</button>
+      <button class="close-btn" onclick={handleClose} aria-label="Close">
+        <UIIcon name="close" size={16} />
+      </button>
 
       <div class="modal-body">
         <div class="header-section">
-          <div class="logo">⚡</div>
+          <div class="logo" aria-hidden="true"><UIIcon name="bolt" size={22} /></div>
           <div class="title-group">
             <h1 id="about-title" class="app-title">Volt</h1>
             <span class="version">v0.1.0</span>
@@ -135,7 +138,8 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: color-mix(in srgb, var(--color-bg) 35%, transparent);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -145,14 +149,14 @@
 
   .modal-content {
     position: relative;
-    background: var(--color-bg);
+    background: var(--color-bg-elevated, var(--color-bg));
     border: 1px solid var(--color-border);
     border-radius: 12px;
     width: 100%;
     max-width: 360px;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-elevated, 0 10px 32px rgba(0, 0, 0, 0.35));
   }
 
   .close-btn {

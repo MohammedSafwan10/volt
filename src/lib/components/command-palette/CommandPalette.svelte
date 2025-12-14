@@ -5,8 +5,11 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { themeStore } from '$lib/stores/theme.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
+  import { UIIcon } from '$lib/components/ui';
+  import { FileIcon } from '$lib/components/file-tree';
   import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
   import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
+  import { indexProject, searchFiles, isIndexReady, type IndexedFile } from '$lib/services/file-index';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     type Command,
@@ -17,10 +20,34 @@
     getRecentCommandIds
   } from './commands';
 
+  type PaletteMode = 'file' | 'command';
+
   let isOpen = $state(false);
+  let mode = $state<PaletteMode>('file');
   let searchQuery = $state('');
   let selectedIndex = $state(0);
   let inputElement: HTMLInputElement | undefined = $state();
+
+  // File search results
+  let fileResults = $state<IndexedFile[]>([]);
+
+  // Get recently opened file paths
+  const recentFilePaths = $derived(editorStore.openFiles.map(f => f.path));
+
+  // Derive if we're in command mode (query starts with >)
+  const effectiveMode = $derived.by(() => {
+    if (mode === 'command') return 'command';
+    if (searchQuery.startsWith('>')) return 'command';
+    return 'file';
+  });
+
+  // Get the actual search query (strip > prefix for commands)
+  const effectiveQuery = $derived.by(() => {
+    if (effectiveMode === 'command' && searchQuery.startsWith('>')) {
+      return searchQuery.slice(1).trim();
+    }
+    return searchQuery;
+  });
 
   const allCommands: Command[] = [
     {
@@ -154,7 +181,6 @@
         await appWindow.close();
       }
     },
-
     {
       id: 'view.toggleSidebar',
       label: 'Toggle Sidebar',
@@ -201,10 +227,8 @@
       id: 'terminal.new',
       label: 'New Terminal',
       category: 'Terminal',
-      shortcut: 'Ctrl+`',
       action: () => {
-        uiStore.bottomPanelOpen = true;
-        showToast({ message: 'Terminal opened', type: 'info' });
+        uiStore.openBottomPanelTab('terminal');
       }
     },
     {
@@ -261,33 +285,62 @@
 
   registerCommands(allCommands);
 
-  let prevSearchQuery = $state('');
-  let filteredCommands = $derived(searchCommands(searchQuery));
-  let hasRecentCommands = $derived(!searchQuery.trim() && getRecentCommandIds().length > 0);
+  // Command search results
+  const filteredCommands = $derived(searchCommands(effectiveQuery));
+  const hasRecentCommands = $derived(!effectiveQuery.trim() && getRecentCommandIds().length > 0);
 
   function getOtherCommandsStartIndex(): number {
     if (!hasRecentCommands) return -1;
     return filteredCommands.filter((c) => c.isRecent).length;
   }
 
+  // Update file results when query changes
+  $effect(() => {
+    if (effectiveMode === 'file' && projectStore.rootPath) {
+      fileResults = searchFiles(effectiveQuery, recentFilePaths);
+    }
+  });
+
+  // Reset selected index when query changes
+  let prevQuery = $state('');
   $effect.pre(() => {
-    if (searchQuery !== prevSearchQuery) {
-      prevSearchQuery = searchQuery;
+    if (searchQuery !== prevQuery) {
+      prevQuery = searchQuery;
       selectedIndex = 0;
     }
   });
 
-  export function open(): void {
+  // Index project when it changes
+  $effect(() => {
+    if (projectStore.rootPath) {
+      void indexProject(projectStore.rootPath);
+    }
+  });
+
+  // Get total result count for current mode
+  const resultCount = $derived(effectiveMode === 'file' ? fileResults.length : filteredCommands.length);
+
+  export function open(initialMode: PaletteMode = 'file'): void {
     isOpen = true;
-    searchQuery = '';
+    mode = initialMode;
+    searchQuery = initialMode === 'command' ? '>' : '';
     selectedIndex = 0;
     setTimeout(() => inputElement?.focus(), 0);
+  }
+
+  export function openFileMode(): void {
+    open('file');
+  }
+
+  export function openCommandMode(): void {
+    open('command');
   }
 
   export function close(): void {
     isOpen = false;
     searchQuery = '';
     selectedIndex = 0;
+    mode = 'file';
   }
 
   export function toggle(): void {
@@ -301,9 +354,13 @@
     try {
       void command.action();
     } catch (err) {
-      console.error('Command execution failed:', err);
       showToast({ message: 'Command failed', type: 'error' });
     }
+  }
+
+  async function openFile(file: IndexedFile): Promise<void> {
+    close();
+    await editorStore.openFile(file.path);
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -315,20 +372,34 @@
         break;
       case 'ArrowDown':
         e.preventDefault();
-        if (filteredCommands.length > 0) {
-          selectedIndex = (selectedIndex + 1) % filteredCommands.length;
+        if (resultCount > 0) {
+          selectedIndex = (selectedIndex + 1) % resultCount;
         }
         break;
       case 'ArrowUp':
         e.preventDefault();
-        if (filteredCommands.length > 0) {
-          selectedIndex = selectedIndex <= 0 ? filteredCommands.length - 1 : selectedIndex - 1;
+        if (resultCount > 0) {
+          selectedIndex = selectedIndex <= 0 ? resultCount - 1 : selectedIndex - 1;
         }
         break;
       case 'Enter':
         e.preventDefault();
-        if (filteredCommands[selectedIndex]) {
-          executeCommand(filteredCommands[selectedIndex]);
+        if (effectiveMode === 'file') {
+          if (fileResults[selectedIndex]) {
+            void openFile(fileResults[selectedIndex]);
+          }
+        } else {
+          if (filteredCommands[selectedIndex]) {
+            executeCommand(filteredCommands[selectedIndex]);
+          }
+        }
+        break;
+      case 'Backspace':
+        // If query is just ">", switch back to file mode
+        if (searchQuery === '>') {
+          e.preventDefault();
+          searchQuery = '';
+          mode = 'file';
         }
         break;
     }
@@ -349,6 +420,17 @@
   function formatShortcut(shortcut: string): string[] {
     return shortcut.split('+').map((k) => k.trim());
   }
+
+  function getPlaceholder(): string {
+    if (effectiveMode === 'command') {
+      return 'Type a command';
+    }
+    return 'Search files by name (type > for commands)';
+  }
+
+  function isRecentFile(file: IndexedFile): boolean {
+    return recentFilePaths.includes(file.path);
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -356,58 +438,104 @@
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="command-palette-backdrop" role="presentation" onclick={handleBackdropClick}>
-    <div class="command-palette" role="dialog" aria-label="Command Palette">
+    <div class="command-palette" role="dialog" aria-label={effectiveMode === 'file' ? 'Quick Open' : 'Command Palette'}>
       <div class="search-container">
-        <span class="search-prefix">&gt;</span>
+        <span class="search-icon" aria-hidden="true">
+          <UIIcon name="search" size={16} />
+        </span>
         <input
           bind:this={inputElement}
           bind:value={searchQuery}
           type="text"
           class="search-input"
-          placeholder=""
-          aria-label="Search commands"
+          placeholder={getPlaceholder()}
+          aria-label={effectiveMode === 'file' ? 'Search files' : 'Search commands'}
           autocomplete="off"
           spellcheck="false"
         />
+        <div class="search-hint" aria-hidden="true">
+          <kbd class="key">Esc</kbd>
+        </div>
       </div>
 
-      <div class="commands-list" role="listbox">
-        {#if filteredCommands.length === 0}
-          <div class="no-results">No commands found</div>
-        {:else}
-          {#each filteredCommands as command, index (command.id)}
-            {#if hasRecentCommands && index === getOtherCommandsStartIndex() && !command.isRecent}
-              <div class="section-divider">
-                <span class="section-label">other commands</span>
-              </div>
-            {/if}
-            <button
-              class="command-item"
-              class:selected={index === selectedIndex}
-              onclick={() => executeCommand(command)}
-              onmouseenter={() => (selectedIndex = index)}
-              role="option"
-              aria-selected={index === selectedIndex}
-              use:scrollIntoView={index === selectedIndex}
-            >
-              <div class="command-info">
-                <span class="command-label">{command.label}</span>
-                {#if hasRecentCommands && command.isRecent && index === 0}
-                  <span class="command-tag">recently used</span>
+      <div class="results-list" role="listbox">
+        {#if effectiveMode === 'file'}
+          <!-- File search results -->
+          {#if !projectStore.rootPath}
+            <div class="no-results">Open a folder to search files</div>
+          {:else if !isIndexReady() && fileResults.length === 0}
+            <div class="no-results">
+              <span class="spinner"></span>
+              Indexing files...
+            </div>
+          {:else if fileResults.length === 0}
+            <div class="no-results">No files found</div>
+          {:else}
+            {#each fileResults as file, index (file.path)}
+              <button
+                class="result-item"
+                class:selected={index === selectedIndex}
+                onclick={() => void openFile(file)}
+                onmouseenter={() => (selectedIndex = index)}
+                role="option"
+                aria-selected={index === selectedIndex}
+                use:scrollIntoView={index === selectedIndex}
+              >
+                <span class="file-icon">
+                  <FileIcon name={file.name} />
+                </span>
+                <div class="file-info">
+                  <span class="file-name">{file.name}</span>
+                  <span class="file-path">{file.parentDir}</span>
+                </div>
+                {#if isRecentFile(file)}
+                  <span class="result-tag">open</span>
                 {/if}
-              </div>
-              {#if command.shortcut}
-                <div class="command-shortcut">
-                  {#each formatShortcut(command.shortcut) as key, i}
-                    <kbd class="key">{key}</kbd>
-                    {#if i < formatShortcut(command.shortcut).length - 1}
-                      <span class="key-sep">+</span>
-                    {/if}
-                  {/each}
+              </button>
+            {/each}
+          {/if}
+        {:else}
+          <!-- Command search results -->
+          {#if filteredCommands.length === 0}
+            <div class="no-results">No commands found</div>
+          {:else}
+            {#each filteredCommands as command, index (command.id)}
+              {#if hasRecentCommands && index === getOtherCommandsStartIndex() && !command.isRecent}
+                <div class="section-divider">
+                  <span class="section-label">other commands</span>
                 </div>
               {/if}
-            </button>
-          {/each}
+              <button
+                class="result-item command-item"
+                class:selected={index === selectedIndex}
+                onclick={() => executeCommand(command)}
+                onmouseenter={() => (selectedIndex = index)}
+                role="option"
+                aria-selected={index === selectedIndex}
+                use:scrollIntoView={index === selectedIndex}
+              >
+                <div class="command-info">
+                  <span class="command-label">{command.label}</span>
+                  {#if hasRecentCommands && command.isRecent && index === 0}
+                    <span class="result-tag">recently used</span>
+                  {/if}
+                </div>
+                <div class="command-meta">
+                  <span class="command-category">{command.category}</span>
+                  {#if command.shortcut}
+                    <div class="command-shortcut">
+                      {#each formatShortcut(command.shortcut) as key, i}
+                        <kbd class="key">{key}</kbd>
+                        {#if i < formatShortcut(command.shortcut).length - 1}
+                          <span class="key-sep">+</span>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </button>
+            {/each}
+          {/if}
         {/if}
       </div>
     </div>
@@ -418,7 +546,8 @@
   .command-palette-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: color-mix(in srgb, var(--color-bg) 40%, transparent);
+    backdrop-filter: blur(6px);
     display: flex;
     justify-content: center;
     padding-top: 8vh;
@@ -429,10 +558,10 @@
     width: 100%;
     max-width: 680px;
     max-height: 480px;
-    background: var(--color-bg-sidebar);
-    border: 1px solid var(--color-accent);
-    border-radius: 8px;
-    box-shadow: 0 0 0 1px var(--color-accent), 0 8px 32px rgba(0, 0, 0, 0.5);
+    background: var(--color-bg-elevated, var(--color-bg-sidebar));
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+    border-radius: 12px;
+    box-shadow: var(--shadow-elevated, 0 10px 32px rgba(0, 0, 0, 0.35));
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -441,15 +570,23 @@
   .search-container {
     display: flex;
     align-items: center;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--color-border);
-    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+    gap: 10px;
+    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-bg-sidebar)) 85%, var(--color-surface0));
   }
 
-  .search-prefix {
-    font-size: 14px;
+  .search-container:focus-within {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  }
+
+  .search-icon {
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
     color: var(--color-text-secondary);
-    font-family: monospace;
+    flex-shrink: 0;
   }
 
   .search-input {
@@ -459,7 +596,7 @@
     outline: none;
     font-size: 14px;
     color: var(--color-text);
-    padding: 12px 0;
+    padding: 0;
     font-family: inherit;
   }
 
@@ -467,13 +604,25 @@
     color: var(--color-text-secondary);
   }
 
-  .commands-list {
+  .search-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0.8;
+    flex-shrink: 0;
+  }
+
+  .results-list {
     flex: 1;
     overflow-y: auto;
     padding: 6px 0;
   }
 
   .no-results {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     padding: 16px;
     text-align: center;
     color: var(--color-text-secondary);
@@ -489,35 +638,85 @@
 
   .section-divider::before {
     content: '';
-    flex: 0 0 auto;
-    width: 0;
+    height: 1px;
+    flex: 1;
+    background: color-mix(in srgb, var(--color-border) 70%, transparent);
   }
 
   .section-label {
     font-size: 11px;
     color: var(--color-text-secondary);
-    text-transform: lowercase;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
   }
 
-  .command-item {
+  .result-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     width: 100%;
     padding: 6px 16px;
     cursor: pointer;
     transition: background-color 0.1s ease;
     text-align: left;
-    gap: 16px;
+    gap: 10px;
   }
 
-  .command-item:hover,
-  .command-item.selected {
+  .result-item:hover,
+  .result-item.selected {
     background: var(--color-hover);
   }
 
-  .command-item.selected {
-    background: rgba(137, 180, 250, 0.15);
+  .result-item.selected {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  /* File result styles */
+  .file-icon {
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+
+  .file-info {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .file-name {
+    font-size: 13px;
+    color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .file-path {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .result-tag {
+    font-size: 11px;
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+    padding: 2px 8px;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  /* Command result styles */
+  .command-item {
+    justify-content: space-between;
+    gap: 16px;
   }
 
   .command-info {
@@ -536,10 +735,18 @@
     text-overflow: ellipsis;
   }
 
-  .command-tag {
-    font-size: 11px;
-    color: var(--color-accent);
+  .command-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     flex-shrink: 0;
+  }
+
+  .command-category {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
   }
 
   .command-shortcut {
@@ -559,9 +766,9 @@
     font-size: 11px;
     font-family: inherit;
     color: var(--color-text-secondary);
-    background: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-surface0) 78%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+    border-radius: 6px;
   }
 
   .key-sep {

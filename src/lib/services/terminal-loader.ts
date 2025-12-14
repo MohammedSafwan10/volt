@@ -7,6 +7,8 @@ import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { WebLinksAddon } from '@xterm/addon-web-links';
 
+type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>['theme'];
+
 let xtermModule: typeof import('@xterm/xterm') | null = null;
 let fitAddonModule: typeof import('@xterm/addon-fit') | null = null;
 let webLinksAddonModule: typeof import('@xterm/addon-web-links') | null = null;
@@ -45,6 +47,49 @@ export async function loadXterm(): Promise<void> {
 	await loadingPromise;
 }
 
+function readCssVar(name: string, fallback: string): string {
+	try {
+		if (typeof window === 'undefined' || typeof document === 'undefined') return fallback;
+		const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+		return v || fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+export function getTerminalTheme(): XtermTheme {
+	// Provide sensible fallbacks so this is safe very early in app startup.
+	const background = readCssVar('--color-bg', '#1e1e2e');
+	const foreground = readCssVar('--color-text', '#cdd6f4');
+	const cursor = readCssVar('--color-text', '#cdd6f4');
+	const selectionBackground = readCssVar('--color-active', '#45475a');
+
+	return {
+		background,
+		foreground,
+		cursor,
+		cursorAccent: background,
+		selectionBackground,
+		selectionForeground: foreground,
+		black: readCssVar('--color-surface1', '#45475a'),
+		red: readCssVar('--color-red', '#f38ba8'),
+		green: readCssVar('--color-green', '#a6e3a1'),
+		yellow: readCssVar('--color-yellow', '#f9e2af'),
+		blue: readCssVar('--color-blue', '#89b4fa'),
+		magenta: readCssVar('--color-pink', '#f5c2e7'),
+		cyan: readCssVar('--color-teal', '#94e2d5'),
+		white: readCssVar('--color-text', '#cdd6f4'),
+		brightBlack: readCssVar('--color-surface2', '#585b70'),
+		brightRed: readCssVar('--color-red', '#f38ba8'),
+		brightGreen: readCssVar('--color-green', '#a6e3a1'),
+		brightYellow: readCssVar('--color-yellow', '#f9e2af'),
+		brightBlue: readCssVar('--color-blue', '#89b4fa'),
+		brightMagenta: readCssVar('--color-pink', '#f5c2e7'),
+		brightCyan: readCssVar('--color-teal', '#94e2d5'),
+		brightWhite: readCssVar('--color-text', '#cdd6f4')
+	};
+}
+
 /**
  * Create a new Terminal instance
  */
@@ -58,30 +103,7 @@ export function createTerminal(options?: ConstructorParameters<typeof Terminal>[
 		cursorStyle: 'bar',
 		fontSize: 13,
 		fontFamily: 'Consolas, "Courier New", monospace',
-		theme: {
-			background: '#1e1e2e',
-			foreground: '#cdd6f4',
-			cursor: '#f5e0dc',
-			cursorAccent: '#1e1e2e',
-			selectionBackground: '#45475a',
-			selectionForeground: '#cdd6f4',
-			black: '#45475a',
-			red: '#f38ba8',
-			green: '#a6e3a1',
-			yellow: '#f9e2af',
-			blue: '#89b4fa',
-			magenta: '#f5c2e7',
-			cyan: '#94e2d5',
-			white: '#bac2de',
-			brightBlack: '#585b70',
-			brightRed: '#f38ba8',
-			brightGreen: '#a6e3a1',
-			brightYellow: '#f9e2af',
-			brightBlue: '#89b4fa',
-			brightMagenta: '#f5c2e7',
-			brightCyan: '#94e2d5',
-			brightWhite: '#a6adc8'
-		},
+		theme: getTerminalTheme(),
 		allowProposedApi: true,
 		...options
 	});

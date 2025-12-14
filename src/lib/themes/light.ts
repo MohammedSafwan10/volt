@@ -27,8 +27,12 @@ export const lightThemeVars = {
   
   // UI colors
   '--color-border': '#ccd0da',
-  '--color-hover': '#ccd0da',
+  '--color-hover': '#d7dbe3',
   '--color-active': '#bcc0cc',
+
+  // Elevated surfaces
+  '--color-bg-elevated': '#ffffff',
+  '--shadow-elevated': '0 12px 34px rgba(0, 0, 0, 0.14)',
   
   // Surface colors
   '--color-surface0': '#ccd0da',

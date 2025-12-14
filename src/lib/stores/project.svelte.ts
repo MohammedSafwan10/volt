@@ -17,6 +17,7 @@ import { stopSvelteLsp } from '$lib/services/lsp/svelte-sidecar';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
+import { invoke } from '@tauri-apps/api/core';
 
 // Tauri FS plugin for file watching
 import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
@@ -118,6 +119,11 @@ class ProjectStore {
     try {
       const sep = projectPath.includes('\\') ? '\\' : '/';
       const lockFilePaths = LOCK_FILES.map(f => `${projectPath}${sep}${f}`);
+
+      // Allow the project directory in the FS scope so the fs plugin can watch it.
+      // The app already has direct filesystem access via custom commands; this is
+      // just to unblock plugin-fs `watch`.
+      await invoke('fs_allow_directory', { path: projectPath, recursive: false });
 
       // Watch the project root for lock file changes
       // Using debounce of 1000ms to avoid rapid re-detection during install

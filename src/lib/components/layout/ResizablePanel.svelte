@@ -95,34 +95,72 @@
   .resizer {
     flex-shrink: 0;
     background: transparent;
-    transition: background-color 0.15s ease;
     position: relative;
+    z-index: 10;
   }
 
+  /* Invisible hit area for easier grabbing */
+  .resizer::before {
+    content: '';
+    position: absolute;
+  }
+
+  /* Visible line indicator */
   .resizer::after {
     content: '';
     position: absolute;
-    inset: 0;
     background: transparent;
+    transition: background-color 0.1s ease;
   }
 
-  .resizer:hover,
-  .resizer.dragging {
+  .resizer:hover::after,
+  .resizer.dragging::after {
     background: var(--color-accent);
   }
 
   .resizer:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: -1px;
+    outline: none;
   }
 
+  .resizer:focus-visible::after {
+    background: var(--color-accent);
+  }
+
+  /* Horizontal resizer (sidebar) */
   .resizer.horizontal {
     width: 4px;
     cursor: col-resize;
+    margin-left: -2px;
   }
 
+  .resizer.horizontal::before {
+    inset: 0 -2px;
+  }
+
+  .resizer.horizontal::after {
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+  }
+
+  /* Vertical resizer (bottom panel) */
   .resizer.vertical {
     height: 4px;
     cursor: row-resize;
+    margin-top: -2px;
+  }
+
+  .resizer.vertical::before {
+    inset: -2px 0;
+  }
+
+  .resizer.vertical::after {
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
   }
 </style>

@@ -1,15 +1,39 @@
 <script lang="ts">
   import type { OpenFile } from '$lib/stores/editor.svelte';
+  import { FileIcon } from '$lib/components/file-tree';
+  import { UIIcon } from '$lib/components/ui';
 
   interface Props {
     file: OpenFile;
     isActive: boolean;
     isDirty: boolean;
+    isPinned?: boolean;
+    isDropTarget?: boolean;
     onSelect: () => void;
     onClose: () => void;
+    onContextMenu?: (file: OpenFile, e: MouseEvent) => void;
+    onDragStart?: (e: DragEvent) => void;
+    onDragOver?: (e: DragEvent) => void;
+    onDragLeave?: (e: DragEvent) => void;
+    onDrop?: (e: DragEvent) => void;
+    onDragEnd?: (e: DragEvent) => void;
   }
 
-  let { file, isActive, isDirty, onSelect, onClose }: Props = $props();
+  let { 
+    file, 
+    isActive, 
+    isDirty, 
+    isPinned = false,
+    isDropTarget = false,
+    onSelect, 
+    onClose, 
+    onContextMenu,
+    onDragStart,
+    onDragOver,
+    onDragLeave,
+    onDrop,
+    onDragEnd
+  }: Props = $props();
 
   function handleMouseDown(e: MouseEvent) {
     // Middle-click to close
@@ -32,71 +56,79 @@
     }
   }
 
-  function getFileIcon(filename: string): string {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    const iconMap: Record<string, string> = {
-      'js': '📜',
-      'mjs': '📜',
-      'cjs': '📜',
-      'jsx': '⚛️',
-      'ts': '📘',
-      'tsx': '⚛️',
-      'svelte': '🔶',
-      'vue': '💚',
-      'html': '🌐',
-      'css': '🎨',
-      'scss': '🎨',
-      'sass': '🎨',
-      'less': '🎨',
-      'json': '📋',
-      'md': '📝',
-      'mdx': '📝',
-      'yaml': '⚙️',
-      'yml': '⚙️',
-      'toml': '⚙️',
-      'xml': '📄',
-      'svg': '🖼️',
-      'png': '🖼️',
-      'jpg': '🖼️',
-      'gif': '🖼️',
-      'rs': '🦀',
-      'py': '🐍',
-      'go': '🐹',
-      'rb': '💎',
-      'sh': '🐚',
-      'bash': '🐚',
-      'ps1': '🐚',
-      'bat': '🐚',
-      'cmd': '🐚',
-    };
-    return iconMap[ext] || '📄';
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    onContextMenu?.(file, e);
+  }
+
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    onDragOver?.(e);
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onDrop?.(e);
+  }
+
+  function handleDragStart(e: DragEvent) {
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      // Set drag image
+      const target = e.currentTarget as HTMLElement;
+      e.dataTransfer.setDragImage(target, 0, 0);
+    }
+    onDragStart?.(e);
   }
 </script>
 
 <div
   class="tab no-select"
   class:active={isActive}
+  class:pinned={isPinned}
+  class:drop-target={isDropTarget}
+  draggable="true"
   onclick={onSelect}
   onmousedown={handleMouseDown}
   onkeydown={handleKeydown}
+  oncontextmenu={handleContextMenu}
+  ondragstart={handleDragStart}
+  ondragover={handleDragOver}
+  ondragleave={onDragLeave}
+  ondrop={handleDrop}
+  ondragend={onDragEnd}
   title={file.path}
   role="tab"
   aria-selected={isActive}
   tabindex="0"
 >
-  <span class="tab-icon">{getFileIcon(file.name)}</span>
+  {#if isPinned}
+    <span class="pin-icon" title="Pinned">
+      <UIIcon name="pin" size={12} />
+    </span>
+  {/if}
+  <span class="tab-icon">
+    <FileIcon name={file.name} />
+  </span>
   <span class="tab-name">{file.name}</span>
   {#if isDirty}
     <span class="dirty-indicator" title="Unsaved changes">●</span>
   {/if}
-  <button
-    class="close-btn"
-    onclick={handleCloseClick}
-    aria-label="Close {file.name}"
-    title="Close"
-  >
-    ✕
-  </button>
+  {#if !isPinned}
+    <button
+      class="close-btn"
+      onclick={handleCloseClick}
+      aria-label="Close {file.name}"
+      title="Close"
+    >
+      <UIIcon name="close" size={14} />
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -105,18 +137,23 @@
     align-items: center;
     gap: 6px;
     height: 100%;
-    padding: 0 12px;
+    padding: 0 10px;
     background: transparent;
     border: none;
     border-right: 1px solid var(--color-border);
+    border-bottom: 2px solid transparent;
     color: var(--color-text-secondary);
     font-size: 13px;
-    cursor: pointer;
-    transition: background 0.1s ease, color 0.1s ease;
+    cursor: grab;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
     white-space: nowrap;
     min-width: 0;
     max-width: 200px;
     flex-shrink: 0;
+  }
+
+  .tab:active {
+    cursor: grabbing;
   }
 
   .tab:hover {
@@ -125,13 +162,16 @@
   }
 
   .tab.active {
-    background: var(--color-bg);
+    background: color-mix(in srgb, var(--color-bg) 92%, var(--color-bg-elevated, var(--color-bg)));
     color: var(--color-text);
-    border-bottom: 2px solid var(--color-accent);
+    border-bottom-color: var(--color-accent);
   }
 
   .tab-icon {
-    font-size: 14px;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
     flex-shrink: 0;
   }
 
@@ -176,7 +216,7 @@
   }
 
   .close-btn:hover {
-    background: var(--color-hover);
+    background: color-mix(in srgb, var(--color-hover) 85%, transparent);
     color: var(--color-text);
   }
 
@@ -188,5 +228,34 @@
 
   .tab.active .close-btn:hover {
     opacity: 1;
+  }
+
+  /* Pinned tab styles */
+  .tab.pinned {
+    padding-left: 6px;
+    padding-right: 8px;
+    max-width: 140px;
+  }
+
+  .pin-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .tab.pinned:hover .pin-icon,
+  .tab.pinned.active .pin-icon {
+    color: var(--color-accent);
+  }
+
+  /* Drag and drop styles */
+  .tab.drop-target {
+    border-left: 2px solid var(--color-accent);
+  }
+
+  .tab:global(.dragging) {
+    opacity: 0.5;
   }
 </style>

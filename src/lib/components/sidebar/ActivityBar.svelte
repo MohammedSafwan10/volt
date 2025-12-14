@@ -1,22 +1,24 @@
 <script lang="ts">
   import { uiStore, type SidebarPanel } from '$lib/stores/ui.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
+  import { UIIcon, type UIIconName } from '$lib/components/ui';
 
   interface ActivityItem {
     id: SidebarPanel;
-    icon: string;
+    icon: UIIconName;
     label: string;
     implemented: boolean;
   }
 
   const topItems: ActivityItem[] = [
-    { id: 'explorer', icon: '📁', label: 'Explorer', implemented: true },
-    { id: 'search', icon: '🔍', label: 'Search', implemented: false },
-    { id: 'git', icon: '🌿', label: 'Source Control', implemented: false }
+    { id: 'explorer', icon: 'files', label: 'Explorer', implemented: true },
+    { id: 'search', icon: 'search', label: 'Search', implemented: false },
+    { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: false },
+    { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true }
   ];
 
   const bottomItems: ActivityItem[] = [
-    { id: 'settings', icon: '⚙️', label: 'Settings', implemented: false }
+    { id: 'settings', icon: 'settings', label: 'Settings', implemented: false }
   ];
 
   function handleClick(item: ActivityItem): void {
@@ -56,7 +58,9 @@
         title={item.label}
         type="button"
       >
-        <span class="activity-icon" aria-hidden="true">{item.icon}</span>
+        <span class="activity-icon" aria-hidden="true">
+          <UIIcon name={item.icon} size={22} />
+        </span>
       </button>
     {/each}
   </div>
@@ -73,7 +77,9 @@
         title={item.label}
         type="button"
       >
-        <span class="activity-icon" aria-hidden="true">{item.icon}</span>
+        <span class="activity-icon" aria-hidden="true">
+          <UIIcon name={item.icon} size={22} />
+        </span>
       </button>
     {/each}
   </div>
@@ -127,7 +133,10 @@
   }
 
   .activity-icon {
-    font-size: 22px;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
     line-height: 1;
   }
 </style>

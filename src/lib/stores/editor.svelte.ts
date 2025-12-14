@@ -38,6 +38,28 @@ export interface OpenFile {
   originalContent: string;
   /** Language for syntax highlighting */
   language: string;
+  /** Line ending style (LF or CRLF) */
+  lineEnding: 'LF' | 'CRLF';
+  /** File encoding */
+  encoding: string;
+  /** Whether the tab is pinned */
+  pinned?: boolean;
+}
+
+/** Cursor position info for status bar */
+export interface CursorPosition {
+  line: number;
+  column: number;
+  /** Number of selected characters (0 if no selection) */
+  selected: number;
+}
+
+/** Editor model options for status bar */
+export interface EditorOptions {
+  /** Tab size */
+  tabSize: number;
+  /** Whether using spaces for indentation */
+  insertSpaces: boolean;
 }
 
 /**
@@ -51,14 +73,30 @@ function normalizePath(path: string): string {
 class EditorStore {
   /** List of open files */
   openFiles = $state<OpenFile[]>([]);
-  
+
   /** Path of the currently active file */
   activeFilePath = $state<string | null>(null);
+
+  /** Current cursor position */
+  cursorPosition = $state<CursorPosition>({ line: 1, column: 1, selected: 0 });
+
+  /** Current editor options (indentation) */
+  editorOptions = $state<EditorOptions>({ tabSize: 2, insertSpaces: true });
 
   /** Get the currently active file */
   get activeFile(): OpenFile | null {
     if (!this.activeFilePath) return null;
-    return this.openFiles.find(f => f.path === this.activeFilePath) ?? null;
+    return this.openFiles.find((f) => f.path === this.activeFilePath) ?? null;
+  }
+
+  /** Update cursor position (called from Monaco editor) */
+  setCursorPosition(line: number, column: number, selected = 0): void {
+    this.cursorPosition = { line, column, selected };
+  }
+
+  /** Update editor options (called from Monaco editor) */
+  setEditorOptions(tabSize: number, insertSpaces: boolean): void {
+    this.editorOptions = { tabSize, insertSpaces };
   }
 
   /** Check if a file is dirty (has unsaved changes) */
@@ -102,17 +140,25 @@ class EditorStore {
     // Detect language from extension
     const language = this.detectLanguage(name);
 
+    // Detect line ending from content
+    const lineEnding = content.includes('\r\n') ? 'CRLF' : 'LF';
+
     // Add to open files
     const newFile: OpenFile = {
       path: normalizedPath,
       name,
       content,
       originalContent: content,
-      language
+      language,
+      lineEnding,
+      encoding: 'UTF-8'
     };
 
     this.openFiles = [...this.openFiles, newFile];
     this.activeFilePath = normalizedPath;
+
+    // Reset cursor position for new file
+    this.cursorPosition = { line: 1, column: 1, selected: 0 };
 
     return true;
   }
@@ -249,6 +295,61 @@ class EditorStore {
     const currentIndex = this.openFiles.findIndex(f => f.path === this.activeFilePath);
     const prevIndex = currentIndex <= 0 ? this.openFiles.length - 1 : currentIndex - 1;
     this.activeFilePath = this.openFiles[prevIndex].path;
+  }
+
+  /**
+   * Pin or unpin a tab
+   */
+  togglePin(path: string): void {
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
+    if (!file) return;
+    
+    file.pinned = !file.pinned;
+    
+    // Reorder: pinned tabs go to the left
+    this.sortTabs();
+  }
+
+  /**
+   * Check if a file is pinned
+   */
+  isPinned(path: string): boolean {
+    const normalizedPath = normalizePath(path);
+    const file = this.openFiles.find(f => f.path === normalizedPath);
+    return file?.pinned ?? false;
+  }
+
+  /**
+   * Sort tabs: pinned first, then unpinned
+   */
+  private sortTabs(): void {
+    this.openFiles = [
+      ...this.openFiles.filter(f => f.pinned),
+      ...this.openFiles.filter(f => !f.pinned)
+    ];
+  }
+
+  /**
+   * Reorder tabs by moving a tab from one index to another
+   */
+  reorderTabs(fromIndex: number, toIndex: number): void {
+    if (fromIndex === toIndex) return;
+    if (fromIndex < 0 || fromIndex >= this.openFiles.length) return;
+    if (toIndex < 0 || toIndex >= this.openFiles.length) return;
+
+    const file = this.openFiles[fromIndex];
+    const targetFile = this.openFiles[toIndex];
+
+    // Don't allow moving unpinned tabs before pinned tabs
+    if (!file.pinned && targetFile.pinned) return;
+    // Don't allow moving pinned tabs after unpinned tabs
+    if (file.pinned && !targetFile.pinned && toIndex > fromIndex) return;
+
+    const newFiles = [...this.openFiles];
+    newFiles.splice(fromIndex, 1);
+    newFiles.splice(toIndex, 0, file);
+    this.openFiles = newFiles;
   }
 
   /**

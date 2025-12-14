@@ -1,31 +1,56 @@
 <script lang="ts">
   import { uiStore } from '$lib/stores/ui.svelte';
+  import { problemsStore } from '$lib/stores/problems.svelte';
+  import { editorStore } from '$lib/stores/editor.svelte';
+  import { projectStore } from '$lib/stores/project.svelte';
+  import { getGitBranch } from '$lib/services/git';
+  import { UIIcon } from '$lib/components/ui';
 
-  // Placeholder values - will be connected to actual state later
-  let branch = $state('main');
-  let warnings = $state(0);
-  let errors = $state(0);
-  let encoding = $state('UTF-8');
-  let lineEnding = $state('LF');
-  let language = $state('TypeScript');
-  let line = $state(1);
-  let column = $state(1);
+  const errors = $derived.by(() => problemsStore.errorCount);
+  const warnings = $derived.by(() => problemsStore.warningCount);
+  const language = $derived.by(() => editorStore.activeFile?.language ?? 'Plain Text');
+
+  // Derive values from editor store
+  const encoding = $derived.by(() => editorStore.activeFile?.encoding ?? 'UTF-8');
+  const lineEnding = $derived.by(() => editorStore.activeFile?.lineEnding ?? 'LF');
+  const line = $derived.by(() => editorStore.activeFile ? editorStore.cursorPosition.line : null);
+  const column = $derived.by(() => editorStore.activeFile ? editorStore.cursorPosition.column : null);
+  const selected = $derived.by(() => editorStore.cursorPosition.selected);
+  const indentation = $derived.by(() => {
+    const opts = editorStore.editorOptions;
+    return opts.insertSpaces ? `Spaces: ${opts.tabSize}` : `Tab Size: ${opts.tabSize}`;
+  });
+
+  // Git branch - fetched when project changes
+  let branch = $state<string | null>(null);
+
+  // Fetch git branch when project root changes
+  $effect(() => {
+    const rootPath = projectStore.rootPath;
+    if (rootPath) {
+      getGitBranch(rootPath).then((b) => {
+        branch = b;
+      });
+    } else {
+      branch = null;
+    }
+  });
 </script>
 
 <div class="status-bar no-select">
   <div class="status-left">
-    <button class="status-item" title="Current branch">
-      <span class="icon">🌿</span>
-      <span>{branch}</span>
+    <button class="status-item" title={branch ? `Git branch: ${branch}` : 'Not a git repository'}>
+      <span class="icon"><UIIcon name="git-branch" size={14} /></span>
+      <span>{branch ?? '—'}</span>
     </button>
 
     <button class="status-item" title="Warnings">
-      <span class="icon warning">⚠</span>
+      <span class="icon warning"><UIIcon name="warning" size={14} /></span>
       <span>{warnings}</span>
     </button>
 
     <button class="status-item" title="Errors">
-      <span class="icon error">✕</span>
+      <span class="icon error"><UIIcon name="error" size={14} /></span>
       <span>{errors}</span>
     </button>
   </div>
@@ -67,7 +92,7 @@
     </div>
 
     <button class="status-item" title="Indentation">
-      Spaces: 2
+      {indentation}
     </button>
 
     <button class="status-item" title="Encoding">
@@ -83,7 +108,7 @@
     </button>
 
     <button class="status-item" title="Cursor position">
-      Ln {line}, Col {column}
+      Ln {line ?? '—'}, Col {column ?? '—'}{#if selected > 0} ({selected} selected){/if}
     </button>
   </div>
 </div>
@@ -127,6 +152,11 @@
     color: var(--color-text);
     font-size: 12px;
     transition: background-color 0.1s ease;
+  }
+
+  .status-item:disabled {
+    opacity: 0.65;
+    cursor: default;
   }
 
   .status-item:hover {
@@ -179,7 +209,10 @@
   }
 
   .icon {
-    font-size: 11px;
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
   }
 
   .icon.warning {

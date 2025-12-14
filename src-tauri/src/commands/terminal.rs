@@ -69,6 +69,10 @@ struct TerminalSession {
     killed: bool,
 }
 
+fn close_terminal_input(session: &mut TerminalSession) {
+    let _ = std::mem::replace(&mut session.writer, Box::new(std::io::sink()));
+}
+
 /// Global terminal manager state
 pub struct TerminalManager {
     sessions: HashMap<String, TerminalSession>,
@@ -406,21 +410,29 @@ pub fn terminal_kill(terminal_id: String) -> Result<(), TerminalError> {
         return Err(TerminalError::AlreadyKilled { terminal_id });
     }
 
-    // Mark as killed to prevent further operations
-    session.killed = true;
+    let kill_result = session.killer.kill();
+    match kill_result {
+        Ok(()) => {
+            session.killed = true;
+            close_terminal_input(session);
+            Ok(())
+        }
+        Err(e) => {
+            let message = e.to_string();
 
-    session
-        .killer
-        .kill()
-        .map_err(|e| TerminalError::KillFailed {
-            message: e.to_string(),
-        })?;
+            #[cfg(windows)]
+            {
+                let message_lower = message.to_lowercase();
+                if message.contains("os error 0") || message_lower.contains("operation completed successfully") {
+                    session.killed = true;
+                    close_terminal_input(session);
+                    return Ok(());
+                }
+            }
 
-    // Drop the writer to close the PTY input, which will cause the reader thread
-    // to receive EOF and clean up
-    // The session will be removed by the reader thread when it exits
-
-    Ok(())
+            Err(TerminalError::KillFailed { message })
+        }
+    }
 }
 
 /// List all active terminals

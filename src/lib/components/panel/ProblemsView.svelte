@@ -7,23 +7,22 @@
 	import { tick } from 'svelte';
   import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { UIIcon, type UIIconName } from '$lib/components/ui';
 
   // Track expanded files (SvelteSet is already reactive)
   const expandedFiles = new SvelteSet<string>();
 
-  // Get severity icon
-  function getSeverityIcon(severity: string): string {
+  function getSeverityIconName(severity: string): UIIconName {
     switch (severity) {
       case 'error':
-        return '✕';
+        return 'error';
       case 'warning':
-        return '⚠';
+        return 'warning';
       case 'info':
-        return 'ℹ';
       case 'hint':
-        return '💡';
+        return 'info';
       default:
-        return '•';
+        return 'info';
     }
   }
 
@@ -99,7 +98,7 @@
 <div class="problems-view">
   {#if problemsStore.totalCount === 0}
     <div class="empty-state">
-      <div class="empty-icon">✓</div>
+      <div class="empty-icon"><UIIcon name="check" size={22} /></div>
       <p class="empty-title">No Problems</p>
       <p class="empty-description">No errors or warnings detected in the workspace</p>
     </div>
@@ -107,13 +106,13 @@
     <div class="problems-header">
       <span class="problem-count">
         {#if problemsStore.errorCount > 0}
-          <span class="count-error">✕ {problemsStore.errorCount}</span>
+          <span class="count-error"><UIIcon name="error" size={14} /> {problemsStore.errorCount}</span>
         {/if}
         {#if problemsStore.warningCount > 0}
-          <span class="count-warning">⚠ {problemsStore.warningCount}</span>
+          <span class="count-warning"><UIIcon name="warning" size={14} /> {problemsStore.warningCount}</span>
         {/if}
         {#if problemsStore.infoCount > 0}
-          <span class="count-info">ℹ {problemsStore.infoCount}</span>
+          <span class="count-info"><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span>
         {/if}
       </span>
     </div>
@@ -130,7 +129,9 @@
             onclick={() => toggleFile(filePath)}
             aria-expanded={expanded}
           >
-            <span class="expand-icon">{expanded ? '▼' : '▶'}</span>
+            <span class="expand-icon">
+              <UIIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} />
+            </span>
             <span class="file-name">{problems[0]?.fileName || filePath}</span>
             <span class="file-counts">
               {#if counts.errors > 0}
@@ -151,7 +152,7 @@
                   title="{problem.file}:{problem.line}:{problem.column}"
                 >
                   <span class="problem-icon {getSeverityClass(problem.severity)}">
-                    {getSeverityIcon(problem.severity)}
+                    <UIIcon name={getSeverityIconName(problem.severity)} size={14} />
                   </span>
                   <span class="problem-message">{problem.message}</span>
                   <span class="problem-location">[{problem.line}, {problem.column}]</span>
@@ -219,6 +220,14 @@
     display: flex;
     gap: 12px;
     font-size: 12px;
+  }
+
+  .count-error,
+  .count-warning,
+  .count-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .count-error {

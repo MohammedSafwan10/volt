@@ -78,3 +78,38 @@ export function disposeAllModels(): void {
   }
   models.clear();
 }
+
+// Editor instance reference for go-to-line functionality
+let activeEditor: Monaco.editor.IStandaloneCodeEditor | null = null;
+
+/**
+ * Set the active editor instance (called from MonacoEditor component)
+ */
+export function setActiveEditor(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
+  activeEditor = editor;
+}
+
+/**
+ * Get the line count of a model
+ */
+export function getModelLineCount(path: string): number {
+  const model = models.get(path);
+  return model ? model.getLineCount() : 0;
+}
+
+/**
+ * Reveal a specific line in the active editor
+ */
+export function revealLine(path: string, line: number): void {
+  const model = models.get(path);
+  if (!model || !activeEditor) return;
+  
+  // Ensure line is within bounds
+  const maxLine = model.getLineCount();
+  const targetLine = Math.max(1, Math.min(line, maxLine));
+  
+  // Set cursor position and reveal the line
+  activeEditor.setPosition({ lineNumber: targetLine, column: 1 });
+  activeEditor.revealLineInCenter(targetLine);
+  activeEditor.focus();
+}

@@ -27,8 +27,12 @@ export const darkThemeVars = {
   
   // UI colors
   '--color-border': '#313244',
-  '--color-hover': '#313244',
+  '--color-hover': '#2b2d3f',
   '--color-active': '#45475a',
+
+  // Elevated surfaces
+  '--color-bg-elevated': '#11111b',
+  '--shadow-elevated': '0 12px 40px rgba(0, 0, 0, 0.45)',
   
   // Surface colors
   '--color-surface0': '#313244',

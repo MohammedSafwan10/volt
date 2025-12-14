@@ -3,8 +3,9 @@
 	import type { Terminal } from '@xterm/xterm';
 	import type { FitAddon } from '@xterm/addon-fit';
 	import type { WebLinksAddon } from '@xterm/addon-web-links';
-	import { loadXterm, createTerminal, createFitAddon, createWebLinksAddon, isXtermLoaded } from '$lib/services/terminal-loader';
+	import { loadXterm, createTerminal, createFitAddon, createWebLinksAddon, getTerminalTheme, isXtermLoaded } from '$lib/services/terminal-loader';
 	import type { TerminalSession } from '$lib/services/terminal-client';
+	import { themeStore } from '$lib/stores/theme.svelte';
 	import { open } from '@tauri-apps/plugin-shell';
 
 	interface Props {
@@ -27,6 +28,24 @@
 	let lastSentRows = 0;
 	let pendingCols = 0;
 	let pendingRows = 0;
+
+	function applyTheme(term: Terminal): void {
+		const theme = getTerminalTheme();
+		const anyTerm = term as unknown as {
+			setOption?: (key: string, value: unknown) => void;
+			options?: { theme?: unknown };
+		};
+		if (typeof anyTerm.setOption === 'function') {
+			anyTerm.setOption('theme', theme);
+			return;
+		}
+		// Older type definitions / runtime: mutate the theme field only (do NOT assign the full options object).
+		try {
+			if (anyTerm.options) anyTerm.options.theme = theme;
+		} catch {
+			// ignore
+		}
+	}
 
 	/**
 	 * Batch writes to xterm for performance
@@ -90,6 +109,7 @@
 
 		// Create terminal and addons
 		terminal = createTerminal();
+		applyTheme(terminal);
 		fitAddon = createFitAddon();
 		// WebLinksAddon with handler to open URLs via Tauri shell
 		webLinksAddon = createWebLinksAddon((_event: MouseEvent, uri: string) => {
@@ -202,6 +222,13 @@
 		}
 	});
 
+	// Keep terminal theme in sync with app theme.
+	$effect(() => {
+		themeStore.resolvedTheme;
+		if (!terminal) return;
+		applyTheme(terminal);
+	});
+
 	// Re-fit when becoming active (in case container size changed)
 	$effect(() => {
 		if (active && fitAddon && initialized) {
@@ -233,11 +260,13 @@
 	.terminal-container {
 		flex: 1;
 		overflow: hidden;
+		background: var(--color-bg);
+		border-left: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
 	}
 
 	/* xterm.js styles */
 	:global(.terminal-view .xterm) {
-		padding: 8px;
+		padding: 10px 12px;
 		height: 100%;
 	}
 
