@@ -6,7 +6,11 @@ use commands::file_ops::{
     rename_path, write_file,
 };
 use commands::fs_scope::fs_allow_directory;
-use commands::git::{get_git_branch, is_git_repo};
+use commands::git::{
+    get_git_branch, git_commit, git_diff_file, git_discard_file, git_has_uncommitted_changes,
+    git_list_branches, git_stage_all, git_stage_file, git_status, git_switch_branch,
+    git_unstage_all, git_unstage_file, is_git_repo, git_cancel, GitProcessManager,
+};
 use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
     lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
@@ -30,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(LspManagerState::<tauri::Wry>::default())
         .manage(SearchManagerState::default())
+        .manage(GitProcessManager::default())
         .invoke_handler(tauri::generate_handler![
             // File operations
             read_file,
@@ -62,6 +67,18 @@ pub fn run() {
             // Git
             get_git_branch,
             is_git_repo,
+            git_status,
+            git_cancel,
+            git_stage_file,
+            git_stage_all,
+            git_unstage_file,
+            git_unstage_all,
+            git_commit,
+            git_list_branches,
+            git_switch_branch,
+            git_diff_file,
+            git_has_uncommitted_changes,
+            git_discard_file,
             // Search
             workspace_search,
             workspace_search_stream,

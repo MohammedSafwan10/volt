@@ -5,6 +5,7 @@
   import { UIIcon } from '$lib/components/ui';
   import ExtensionsPanel from './ExtensionsPanel.svelte';
   import { SearchPanel } from '$lib/components/search';
+  import { GitPanel } from '$lib/components/git';
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -59,7 +60,7 @@
       {:else if uiStore.activeSidebarPanel === 'search'}
         <SearchPanel />
       {:else if uiStore.activeSidebarPanel === 'git'}
-        <p class="placeholder-text">Git panel coming soon</p>
+        <GitPanel />
       {:else if uiStore.activeSidebarPanel === 'extensions'}
         <ExtensionsPanel />
       {:else if uiStore.activeSidebarPanel === 'settings'}

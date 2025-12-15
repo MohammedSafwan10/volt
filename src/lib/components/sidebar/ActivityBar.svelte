@@ -13,7 +13,7 @@
   const topItems: ActivityItem[] = [
     { id: 'explorer', icon: 'files', label: 'Explorer', implemented: true },
     { id: 'search', icon: 'search', label: 'Search', implemented: true },
-    { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: false },
+    { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: true },
     { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true }
   ];
 

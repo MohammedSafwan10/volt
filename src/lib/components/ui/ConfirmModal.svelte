@@ -53,7 +53,9 @@
       <div class="message">{message}</div>
 
       <div class="actions">
-        <button class="btn" type="button" onclick={onCancel}>{cancelLabel}</button>
+        {#if cancelLabel}
+          <button class="btn" type="button" onclick={onCancel}>{cancelLabel}</button>
+        {/if}
         <button class="btn" class:danger type="button" onclick={onConfirm}>{confirmLabel}</button>
       </div>
     </div>

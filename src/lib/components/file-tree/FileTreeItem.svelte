@@ -15,6 +15,14 @@
     onEditValueChange?: (value: string) => void;
     onEditCommit?: () => void;
     onEditCancel?: () => void;
+    // Drag and drop
+    isDragging?: boolean;
+    dropPosition?: 'inside' | 'before' | 'after' | null;
+    onDragStart?: (node: TreeNode, e: DragEvent) => void;
+    onDragOver?: (node: TreeNode, e: DragEvent) => void;
+    onDragLeave?: (node: TreeNode, e: DragEvent) => void;
+    onDrop?: (node: TreeNode, e: DragEvent) => void;
+    onDragEnd?: () => void;
   }
 
   let {
@@ -28,11 +36,19 @@
     editFocusNonce,
     onEditValueChange,
     onEditCommit,
-    onEditCancel
+    onEditCancel,
+    isDragging = false,
+    dropPosition = null,
+    onDragStart,
+    onDragOver,
+    onDragLeave,
+    onDrop,
+    onDragEnd
   }: Props = $props();
 
   const isSelected = $derived(projectStore.selectedPath === node.path);
   const indentPx = $derived(depth * 16);
+  const isDraftNode = $derived(node.path.startsWith('__draft__:'));
 
   let inputEl = $state<HTMLInputElement | null>(null);
 
@@ -70,17 +86,60 @@
       onEditCancel?.();
     }
   }
+
+  function handleDragStart(e: DragEvent): void {
+    if (isEditing || isDraftNode) {
+      e.preventDefault();
+      return;
+    }
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', node.path);
+    }
+    onDragStart?.(node, e);
+  }
+
+  function handleDragOver(e: DragEvent): void {
+    if (isDraftNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    onDragOver?.(node, e);
+  }
+
+  function handleDragLeave(e: DragEvent): void {
+    e.stopPropagation();
+    onDragLeave?.(node, e);
+  }
+
+  function handleDrop(e: DragEvent): void {
+    if (isDraftNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onDrop?.(node, e);
+  }
+
+  function handleDragEnd(): void {
+    onDragEnd?.();
+  }
 </script>
 
 <div
   class="tree-item"
   data-tree-row
   class:selected={isSelected}
+  class:dragging={isDragging}
+  class:drop-inside={dropPosition === 'inside'}
+  class:drop-before={dropPosition === 'before'}
+  class:drop-after={dropPosition === 'after'}
   style="padding-left: {indentPx + 8}px"
   role="treeitem"
   tabindex="0"
   aria-selected={isSelected}
   aria-expanded={node.isDir ? node.expanded : undefined}
+  draggable={!isEditing && !isDraftNode}
   onclick={() => {
     if (isEditing) return;
     void handleActivate();
@@ -90,6 +149,11 @@
     if (isEditing) return;
     onContextMenu?.(node, e);
   }}
+  ondragstart={handleDragStart}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  ondragend={handleDragEnd}
 >
   {#if node.isDir}
     <span class="chevron" aria-hidden="true">
@@ -145,6 +209,24 @@
 
   .tree-item.selected {
     background: var(--color-active);
+  }
+
+  .tree-item.dragging {
+    opacity: 0.5;
+  }
+
+  .tree-item.drop-inside {
+    background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+    outline: 1px dashed var(--color-accent);
+    outline-offset: -1px;
+  }
+
+  .tree-item.drop-before {
+    box-shadow: inset 0 2px 0 0 var(--color-accent);
+  }
+
+  .tree-item.drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--color-accent);
   }
 
   .chevron {

@@ -79,9 +79,15 @@
   function handleDragStart(e: DragEvent) {
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
-      // Set drag image
-      const target = e.currentTarget as HTMLElement;
-      e.dataTransfer.setDragImage(target, 0, 0);
+      // WebView2/Chromium sometimes requires calling setData() in the element's own
+      // dragstart handler; otherwise the drag operation may be treated as "not allowed".
+      // We don't rely on this payload for reordering (we use local state), but it
+      // enables the drag gesture consistently.
+      try {
+        e.dataTransfer.setData('text/plain', file.path);
+      } catch {
+        // ignore
+      }
     }
     onDragStart?.(e);
   }

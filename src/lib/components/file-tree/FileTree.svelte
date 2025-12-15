@@ -134,6 +134,16 @@
   let confirmDanger = $state(false);
   let confirmResolver = $state<((ok: boolean) => void) | null>(null);
 
+  // Drag and drop state
+  let draggedNode = $state<TreeNode | null>(null);
+  let dropTarget = $state<{ path: string; position: 'inside' | 'before' | 'after' } | null>(null);
+  let dragScrollInterval: ReturnType<typeof setInterval> | null = null;
+  let lastDragY = 0;
+  
+  // Auto-scroll configuration
+  const SCROLL_EDGE_SIZE = 40; // pixels from edge to trigger scroll
+  const SCROLL_SPEED = 8; // pixels per frame
+
   function makeDraftNode(state: Extract<InlineEditState, { mode: 'newFile' | 'newFolder' }>): TreeNode {
     return {
       name: state.value,
@@ -435,6 +445,185 @@
     }
   }
 
+  // Drag and drop handlers
+  function handleDragStart(node: TreeNode): void {
+    draggedNode = node;
+    startDragScroll();
+  }
+
+  function handleDragEnd(): void {
+    draggedNode = null;
+    dropTarget = null;
+    stopDragScroll();
+  }
+  
+  function handleGlobalDrag(e: DragEvent): void {
+    lastDragY = e.clientY;
+  }
+  
+  function startDragScroll(): void {
+    if (dragScrollInterval) return;
+    
+    // Listen globally for drag position - this works even outside the container
+    window.addEventListener('dragover', handleGlobalDrag);
+    
+    dragScrollInterval = setInterval(() => {
+      if (!scrollEl || !draggedNode) return;
+      
+      const rect = scrollEl.getBoundingClientRect();
+      const relativeY = lastDragY - rect.top;
+      
+      // Scroll up when near top edge OR above the container
+      if (relativeY < SCROLL_EDGE_SIZE) {
+        const intensity = relativeY < 0 ? 1 : 1 - relativeY / SCROLL_EDGE_SIZE;
+        scrollEl.scrollTop -= SCROLL_SPEED * Math.min(intensity, 1);
+      }
+      // Scroll down when near bottom edge OR below the container
+      else if (relativeY > rect.height - SCROLL_EDGE_SIZE) {
+        const intensity = relativeY > rect.height 
+          ? 1 
+          : 1 - (rect.height - relativeY) / SCROLL_EDGE_SIZE;
+        scrollEl.scrollTop += SCROLL_SPEED * Math.min(intensity, 1);
+      }
+    }, 16); // ~60fps
+  }
+  
+  function stopDragScroll(): void {
+    window.removeEventListener('dragover', handleGlobalDrag);
+    if (dragScrollInterval) {
+      clearInterval(dragScrollInterval);
+      dragScrollInterval = null;
+    }
+  }
+  
+  function handleContainerDragOver(e: DragEvent): void {
+    // Track mouse Y position for auto-scroll (backup for when global doesn't fire)
+    lastDragY = e.clientY;
+  }
+
+  function isDescendantOf(childPath: string, parentPath: string): boolean {
+    const normalizedChild = childPath.replace(/\\/g, '/');
+    const normalizedParent = parentPath.replace(/\\/g, '/');
+    return normalizedChild.startsWith(normalizedParent + '/');
+  }
+
+  function handleDragOver(targetNode: TreeNode, e: DragEvent): void {
+    if (!draggedNode) return;
+    
+    // Can't drop on self
+    if (draggedNode.path === targetNode.path) {
+      dropTarget = null;
+      return;
+    }
+    
+    // Can't drop folder into its own descendant
+    if (draggedNode.isDir && isDescendantOf(targetNode.path, draggedNode.path)) {
+      dropTarget = null;
+      return;
+    }
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const height = rect.height;
+
+    if (targetNode.isDir) {
+      // For folders: top 25% = before, middle 50% = inside, bottom 25% = after
+      if (y < height * 0.25) {
+        dropTarget = { path: targetNode.path, position: 'before' };
+      } else if (y > height * 0.75) {
+        dropTarget = { path: targetNode.path, position: 'after' };
+      } else {
+        dropTarget = { path: targetNode.path, position: 'inside' };
+      }
+    } else {
+      // For files: top 50% = before, bottom 50% = after
+      if (y < height * 0.5) {
+        dropTarget = { path: targetNode.path, position: 'before' };
+      } else {
+        dropTarget = { path: targetNode.path, position: 'after' };
+      }
+    }
+  }
+
+  function handleDragLeave(targetNode: TreeNode, e: DragEvent): void {
+    // Only clear if we're actually leaving this element (not entering a child)
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    const currentTarget = e.currentTarget as HTMLElement;
+    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
+      if (dropTarget?.path === targetNode.path) {
+        dropTarget = null;
+      }
+    }
+  }
+
+  async function handleDrop(targetNode: TreeNode): Promise<void> {
+    if (!draggedNode || !dropTarget) {
+      handleDragEnd();
+      return;
+    }
+
+    const sourceNode = draggedNode;
+    const sourcePath = sourceNode.path;
+    const target = dropTarget;
+    
+    // Clear drag state immediately for responsive UI
+    handleDragEnd();
+
+    // Determine destination folder
+    let destFolder: string;
+    if (target.position === 'inside' && targetNode.isDir) {
+      destFolder = targetNode.path;
+    } else {
+      // Move to same parent as target
+      try {
+        destFolder = await dirname(targetNode.path);
+      } catch {
+        const normalized = targetNode.path.replace(/\\/g, '/');
+        destFolder = normalized.slice(0, normalized.lastIndexOf('/'));
+      }
+    }
+
+    // Build new path
+    const newPath = await joinPath(destFolder, sourceNode.name);
+    
+    // Check if destination is same as source (no-op)
+    const normalizedNew = newPath.replace(/\\/g, '/');
+    const normalizedSource = sourcePath.replace(/\\/g, '/');
+    if (normalizedNew === normalizedSource) {
+      return; // No-op, same location
+    }
+
+    // Check if destination already exists (and it's not the source itself)
+    const existingNode = projectStore.findNode(newPath);
+    if (existingNode && existingNode.path !== sourcePath) {
+      showToast({ message: `"${sourceNode.name}" already exists in destination`, type: 'error' });
+      return;
+    }
+
+    // Execute move
+    const ok = await renamePath(sourcePath, newPath);
+    if (!ok) {
+      return; // Error already shown by renamePath
+    }
+
+    // Remove from old location first
+    projectStore.removeNode(sourcePath);
+    
+    // Refresh destination folder to show the moved item
+    // This is safer than manually adding to avoid duplicate key issues
+    const destNode = projectStore.findNode(destFolder);
+    if (destNode && destNode.isDir && destNode.expanded) {
+      await projectStore.refreshFolder(destNode);
+    } else if (destFolder === projectStore.rootPath) {
+      // Moving to root - refresh tree
+      await projectStore.refreshTree();
+    }
+    // If dest folder is collapsed, it will load when expanded
+    
+    projectStore.selectItem(newPath);
+    showToast({ message: 'Moved successfully', type: 'success' });
+  }
+
   async function handleDelete(node: TreeNode): Promise<void> {
     closeContextMenu();
 
@@ -511,6 +700,7 @@
       bind:this={scrollEl}
       onscroll={handleScroll}
       oncontextmenu={handleEmptyContextMenu}
+      ondragover={handleContainerDragOver}
     >
       <div class="spacer" style="height: {totalHeight}px">
         {#each visibleNodes as item, idx (item.node.path)}
@@ -523,27 +713,34 @@
               depth={item.depth}
               {onFileSelect}
               onContextMenu={handleNodeContextMenu}
-            isEditing={
-              Boolean(
-                inlineEdit &&
-                  ((inlineEdit.mode === 'rename' && inlineEdit.targetPath === item.node.path) ||
-                    (inlineEdit.mode !== 'rename' && inlineEdit.draftPath === item.node.path))
-              )
-            }
-            editValue={inlineEdit?.value ?? ''}
-            editPlaceholder={
-              inlineEdit?.mode === 'newFolder'
-                ? 'Folder name'
-                : inlineEdit?.mode === 'newFile'
-                  ? 'File name'
-                  : undefined
-            }
-            editFocusNonce={inlineEditFocusNonce}
-            onEditValueChange={(value) => {
-              if (inlineEdit) inlineEdit.value = value;
-            }}
-            onEditCommit={() => void commitInlineEdit()}
-            onEditCancel={cancelInlineEdit}
+              isEditing={
+                Boolean(
+                  inlineEdit &&
+                    ((inlineEdit.mode === 'rename' && inlineEdit.targetPath === item.node.path) ||
+                      (inlineEdit.mode !== 'rename' && inlineEdit.draftPath === item.node.path))
+                )
+              }
+              editValue={inlineEdit?.value ?? ''}
+              editPlaceholder={
+                inlineEdit?.mode === 'newFolder'
+                  ? 'Folder name'
+                  : inlineEdit?.mode === 'newFile'
+                    ? 'File name'
+                    : undefined
+              }
+              editFocusNonce={inlineEditFocusNonce}
+              onEditValueChange={(value) => {
+                if (inlineEdit) inlineEdit.value = value;
+              }}
+              onEditCommit={() => void commitInlineEdit()}
+              onEditCancel={cancelInlineEdit}
+              isDragging={draggedNode?.path === item.node.path}
+              dropPosition={dropTarget?.path === item.node.path ? dropTarget.position : null}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={(node) => void handleDrop(node)}
+              onDragEnd={handleDragEnd}
             />
           </div>
         {/each}

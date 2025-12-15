@@ -26,6 +26,7 @@
     // Actions
     | 'refresh'
     | 'plus'
+    | 'minus'
     | 'close'
     | 'trash'
     | 'pencil'
@@ -95,7 +96,8 @@
     | 'play'
     | 'pause'
     | 'stop'
-    | 'record';
+    | 'record'
+    | 'cloud';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -118,6 +120,7 @@
     // Actions
     refresh: 'codicon:refresh',
     plus: 'codicon:add',
+    minus: 'codicon:remove',
     close: 'codicon:close',
     trash: 'codicon:trash',
     pencil: 'codicon:edit',
@@ -188,6 +191,7 @@
     pause: 'codicon:debug-pause',
     stop: 'codicon:debug-stop',
     record: 'codicon:record',
+    cloud: 'codicon:cloud',
   };
 
   interface Props {

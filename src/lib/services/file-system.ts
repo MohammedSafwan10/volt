@@ -58,7 +58,10 @@ function handleError(
   // Log technical details for debugging
   console.error(`[FileSystem] ${operation} error:`, error);
 
-  const shouldShowRetry = showRetry || Boolean(retry);
+  // Only show "Retry" for operations that are likely to succeed on retry.
+  // For typed FileError responses, only FileLocked is considered retryable.
+  const shouldShowRetry =
+    Boolean(retry) && (!isFileError(error) || showRetry);
 
   // Show toast notification
   showToast({

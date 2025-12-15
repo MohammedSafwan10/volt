@@ -12,6 +12,9 @@ pub enum FileError {
     #[error("File not found: {path}")]
     NotFound { path: String },
 
+    #[error("Already exists: {path}")]
+    AlreadyExists { path: String },
+
     #[error("Permission denied: {path}")]
     PermissionDenied { path: String },
 
@@ -72,6 +75,7 @@ fn io_error_with_path(err: io::Error, path: &str) -> FileError {
     let mut file_error = FileError::from(err);
     match &mut file_error {
         FileError::NotFound { path: p } => *p = path.to_string(),
+        FileError::AlreadyExists { path: p } => *p = path.to_string(),
         FileError::PermissionDenied { path: p } => *p = path.to_string(),
         FileError::FileLocked { path: p } => *p = path.to_string(),
         FileError::PathTooLong { path: p } => *p = path.to_string(),
@@ -311,9 +315,7 @@ pub async fn create_file(path: String) -> Result<(), FileError> {
         let path_buf = normalize_path(&path_clone);
 
         if path_buf.exists() {
-            return Err(FileError::IoError {
-                message: format!("File already exists: {}", path_clone),
-            });
+            return Err(FileError::AlreadyExists { path: path_clone });
         }
 
         // Ensure parent directory exists
@@ -341,9 +343,7 @@ pub async fn create_dir(path: String) -> Result<(), FileError> {
         let path_buf = normalize_path(&path_clone);
 
         if path_buf.exists() {
-            return Err(FileError::IoError {
-                message: format!("Directory already exists: {}", path_clone),
-            });
+            return Err(FileError::AlreadyExists { path: path_clone });
         }
 
         fs::create_dir_all(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
@@ -431,9 +431,7 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), FileE
                 }
             }
 
-            return Err(FileError::IoError {
-                message: format!("Destination already exists: {}", new_clone),
-            });
+            return Err(FileError::AlreadyExists { path: new_clone });
         }
 
         // Ensure parent directory of destination exists

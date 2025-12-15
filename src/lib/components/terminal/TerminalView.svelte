@@ -130,13 +130,6 @@
 					return false; // Prevent sending to shell
 				}
 			}
-			// Ctrl+V: paste from clipboard
-			if (event.ctrlKey && event.key === 'v' && event.type === 'keydown') {
-				void navigator.clipboard.readText().then((text) => {
-					void session.write(text);
-				});
-				return false;
-			}
 			return true; // Allow default handling
 		});
 
@@ -195,6 +188,17 @@
 		if (active) {
 			void tryInit();
 		}
+
+		const handleFocusRequest = (): void => {
+			if (active && terminal && initialized) {
+				terminal.focus();
+			}
+		};
+		window.addEventListener('volt:terminal-focus', handleFocusRequest);
+
+		return () => {
+			window.removeEventListener('volt:terminal-focus', handleFocusRequest);
+		};
 	});
 
 	onDestroy(() => {

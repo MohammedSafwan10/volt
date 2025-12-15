@@ -38,6 +38,7 @@ export interface FileInfo {
  */
 export type FileErrorType =
   | 'NotFound'
+  | 'AlreadyExists'
   | 'PermissionDenied'
   | 'FileLocked'
   | 'PathTooLong'
@@ -69,6 +70,8 @@ export function getFileErrorMessage(error: FileError): string {
   switch (error.type) {
     case 'NotFound':
       return `File not found: ${error.path || 'unknown path'}`;
+    case 'AlreadyExists':
+      return `Already exists: ${error.path || 'unknown path'}`;
     case 'PermissionDenied':
       return `Permission denied: ${error.path || 'unknown path'}`;
     case 'FileLocked':
