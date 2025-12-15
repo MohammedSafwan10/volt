@@ -36,6 +36,8 @@
     | 'cut'
     | 'undo'
     | 'redo'
+    | 'replace'
+    | 'replace-all'
     // Navigation
     | 'chevron-right'
     | 'chevron-down'
@@ -126,6 +128,8 @@
     cut: 'codicon:clippy',
     undo: 'codicon:discard',
     redo: 'codicon:redo',
+    replace: 'codicon:replace',
+    'replace-all': 'codicon:replace-all',
     // Navigation
     'chevron-right': 'codicon:chevron-right',
     'chevron-down': 'codicon:chevron-down',

@@ -223,7 +223,6 @@
 
   async function handleRefresh(): Promise<void> {
     await projectStore.refreshTree();
-    showToast({ message: 'Refreshed', type: 'success', duration: 2000 });
   }
 
   function closeContextMenu(): void {

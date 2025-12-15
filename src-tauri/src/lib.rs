@@ -11,6 +11,10 @@ use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
     lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
 };
+use commands::search::{
+    cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
+    workspace_search_stream, SearchManagerState,
+};
 use commands::system::get_system_info;
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_list, terminal_resize, terminal_write,
@@ -25,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .manage(LspManagerState::<tauri::Wry>::default())
+        .manage(SearchManagerState::default())
         .invoke_handler(tauri::generate_handler![
             // File operations
             read_file,
@@ -57,6 +62,12 @@ pub fn run() {
             // Git
             get_git_branch,
             is_git_repo,
+            // Search
+            workspace_search,
+            workspace_search_stream,
+            cancel_workspace_search,
+            replace_in_file,
+            replace_one_in_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

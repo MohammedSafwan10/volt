@@ -8,7 +8,7 @@
   import { WelcomeScreen } from '$lib/components/welcome';
   import { MonacoEditor, Breadcrumb, EmptyState, GoToLineDialog } from '$lib/components/editor';
   import { TabBar } from '$lib/components/tabs';
-  import { CommandPalette } from '$lib/components/command-palette';
+  import { CommandPalette, SymbolPicker } from '$lib/components/command-palette';
   import { BottomPanel } from '$lib/components/panel';
   import { loadMonaco } from '$lib/services/monaco-loader';
   import { loadXterm } from '$lib/services/terminal-loader';
@@ -41,6 +41,10 @@
   // Go to Line dialog state
   let goToLineOpen = $state(false);
   let goToLineMax = $state(1);
+
+  // Symbol picker state
+  let symbolPickerOpen = $state(false);
+  let symbolPickerMode = $state<'file' | 'workspace'>('file');
 
   // Key-chord state (VS Code style, e.g. Ctrl+K Ctrl+O)
   let chordActive = $state(false);
@@ -92,6 +96,18 @@
     revealLine(editorStore.activeFile.path, line);
   }
 
+  // Handle symbol picker open event from command palette
+  function handleOpenSymbolPicker(e: CustomEvent<{ mode: 'file' | 'workspace' }>): void {
+    symbolPickerMode = e.detail.mode;
+    symbolPickerOpen = true;
+  }
+
+
+  // Handle go to line open event from command palette
+  function handleOpenGoToLine(): void {
+    openGoToLine();
+  }
+
   // VS Code-like: warm Monaco and xterm at app startup so first use feels instant.
   // Also initialize auto-save listeners.
   onMount(() => {
@@ -110,6 +126,10 @@
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     
+    // Listen for symbol picker open events from command palette
+    window.addEventListener('volt:open-symbol-picker', handleOpenSymbolPicker as EventListener);
+    window.addEventListener('volt:open-go-to-line', handleOpenGoToLine as EventListener);
+    
     return () => {
       destroyAutoSave();
       // Kill all terminals on unmount
@@ -117,6 +137,8 @@
       // Stop all LSP servers on unmount
       void disposeLspRegistry();
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('volt:open-symbol-picker', handleOpenSymbolPicker as EventListener);
+      window.removeEventListener('volt:open-go-to-line', handleOpenGoToLine as EventListener);
     };
   });
 
@@ -231,7 +253,17 @@
       // fall through to normal handling
     }
 
-    if (isEditableTarget(e.target)) return;
+    const editable = isEditableTarget(e.target);
+    const allowInEditable =
+      e.key === 'Escape' ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'g') ||
+      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') ||
+      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') ||
+      (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote'));
+
+    if (editable && !allowInEditable) return;
 
     if (e.key === 'Escape') {
       uiStore.closeMenus();
@@ -263,6 +295,32 @@
       e.preventDefault();
       uiStore.closeMenus();
       void formatCurrentDocument();
+    }
+
+    // Ctrl+Shift+F to open search panel
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      uiStore.setActiveSidebarPanel('search');
+    }
+
+    // Ctrl+Shift+O to open Go to Symbol in File
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      void import('$lib/services/monaco-models')
+        .then(({ runEditorAction }) => runEditorAction('editor.action.quickOutline'))
+        .catch(() => {
+          // ignore
+        });
+    }
+
+    // Ctrl+T to open Go to Symbol in Workspace
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      symbolPickerMode = 'workspace';
+      symbolPickerOpen = true;
     }
 
     if (isMod && !e.altKey && (e.code === 'Equal' || e.code === 'NumpadAdd' || e.key === '=' || e.key === '+')) {
@@ -396,6 +454,11 @@
     maxLine={goToLineMax}
     onGo={handleGoToLine}
     onClose={() => (goToLineOpen = false)}
+  />
+  <SymbolPicker
+    open={symbolPickerOpen}
+    mode={symbolPickerMode}
+    onClose={() => (symbolPickerOpen = false)}
   />
 </div>
 

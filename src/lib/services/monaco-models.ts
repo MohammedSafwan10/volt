@@ -90,6 +90,26 @@ export function setActiveEditor(editor: Monaco.editor.IStandaloneCodeEditor | nu
 }
 
 /**
+ * Run a Monaco editor action on the active editor.
+ * Useful for invoking built-in UI like Quick Outline.
+ */
+export async function runEditorAction(actionId: string): Promise<boolean> {
+  // Ensure Monaco is loaded (mainly so editor actions exist)
+  await loadMonaco();
+  if (!activeEditor) return false;
+
+  const action = activeEditor.getAction(actionId);
+  if (!action) return false;
+
+  try {
+    await action.run();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get the line count of a model
  */
 export function getModelLineCount(path: string): number {

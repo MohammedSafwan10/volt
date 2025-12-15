@@ -1,0 +1,43 @@
+Context management is the #1 thing that makes an IDE agent feel “senior” instead of random. The best architecture is tiered context + evidence-first selection + strict budgets.
+
+A “better than Copilot-like” context architecture (for Volt)
+
+Tier 0 — Live editor state (highest priority)
+
+Active file path, language, dirty state
+Current selection (range + text)
+Cursor position
+Open tabs list
+Why: this is what the user means right now.
+Tier 1 — Local evidence (cheap + reliable)
+
+workspace.search results for the exact symbols/strings in the request
+diagnostics.getProblems for current errors
+projectMap.read() (entrypoints/scripts/routes)
+Why: prevents hallucinated files and wrong assumptions.
+Tier 2 — Semantic index (fast on big repos)
+
+index.querySymbols, index.findReferences
+import graph / symbol definitions
+Why: “find the right files quickly” without reading everything.
+Tier 3 — On-demand file reads
+
+Pull only the smallest slices needed:
+200–400 lines around matches/diagnostics
+relevant config files (tsconfig/vite config)
+Why: avoids dumping entire files into the model.
+Tier 4 — External docs (MCP Context7)
+
+Only when you’re touching external APIs or uncertain behavior.
+Why: stops “guessing”.
+Core rules that make it work
+
+Hard token budget + packing order
+Always pack: selection → local evidence → minimal file slices → index summaries → docs.
+Evidence-first
+If the agent can’t point to a file path + snippet that supports a claim, it should go fetch it.
+“Context is a product”
+Show the user exactly what’s attached (like Cursor): selection + files + diagnostics + search hits.
+Let user remove attachments before sending.
+How to implement in Volt (clean + robust)
+

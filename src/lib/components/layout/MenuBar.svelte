@@ -93,6 +93,11 @@
     void formatCurrentDocument();
   }
 
+  function handleOpenSearch() {
+    uiStore.closeMenus();
+    uiStore.setActiveSidebarPanel('search');
+  }
+
   function handleToggleFormatOnSave() {
     settingsStore.toggleFormatOnSave();
     showToast({
@@ -177,7 +182,7 @@
         { label: 'Copy', shortcut: 'Ctrl+C', action: comingSoon('Copy') },
         { label: 'Paste', shortcut: 'Ctrl+V', action: comingSoon('Paste') },
         { separator: true, label: '' },
-        { label: 'Find', shortcut: 'Ctrl+F', action: comingSoon('Find') },
+        { label: 'Find', shortcut: 'Ctrl+F', action: handleOpenSearch },
         { separator: true, label: '' },
         { label: 'Format Document', shortcut: 'Ctrl+Shift+I', action: handleFormatDocument },
         { label: 'Format on Save', action: handleToggleFormatOnSave, checked: settingsStore.formatOnSaveEnabled }
@@ -190,6 +195,7 @@
         { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { uiStore.closeMenus(); onOpenCommandPalette?.(); } },
         { separator: true, label: '' },
         { label: 'Explorer', shortcut: 'Ctrl+Shift+E', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('explorer'); } },
+        { label: 'Search', shortcut: 'Ctrl+Shift+F', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('search'); } },
         { separator: true, label: '' },
         { label: 'Problems', shortcut: 'Ctrl+Shift+M', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('problems'); } },
         { label: 'Output', shortcut: 'Ctrl+Shift+U', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('output'); } },

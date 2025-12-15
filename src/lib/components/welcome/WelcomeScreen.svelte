@@ -64,7 +64,7 @@
         </svg>
       </div>
       <h1 class="title">VOLT</h1>
-      <p class="subtitle">Lightweight Code Editor</p>
+      <p class="subtitle">Fast Code Editor</p>
     </div>
 
     <!-- Start Section -->

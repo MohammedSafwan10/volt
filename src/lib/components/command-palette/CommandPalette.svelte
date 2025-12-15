@@ -196,6 +196,13 @@
       action: () => uiStore.setActiveSidebarPanel('explorer')
     },
     {
+      id: 'view.search',
+      label: 'Search: Find in Files',
+      category: 'View',
+      shortcut: 'Ctrl+Shift+F',
+      action: () => uiStore.setActiveSidebarPanel('search')
+    },
+    {
       id: 'view.toggleTerminal',
       label: 'Toggle Terminal',
       category: 'View',
@@ -280,6 +287,39 @@
         themeStore.toggle();
         showToast({ message: `Theme: ${themeStore.displayName}`, type: 'info' });
       }
+    },
+    {
+      id: 'go.goToSymbolInFile',
+      label: 'Go to Symbol in File...',
+      category: 'Go',
+      shortcut: 'Ctrl+Shift+O',
+      action: () => {
+        // Dispatch event to open symbol picker in file mode
+        window.dispatchEvent(new CustomEvent('volt:open-symbol-picker', { detail: { mode: 'file' } }));
+      },
+      enabled: () => editorStore.activeFile !== null
+    },
+    {
+      id: 'go.goToSymbolInWorkspace',
+      label: 'Go to Symbol in Workspace...',
+      category: 'Go',
+      shortcut: 'Ctrl+T',
+      action: () => {
+        // Dispatch event to open symbol picker in workspace mode
+        window.dispatchEvent(new CustomEvent('volt:open-symbol-picker', { detail: { mode: 'workspace' } }));
+      },
+      enabled: () => projectStore.rootPath !== null
+    },
+    {
+      id: 'go.goToLine',
+      label: 'Go to Line...',
+      category: 'Go',
+      shortcut: 'Ctrl+G',
+      action: () => {
+        // Dispatch event to open go to line dialog
+        window.dispatchEvent(new CustomEvent('volt:open-go-to-line'));
+      },
+      enabled: () => editorStore.activeFile !== null
     }
   ];
 

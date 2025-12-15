@@ -4,6 +4,7 @@
   import { FileTree } from '$lib/components/file-tree';
   import { UIIcon } from '$lib/components/ui';
   import ExtensionsPanel from './ExtensionsPanel.svelte';
+  import { SearchPanel } from '$lib/components/search';
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -56,7 +57,7 @@
       {#if uiStore.activeSidebarPanel === 'explorer'}
         <FileTree {onFileSelect} />
       {:else if uiStore.activeSidebarPanel === 'search'}
-        <p class="placeholder-text">Search panel coming soon</p>
+        <SearchPanel />
       {:else if uiStore.activeSidebarPanel === 'git'}
         <p class="placeholder-text">Git panel coming soon</p>
       {:else if uiStore.activeSidebarPanel === 'extensions'}

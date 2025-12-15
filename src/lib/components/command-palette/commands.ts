@@ -9,7 +9,7 @@ export interface Command {
   /** Display label */
   label: string;
   /** Category for grouping */
-  category: 'File' | 'Edit' | 'View' | 'Terminal' | 'Help';
+  category: 'File' | 'Edit' | 'View' | 'Go' | 'Terminal' | 'Help';
   /** Keyboard shortcut (for display) */
   shortcut?: string;
   /** Action to execute */

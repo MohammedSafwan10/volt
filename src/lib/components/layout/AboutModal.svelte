@@ -90,7 +90,7 @@
           </div>
         </div>
 
-        <p class="description">A lightweight, fast code editor for web development.</p>
+        <p class="description">A fast, smooth code editor for web development.</p>
 
         <div class="info-grid">
           <div class="info-card">

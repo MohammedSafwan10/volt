@@ -73,16 +73,37 @@
   const detectedLanguage = $derived(language || detectLanguage(filepath));
   const filename = $derived(filepath.split(/[/\\]/).pop() || '');
 
-  // Handle navigation events from Problems panel
-  function handleNavigateToPosition(event: CustomEvent<{ file: string; line: number; column: number }>): void {
-    if (!editor || !filepath) return;
-    
-    const { file, line, column } = event.detail;
-    if (file !== filepath) return;
-    
+  type NavigateToPositionDetail = { file: string; line: number; column: number };
+
+  let pendingNavigation = $state<NavigateToPositionDetail | null>(null);
+
+  function normalizePath(path: string): string {
+    return path.replace(/\\/g, '/');
+  }
+
+  function applyPendingNavigation(): void {
+    if (!editor || !monaco || !filepath || !pendingNavigation) return;
+    if (normalizePath(pendingNavigation.file) !== normalizePath(filepath)) return;
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    const maxLine = model.getLineCount();
+    const line = Math.max(1, Math.min(pendingNavigation.line, maxLine));
+    const maxColumn = model.getLineMaxColumn(line);
+    const column = Math.max(1, Math.min(pendingNavigation.column, maxColumn));
+
     editor.setPosition({ lineNumber: line, column });
     editor.revealPositionInCenter({ lineNumber: line, column });
     editor.focus();
+
+    pendingNavigation = null;
+  }
+
+  // Handle navigation events from Problems panel (and other UI like Search)
+  function handleNavigateToPosition(event: CustomEvent<NavigateToPositionDetail>): void {
+    pendingNavigation = { ...event.detail, file: normalizePath(event.detail.file) };
+    applyPendingNavigation();
   }
 
   // Initialize editor once
@@ -254,6 +275,9 @@
 
       if (!editor) return;
       editor.setModel(model);
+
+      // If a navigation request came in before the model swap completed, apply it now.
+      applyPendingNavigation();
 
       // Notify TypeScript LSP sidecar about the file being opened
       if (isTsJsFile(path)) {

@@ -1,6 +1,6 @@
 # Volt (Tauri + Svelte) – VS Code‑like IDE
 
-This repo contains **Volt**, a lightweight VS Code‑style IDE built with **Tauri v2 (Rust)** and a **SvelteKit + TypeScript** frontend.
+This repo contains **Volt**, a fast VS Code‑style IDE built with **Tauri v2 (Rust)** and a **SvelteKit + TypeScript** frontend.
 
 ## Project layout
 

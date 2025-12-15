@@ -23,6 +23,7 @@ import { registerSvelteMonacoProviders, disposeSvelteMonacoProviders } from './s
 let svelteServerTransport: LspTransport | null = null;
 let svelteServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let initializedRootPath: string | null = null;
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -51,10 +52,11 @@ function getLanguageId(_filepath: string): string {
 function pathToUri(filepath: string): string {
   // Handle Windows paths
   const normalizedPath = filepath.replace(/\\/g, '/');
+  const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${normalizedPath}`;
+    return `file:///${encodedPath}`;
   }
-  return `file://${normalizedPath}`;
+  return `file://${encodedPath}`;
 }
 
 /**
@@ -142,9 +144,15 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
  * Initialize the Svelte language server
  */
 async function initializeServer(): Promise<void> {
-  if (svelteServerInitialized || !projectStore.rootPath) {
-    return;
+  if (!projectStore.rootPath) return;
+
+  // If the workspace root changed, the server will reject new documents.
+  // Restart to re-bind to the new root.
+  if (svelteServerInitialized && initializedRootPath && projectStore.rootPath !== initializedRootPath) {
+    await stopSvelteLsp();
   }
+
+  if (svelteServerInitialized) return;
 
   if (initializationPromise) {
     return initializationPromise;
@@ -174,6 +182,7 @@ async function initializeServer(): Promise<void> {
         svelteServerTransport = null;
         svelteServerInitialized = false;
         initializationPromise = null;
+        initializedRootPath = null;
         openDocuments.clear();
       });
 
@@ -315,6 +324,7 @@ async function initializeServer(): Promise<void> {
       await svelteServerTransport.sendNotification('initialized', {});
 
       svelteServerInitialized = true;
+      initializedRootPath = projectStore.rootPath ?? null;
       
       // Register Monaco providers
       registerSvelteMonacoProviders();
@@ -779,6 +789,7 @@ export async function stopSvelteLsp(): Promise<void> {
   
   svelteServerInitialized = false;
   initializationPromise = null;
+  initializedRootPath = null;
   openDocuments.clear();
   
   // Clear all diagnostic timers
@@ -798,4 +809,13 @@ export async function restartSvelteLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
+}
+
+/**
+ * Ensure the Svelte LSP is started for the current workspace.
+ * Useful for features like Symbol Search that should be able to bootstrap LSP.
+ */
+export async function ensureSvelteLspStarted(): Promise<void> {
+  if (!projectStore.rootPath) return;
+  await initializeServer();
 }

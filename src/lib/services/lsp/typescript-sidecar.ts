@@ -26,6 +26,7 @@ import { registerTsMonacoProviders, disposeTsMonacoProviders } from './typescrip
 let tsServerTransport: LspTransport | null = null;
 let tsServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let initializedRootPath: string | null = null;
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -73,10 +74,11 @@ function getLanguageId(filepath: string): string {
 function pathToUri(filepath: string): string {
   // Handle Windows paths
   const normalizedPath = filepath.replace(/\\/g, '/');
+  const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${normalizedPath}`;
+    return `file:///${encodedPath}`;
   }
-  return `file://${normalizedPath}`;
+  return `file://${encodedPath}`;
 }
 
 /**
@@ -164,9 +166,15 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
  * Initialize the TypeScript language server
  */
 async function initializeServer(): Promise<void> {
-  if (tsServerInitialized || !projectStore.rootPath) {
-    return;
+  if (!projectStore.rootPath) return;
+
+  // If the workspace root changed, the server will reject new documents.
+  // Restart to re-bind to the new root.
+  if (tsServerInitialized && initializedRootPath && projectStore.rootPath !== initializedRootPath) {
+    await stopTsLsp();
   }
+
+  if (tsServerInitialized) return;
 
   if (initializationPromise) {
     return initializationPromise;
@@ -196,6 +204,7 @@ async function initializeServer(): Promise<void> {
         tsServerTransport = null;
         tsServerInitialized = false;
         initializationPromise = null;
+        initializedRootPath = null;
         openDocuments.clear();
       });
 
@@ -334,6 +343,7 @@ async function initializeServer(): Promise<void> {
       await tsServerTransport.sendNotification('initialized', {});
 
       tsServerInitialized = true;
+      initializedRootPath = projectStore.rootPath ?? null;
       
       // Register Monaco providers to use the sidecar for completions/hover/definition
       registerTsMonacoProviders();
@@ -834,6 +844,15 @@ export function isTsLspConnected(): boolean {
 }
 
 /**
+ * Ensure the TypeScript LSP is started for the current workspace.
+ * Useful for features like Symbol Search that should be able to bootstrap LSP.
+ */
+export async function ensureTsLspStarted(): Promise<void> {
+  if (!projectStore.rootPath) return;
+  await initializeServer();
+}
+
+/**
  * Stop the TypeScript LSP server
  */
 export async function stopTsLsp(): Promise<void> {
@@ -856,6 +875,7 @@ export async function stopTsLsp(): Promise<void> {
   
   tsServerInitialized = false;
   initializationPromise = null;
+  initializedRootPath = null;
   openDocuments.clear();
   
   // Clear all diagnostic timers
