@@ -1,10 +1,18 @@
 /**
- * File indexing service for quick file search
- * Scans project files and provides fuzzy search
+ * Scalable file indexing service for Quick Open
+ * 
+ * Uses Rust backend for fast filesystem walking with gitignore support.
+ * Streams results to provide responsive Quick Open even for 500K+ file workspaces.
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { FileEntry } from '$lib/types/files';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { logOutput } from '$lib/stores/output.svelte';
+import { writable } from 'svelte/store';
+
+// Emits a monotonic tick whenever the in-memory index changes.
+// Used by Quick Open UI to refresh results as chunks stream in.
+export const indexUpdateTick = writable(0);
 
 export interface IndexedFile {
   /** File name */
@@ -17,126 +25,219 @@ export interface IndexedFile {
   parentDir: string;
 }
 
-// Directories to skip when indexing
-const IGNORED_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.svelte-kit',
-  'dist',
-  'build',
-  '.next',
-  '.nuxt',
-  'target',
-  '.turbo',
-  'coverage',
-  '.cache',
-  '__pycache__',
-  '.venv',
-  'venv',
-]);
+interface IndexChunkEvent {
+  requestId: number;
+  files: IndexedFile[];
+  totalCount: number;
+  done: boolean;
+}
 
-// File index cache
+interface IndexDoneEvent {
+  requestId: number;
+  totalCount: number;
+  cancelled: boolean;
+  durationMs: number;
+}
+
+interface IndexErrorEvent {
+  requestId: number;
+  message: string;
+}
+
+interface IndexStatus {
+  indexing: boolean;
+  count: number;
+  rootPath: string | null;
+}
+
+// File index state
 let fileIndex: IndexedFile[] = [];
 let indexedRoot: string | null = null;
 let indexing = false;
+let currentRequestId = 0;
+let unlistenChunk: UnlistenFn | null = null;
+let unlistenDone: UnlistenFn | null = null;
+let unlistenError: UnlistenFn | null = null;
+
 
 /**
- * Index all files in a project directory
+ * Generate a unique request ID
  */
-export async function indexProject(rootPath: string): Promise<void> {
-  if (indexing) return;
-  if (indexedRoot === rootPath && fileIndex.length > 0) return;
+function generateRequestId(): number {
+  return Date.now() + Math.floor(Math.random() * 10000);
+}
+
+/**
+ * Clean up event listeners
+ */
+async function cleanupListeners(): Promise<void> {
+  if (unlistenChunk) {
+    unlistenChunk();
+    unlistenChunk = null;
+  }
+  if (unlistenDone) {
+    unlistenDone();
+    unlistenDone = null;
+  }
+  if (unlistenError) {
+    unlistenError();
+    unlistenError = null;
+  }
+}
+
+/**
+ * Index all files in a project directory using streaming Rust backend
+ */
+export async function indexProject(rootPath: string, useCache = true): Promise<void> {
+  // Don't re-index if already indexing the same path
+  if (indexing && indexedRoot === rootPath) return;
+  
+  // If already indexed this path and not forcing refresh, skip
+  if (indexedRoot === rootPath && fileIndex.length > 0 && useCache) return;
+
+  // Cancel any previous indexing
+  if (indexing && currentRequestId > 0) {
+    await cancelIndexing();
+  }
 
   indexing = true;
-  fileIndex = [];
   indexedRoot = rootPath;
+  fileIndex = [];
+  currentRequestId = generateRequestId();
+
+  const requestId = currentRequestId;
 
   try {
-    await indexDirectory(rootPath, rootPath);
-  } finally {
-    indexing = false;
-  }
-}
+    // Clean up previous listeners
+    await cleanupListeners();
 
-/**
- * Recursively index a directory
- */
-async function indexDirectory(dirPath: string, rootPath: string): Promise<void> {
-  try {
-    const result = await invoke<{ entries: FileEntry[]; skipped: unknown[] }>('list_dir_detailed', { path: dirPath });
-    
-    for (const entry of result.entries) {
-      if (entry.isDir) {
-        // Skip ignored directories
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        // Recursively index subdirectories
-        await indexDirectory(entry.path, rootPath);
+    // Set up event listeners
+    unlistenChunk = await listen<IndexChunkEvent>('file-index://chunk', (event) => {
+      if (event.payload.requestId !== requestId) return;
+      
+      // Append new files to index
+      fileIndex.push(...event.payload.files);
+      indexUpdateTick.update((n) => n + 1);
+    });
+
+    unlistenDone = await listen<IndexDoneEvent>('file-index://done', (event) => {
+      if (event.payload.requestId !== requestId) return;
+      
+      indexing = false;
+      indexUpdateTick.update((n) => n + 1);
+      
+      if (event.payload.cancelled) {
+        logOutput('Volt', `File indexing cancelled after ${event.payload.durationMs}ms`);
       } else {
-        // Add file to index
-        const relativePath = getRelativePath(entry.path, rootPath);
-        const parentDir = getParentDir(relativePath);
-        
-        fileIndex.push({
-          name: entry.name,
-          path: entry.path,
-          relativePath,
-          parentDir,
-        });
+        logOutput(
+          'Volt',
+          `Indexed ${event.payload.totalCount} files in ${event.payload.durationMs}ms`
+        );
       }
-    }
-  } catch {
-    // Silently skip directories we can't read
+      
+      // Clean up listeners after completion
+      void cleanupListeners();
+    });
+
+    unlistenError = await listen<IndexErrorEvent>('file-index://error', (event) => {
+      if (event.payload.requestId !== requestId) return;
+      
+      indexing = false;
+      logOutput('Volt', `File indexing error: ${event.payload.message}`);
+
+      indexUpdateTick.update((n) => n + 1);
+      
+      void cleanupListeners();
+    });
+
+    // Start indexing
+    logOutput('Volt', `Starting file indexing for ${rootPath}...`);
+    
+    await invoke('index_workspace_stream', {
+      rootPath,
+      requestId,
+      useCache,
+    });
+  } catch (error) {
+    indexing = false;
+    logOutput('Volt', `File indexing failed: ${error}`);
+    indexUpdateTick.update((n) => n + 1);
+    await cleanupListeners();
   }
 }
 
 /**
- * Get relative path from root
+ * Cancel current indexing operation
  */
-function getRelativePath(fullPath: string, rootPath: string): string {
-  const normalizedFull = fullPath.replace(/\\/g, '/');
-  const normalizedRoot = rootPath.replace(/\\/g, '/');
+export async function cancelIndexing(): Promise<void> {
+  if (!indexing || currentRequestId === 0) return;
   
-  if (normalizedFull.startsWith(normalizedRoot)) {
-    let relative = normalizedFull.slice(normalizedRoot.length);
-    if (relative.startsWith('/')) relative = relative.slice(1);
-    return relative;
+  try {
+    await invoke('cancel_index_workspace', { requestId: currentRequestId });
+  } catch {
+    // Best-effort cancellation
   }
-  return normalizedFull;
+  
+  indexing = false;
+  indexUpdateTick.update((n) => n + 1);
+  await cleanupListeners();
 }
 
 /**
- * Get parent directory from relative path
+ * Clear the file index and optionally the backend cache
  */
-function getParentDir(relativePath: string): string {
-  const parts = relativePath.split('/');
-  if (parts.length <= 1) return '';
-  return parts.slice(0, -1).join('/');
-}
-
-/**
- * Clear the file index
- */
-export function clearIndex(): void {
+export async function clearIndex(clearBackendCache = false): Promise<void> {
+  await cancelIndexing();
+  
   fileIndex = [];
   indexedRoot = null;
+  indexUpdateTick.update((n) => n + 1);
+  
+  if (clearBackendCache) {
+    try {
+      await invoke('clear_index_cache', { rootPath: null });
+    } catch {
+      // Ignore errors
+    }
+  }
 }
 
 /**
- * Check if index is ready
+ * Check if index is ready (has files and not currently indexing)
  */
 export function isIndexReady(): boolean {
-  return fileIndex.length > 0 && !indexing;
+  return fileIndex.length > 0;
+}
+
+/**
+ * Check if currently indexing
+ */
+export function isIndexing(): boolean {
+  return indexing;
 }
 
 /**
  * Get index status
  */
-export function getIndexStatus(): { count: number; indexing: boolean } {
-  return { count: fileIndex.length, indexing };
+export function getIndexStatus(): { count: number; indexing: boolean; rootPath: string | null } {
+  return { count: fileIndex.length, indexing, rootPath: indexedRoot };
 }
 
 /**
+ * Get backend index status
+ */
+export async function getBackendIndexStatus(rootPath: string): Promise<IndexStatus | null> {
+  try {
+    return await invoke<IndexStatus>('get_index_status', { rootPath });
+  } catch {
+    return null;
+  }
+}
+
+
+/**
  * Fuzzy score for file search
+ * Higher score = better match
  */
 function fuzzyScore(query: string, file: IndexedFile): number {
   const queryLower = query.toLowerCase();
@@ -215,5 +316,5 @@ export function searchFiles(query: string, recentPaths: string[] = [], limit = 5
   // Sort by score
   results.sort((a, b) => b.score - a.score);
 
-  return results.slice(0, limit).map(r => r.file);
+  return results.slice(0, limit).map((r) => r.file);
 }

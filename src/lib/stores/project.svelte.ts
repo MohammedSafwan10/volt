@@ -14,6 +14,7 @@ import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
 import { stopEslintLsp, pushEslintConfig } from '$lib/services/lsp/eslint-sidecar';
 import { stopSvelteLsp } from '$lib/services/lsp/svelte-sidecar';
+import { cancelIndexing, clearIndex } from '$lib/services/file-index';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
@@ -76,9 +77,10 @@ class ProjectStore {
   async openProject(path: string): Promise<boolean> {
     this.loading = true;
 
-    // Stop any existing LSP servers from previous project
+    // Stop any existing LSP servers and cancel file indexing from previous project
     if (this.rootPath && this.rootPath !== path) {
       await this.stopLspServers();
+      await cancelIndexing();
     }
 
     const entries = await listDirectory(path);
@@ -288,6 +290,9 @@ class ProjectStore {
 
     // Stop all LSP servers when closing project
     await this.stopLspServers();
+
+    // Cancel file indexing and clear the index
+    await clearIndex(false);
 
     // Close all open editor tabs (VS Code behavior)
     editorStore.closeAllFiles(true);

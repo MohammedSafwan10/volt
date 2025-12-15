@@ -1,3 +1,4 @@
+pub mod file_index;
 pub mod file_ops;
 pub mod fs_scope;
 pub mod git;

@@ -9,7 +9,7 @@
   import { FileIcon } from '$lib/components/file-tree';
   import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
   import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
-  import { indexProject, searchFiles, isIndexReady, type IndexedFile } from '$lib/services/file-index';
+  import { indexProject, indexUpdateTick, searchFiles, isIndexReady, isIndexing, type IndexedFile } from '$lib/services/file-index';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     type Command,
@@ -337,6 +337,8 @@
   // Update file results when query changes
   $effect(() => {
     if (effectiveMode === 'file' && projectStore.rootPath) {
+      // Recompute as the backend streams new index chunks.
+      $indexUpdateTick;
       fileResults = searchFiles(effectiveQuery, recentFilePaths);
     }
   });
@@ -503,7 +505,7 @@
           <!-- File search results -->
           {#if !projectStore.rootPath}
             <div class="no-results">Open a folder to search files</div>
-          {:else if !isIndexReady() && fileResults.length === 0}
+          {:else if isIndexing() && fileResults.length === 0}
             <div class="no-results">
               <span class="spinner"></span>
               Indexing files...
