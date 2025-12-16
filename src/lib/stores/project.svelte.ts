@@ -14,7 +14,19 @@ import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
 import { stopEslintLsp, pushEslintConfig } from '$lib/services/lsp/eslint-sidecar';
 import { stopSvelteLsp } from '$lib/services/lsp/svelte-sidecar';
-import { cancelIndexing, clearIndex } from '$lib/services/file-index';
+import {
+  cancelIndexing,
+  clearIndex,
+  handleFileChangeBatch,
+  indexProject,
+  getIndexedRoot,
+} from '$lib/services/file-index';
+import {
+  startWatching as startFileWatching,
+  stopWatching as stopFileWatching,
+  onFileChange,
+  type FileChangeBatchEvent,
+} from '$lib/services/file-watch';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
@@ -67,6 +79,9 @@ class ProjectStore {
   private lockFileLastModified = new Map<string, number | null>();
   private lockFilePollInFlight = false;
 
+  // File change handler cleanup
+  private unsubscribeFileChange: (() => void) | null = null;
+
   constructor() {
     this.loadRecentProjects();
   }
@@ -106,7 +121,126 @@ class ProjectStore {
     // Initialize LSP registry with new project root
     initLspRegistry(path);
 
+    // Start file watching for incremental index updates
+    await this.startFileWatching(path);
+
     return true;
+  }
+
+  /**
+   * Start file watching for incremental index updates
+   * This enables Quick Open and file tree to update without full rescans
+   */
+  private async startFileWatching(projectPath: string): Promise<void> {
+    // Stop any existing file watcher
+    await this.stopFileWatching();
+
+    // Register handler for file changes
+    this.unsubscribeFileChange = onFileChange((batch: FileChangeBatchEvent) => {
+      this.handleFileChanges(batch);
+    });
+
+    // Start the file watcher
+    await startFileWatching(projectPath);
+  }
+
+  /**
+   * Stop file watching
+   */
+  private async stopFileWatching(): Promise<void> {
+    if (this.unsubscribeFileChange) {
+      this.unsubscribeFileChange();
+      this.unsubscribeFileChange = null;
+    }
+    await stopFileWatching();
+  }
+
+  /**
+   * Handle file changes from the file watcher
+   * Updates both the file index and the file tree
+   */
+  private handleFileChanges(batch: FileChangeBatchEvent): void {
+    // Update the file index incrementally
+    const handledIncrementally = handleFileChangeBatch(batch.changes);
+
+    // If too many changes, trigger a full rescan
+    if (!handledIncrementally && this.rootPath) {
+      // Large burst (git checkout / install): fall back to a full re-index.
+      void indexProject(this.rootPath, false);
+    }
+
+    // Update the file tree for visible changes
+    for (const change of batch.changes) {
+      // Rename can include [old, new] paths.
+      if (change.kind === 'rename' && change.absolutePaths.length >= 2 && change.paths.length >= 2) {
+        const oldAbs = change.absolutePaths[0];
+        const newAbs = change.absolutePaths[1];
+        const newRel = change.paths[1];
+
+        this.handleFileDeleted(oldAbs);
+        this.handleFileCreated(newAbs, newRel);
+        continue;
+      }
+
+      for (let i = 0; i < change.absolutePaths.length; i++) {
+        const absPath = change.absolutePaths[i];
+        const relPath = change.paths[i];
+
+        switch (change.kind) {
+          case 'create':
+            this.handleFileCreated(absPath, relPath);
+            break;
+          case 'delete':
+            this.handleFileDeleted(absPath);
+            break;
+          case 'rename':
+            // If we only got the new path, best-effort refresh.
+            this.handleFileCreated(absPath, relPath);
+            break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Handle a file being created (update tree if parent is expanded)
+   */
+  private handleFileCreated(absolutePath: string, relativePath: string): void {
+    if (!this.rootPath) return;
+
+    // Find the parent directory path
+    const parentRelPath = relativePath.includes('/')
+      ? relativePath.substring(0, relativePath.lastIndexOf('/'))
+      : '';
+    
+    const sep = this.rootPath.includes('\\') ? '\\' : '/';
+    const parentAbsPath = parentRelPath
+      ? `${this.rootPath}${sep}${parentRelPath.replace(/\//g, sep)}`
+      : this.rootPath;
+
+    // Check if parent is in the tree and expanded
+    const parentNode = parentAbsPath === this.rootPath
+      ? null // Root level
+      : this.findNode(parentAbsPath);
+
+    // Only update if parent is visible (root or expanded)
+    if (parentAbsPath === this.rootPath || (parentNode && parentNode.expanded && parentNode.children)) {
+      // Refresh the parent folder to get the new file
+      if (parentNode) {
+        void this.refreshFolder(parentNode);
+      } else {
+        // Root level - refresh tree
+        void this.refreshTree();
+      }
+    }
+  }
+
+  /**
+   * Handle a file being deleted
+   */
+  private handleFileDeleted(absolutePath: string): void {
+    // Remove from tree if present
+    this.removeNode(absolutePath);
   }
 
   /**
@@ -255,7 +389,6 @@ class ProjectStore {
     const pnpmLock = `${projectPath}${sep}pnpm-lock.yaml`;
     const pnpmInfo = await getFileInfoQuiet(pnpmLock);
     if (pnpmInfo !== null) {
-      console.log('[ProjectStore] Detected package manager: pnpm');
       return 'pnpm';
     }
     
@@ -263,7 +396,6 @@ class ProjectStore {
     const yarnLock = `${projectPath}${sep}yarn.lock`;
     const yarnInfo = await getFileInfoQuiet(yarnLock);
     if (yarnInfo !== null) {
-      console.log('[ProjectStore] Detected package manager: yarn');
       return 'yarn';
     }
     
@@ -271,12 +403,10 @@ class ProjectStore {
     const npmLock = `${projectPath}${sep}package-lock.json`;
     const npmInfo = await getFileInfoQuiet(npmLock);
     if (npmInfo !== null) {
-      console.log('[ProjectStore] Detected package manager: npm');
       return 'npm';
     }
     
     // Default to npm if no lock file found
-    console.log('[ProjectStore] No lock file found, defaulting to npm');
     return 'npm';
   }
 
@@ -285,6 +415,9 @@ class ProjectStore {
    * VS Code behavior: closes all open files and kills all terminals
    */
   async closeProject(): Promise<void> {
+    // Stop file watching
+    await this.stopFileWatching();
+
     // Stop watching lock files
     await this.stopWatchingLockFiles();
 
@@ -394,7 +527,6 @@ class ProjectStore {
     if (!this.rootPath) return;
     const detected = await this.detectPackageManager(this.rootPath);
     if (detected !== this.packageManager) {
-      console.log(`[ProjectStore] Package manager changed: ${this.packageManager} → ${detected}`);
       this.packageManager = detected;
       
       // Notify ESLint server of the configuration change

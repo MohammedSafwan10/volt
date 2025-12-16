@@ -9,6 +9,9 @@ use commands::file_ops::{
     create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed, read_file,
     rename_path, write_file,
 };
+use commands::file_watch::{
+    is_watching, start_file_watch, stop_all_file_watches, stop_file_watch, FileWatchState,
+};
 use commands::fs_scope::fs_allow_directory;
 use commands::git::{
     get_git_branch, git_cancel, git_commit, git_diff_file, git_discard_file,
@@ -40,6 +43,7 @@ pub fn run() {
         .manage(SearchManagerState::default())
         .manage(GitProcessManager::default())
         .manage(FileIndexState::default())
+        .manage(FileWatchState::default())
         .invoke_handler(tauri::generate_handler![
             // File operations
             read_file,
@@ -95,6 +99,11 @@ pub fn run() {
             cancel_index_workspace,
             clear_index_cache,
             get_index_status,
+            // File watching
+            start_file_watch,
+            stop_file_watch,
+            stop_all_file_watches,
+            is_watching,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

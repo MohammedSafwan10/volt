@@ -1,5 +1,6 @@
 pub mod file_index;
 pub mod file_ops;
+pub mod file_watch;
 pub mod fs_scope;
 pub mod git;
 pub mod lsp;

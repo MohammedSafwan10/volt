@@ -42,8 +42,16 @@ export interface OpenFile {
   lineEnding: 'LF' | 'CRLF';
   /** File encoding */
   encoding: string;
+  /** Whether this editor is read-only */
+  readonly?: boolean;
   /** Whether the tab is pinned */
   pinned?: boolean;
+}
+
+export const VOLT_SETTINGS_PATH = 'volt://settings';
+
+export function isVoltVirtualPath(path: string): boolean {
+  return path.startsWith('volt://');
 }
 
 /** Cursor position info for status bar */
@@ -161,6 +169,54 @@ class EditorStore {
     this.cursorPosition = { line: 1, column: 1, selected: 0 };
 
     return true;
+  }
+
+  /**
+   * Open a virtual document (not backed by the filesystem).
+   * Useful for editor UI pages like Settings.
+   */
+  openVirtualFile(spec: {
+    path: string;
+    name: string;
+    content: string;
+    language: string;
+    readonly?: boolean;
+    pinned?: boolean;
+  }): void {
+    const normalizedPath = normalizePath(spec.path);
+
+    const existing = this.openFiles.find((f) => f.path === normalizedPath);
+    if (existing) {
+      this.activeFilePath = normalizedPath;
+      return;
+    }
+
+    const newFile: OpenFile = {
+      path: normalizedPath,
+      name: spec.name,
+      content: spec.content,
+      originalContent: spec.content,
+      language: spec.language,
+      lineEnding: 'LF',
+      encoding: 'UTF-8',
+      readonly: spec.readonly ?? true,
+      pinned: spec.pinned
+    };
+
+    this.openFiles = [...this.openFiles, newFile];
+    this.activeFilePath = normalizedPath;
+    this.cursorPosition = { line: 1, column: 1, selected: 0 };
+  }
+
+  openSettingsTab(): void {
+    this.openVirtualFile({
+      path: VOLT_SETTINGS_PATH,
+      name: 'Settings',
+      content: '',
+      language: 'volt-settings',
+      readonly: true,
+      pinned: true
+    });
   }
 
   /**

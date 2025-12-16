@@ -1,5 +1,6 @@
 <script lang="ts">
   import { uiStore, type SidebarPanel } from '$lib/stores/ui.svelte';
+  import { editorStore, VOLT_SETTINGS_PATH } from '$lib/stores/editor.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { UIIcon, type UIIconName } from '$lib/components/ui';
 
@@ -18,10 +19,15 @@
   ];
 
   const bottomItems: ActivityItem[] = [
-    { id: 'settings', icon: 'settings', label: 'Settings', implemented: false }
+    { id: 'settings', icon: 'settings', label: 'Settings', implemented: true }
   ];
 
   function handleClick(item: ActivityItem): void {
+    if (item.id === 'settings') {
+      editorStore.openSettingsTab();
+      return;
+    }
+
     uiStore.setActiveSidebarPanel(item.id);
 
     if (!item.implemented) {
@@ -41,6 +47,9 @@
   }
 
   function isActive(itemId: SidebarPanel): boolean {
+    if (itemId === 'settings') {
+      return editorStore.activeFilePath === VOLT_SETTINGS_PATH;
+    }
     return uiStore.sidebarOpen && uiStore.activeSidebarPanel === itemId;
   }
 </script>

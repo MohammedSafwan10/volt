@@ -5,6 +5,7 @@
   import ResizablePanel from './ResizablePanel.svelte';
   import AboutModal from './AboutModal.svelte';
   import { ActivityBar, SidePanel } from '$lib/components/sidebar';
+  import SettingsPanel from '$lib/components/sidebar/SettingsPanel.svelte';
   import { WelcomeScreen } from '$lib/components/welcome';
   import { MonacoEditor, Breadcrumb, EmptyState, GoToLineDialog } from '$lib/components/editor';
   import { TabBar } from '$lib/components/tabs';
@@ -16,6 +17,7 @@
 	import { bottomPanelStore } from '$lib/stores/bottom-panel.svelte';
   import { projectStore } from '$lib/stores/project.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { VOLT_SETTINGS_PATH, isVoltVirtualPath } from '$lib/stores/editor.svelte';
   import { terminalStore } from '$lib/stores/terminal.svelte';
   import { logOutput } from '$lib/stores/output.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
@@ -162,6 +164,9 @@
   async function handleSave(): Promise<void> {
     const activeFile = editorStore.activeFile;
     if (!activeFile) return;
+
+    // Virtual/read-only docs (like Settings) are not saved to disk.
+    if (activeFile.readonly || isVoltVirtualPath(activeFile.path)) return;
 
     // Prefer saving the live Monaco model value to avoid any lag from debounced store updates.
     let contentToSave = activeFile.content;
@@ -404,7 +409,7 @@
       <TabBar />
 
       <!-- Breadcrumb navigation -->
-      {#if editorStore.activeFile}
+      {#if editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
         <Breadcrumb filepath={editorStore.activeFile.path} />
       {/if}
 
@@ -412,15 +417,22 @@
       <div class="editor-area">
         {#if children}
           {@render children()}
+        {:else if editorStore.activeFile}
+          {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
+            <div class="settings-editor" role="region" aria-label="Settings">
+              <SettingsPanel />
+            </div>
+          {:else}
+            <MonacoEditor
+              filepath={editorStore.activeFile.path}
+              value={editorStore.activeFile.content}
+              language={editorStore.activeFile.language}
+              readonly={editorStore.activeFile.readonly ?? false}
+              onchange={handleEditorChange}
+            />
+          {/if}
         {:else if !projectStore.rootPath}
           <WelcomeScreen />
-        {:else if editorStore.activeFile}
-          <MonacoEditor
-            filepath={editorStore.activeFile.path}
-            value={editorStore.activeFile.content}
-            language={editorStore.activeFile.language}
-            onchange={handleEditorChange}
-          />
         {:else}
           <EmptyState hasProject={true} />
         {/if}
@@ -476,6 +488,13 @@
     display: flex;
     flex: 1;
     overflow: hidden;
+  }
+
+  .settings-editor {
+    height: 100%;
+    width: 100%;
+    overflow: auto;
+    background: var(--color-bg-panel);
   }
 
   .main-content {

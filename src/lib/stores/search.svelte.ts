@@ -19,6 +19,7 @@ import { editorStore } from '$lib/stores/editor.svelte';
 import { showToast } from './toast.svelte';
 
 export type { SearchResults, FileSearchResult, SearchMatch };
+export type FileMatches = FileSearchResult;
 
 class SearchStore {
   // Search query

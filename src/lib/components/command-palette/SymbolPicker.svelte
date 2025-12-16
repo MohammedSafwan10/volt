@@ -4,7 +4,7 @@
    * 
    * Integrates with LSP textDocument/documentSymbol and workspace/symbol
    */
-  import { UIIcon } from '$lib/components/ui';
+  import { UIIcon, VirtualList } from '$lib/components/ui';
   import { editorStore } from '$lib/stores/editor.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import {
@@ -42,6 +42,11 @@
   let filteredSymbols = $state<Symbol[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
+
+  // Virtualized symbol results list
+  let symbolList: { ensureVisible: (index: number) => void } | null = $state(null);
+  const ROW_HEIGHT = 32;
+  const OVERSCAN = 5;
 
   // Debounce timer for workspace symbol search
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -241,13 +246,7 @@
     if (e.target === e.currentTarget) onClose();
   }
 
-  function scrollIntoView(node: HTMLElement, isSelected: boolean): { update: (s: boolean) => void } {
-    function update(s: boolean) {
-      if (s) node.scrollIntoView({ block: 'nearest' });
-    }
-    update(isSelected);
-    return { update };
-  }
+  // scrollIntoView is now handled by the virtualization effect
 
   function getPlaceholder(): string {
     if (mode === 'file') {
@@ -266,6 +265,13 @@
   function getSymbolIcon(kind: number): string {
     return symbolKindIcons[kind] || '❓';
   }
+
+  // Ensure selected item is visible
+  $effect(() => {
+    if (!symbolList || !open) return;
+    if (selectedIndex < 0 || selectedIndex >= filteredSymbols.length) return;
+    symbolList.ensureVisible(selectedIndex);
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -306,36 +312,45 @@
         {:else if filteredSymbols.length === 0}
           <div class="status-message">No symbols found</div>
         {:else}
-          {#each filteredSymbols as symbol, index (symbol.filePath + ':' + symbol.line + ':' + symbol.column + ':' + symbol.name)}
-            <button
-              class="result-item"
-              class:selected={index === selectedIndex}
-              onclick={() => void navigateToSymbol(symbol)}
-              onmouseenter={() => (selectedIndex = index)}
-              role="option"
-              aria-selected={index === selectedIndex}
-              use:scrollIntoView={index === selectedIndex}
-            >
-              <span class="symbol-icon" title={symbol.kindName}>
-                {getSymbolIcon(symbol.kind)}
-              </span>
-              <div class="symbol-info">
-                <span class="symbol-name" class:deprecated={symbol.deprecated}>
-                  {symbol.name}
+          <!-- Virtualized symbol results -->
+          <VirtualList
+            bind:this={symbolList}
+            items={filteredSymbols}
+            rowHeight={ROW_HEIGHT}
+            overscan={OVERSCAN}
+            getKey={(symbol: Symbol) => symbol.filePath + ':' + symbol.line + ':' + symbol.column + ':' + symbol.name}
+          >
+            {#snippet children({ item: symbol, index, style })}
+              <button
+                class="result-item"
+                class:selected={index === selectedIndex}
+                style={style}
+                onclick={() => void navigateToSymbol(symbol)}
+                onmouseenter={() => (selectedIndex = index)}
+                role="option"
+                aria-selected={index === selectedIndex}
+              >
+                <span class="symbol-icon" title={symbol.kindName}>
+                  {getSymbolIcon(symbol.kind)}
                 </span>
-                {#if symbol.containerPath}
-                  <span class="symbol-container">{symbol.containerPath}</span>
-                {/if}
-              </div>
-              <div class="symbol-meta">
-                <span class="symbol-kind">{symbol.kindName}</span>
-                {#if mode === 'workspace'}
-                  <span class="symbol-file">{symbol.fileName}</span>
-                {/if}
-                <span class="symbol-location">:{symbol.line}</span>
-              </div>
-            </button>
-          {/each}
+                <div class="symbol-info">
+                  <span class="symbol-name" class:deprecated={symbol.deprecated}>
+                    {symbol.name}
+                  </span>
+                  {#if symbol.containerPath}
+                    <span class="symbol-container">{symbol.containerPath}</span>
+                  {/if}
+                </div>
+                <div class="symbol-meta">
+                  <span class="symbol-kind">{symbol.kindName}</span>
+                  {#if mode === 'workspace'}
+                    <span class="symbol-file">{symbol.fileName}</span>
+                  {/if}
+                  <span class="symbol-location">:{symbol.line}</span>
+                </div>
+              </button>
+            {/snippet}
+          </VirtualList>
         {/if}
       </div>
     </div>
@@ -414,8 +429,11 @@
 
   .results-list {
     flex: 1;
-    overflow-y: auto;
+    overflow: hidden;
     padding: 6px 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .status-message {

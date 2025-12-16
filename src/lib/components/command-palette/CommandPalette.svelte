@@ -5,11 +5,11 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { themeStore } from '$lib/stores/theme.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
-  import { UIIcon } from '$lib/components/ui';
+  import { UIIcon, VirtualList } from '$lib/components/ui';
   import { FileIcon } from '$lib/components/file-tree';
   import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
   import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
-  import { indexProject, indexUpdateTick, searchFiles, isIndexReady, isIndexing, type IndexedFile } from '$lib/services/file-index';
+  import { indexProject, indexUpdateTick, searchFiles, searchFilesAsync, cancelAsyncSearch, isIndexing, getIndexStatus, type IndexedFile } from '$lib/services/file-index';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     type Command,
@@ -22,14 +22,25 @@
 
   type PaletteMode = 'file' | 'command';
 
+  // Debounce delay for file search (ms)
+  const FILE_SEARCH_DEBOUNCE_MS = 50;
+
   let isOpen = $state(false);
   let mode = $state<PaletteMode>('file');
   let searchQuery = $state('');
   let selectedIndex = $state(0);
   let inputElement: HTMLInputElement | undefined = $state();
+  
+  // Debounce timer for file search
+  let fileSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
   // File search results
   let fileResults = $state<IndexedFile[]>([]);
+
+  // Virtualized file results list
+  let fileList: { ensureVisible: (index: number) => void } | null = $state(null);
+  const FILE_ROW_HEIGHT = 32;
+  const FILE_OVERSCAN = 5;
 
   // Get recently opened file paths
   const recentFilePaths = $derived(editorStore.openFiles.map(f => f.path));
@@ -289,6 +300,14 @@
       }
     },
     {
+      id: 'preferences.openSettings',
+      label: 'Preferences: Open Settings',
+      category: 'View',
+      action: () => {
+        editorStore.openSettingsTab();
+      }
+    },
+    {
       id: 'go.goToSymbolInFile',
       label: 'Go to Symbol in File...',
       category: 'Go',
@@ -334,12 +353,54 @@
     return filteredCommands.filter((c) => c.isRecent).length;
   }
 
-  // Update file results when query changes
+  // Update file results when query changes (with debouncing for performance)
   $effect(() => {
+    if (!isOpen) {
+      return;
+    }
     if (effectiveMode === 'file' && projectStore.rootPath) {
-      // Recompute as the backend streams new index chunks.
-      $indexUpdateTick;
-      fileResults = searchFiles(effectiveQuery, recentFilePaths);
+      // Track index updates to refresh results as chunks stream in
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      void $indexUpdateTick;
+      const query = effectiveQuery;
+      const recent = recentFilePaths;
+      
+      // Clear any pending search
+      if (fileSearchTimer) {
+        clearTimeout(fileSearchTimer);
+        fileSearchTimer = null;
+      }
+      
+      // Cancel any in-flight async search
+      cancelAsyncSearch();
+      
+      // For empty query or very short queries, search immediately (no debounce)
+      // This makes the initial state feel snappy
+      if (query.length <= 1) {
+        fileResults = searchFiles(query, recent);
+        return;
+      }
+      
+      // Debounce longer queries to avoid work on every keystroke
+      // Use async search to prevent UI jank on large indexes
+      fileSearchTimer = setTimeout(() => {
+        fileSearchTimer = null;
+        void (async () => {
+          const results = await searchFilesAsync(query, recent);
+          // Only update if not cancelled (returns null if cancelled)
+          if (results !== null) {
+            fileResults = results;
+          }
+        })();
+      }, FILE_SEARCH_DEBOUNCE_MS);
+    }
+  });
+  
+  // Cleanup debounce timer when component closes
+  $effect(() => {
+    if (!isOpen && fileSearchTimer) {
+      clearTimeout(fileSearchTimer);
+      fileSearchTimer = null;
     }
   });
 
@@ -473,6 +534,13 @@
   function isRecentFile(file: IndexedFile): boolean {
     return recentFilePaths.includes(file.path);
   }
+
+  // Ensure selected item is visible in virtualized list
+  $effect(() => {
+    if (!fileList || !isOpen || effectiveMode !== 'file') return;
+    if (selectedIndex < 0 || selectedIndex >= fileResults.length) return;
+    fileList.ensureVisible(selectedIndex);
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -506,77 +574,107 @@
           {#if !projectStore.rootPath}
             <div class="no-results">Open a folder to search files</div>
           {:else if isIndexing() && fileResults.length === 0}
+            {@const status = getIndexStatus()}
             <div class="no-results">
               <span class="spinner"></span>
-              Indexing files...
+              {#if status.progress.total > 0}
+                Indexing files... ({status.progress.current.toLocaleString()} / {status.progress.total.toLocaleString()})
+              {:else}
+                Indexing files...
+              {/if}
             </div>
           {:else if fileResults.length === 0}
             <div class="no-results">No files found</div>
           {:else}
-            {#each fileResults as file, index (file.path)}
-              <button
-                class="result-item"
-                class:selected={index === selectedIndex}
-                onclick={() => void openFile(file)}
-                onmouseenter={() => (selectedIndex = index)}
-                role="option"
-                aria-selected={index === selectedIndex}
-                use:scrollIntoView={index === selectedIndex}
+            <!-- Virtualized file results -->
+            <div class="virtual-results-wrapper">
+              <VirtualList
+                bind:this={fileList}
+                items={fileResults}
+                rowHeight={FILE_ROW_HEIGHT}
+                overscan={FILE_OVERSCAN}
+                getKey={(file: IndexedFile) => file.path}
               >
-                <span class="file-icon">
-                  <FileIcon name={file.name} />
-                </span>
-                <div class="file-info">
-                  <span class="file-name">{file.name}</span>
-                  <span class="file-path">{file.parentDir}</span>
+                {#snippet children({ item: file, index, style })}
+                  <button
+                    class="result-item"
+                    class:selected={index === selectedIndex}
+                    style={style}
+                    onclick={() => void openFile(file)}
+                    onmouseenter={() => (selectedIndex = index)}
+                    role="option"
+                    aria-selected={index === selectedIndex}
+                  >
+                    <span class="file-icon">
+                      <FileIcon name={file.name} />
+                    </span>
+                    <div class="file-info">
+                      <span class="file-name">{file.name}</span>
+                      <span class="file-path">{file.parentDir}</span>
+                    </div>
+                    {#if isRecentFile(file)}
+                      <span class="result-tag">open</span>
+                    {/if}
+                  </button>
+                {/snippet}
+              </VirtualList>
+
+              {#if isIndexing()}
+                {@const status = getIndexStatus()}
+                <div class="indexing-indicator">
+                  <span class="spinner"></span>
+                  {#if status.progress.total > 0}
+                    Indexing... {Math.round((status.progress.current / status.progress.total) * 100)}%
+                  {:else}
+                    Indexing...
+                  {/if}
                 </div>
-                {#if isRecentFile(file)}
-                  <span class="result-tag">open</span>
-                {/if}
-              </button>
-            {/each}
+              {/if}
+            </div>
           {/if}
         {:else}
           <!-- Command search results -->
           {#if filteredCommands.length === 0}
             <div class="no-results">No commands found</div>
           {:else}
-            {#each filteredCommands as command, index (command.id)}
-              {#if hasRecentCommands && index === getOtherCommandsStartIndex() && !command.isRecent}
-                <div class="section-divider">
-                  <span class="section-label">other commands</span>
-                </div>
-              {/if}
-              <button
-                class="result-item command-item"
-                class:selected={index === selectedIndex}
-                onclick={() => executeCommand(command)}
-                onmouseenter={() => (selectedIndex = index)}
-                role="option"
-                aria-selected={index === selectedIndex}
-                use:scrollIntoView={index === selectedIndex}
-              >
-                <div class="command-info">
-                  <span class="command-label">{command.label}</span>
-                  {#if hasRecentCommands && command.isRecent && index === 0}
-                    <span class="result-tag">recently used</span>
-                  {/if}
-                </div>
-                <div class="command-meta">
-                  <span class="command-category">{command.category}</span>
-                  {#if command.shortcut}
-                    <div class="command-shortcut">
-                      {#each formatShortcut(command.shortcut) as key, i}
-                        <kbd class="key">{key}</kbd>
-                        {#if i < formatShortcut(command.shortcut).length - 1}
-                          <span class="key-sep">+</span>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              </button>
-            {/each}
+            <div class="command-results-container">
+              {#each filteredCommands as command, index (command.id)}
+                {#if hasRecentCommands && index === getOtherCommandsStartIndex() && !command.isRecent}
+                  <div class="section-divider">
+                    <span class="section-label">other commands</span>
+                  </div>
+                {/if}
+                <button
+                  class="result-item command-item"
+                  class:selected={index === selectedIndex}
+                  onclick={() => executeCommand(command)}
+                  onmouseenter={() => (selectedIndex = index)}
+                  role="option"
+                  aria-selected={index === selectedIndex}
+                  use:scrollIntoView={index === selectedIndex}
+                >
+                  <div class="command-info">
+                    <span class="command-label">{command.label}</span>
+                    {#if hasRecentCommands && command.isRecent && index === 0}
+                      <span class="result-tag">recently used</span>
+                    {/if}
+                  </div>
+                  <div class="command-meta">
+                    <span class="command-category">{command.category}</span>
+                    {#if command.shortcut}
+                      <div class="command-shortcut">
+                        {#each formatShortcut(command.shortcut) as key, i}
+                          <kbd class="key">{key}</kbd>
+                          {#if i < formatShortcut(command.shortcut).length - 1}
+                            <span class="key-sep">+</span>
+                          {/if}
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                </button>
+              {/each}
+            </div>
           {/if}
         {/if}
       </div>
@@ -656,9 +754,28 @@
 
   .results-list {
     flex: 1;
-    overflow-y: auto;
+    overflow: hidden;
     padding: 6px 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
+
+  .command-results-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+  }
+
+  /* Virtualized file results container */
+  .virtual-results-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
 
   .no-results {
     display: flex;
@@ -669,6 +786,37 @@
     text-align: center;
     color: var(--color-text-secondary);
     font-size: 13px;
+  }
+
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .indexing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-surface0) 50%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  }
+
+  .indexing-indicator .spinner {
+    width: 12px;
+    height: 12px;
+    border-width: 1.5px;
   }
 
   .section-divider {

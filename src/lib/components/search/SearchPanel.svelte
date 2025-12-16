@@ -2,22 +2,58 @@
   /**
    * SearchPanel - Workspace search and replace panel
    * VS Code-style search with file grouping and match previews
+   * 
+   * Uses virtualization for large result sets to maintain smooth scrolling.
    */
-  import { searchStore, type SearchMatch } from '$lib/stores/search.svelte';
+  import { searchStore, type SearchMatch, type FileMatches } from '$lib/stores/search.svelte';
   import { projectStore } from '$lib/stores/project.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
-  import { UIIcon } from '$lib/components/ui';
+  import { UIIcon, VirtualList } from '$lib/components/ui';
 
   // Local state
   let showReplace = $state(false);
   let showFilters = $state(false);
   let searchInputRef: HTMLInputElement | null = $state(null);
   let debounceTimer: ReturnType<typeof setTimeout> | null = $state(null);
+  let virtualListRef: ReturnType<typeof VirtualList> | undefined = $state();
+  let focusedResultIndex = $state(-1);
+
+  // Virtualization constants - VS Code uses ~22px for rows
+  const ROW_HEIGHT = 22;
+  const OVERSCAN = 10;
 
   // Derived
   const hasResults = $derived(searchStore.results !== null);
   const resultCount = $derived(searchStore.results?.totalMatches ?? 0);
   const fileCount = $derived(searchStore.results?.totalFiles ?? 0);
+
+  // Flatten results for virtualization - each file header and match is a row
+  type FlatItem = 
+    | { type: 'file'; file: FileMatches }
+    | { type: 'match'; file: FileMatches; match: SearchMatch; matchIndex: number };
+
+  const flatItems = $derived.by(() => {
+    const items: FlatItem[] = [];
+    if (!searchStore.results) return items;
+
+    for (const file of searchStore.results.files) {
+      items.push({ type: 'file', file });
+      if (searchStore.expandedFiles.has(file.path)) {
+        for (let i = 0; i < file.matches.length; i++) {
+          items.push({ type: 'match', file, match: file.matches[i], matchIndex: i });
+        }
+      }
+    }
+    return items;
+  });
+
+  // Generate unique key for each item
+  function getItemKey(item: FlatItem): string {
+    if (item.type === 'file') {
+      return `file:${item.file.path}`;
+    }
+    return `match:${item.file.path}:${item.matchIndex}`;
+  }
 
   function handleSearchInput(event: Event): void {
     const target = event.target as HTMLInputElement;
@@ -45,11 +81,16 @@
       }
     } else if (event.key === 'Escape') {
       searchStore.clear();
+      focusedResultIndex = -1;
+    } else if (event.key === 'ArrowDown' && hasResults) {
+      // Move focus to results list
+      event.preventDefault();
+      focusedResultIndex = 0;
+      virtualListRef?.focus();
     }
   }
 
   function handlePanelKeydown(event: KeyboardEvent): void {
-    // Match VS Code-ish shortcuts
     if (event.altKey && !event.ctrlKey && !event.metaKey) {
       if (event.code === 'KeyC') {
         event.preventDefault();
@@ -95,15 +136,11 @@
 
   async function handleReplaceAll(): Promise<void> {
     if (!projectStore.rootPath || !searchStore.results) return;
-
     const count = searchStore.results.totalMatches;
     const files = searchStore.results.totalFiles;
-
-    // Confirm before replacing all
     const confirmed = window.confirm(
       `Replace ${count} occurrence${count === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}?`
     );
-
     if (confirmed) {
       await searchStore.replaceAll(projectStore.rootPath);
     }
@@ -114,36 +151,48 @@
     await searchStore.replaceNext(projectStore.rootPath);
   }
 
-  async function handleReplaceInFile(path: string): Promise<void> {
+  async function handleReplaceInFile(path: string, e: MouseEvent): Promise<void> {
+    e.stopPropagation();
     const success = await searchStore.replaceInSingleFile(path);
     if (success && projectStore.rootPath) {
-      // Re-run search to update results
       await searchStore.search(projectStore.rootPath);
     }
   }
 
   function handleMatchClick(filePath: string, match: SearchMatch): void {
-    // Open file and navigate to match
     searchStore.selectMatch(filePath, match);
-    
-    void (async () => {
-      // Open the file in editor
-      const opened = await editorStore.openFile(filePath);
-      if (!opened) return;
+    void openMatchInEditor(filePath, match);
+  }
 
-      const normalizedPath = filePath.replace(/\\/g, '/');
+  async function openMatchInEditor(filePath: string, match: SearchMatch): Promise<void> {
+    const opened = await editorStore.openFile(filePath);
+    if (!opened) return;
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    window.dispatchEvent(
+      new CustomEvent('volt:navigate-to-position', {
+        detail: { file: normalizedPath, line: match.line, column: match.columnStart + 1 }
+      })
+    );
+  }
 
-      // Dispatch navigation event for Monaco to handle
-      window.dispatchEvent(
-        new CustomEvent('volt:navigate-to-position', {
-          detail: {
-            file: normalizedPath,
-            line: match.line,
-            column: match.columnStart + 1
-          }
-        })
-      );
-    })();
+  /**
+   * Handle keyboard selection of a result item
+   */
+  function handleResultSelect(index: number, item: FlatItem): void {
+    if (item.type === 'file') {
+      // Toggle file expansion
+      searchStore.toggleFileExpanded(item.file.path);
+    } else {
+      // Open match in editor
+      handleMatchClick(item.file.path, item.match);
+    }
+  }
+
+  /**
+   * Handle focus change in results list
+   */
+  function handleResultFocusChange(index: number): void {
+    focusedResultIndex = index;
   }
 
   function getFileName(path: string): string {
@@ -176,7 +225,6 @@
       .replace(/'/g, '&#039;');
   }
 
-  // Focus search input when panel opens
   $effect(() => {
     if (searchInputRef) {
       searchInputRef.focus();
@@ -186,7 +234,6 @@
 
 <div class="search-panel">
   <div class="search-inputs">
-    <!-- Search row with expand toggle -->
     <div class="search-row">
       <button
         class="expand-toggle"
@@ -280,7 +327,6 @@
       </div>
     </div>
 
-    <!-- Filter toggle -->
     <button
       class="filter-toggle"
       onclick={() => (showFilters = !showFilters)}
@@ -314,7 +360,7 @@
     {/if}
   </div>
 
-  <!-- Results Section -->
+  <!-- Results Section with Virtualization -->
   <div class="search-results">
     {#if searchStore.searching && !hasResults}
       <div class="search-status">
@@ -332,81 +378,87 @@
           </span>
         {/if}
         {#if searchStore.results?.truncated}
-          <span class="truncated-warning" title="Results were truncated">
-            (truncated)
-          </span>
+          <span class="truncated-warning" title="Results were truncated">(truncated)</span>
         {/if}
         <div class="results-actions">
-          <button
-            class="icon-btn"
-            onclick={() => searchStore.expandAll()}
-            title="Expand All"
-            aria-label="Expand All"
-          >
+          <button class="icon-btn" onclick={() => searchStore.expandAll()} title="Expand All" aria-label="Expand All">
             <UIIcon name="expand-all" size={14} />
           </button>
-          <button
-            class="icon-btn"
-            onclick={() => searchStore.collapseAll()}
-            title="Collapse All"
-            aria-label="Collapse All"
-          >
+          <button class="icon-btn" onclick={() => searchStore.collapseAll()} title="Collapse All" aria-label="Collapse All">
             <UIIcon name="collapse-all" size={14} />
           </button>
         </div>
       </div>
 
-      <div class="results-list" role="tree" aria-label="Search results">
-        {#each searchStore.results?.files ?? [] as file (file.path)}
-          <div class="file-group" role="treeitem" aria-selected={searchStore.selectedFile === file.path} aria-expanded={searchStore.expandedFiles.has(file.path)}>
-            <div class="file-header-row">
+      <!-- Virtualized results list with keyboard navigation -->
+      <VirtualList
+        bind:this={virtualListRef}
+        role="tree"
+        aria-label="Search results"
+        items={flatItems}
+        rowHeight={ROW_HEIGHT}
+        overscan={OVERSCAN}
+        getKey={(item: FlatItem) => getItemKey(item)}
+        focusedIndex={focusedResultIndex}
+        onFocusChange={handleResultFocusChange}
+        onSelect={handleResultSelect}
+      >
+        {#snippet children({ item, style, focused, index: _index })}
+          {#if item.type === 'file'}
+            <div
+              class="file-header-row"
+              class:focused
+              style={style}
+              role="treeitem"
+              aria-selected={searchStore.selectedFile === item.file.path}
+              aria-expanded={searchStore.expandedFiles.has(item.file.path)}
+            >
               <button
                 class="file-header"
-                onclick={() => searchStore.toggleFileExpanded(file.path)}
-                aria-label={`${getFileName(file.path)}, ${file.matches.length} matches`}
+                onclick={() => searchStore.toggleFileExpanded(item.file.path)}
+                aria-label={`${getFileName(item.file.path)}, ${item.file.matches.length} matches`}
+                tabindex="-1"
               >
                 <UIIcon
-                  name={searchStore.expandedFiles.has(file.path) ? 'chevron-down' : 'chevron-right'}
+                  name={searchStore.expandedFiles.has(item.file.path) ? 'chevron-down' : 'chevron-right'}
                   size={12}
                 />
-                <span class="file-name">{getFileName(file.path)}</span>
-                <span class="file-path">{getRelativePath(file.path)}</span>
-                <span class="match-count">{file.matches.length}</span>
+                <span class="file-name">{getFileName(item.file.path)}</span>
+                <span class="file-path">{getRelativePath(item.file.path)}</span>
+                <span class="match-count">{item.file.matches.length}</span>
               </button>
               {#if showReplace}
                 <button
                   class="replace-file-btn"
-                  onclick={() => handleReplaceInFile(file.path)}
+                  onclick={(e) => handleReplaceInFile(item.file.path, e)}
                   title="Replace in this file"
                   aria-label="Replace in this file"
+                  tabindex="-1"
                 >
                   <UIIcon name="replace" size={12} />
                 </button>
               {/if}
             </div>
-
-            {#if searchStore.expandedFiles.has(file.path)}
-              <div class="matches-list" role="group">
-                {#each file.matches as match, idx (idx)}
-                  <button
-                    class="match-item"
-                    class:selected={searchStore.selectedFile === file.path && 
-                                   searchStore.selectedMatch?.line === match.line &&
-                                   searchStore.selectedMatch?.columnStart === match.columnStart}
-                    onclick={() => handleMatchClick(file.path, match)}
-                    aria-label={`Line ${match.line}: ${match.lineContent.trim()}`}
-                  >
-                    <span class="line-number">{match.line}</span>
-                    <span class="line-content">
-                      {@html highlightMatch(match.lineContent, match)}
-                    </span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
+          {:else}
+            <button
+              class="match-item"
+              class:focused
+              style={style}
+              class:selected={searchStore.selectedFile === item.file.path && 
+                             searchStore.selectedMatch?.line === item.match.line &&
+                             searchStore.selectedMatch?.columnStart === item.match.columnStart}
+              onclick={() => handleMatchClick(item.file.path, item.match)}
+              aria-label={`Line ${item.match.line}: ${item.match.lineContent.trim()}`}
+              tabindex="-1"
+            >
+              <span class="line-number">{item.match.line}</span>
+              <span class="line-content">
+                {@html highlightMatch(item.match.lineContent, item.match)}
+              </span>
+            </button>
+          {/if}
+        {/snippet}
+      </VirtualList>
     {:else if searchStore.query.trim() && !searchStore.searching}
       <div class="no-results">
         <p>No results found for "{searchStore.query}"</p>
@@ -418,6 +470,7 @@
     {/if}
   </div>
 </div>
+
 
 <style>
   .search-panel {
@@ -623,7 +676,10 @@
 
   .search-results {
     flex: 1;
-    overflow: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .search-status {
@@ -645,9 +701,7 @@
   }
 
   @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    to { transform: rotate(360deg); }
   }
 
   .results-header {
@@ -657,6 +711,7 @@
     padding: 6px 8px;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-bg-header);
+    flex-shrink: 0;
   }
 
   .results-count {
@@ -693,14 +748,6 @@
     color: var(--color-text);
   }
 
-  .results-list {
-    padding: 4px 0;
-  }
-
-  .file-group {
-    margin-bottom: 2px;
-  }
-
   .file-header-row {
     display: flex;
     align-items: center;
@@ -720,18 +767,21 @@
     align-items: center;
     gap: 4px;
     flex: 1;
-    padding: 4px 8px;
+    height: 100%;
+    padding: 0 8px;
     font-size: 13px;
     color: var(--color-text);
     background: transparent;
     border: none;
     cursor: pointer;
     text-align: left;
+    overflow: hidden;
   }
 
   .file-name {
     font-weight: 500;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .file-path {
@@ -749,6 +799,7 @@
     color: var(--color-text-secondary);
     background: var(--color-bg);
     border-radius: 10px;
+    flex-shrink: 0;
   }
 
   .replace-file-btn {
@@ -764,6 +815,7 @@
     cursor: pointer;
     opacity: 0;
     transition: opacity 0.1s ease;
+    flex-shrink: 0;
   }
 
   .replace-file-btn:hover {
@@ -771,16 +823,12 @@
     color: var(--color-text);
   }
 
-  .matches-list {
-    padding-left: 16px;
-  }
-
   .match-item {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 2px 8px;
+    padding: 0 8px 0 24px;
     font-size: 12px;
     font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
     color: var(--color-text);
@@ -788,6 +836,7 @@
     border: none;
     cursor: pointer;
     text-align: left;
+    overflow: hidden;
   }
 
   .match-item:hover {
@@ -796,6 +845,12 @@
 
   .match-item.selected {
     background: var(--color-active);
+  }
+
+  .match-item.focused,
+  .file-header-row.focused {
+    outline: 1px solid var(--color-accent);
+    outline-offset: -1px;
   }
 
   .line-number {

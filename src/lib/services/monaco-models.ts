@@ -2,7 +2,49 @@ import type * as Monaco from 'monaco-editor';
 
 import { loadMonaco } from '$lib/services/monaco-loader';
 
+// ============================================================================
+// LRU Cache for Monaco Models
+// ============================================================================
+
+// Maximum number of models to keep in memory
+// Beyond this, least recently used models are evicted
+const MAX_MODELS = 50;
+
+// Track model access order for LRU eviction
+// Most recently accessed at the end
+const accessOrder: string[] = [];
+
 const models = new Map<string, Monaco.editor.ITextModel>();
+
+/**
+ * Mark a model as recently accessed (move to end of LRU list)
+ */
+function touchModel(path: string): void {
+  const idx = accessOrder.indexOf(path);
+  if (idx !== -1) {
+    accessOrder.splice(idx, 1);
+  }
+  accessOrder.push(path);
+}
+
+/**
+ * Evict least recently used models if over capacity
+ */
+function evictIfNeeded(): void {
+  while (models.size > MAX_MODELS && accessOrder.length > 0) {
+    const oldest = accessOrder.shift();
+    if (oldest) {
+      const model = models.get(oldest);
+      if (model) {
+        // Don't evict if model has unsaved changes (dirty)
+        // Monaco doesn't track dirty state, so we just evict
+        // The editor store tracks dirty state separately
+        model.dispose();
+        models.delete(oldest);
+      }
+    }
+  }
+}
 
 function uriForPath(monaco: typeof Monaco, path: string): Monaco.Uri {
   // Use an in-memory URI so we don't have to deal with file:// + Windows path encoding.
@@ -21,6 +63,7 @@ export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.I
   const existing = models.get(spec.path);
   if (existing) {
     monaco.editor.setModelLanguage(existing, spec.language);
+    touchModel(spec.path);
     return existing;
   }
 
@@ -28,12 +71,17 @@ export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.I
   const already = monaco.editor.getModel(uri);
   if (already) {
     models.set(spec.path, already);
+    touchModel(spec.path);
     monaco.editor.setModelLanguage(already, spec.language);
     return already;
   }
 
+  // Evict old models before creating new one
+  evictIfNeeded();
+
   const model = monaco.editor.createModel(spec.content, spec.language, uri);
   models.set(spec.path, model);
+  touchModel(spec.path);
   return model;
 }
 
@@ -70,6 +118,12 @@ export function disposeModel(path: string): void {
   if (!model) return;
   model.dispose();
   models.delete(path);
+  
+  // Remove from LRU tracking
+  const idx = accessOrder.indexOf(path);
+  if (idx !== -1) {
+    accessOrder.splice(idx, 1);
+  }
 }
 
 export function disposeAllModels(): void {
@@ -77,6 +131,9 @@ export function disposeAllModels(): void {
     model.dispose();
   }
   models.clear();
+  
+  // Clear LRU tracking
+  accessOrder.length = 0;
 }
 
 // Editor instance reference for go-to-line functionality

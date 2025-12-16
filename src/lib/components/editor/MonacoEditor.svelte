@@ -32,6 +32,7 @@
   } from '$lib/services/lsp/svelte-sidecar';
   import { themeStore, getMonacoThemeName } from '$lib/stores/theme.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { settingsStore } from '$lib/stores/settings.svelte';
   import EditorPlaceholder from './EditorPlaceholder.svelte';
 
   interface Props {
@@ -126,11 +127,11 @@
           theme: getMonacoThemeName(),
           readOnly: readonly,
           automaticLayout: true,
-          fontSize: 14,
+          fontSize: settingsStore.editorFontSize,
           fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace",
           fontLigatures: true,
-          lineNumbers: 'on',
-          minimap: { enabled: true },
+          lineNumbers: settingsStore.editorLineNumbersEnabled ? 'on' : 'off',
+          minimap: { enabled: settingsStore.editorMinimapEnabled },
           scrollBeyondLastLine: false,
           renderWhitespace: 'selection',
           smoothScrolling: true,
@@ -276,6 +277,16 @@
       if (!editor) return;
       editor.setModel(model);
 
+      // Apply persisted indentation options to the model.
+      try {
+        model.updateOptions({
+          tabSize: settingsStore.editorTabSize,
+          insertSpaces: settingsStore.editorInsertSpaces
+        });
+      } catch {
+        // ignore
+      }
+
       // If a navigation request came in before the model swap completed, apply it now.
       applyPendingNavigation();
 
@@ -313,6 +324,34 @@
     const theme = themeStore.resolvedTheme;
     if (editor && monaco) {
       monaco.editor.setTheme(theme === 'dark' ? 'volt-dark' : 'volt-light');
+    }
+  });
+
+  // Update editor options when settings change
+  $effect(() => {
+    const fontSize = settingsStore.editorFontSize;
+    const lineNumbersEnabled = settingsStore.editorLineNumbersEnabled;
+    const minimapEnabled = settingsStore.editorMinimapEnabled;
+    const tabSize = settingsStore.editorTabSize;
+    const insertSpaces = settingsStore.editorInsertSpaces;
+
+    if (!editor) return;
+
+    try {
+      editor.updateOptions({
+        fontSize,
+        lineNumbers: lineNumbersEnabled ? 'on' : 'off',
+        minimap: { enabled: minimapEnabled }
+      });
+    } catch {
+      // ignore
+    }
+
+    try {
+      const model = editor.getModel();
+      model?.updateOptions({ tabSize, insertSpaces });
+    } catch {
+      // ignore
     }
   });
 </script>

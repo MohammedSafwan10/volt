@@ -6,6 +6,7 @@
   import ExtensionsPanel from './ExtensionsPanel.svelte';
   import { SearchPanel } from '$lib/components/search';
   import { GitPanel } from '$lib/components/git';
+  import SettingsPanel from './SettingsPanel.svelte';
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -64,7 +65,7 @@
       {:else if uiStore.activeSidebarPanel === 'extensions'}
         <ExtensionsPanel />
       {:else if uiStore.activeSidebarPanel === 'settings'}
-        <p class="placeholder-text">Settings panel coming soon</p>
+        <SettingsPanel />
       {/if}
     </div>
   </div>
@@ -134,11 +135,4 @@
     padding: 0;
   }
 
-  .placeholder-text {
-    color: var(--color-text-disabled);
-    font-size: 13px;
-    font-style: italic;
-    margin: 0;
-    padding: 12px;
-  }
 </style>

@@ -4,6 +4,7 @@
   import { showToast } from '$lib/stores/toast.svelte';
   import { projectStore } from '$lib/stores/project.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
+	import { editorStore } from '$lib/stores/editor.svelte';
 	import { terminalStore } from '$lib/stores/terminal.svelte';
   import { themeStore } from '$lib/stores/theme.svelte';
   import { openFileDialog, openFolderDialog } from '$lib/services/file-system';
@@ -96,6 +97,11 @@
   function handleOpenSearch() {
     uiStore.closeMenus();
     uiStore.setActiveSidebarPanel('search');
+  }
+
+  function handleOpenSettings() {
+    uiStore.closeMenus();
+		editorStore.openSettingsTab();
   }
 
   function handleToggleFormatOnSave() {
@@ -196,6 +202,7 @@
         { separator: true, label: '' },
         { label: 'Explorer', shortcut: 'Ctrl+Shift+E', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('explorer'); } },
         { label: 'Search', shortcut: 'Ctrl+Shift+F', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('search'); } },
+        { label: 'Settings', shortcut: 'Ctrl+,', action: handleOpenSettings },
         { separator: true, label: '' },
         { label: 'Problems', shortcut: 'Ctrl+Shift+M', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('problems'); } },
         { label: 'Output', shortcut: 'Ctrl+Shift+U', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('output'); } },
