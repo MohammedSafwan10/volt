@@ -260,7 +260,7 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
         
         // Convert to base64
         const base64Data = btoa(
-          bytes.reduce((data, byte) => data + String.fromCharCode(byte), '')
+          bytes.reduce((data: string, byte: number) => data + String.fromCharCode(byte), '')
         );
         
         // Determine mime type from extension
