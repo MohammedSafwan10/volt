@@ -193,9 +193,18 @@ export function revealLine(path: string, line: number): void {
 
 /**
  * Get the current selection from the active editor
- * Returns the selected text and the file path
+ * Returns the selected text, file path, and selection range
  */
-export function getEditorSelection(): { text: string; path: string | null } | null {
+export function getEditorSelection(): { 
+  text: string; 
+  path: string | null;
+  range?: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+} | null {
   if (!activeEditor) return null;
   
   const selection = activeEditor.getSelection();
@@ -215,5 +224,14 @@ export function getEditorSelection(): { text: string; path: string | null } | nu
     }
   }
   
-  return { text, path };
+  return { 
+    text, 
+    path,
+    range: {
+      startLineNumber: selection.startLineNumber,
+      startColumn: selection.startColumn,
+      endLineNumber: selection.endLineNumber,
+      endColumn: selection.endColumn
+    }
+  };
 }

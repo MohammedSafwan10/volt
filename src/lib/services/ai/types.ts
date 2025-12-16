@@ -1,15 +1,33 @@
 /**
  * AI Provider Types
  * Unified interface for all AI providers
+ * 
+ * Docs consulted:
+ * - Gemini API: multimodal vision with inline base64 data (mimeType + data format)
  */
 
 // Chat message role
 export type MessageRole = 'user' | 'assistant' | 'system';
 
-// Chat message
+// Content part types for multimodal messages
+export interface TextPart {
+  type: 'text';
+  text: string;
+}
+
+export interface ImagePart {
+  type: 'image';
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  data: string; // Base64 encoded
+}
+
+export type ContentPart = TextPart | ImagePart;
+
+// Chat message (supports multimodal content)
 export interface ChatMessage {
   role: MessageRole;
   content: string;
+  parts?: ContentPart[]; // For multimodal messages
 }
 
 // Tool definition for function calling
@@ -51,8 +69,9 @@ export interface ChatResponse {
 
 // Streaming chunk
 export interface StreamChunk {
-  type: 'content' | 'tool_call' | 'done' | 'error';
+  type: 'content' | 'thinking' | 'tool_call' | 'done' | 'error';
   content?: string;
+  thinking?: string; // Thinking/reasoning content from model
   toolCall?: ToolCall;
   error?: string;
 }

@@ -101,7 +101,8 @@
     | 'comment'
     | 'sparkle'
     | 'robot'
-    | 'send';
+    | 'send'
+    | 'image';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -200,6 +201,7 @@
     sparkle: 'codicon:sparkle',
     robot: 'codicon:robot',
     send: 'codicon:send',
+    image: 'codicon:file-media',
   };
 
   interface Props {

@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import { UIIcon } from '$lib/components/ui';
-  import type { AssistantMessage } from '$lib/stores/assistant.svelte';
+  import type { AssistantMessage, ImageAttachment } from '$lib/stores/assistant.svelte';
   import type { AIMode } from '$lib/stores/ai.svelte';
 
   interface Props {
@@ -11,15 +10,49 @@
 
   let { messages, currentMode = 'ask' }: Props = $props();
 
+  // Image preview modal state
+  let previewImage = $state<{ src: string; alt: string } | null>(null);
+
+  function openImagePreview(img: ImageAttachment): void {
+    previewImage = {
+      src: `data:${img.mimeType};base64,${img.data}`,
+      alt: img.filename
+    };
+  }
+
+  function closeImagePreview(): void {
+    previewImage = null;
+  }
+
+  function handlePreviewKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      closeImagePreview();
+    }
+  }
+
+  function handleBackdropClick(e: MouseEvent): void {
+    if ((e.target as HTMLElement).classList.contains('image-preview-modal')) {
+      closeImagePreview();
+    }
+  }
+
+  // Get image attachments from a message
+  function getImageAttachments(message: AssistantMessage): ImageAttachment[] {
+    return (message.attachments ?? []).filter(a => a.type === 'image') as ImageAttachment[];
+  }
+
   let containerRef: HTMLDivElement | undefined = $state();
-  let autoscroll = true;
+  let userNearBottom = $state(true);
   let showJumpButton = $state(false);
 
-  // Track scroll position for jump button visibility
+  // Track scroll position for jump button visibility and autoscroll decision
   function handleScroll(): void {
     if (!containerRef) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    
+    // User is "near bottom" if within 80px
+    userNearBottom = distanceFromBottom < 80;
     showJumpButton = distanceFromBottom > 150;
   }
 
@@ -27,30 +60,42 @@
   function jumpToBottom(): void {
     containerRef?.scrollTo({ top: containerRef.scrollHeight, behavior: 'smooth' });
     showJumpButton = false;
+    userNearBottom = true;
   }
 
-  // Use $effect.pre to check scroll position BEFORE DOM updates (Svelte 5 recommended pattern)
-  $effect.pre(() => {
-    // Reference messages to trigger on changes
+  // Scroll to bottom helper (instant, no animation)
+  function scrollToBottom(): void {
+    if (!containerRef) return;
+    containerRef.scrollTop = containerRef.scrollHeight;
+  }
+
+  // Auto-scroll effect - runs AFTER DOM updates
+  $effect(() => {
+    // Track these to re-run on changes
     const lastMsg = messages[messages.length - 1];
-    void lastMsg?.content;
-    void messages.length;
+    const content = lastMsg?.content;
+    const thinking = lastMsg?.thinking;
+    const isStreaming = lastMsg?.isStreaming;
+    const msgCount = messages.length;
+    
+    // Avoid unused variable warnings
+    void content;
+    void thinking;
+    void isStreaming;
+    void msgCount;
 
     if (!containerRef) return;
 
-    // Check if user is near bottom BEFORE the DOM update
-    const { scrollTop, scrollHeight, clientHeight } = containerRef;
-    autoscroll = scrollHeight - scrollTop - clientHeight < 50;
+    // Determine if we should auto-scroll:
+    // 1. User is near bottom (hasn't scrolled up)
+    // 2. OR the last message is from user (they just sent something)
+    // 3. OR streaming just started (isStreaming became true)
+    const shouldScroll = userNearBottom || lastMsg?.role === 'user';
 
-    // If user just sent a message, always scroll
-    if (lastMsg?.role === 'user') {
-      autoscroll = true;
-    }
-
-    if (autoscroll) {
-      // Use tick() to scroll AFTER DOM updates
-      tick().then(() => {
-        containerRef?.scrollTo(0, containerRef.scrollHeight);
+    if (shouldScroll) {
+      // Use requestAnimationFrame to ensure DOM has updated
+      requestAnimationFrame(() => {
+        scrollToBottom();
       });
     }
   });
@@ -119,9 +164,30 @@
   {:else}
     {#each messages as message (message.id)}
       {#if message.role === 'user'}
+        {@const images = getImageAttachments(message)}
         <div class="message-row user">
           <div class="user-bubble">
-            <div class="bubble-text">{message.content}</div>
+            {#if images.length > 0}
+              <div class="message-images" class:single={images.length === 1} class:multiple={images.length > 1}>
+                {#each images as img (img.id)}
+                  <button
+                    class="message-image-btn"
+                    onclick={() => openImagePreview(img)}
+                    title="Click to view full image"
+                    type="button"
+                  >
+                    <img 
+                      src="data:{img.mimeType};base64,{img.data}" 
+                      alt={img.filename}
+                      class="message-image-thumb"
+                    />
+                  </button>
+                {/each}
+              </div>
+            {/if}
+            {#if message.content.trim()}
+              <div class="bubble-text">{message.content}</div>
+            {/if}
             <span class="bubble-time">{formatTime(message.timestamp)}</span>
           </div>
         </div>
@@ -131,6 +197,23 @@
             <UIIcon name={message.role === 'assistant' ? 'bolt' : 'terminal'} size={14} />
           </div>
           <div class="msg-body">
+            <!-- Thinking indicator (collapsible) -->
+            {#if message.thinking}
+              <details class="thinking-section" open={message.isThinking}>
+                <summary class="thinking-header">
+                  <span class="thinking-icon" class:active={message.isThinking}>
+                    <UIIcon name="sparkle" size={12} />
+                  </span>
+                  <span class="thinking-label">
+                    {message.isThinking ? 'Thinking...' : 'Thought process'}
+                  </span>
+                  <UIIcon name="chevron-down" size={12} />
+                </summary>
+                <div class="thinking-content">
+                  {message.thinking}
+                </div>
+              </details>
+            {/if}
             <div class="msg-content">
               {#if message.isStreaming}
                 <span>{message.content}</span><span class="cursor"></span>
@@ -163,6 +246,37 @@
     >
       <UIIcon name="chevron-down" size={14} />
     </button>
+  {/if}
+
+  <!-- Image Preview Modal -->
+  {#if previewImage}
+    <div 
+      class="image-preview-modal" 
+      onclick={handleBackdropClick}
+      onkeydown={handlePreviewKeydown}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image preview"
+      tabindex="-1"
+    >
+      <div class="preview-content">
+        <button
+          class="preview-close"
+          onclick={closeImagePreview}
+          title="Close (Esc)"
+          aria-label="Close preview"
+          type="button"
+        >
+          <UIIcon name="close" size={18} />
+        </button>
+        <img 
+          src={previewImage.src} 
+          alt={previewImage.alt}
+          class="preview-image"
+        />
+        <div class="preview-filename">{previewImage.alt}</div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -338,4 +452,185 @@
   }
 
   .action-btn:hover { background: var(--color-hover); color: var(--color-text); }
+
+  /* Thinking section */
+  .thinking-section {
+    margin-bottom: 8px;
+    border-radius: 6px;
+    background: var(--color-surface0);
+    border: 1px solid var(--color-border);
+    overflow: hidden;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s ease;
+  }
+
+  .thinking-header:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .thinking-header::-webkit-details-marker {
+    display: none;
+  }
+
+  .thinking-icon {
+    display: flex;
+    color: var(--color-mauve);
+    transition: transform 0.3s ease;
+  }
+
+  .thinking-icon.active {
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.95); }
+  }
+
+  .thinking-label {
+    flex: 1;
+    font-weight: 500;
+  }
+
+  .thinking-section[open] .thinking-header :global(svg:last-child) {
+    transform: rotate(180deg);
+  }
+
+  .thinking-content {
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+    border-top: 1px solid var(--color-border);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  /* Message images */
+  .message-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .message-images.single {
+    max-width: 200px;
+  }
+
+  .message-images.multiple {
+    max-width: 100%;
+  }
+
+  .message-image-btn {
+    display: block;
+    padding: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    background: transparent;
+  }
+
+  .message-image-btn:hover {
+    transform: scale(1.02);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .message-image-btn:focus-visible {
+    outline: 2px solid var(--color-bg);
+    outline-offset: 2px;
+  }
+
+  .message-image-thumb {
+    display: block;
+    max-width: 180px;
+    max-height: 120px;
+    width: auto;
+    height: auto;
+    object-fit: cover;
+    border-radius: 6px;
+  }
+
+  .message-images.multiple .message-image-thumb {
+    max-width: 80px;
+    max-height: 80px;
+  }
+
+  /* Image Preview Modal */
+  .image-preview-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 1000;
+    animation: fadeIn 0.2s ease;
+    backdrop-filter: blur(4px);
+  }
+
+  .preview-content {
+    position: relative;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    animation: scaleIn 0.2s ease;
+  }
+
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  .preview-close {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    transition: all 0.15s ease;
+  }
+
+  .preview-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: scale(1.1);
+  }
+
+  .preview-image {
+    max-width: 90vw;
+    max-height: 80vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  }
+
+  .preview-filename {
+    margin-top: 12px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    text-align: center;
+  }
 </style>

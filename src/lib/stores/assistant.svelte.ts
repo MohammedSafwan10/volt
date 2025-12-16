@@ -1,6 +1,11 @@
 /**
  * Assistant Store - Manages AI assistant panel state
- * Handles conversation, modes, and streaming state
+ * Handles conversation, modes, attachments, and streaming state
+ * 
+ * Docs consulted:
+ * - Gemini API: multimodal vision with inline base64 data (mimeType + data format)
+ * - Tauri v2: dialog plugin for file picker with filters
+ * - Svelte 5: $state runes for immutable state management
  */
 
 import type { AIMode } from './ai.svelte';
@@ -24,7 +29,7 @@ export interface ToolCall {
   requiresApproval?: boolean;
 }
 
-// Chat message
+// Chat message with attachments
 export interface AssistantMessage {
   id: string;
   role: MessageRole;
@@ -32,9 +37,68 @@ export interface AssistantMessage {
   timestamp: number;
   toolCalls?: ToolCall[];
   isStreaming?: boolean;
+  attachments?: MessageAttachment[];
+  thinking?: string; // Model's thinking/reasoning (if available)
+  isThinking?: boolean; // Currently in thinking phase
 }
 
-// Attached context
+// Conversation container
+export interface Conversation {
+  id: string;
+  createdAt: number;
+  messages: AssistantMessage[];
+}
+
+// Selection range for Monaco editor
+export interface SelectionRange {
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+}
+
+// Base attachment interface
+interface BaseAttachment {
+  id: string;
+  label: string;
+  checksum?: string; // Short hash for stale detection
+}
+
+// File attachment
+export interface FileAttachment extends BaseAttachment {
+  type: 'file';
+  path: string;
+  content: string;
+}
+
+// Selection attachment (from Monaco)
+export interface SelectionAttachment extends BaseAttachment {
+  type: 'selection';
+  path?: string;
+  content: string;
+  range?: SelectionRange;
+}
+
+// Folder scope attachment
+export interface FolderAttachment extends BaseAttachment {
+  type: 'folder';
+  path: string;
+}
+
+// Image attachment (vision)
+export interface ImageAttachment extends BaseAttachment {
+  type: 'image';
+  filename: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  data: string; // Base64 encoded
+  byteSize: number;
+  dimensions?: { width: number; height: number };
+}
+
+// Union type for all attachments
+export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment;
+
+// Legacy attached context (for backward compatibility)
 export interface AttachedContext {
   type: 'file' | 'selection';
   path?: string;
@@ -42,11 +106,118 @@ export interface AttachedContext {
   label: string;
 }
 
+// Image attachment limits (configurable)
+export const IMAGE_LIMITS = {
+  maxImagesPerMessage: 5,
+  maxImageBytes: 5 * 1024 * 1024, // 5MB per image
+  maxTotalImageBytesPerMessage: 15 * 1024 * 1024, // 15MB total
+  allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'] as const
+};
+
+// Model context limits (in tokens)
+// Gemini 2.5 Flash: 1,048,576 input tokens, 65,536 output tokens
+export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputTokens: number }> = {
+  'gemini-2.5-flash': { inputTokens: 1_048_576, outputTokens: 65_536 },
+  'gemini-2.5-flash-lite': { inputTokens: 1_048_576, outputTokens: 65_536 },
+  'gemini-2.5-pro': { inputTokens: 1_048_576, outputTokens: 65_536 },
+  'gemini-2.0-flash': { inputTokens: 1_048_576, outputTokens: 8_192 },
+  'gemini-2.0-flash-lite': { inputTokens: 1_048_576, outputTokens: 8_192 }
+};
+
+// Default context limit if model not found
+const DEFAULT_CONTEXT_LIMIT = { inputTokens: 1_000_000, outputTokens: 8_192 };
+
+// Rough estimate: ~4 characters per token (conservative for code)
+const CHARS_PER_TOKEN = 4;
+
+// Context packing limits
+export const CONTEXT_LIMITS = {
+  maxContextSize: 100000, // ~100k chars default cap for attachments
+  maxFilesPerMessage: 10
+};
+
+// Secret patterns to redact
+const SECRET_PATTERNS = [
+  /^\.env$/i,
+  /\.env\./i,
+  /secret/i,
+  /password/i,
+  /api[_-]?key/i,
+  /token/i,
+  /credential/i,
+  /private[_-]?key/i
+];
+
+// Mode capabilities - enforced in code, not just UI
+export const MODE_CAPABILITIES: Record<AIMode, {
+  canMutateFiles: boolean;
+  canExecuteCommands: boolean;
+  canUseTools: boolean;
+  description: string;
+}> = {
+  ask: {
+    canMutateFiles: false,
+    canExecuteCommands: false,
+    canUseTools: false,
+    description: 'Read-only mode for questions and explanations'
+  },
+  plan: {
+    canMutateFiles: false,
+    canExecuteCommands: false,
+    canUseTools: true,
+    description: 'Planning mode - can analyze but not modify'
+  },
+  agent: {
+    canMutateFiles: true,
+    canExecuteCommands: true,
+    canUseTools: true,
+    description: 'Full agent mode with file and command access'
+  }
+};
+
 // Panel width storage key
 const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
+
+/**
+ * Generate a short checksum for content (for stale detection)
+ */
+function generateChecksum(content: string): string {
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(16).slice(0, 8);
+}
+
+/**
+ * Check if a path looks like it contains secrets
+ */
+function isLikelySecretPath(path: string): boolean {
+  const filename = path.split('/').pop() ?? path;
+  return SECRET_PATTERNS.some(pattern => pattern.test(filename));
+}
+
+/**
+ * Redact potential secrets from content
+ */
+function redactSecrets(content: string): string {
+  // Redact common secret patterns
+  return content
+    .replace(/([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*["']?([^"'\s\n]+)["']?/gi, '$1=[REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9_-]{20,}/gi, 'Bearer [REDACTED]')
+    .replace(/[A-Za-z0-9_-]{32,}/g, (match) => {
+      // Only redact if it looks like a key (mixed case, numbers, etc.)
+      if (/[A-Z]/.test(match) && /[a-z]/.test(match) && /[0-9]/.test(match)) {
+        return '[REDACTED]';
+      }
+      return match;
+    });
+}
 
 class AssistantStore {
   // Panel state
@@ -57,11 +228,15 @@ class AssistantStore {
   currentMode = $state<AIMode>('ask');
 
   // Conversation state
+  currentConversation = $state<Conversation | null>(null);
   messages = $state<AssistantMessage[]>([]);
   
   // Input state
   inputValue = $state('');
   attachedContext = $state<AttachedContext[]>([]);
+  
+  // New attachment model
+  pendingAttachments = $state<MessageAttachment[]>([]);
 
   // Streaming state
   isStreaming = $state(false);
@@ -72,6 +247,67 @@ class AssistantStore {
 
   constructor() {
     this.loadPanelWidth();
+    this.initConversation();
+  }
+
+  /**
+   * Initialize a new conversation
+   */
+  private initConversation(): void {
+    this.currentConversation = {
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+      messages: []
+    };
+  }
+
+  /**
+   * Get current mode capabilities
+   */
+  get modeCapabilities() {
+    return MODE_CAPABILITIES[this.currentMode];
+  }
+
+  /**
+   * Check if current mode allows file mutations
+   */
+  canMutateFiles(): boolean {
+    return MODE_CAPABILITIES[this.currentMode].canMutateFiles;
+  }
+
+  /**
+   * Check if current mode allows command execution
+   */
+  canExecuteCommands(): boolean {
+    return MODE_CAPABILITIES[this.currentMode].canExecuteCommands;
+  }
+
+  /**
+   * Check if current mode allows tool usage
+   */
+  canUseTools(): boolean {
+    return MODE_CAPABILITIES[this.currentMode].canUseTools;
+  }
+
+  /**
+   * Validate a tool call against current mode
+   * Returns error message if not allowed, null if allowed
+   */
+  validateToolCall(toolName: string): string | null {
+    const caps = MODE_CAPABILITIES[this.currentMode];
+    
+    // In ask mode, no tools allowed
+    if (!caps.canUseTools) {
+      return `Tool "${toolName}" is not available in ${this.currentMode} mode. Switch to plan or agent mode to use tools.`;
+    }
+    
+    // Check for mutation tools in non-agent modes
+    const mutationTools = ['write_file', 'delete_file', 'create_file', 'rename_file', 'execute_command'];
+    if (mutationTools.includes(toolName) && !caps.canMutateFiles) {
+      return `Tool "${toolName}" requires agent mode. Current mode (${this.currentMode}) is read-only.`;
+    }
+    
+    return null;
   }
 
   // Panel controls
@@ -112,15 +348,28 @@ class AssistantStore {
       id,
       role: 'user',
       content,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      attachments: [...this.pendingAttachments] // Include pending attachments
     };
     
-    // Include context in message if provided
+    // Include context in message if provided (legacy support)
     if (context && context.length > 0) {
       message.content = this.formatMessageWithContext(content, context);
     }
 
     this.messages = [...this.messages, message];
+    
+    // Update conversation
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: [...this.currentConversation.messages, message]
+      };
+    }
+    
+    // Clear pending attachments after adding to message
+    this.pendingAttachments = [];
+    
     return id;
   }
 
@@ -140,6 +389,12 @@ class AssistantStore {
   updateAssistantMessage(id: string, content: string, isStreaming = false): void {
     this.messages = this.messages.map(msg =>
       msg.id === id ? { ...msg, content, isStreaming } : msg
+    );
+  }
+
+  updateAssistantThinking(id: string, thinking: string, isThinking = true): void {
+    this.messages = this.messages.map(msg =>
+      msg.id === id ? { ...msg, thinking, isThinking } : msg
     );
   }
 
@@ -171,7 +426,7 @@ class AssistantStore {
     this.activeToolCalls = [];
   }
 
-  // Context management
+  // Context management (legacy)
   attachContext(context: AttachedContext): void {
     // Avoid duplicates
     const exists = this.attachedContext.some(
@@ -188,6 +443,317 @@ class AssistantStore {
 
   clearContext(): void {
     this.attachedContext = [];
+  }
+
+  // New attachment model methods
+  
+  /**
+   * Add a file attachment
+   */
+  attachFile(path: string, content: string, label?: string): { success: boolean; error?: string } {
+    // Check for secrets
+    if (isLikelySecretPath(path)) {
+      return { 
+        success: false, 
+        error: `File "${path}" appears to contain secrets. Redacting sensitive content.` 
+      };
+    }
+
+    // Check limits
+    if (this.pendingAttachments.filter(a => a.type === 'file').length >= CONTEXT_LIMITS.maxFilesPerMessage) {
+      return { success: false, error: `Maximum ${CONTEXT_LIMITS.maxFilesPerMessage} files per message` };
+    }
+
+    // Avoid duplicates
+    const exists = this.pendingAttachments.some(
+      a => a.type === 'file' && (a as FileAttachment).path === path
+    );
+    if (exists) {
+      return { success: false, error: 'File already attached' };
+    }
+
+    // Redact secrets from content
+    const safeContent = redactSecrets(content);
+
+    const attachment: FileAttachment = {
+      id: crypto.randomUUID(),
+      type: 'file',
+      path,
+      content: safeContent,
+      label: label ?? path.split('/').pop() ?? path,
+      checksum: generateChecksum(safeContent)
+    };
+
+    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    return { success: true };
+  }
+
+  /**
+   * Add a selection attachment
+   */
+  attachSelection(content: string, path?: string, range?: SelectionRange): { success: boolean; error?: string } {
+    if (!content.trim()) {
+      return { success: false, error: 'Selection is empty' };
+    }
+
+    // Redact secrets
+    const safeContent = redactSecrets(content);
+
+    const attachment: SelectionAttachment = {
+      id: crypto.randomUUID(),
+      type: 'selection',
+      path,
+      content: safeContent,
+      range,
+      label: `Selection${path ? ` from ${path.split('/').pop()}` : ''}`,
+      checksum: generateChecksum(safeContent)
+    };
+
+    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    return { success: true };
+  }
+
+  /**
+   * Add a folder scope attachment
+   */
+  attachFolder(path: string): { success: boolean; error?: string } {
+    // Avoid duplicates
+    const exists = this.pendingAttachments.some(
+      a => a.type === 'folder' && (a as FolderAttachment).path === path
+    );
+    if (exists) {
+      return { success: false, error: 'Folder already attached' };
+    }
+
+    const attachment: FolderAttachment = {
+      id: crypto.randomUUID(),
+      type: 'folder',
+      path,
+      label: path.split('/').pop() ?? path
+    };
+
+    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    return { success: true };
+  }
+
+  /**
+   * Add an image attachment (vision)
+   */
+  attachImage(
+    filename: string,
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp',
+    base64Data: string,
+    dimensions?: { width: number; height: number }
+  ): { success: boolean; error?: string } {
+    // Validate mime type
+    if (!IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
+      return { success: false, error: `Unsupported image type: ${mimeType}. Allowed: PNG, JPEG, WebP` };
+    }
+
+    // Calculate byte size from base64
+    const byteSize = Math.ceil((base64Data.length * 3) / 4);
+
+    // Check individual image size
+    if (byteSize > IMAGE_LIMITS.maxImageBytes) {
+      const maxMB = IMAGE_LIMITS.maxImageBytes / (1024 * 1024);
+      return { success: false, error: `Image too large (${(byteSize / (1024 * 1024)).toFixed(1)}MB). Maximum: ${maxMB}MB` };
+    }
+
+    // Check image count
+    const currentImages = this.pendingAttachments.filter(a => a.type === 'image') as ImageAttachment[];
+    if (currentImages.length >= IMAGE_LIMITS.maxImagesPerMessage) {
+      return { success: false, error: `Maximum ${IMAGE_LIMITS.maxImagesPerMessage} images per message` };
+    }
+
+    // Check total size
+    const currentTotalSize = currentImages.reduce((sum, img) => sum + img.byteSize, 0);
+    if (currentTotalSize + byteSize > IMAGE_LIMITS.maxTotalImageBytesPerMessage) {
+      const maxMB = IMAGE_LIMITS.maxTotalImageBytesPerMessage / (1024 * 1024);
+      return { success: false, error: `Total image size would exceed ${maxMB}MB limit` };
+    }
+
+    const attachment: ImageAttachment = {
+      id: crypto.randomUUID(),
+      type: 'image',
+      filename,
+      mimeType,
+      data: base64Data,
+      byteSize,
+      dimensions,
+      label: filename,
+      checksum: generateChecksum(base64Data.slice(0, 1000)) // Only hash first 1000 chars for perf
+    };
+
+    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    return { success: true };
+  }
+
+  /**
+   * Remove a pending attachment by ID
+   */
+  removeAttachment(id: string): void {
+    this.pendingAttachments = this.pendingAttachments.filter(a => a.id !== id);
+  }
+
+  /**
+   * Clear all pending attachments
+   */
+  clearAttachments(): void {
+    this.pendingAttachments = [];
+  }
+
+  /**
+   * Get attachment preview info (for UI display)
+   */
+  getAttachmentPreviews(): Array<{
+    id: string;
+    type: MessageAttachment['type'];
+    label: string;
+    size?: string;
+    dimensions?: string;
+    isImage: boolean;
+    thumbnailData?: string;
+  }> {
+    return this.pendingAttachments.map(a => {
+      const base = {
+        id: a.id,
+        type: a.type,
+        label: a.label,
+        isImage: a.type === 'image'
+      };
+
+      if (a.type === 'image') {
+        const img = a as ImageAttachment;
+        return {
+          ...base,
+          size: `${(img.byteSize / 1024).toFixed(1)}KB`,
+          dimensions: img.dimensions ? `${img.dimensions.width}×${img.dimensions.height}` : undefined,
+          thumbnailData: img.data // For preview
+        };
+      }
+
+      if (a.type === 'file' || a.type === 'selection') {
+        const content = (a as FileAttachment | SelectionAttachment).content;
+        return {
+          ...base,
+          size: `${content.length} chars`
+        };
+      }
+
+      return base;
+    });
+  }
+
+  /**
+   * Get total context size for current attachments
+   */
+  getTotalContextSize(): number {
+    return this.pendingAttachments.reduce((total, a) => {
+      if (a.type === 'file' || a.type === 'selection') {
+        return total + (a as FileAttachment | SelectionAttachment).content.length;
+      }
+      if (a.type === 'image') {
+        return total + (a as ImageAttachment).byteSize;
+      }
+      return total;
+    }, 0);
+  }
+
+  /**
+   * Check if context size is within limits
+   */
+  isContextWithinLimits(): boolean {
+    const textSize = this.pendingAttachments
+      .filter(a => a.type === 'file' || a.type === 'selection')
+      .reduce((sum, a) => sum + (a as FileAttachment | SelectionAttachment).content.length, 0);
+    
+    return textSize <= CONTEXT_LIMITS.maxContextSize;
+  }
+
+  /**
+   * Estimate token count from character count
+   */
+  estimateTokens(charCount: number): number {
+    return Math.ceil(charCount / CHARS_PER_TOKEN);
+  }
+
+  /**
+   * Get total conversation context size in characters
+   * Includes all messages + pending attachments + input
+   */
+  getConversationContextChars(): number {
+    let total = 0;
+    
+    // Count all messages
+    for (const msg of this.messages) {
+      total += msg.content.length;
+      
+      // Count thinking content if present
+      if (msg.thinking) {
+        total += msg.thinking.length;
+      }
+      
+      // Count attachments in messages
+      if (msg.attachments) {
+        for (const a of msg.attachments) {
+          if (a.type === 'file' || a.type === 'selection') {
+            total += (a as FileAttachment | SelectionAttachment).content.length;
+          }
+          // Images are counted differently (base64 is ~1.33x the byte size)
+          if (a.type === 'image') {
+            total += (a as ImageAttachment).data.length;
+          }
+        }
+      }
+    }
+    
+    // Add pending attachments
+    total += this.getTotalContextSize();
+    
+    // Add current input
+    total += this.inputValue.length;
+    
+    return total;
+  }
+
+  /**
+   * Get context usage info for UI display
+   */
+  getContextUsage(model = 'gemini-2.5-flash'): {
+    usedTokens: number;
+    maxTokens: number;
+    usedChars: number;
+    percentage: number;
+    isNearLimit: boolean;
+    isOverLimit: boolean;
+  } {
+    const limits = MODEL_CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT;
+    const usedChars = this.getConversationContextChars();
+    const usedTokens = this.estimateTokens(usedChars);
+    const maxTokens = limits.inputTokens;
+    const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
+    
+    return {
+      usedTokens,
+      maxTokens,
+      usedChars,
+      percentage,
+      isNearLimit: percentage > 80,
+      isOverLimit: percentage >= 100
+    };
+  }
+
+  /**
+   * Format token count for display (e.g., "1.2M", "500K", "1,234")
+   */
+  formatTokenCount(tokens: number): string {
+    if (tokens >= 1_000_000) {
+      return `${(tokens / 1_000_000).toFixed(1)}M`;
+    }
+    if (tokens >= 1_000) {
+      return `${(tokens / 1_000).toFixed(0)}K`;
+    }
+    return tokens.toLocaleString();
   }
 
   // Streaming controls
@@ -224,6 +790,8 @@ class AssistantStore {
     this.activeToolCalls = [];
     this.inputValue = '';
     this.attachedContext = [];
+    this.pendingAttachments = [];
+    this.initConversation();
   }
 
   // Input management
@@ -276,3 +844,6 @@ export const assistantStore = new AssistantStore();
 
 // Export constants for use in components
 export { MIN_PANEL_WIDTH, MAX_PANEL_WIDTH };
+
+// Export utility functions
+export { generateChecksum, isLikelySecretPath, redactSecrets };

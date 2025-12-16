@@ -215,7 +215,7 @@ class EditorStore {
       content: '',
       language: 'volt-settings',
       readonly: true,
-      pinned: true
+      pinned: false
     });
   }
 

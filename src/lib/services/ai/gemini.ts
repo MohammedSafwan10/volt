@@ -5,6 +5,9 @@
  * - Gemini API: `x-goog-api-key` auth header
  * - POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
  * - POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent (SSE)
+ * - Gemini API: multimodal vision with inline base64 data (mimeType + data format)
+ * - Gemini API: thinkingConfig for native reasoning (thinkingBudget, includeThoughts)
+ * - Gemini 2.5 models support thinking by default, can be configured via thinkingConfig
  */
 
 import type {
@@ -28,6 +31,11 @@ interface GeminiContent {
 
 interface GeminiPart {
   text?: string;
+  thought?: boolean; // True if this part is a thinking/reasoning part
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
   functionCall?: {
     name: string;
     args: Record<string, unknown>;
@@ -48,6 +56,11 @@ interface GeminiFunctionDeclaration {
   parameters: Record<string, unknown>;
 }
 
+interface GeminiThinkingConfig {
+  thinkingBudget?: number; // 0 to disable, positive number for token budget
+  includeThoughts?: boolean; // Include thought summaries in response
+}
+
 interface GeminiRequest {
   contents: GeminiContent[];
   systemInstruction?: GeminiContent;
@@ -56,6 +69,27 @@ interface GeminiRequest {
     temperature?: number;
     maxOutputTokens?: number;
     stopSequences?: string[];
+    thinkingConfig?: GeminiThinkingConfig;
+  };
+}
+
+// Streaming response can have partial candidates
+interface GeminiStreamCandidate {
+  content?: GeminiContent;
+  finishReason?: string;
+}
+
+interface GeminiStreamResponse {
+  candidates?: GeminiStreamCandidate[];
+  usageMetadata?: {
+    promptTokenCount: number;
+    candidatesTokenCount: number;
+    totalTokenCount: number;
+  };
+  error?: {
+    code: number;
+    message: string;
+    status: string;
   };
 }
 
@@ -80,14 +114,38 @@ interface GeminiResponse {
 
 /**
  * Convert our message format to Gemini format
+ * Supports multimodal content (text + images)
  */
 function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
   return messages
     .filter(m => m.role !== 'system') // System handled separately
-    .map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
-    }));
+    .map(m => {
+      const parts: GeminiPart[] = [];
+      
+      // If message has multimodal parts, use them
+      if (m.parts && m.parts.length > 0) {
+        for (const part of m.parts) {
+          if (part.type === 'text') {
+            parts.push({ text: part.text });
+          } else if (part.type === 'image') {
+            parts.push({
+              inlineData: {
+                mimeType: part.mimeType,
+                data: part.data
+              }
+            });
+          }
+        }
+      } else {
+        // Fallback to text-only content
+        parts.push({ text: m.content });
+      }
+      
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts
+      };
+    });
 }
 
 /**
@@ -317,6 +375,14 @@ export const geminiProvider: AIProvider = {
       geminiRequest.generationConfig.maxOutputTokens = request.maxTokens;
     }
     
+    // Enable thinking with includeThoughts for Gemini 2.5+ models
+    // This returns thought summaries as parts with thought: true
+    if (request.model.includes('2.5') || request.model.includes('3')) {
+      geminiRequest.generationConfig.thinkingConfig = {
+        includeThoughts: true
+      };
+    }
+    
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -328,8 +394,13 @@ export const geminiProvider: AIProvider = {
     });
     
     if (!response.ok) {
-      const data = await response.json() as GeminiResponse;
-      yield { type: 'error', error: mapGeminiError(data.error) };
+      // Try to parse error response
+      try {
+        const data = await response.json() as GeminiResponse;
+        yield { type: 'error', error: mapGeminiError(data.error) };
+      } catch {
+        yield { type: 'error', error: `HTTP ${response.status}: ${response.statusText}` };
+      }
       return;
     }
     
@@ -347,56 +418,77 @@ export const geminiProvider: AIProvider = {
         const { done, value } = await reader.read();
         
         if (done) {
+          // Process any remaining buffer
+          if (buffer.trim()) {
+            yield* processSSELine(buffer);
+          }
           yield { type: 'done' };
           break;
         }
         
         buffer += decoder.decode(value, { stream: true });
         
-        // Process SSE events
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6).trim();
-            if (!jsonStr || jsonStr === '[DONE]') continue;
-            
-            try {
-              const data = JSON.parse(jsonStr) as GeminiResponse;
-              
-              if (data.error) {
-                yield { type: 'error', error: mapGeminiError(data.error) };
-                return;
-              }
-              
-              if (data.candidates && data.candidates.length > 0) {
-                const candidate = data.candidates[0];
-                
-                for (const part of candidate.content.parts) {
-                  if (part.text) {
-                    yield { type: 'content', content: part.text };
-                  }
-                  if (part.functionCall) {
-                    yield {
-                      type: 'tool_call',
-                      toolCall: {
-                        id: `call_${Date.now()}`,
-                        name: part.functionCall.name,
-                        arguments: part.functionCall.args
-                      }
-                    };
-                  }
-                }
-              }
-            } catch {
-              // Skip malformed JSON
-            }
+        // Process complete SSE events (separated by double newlines or single newlines)
+        // Gemini SSE format: "data: {json}\n\n" or "data: {json}\n"
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          
+          if (line) {
+            yield* processSSELine(line);
           }
         }
       }
     } finally {
       reader.releaseLock();
+    }
+    
+    function* processSSELine(line: string): Generator<StreamChunk> {
+      // Handle SSE data lines
+      if (line.startsWith('data:')) {
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') return;
+        
+        try {
+          const data = JSON.parse(jsonStr) as GeminiStreamResponse;
+          
+          if (data.error) {
+            yield { type: 'error', error: mapGeminiError(data.error) };
+            return;
+          }
+          
+          if (data.candidates && data.candidates.length > 0) {
+            const candidate = data.candidates[0];
+            
+            // Check if content exists (streaming can have partial responses)
+            if (candidate.content && candidate.content.parts) {
+              for (const part of candidate.content.parts) {
+                if (part.text) {
+                  // Check if this is a thinking/reasoning part (thought: true)
+                  if (part.thought) {
+                    yield { type: 'thinking', thinking: part.text };
+                  } else {
+                    yield { type: 'content', content: part.text };
+                  }
+                }
+                if (part.functionCall) {
+                  yield {
+                    type: 'tool_call',
+                    toolCall: {
+                      id: `call_${Date.now()}`,
+                      name: part.functionCall.name,
+                      arguments: part.functionCall.args
+                    }
+                  };
+                }
+              }
+            }
+          }
+        } catch {
+          // Skip malformed JSON - this can happen with partial chunks
+        }
+      }
     }
   },
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { UIIcon } from '$lib/components/ui';
   import type { AIMode } from '$lib/stores/ai.svelte';
+  import { IMAGE_LIMITS, assistantStore } from '$lib/stores/assistant.svelte';
 
   interface Props {
     inputRef?: HTMLTextAreaElement;
@@ -13,7 +14,30 @@
     onModeChange: (mode: AIMode) => void;
     onAttachFile: () => void;
     onAttachSelection: () => void;
+    onAttachImage?: (file: File) => void;
+    onAttachImageFromPicker?: () => void;
   }
+
+  // Context usage tracking (reactive)
+  const contextUsage = $derived(assistantStore.getContextUsage('gemini-2.5-flash'));
+
+  // SVG circle parameters for progress ring
+  const RING_SIZE = 24;
+  const RING_STROKE = 2.5;
+  const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
+  const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+  
+  // Calculate stroke dash offset for progress
+  const strokeDashoffset = $derived(
+    RING_CIRCUMFERENCE - (contextUsage.percentage / 100) * RING_CIRCUMFERENCE
+  );
+
+  // Determine ring color based on usage
+  const ringColor = $derived(
+    contextUsage.isOverLimit ? 'var(--color-error)' :
+    contextUsage.isNearLimit ? 'var(--color-warning)' :
+    'var(--color-green)'
+  );
 
   let { 
     inputRef = $bindable(),
@@ -25,8 +49,12 @@
     onStop,
     onModeChange,
     onAttachFile,
-    onAttachSelection
+    onAttachSelection,
+    onAttachImage,
+    onAttachImageFromPicker
   }: Props = $props();
+
+  let isDraggingOver = $state(false);
 
   let showModeMenu = $state(false);
   let showAttachMenu = $state(false);
@@ -84,6 +112,62 @@
     showAttachMenu = false;
   }
 
+  function handleAttachImagePicker(): void {
+    onAttachImageFromPicker?.();
+    showAttachMenu = false;
+  }
+
+  // Handle paste for images
+  function handlePaste(e: ClipboardEvent): void {
+    if (!onAttachImage) return;
+    
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          onAttachImage(file);
+        }
+        return;
+      }
+    }
+  }
+
+  // Handle drag over
+  function handleDragOver(e: DragEvent): void {
+    e.preventDefault();
+    if (e.dataTransfer?.types.includes('Files')) {
+      isDraggingOver = true;
+    }
+  }
+
+  // Handle drag leave
+  function handleDragLeave(e: DragEvent): void {
+    e.preventDefault();
+    isDraggingOver = false;
+  }
+
+  // Handle drop for images
+  function handleDrop(e: DragEvent): void {
+    e.preventDefault();
+    isDraggingOver = false;
+    
+    if (!onAttachImage) return;
+    
+    const files = e.dataTransfer?.files;
+    if (!files) return;
+
+    for (const file of files) {
+      const mimeType = file.type as typeof IMAGE_LIMITS.allowedMimeTypes[number];
+      if (IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
+        onAttachImage(file);
+      }
+    }
+  }
+
   function handleClickOutside(e: MouseEvent): void {
     const target = e.target as HTMLElement;
     if (!target.closest('.mode-dropdown-container')) {
@@ -97,7 +181,22 @@
 
 <svelte:window onclick={handleClickOutside} />
 
-<div class="chat-input-bar">
+<div 
+  class="chat-input-bar"
+  class:dragging={isDraggingOver}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  role="region"
+  aria-label="Chat input area"
+>
+  {#if isDraggingOver}
+    <div class="drop-overlay">
+      <UIIcon name="image" size={24} />
+      <span>Drop image to attach</span>
+    </div>
+  {/if}
+
   <!-- Text Input Area -->
   <div class="input-wrapper">
     <textarea
@@ -108,6 +207,7 @@
       {value}
       oninput={handleInput}
       onkeydown={handleKeydown}
+      onpaste={handlePaste}
       aria-label="Message input"
     ></textarea>
   </div>
@@ -115,6 +215,47 @@
   <!-- Bottom Bar with Mode Selector and Actions -->
   <div class="bottom-bar">
     <div class="left-controls">
+      <!-- Context Usage Ring -->
+      {#if assistantStore.messages.length > 0 || contextUsage.usedTokens > 100}
+        <div 
+          class="context-ring-container"
+          class:near-limit={contextUsage.isNearLimit}
+          class:over-limit={contextUsage.isOverLimit}
+          title="{contextUsage.percentage.toFixed(0)}% context usage ({assistantStore.formatTokenCount(contextUsage.usedTokens)} / {assistantStore.formatTokenCount(contextUsage.maxTokens)} tokens)"
+        >
+          <svg 
+            class="context-ring" 
+            width={RING_SIZE} 
+            height={RING_SIZE}
+            viewBox="0 0 {RING_SIZE} {RING_SIZE}"
+          >
+            <!-- Background circle -->
+            <circle
+              cx={RING_SIZE / 2}
+              cy={RING_SIZE / 2}
+              r={RING_RADIUS}
+              fill="none"
+              stroke="var(--color-border)"
+              stroke-width={RING_STROKE}
+            />
+            <!-- Progress circle -->
+            <circle
+              cx={RING_SIZE / 2}
+              cy={RING_SIZE / 2}
+              r={RING_RADIUS}
+              fill="none"
+              stroke={ringColor}
+              stroke-width={RING_STROKE}
+              stroke-linecap="round"
+              stroke-dasharray={RING_CIRCUMFERENCE}
+              stroke-dashoffset={strokeDashoffset}
+              transform="rotate(-90 {RING_SIZE / 2} {RING_SIZE / 2})"
+              class="progress-circle"
+            />
+          </svg>
+        </div>
+      {/if}
+
       <!-- Mode Selector Dropdown -->
       <div class="mode-dropdown-container">
         <button
@@ -199,6 +340,17 @@
               <UIIcon name="code" size={14} />
               <span>Selection</span>
             </button>
+            {#if onAttachImageFromPicker}
+              <button
+                class="attach-option"
+                onclick={handleAttachImagePicker}
+                role="menuitem"
+                type="button"
+              >
+                <UIIcon name="image" size={14} />
+                <span>Image</span>
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -246,6 +398,29 @@
     flex-direction: column;
     padding: 12px;
     gap: 8px;
+    position: relative;
+  }
+
+  .chat-input-bar.dragging {
+    background: var(--color-accent-alpha);
+  }
+
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--color-accent-alpha);
+    border: 2px dashed var(--color-accent);
+    border-radius: 8px;
+    color: var(--color-accent);
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 10;
+    pointer-events: none;
   }
 
   .input-wrapper {
@@ -288,7 +463,28 @@
   .left-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
+  }
+
+  /* Context Usage Ring */
+  .context-ring-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: help;
+    transition: transform 0.15s ease;
+  }
+
+  .context-ring-container:hover {
+    transform: scale(1.1);
+  }
+
+  .context-ring {
+    display: block;
+  }
+
+  .progress-circle {
+    transition: stroke-dashoffset 0.3s ease, stroke 0.2s ease;
   }
 
   .right-controls {
@@ -341,6 +537,19 @@
     box-shadow: var(--shadow-elevated);
     padding: 4px 0;
     z-index: 100;
+    animation: dropdownIn 0.15s ease;
+    transform-origin: bottom left;
+  }
+
+  @keyframes dropdownIn {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
   }
 
   .mode-option {
@@ -443,6 +652,8 @@
     box-shadow: var(--shadow-elevated);
     padding: 4px 0;
     z-index: 100;
+    animation: dropdownIn 0.15s ease;
+    transform-origin: bottom right;
   }
 
   .attach-option {

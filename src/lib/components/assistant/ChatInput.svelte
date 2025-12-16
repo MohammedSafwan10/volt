@@ -1,5 +1,6 @@
 <script lang="ts">
   import { UIIcon } from '$lib/components/ui';
+  import { IMAGE_LIMITS } from '$lib/stores/assistant.svelte';
 
   interface Props {
     inputRef?: HTMLTextAreaElement;
@@ -10,6 +11,8 @@
     onStop: () => void;
     onAttachFile: () => void;
     onAttachSelection: () => void;
+    onAttachImage?: (file: File) => void;
+    onAttachImageFromPicker?: () => void;
   }
 
   let { 
@@ -20,10 +23,13 @@
     onSend, 
     onStop,
     onAttachFile,
-    onAttachSelection
+    onAttachSelection,
+    onAttachImage,
+    onAttachImageFromPicker
   }: Props = $props();
 
   let showAttachMenu = $state(false);
+  let isDraggingOver = $state(false);
 
   function handleKeydown(e: KeyboardEvent): void {
     // Enter to send, Shift+Enter for newline
@@ -69,6 +75,11 @@
     showAttachMenu = false;
   }
 
+  function handleAttachImagePicker(): void {
+    onAttachImageFromPicker?.();
+    showAttachMenu = false;
+  }
+
   // Close menu when clicking outside
   function handleClickOutside(e: MouseEvent): void {
     const target = e.target as HTMLElement;
@@ -76,11 +87,78 @@
       showAttachMenu = false;
     }
   }
+
+  // Handle paste for images
+  function handlePaste(e: ClipboardEvent): void {
+    if (!onAttachImage) return;
+    
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          onAttachImage(file);
+        }
+        return;
+      }
+    }
+  }
+
+  // Handle drag over
+  function handleDragOver(e: DragEvent): void {
+    e.preventDefault();
+    if (e.dataTransfer?.types.includes('Files')) {
+      isDraggingOver = true;
+    }
+  }
+
+  // Handle drag leave
+  function handleDragLeave(e: DragEvent): void {
+    e.preventDefault();
+    isDraggingOver = false;
+  }
+
+  // Handle drop for images
+  function handleDrop(e: DragEvent): void {
+    e.preventDefault();
+    isDraggingOver = false;
+    
+    if (!onAttachImage) return;
+    
+    const files = e.dataTransfer?.files;
+    if (!files) return;
+
+    for (const file of files) {
+      // Check if it's an allowed image type
+      const mimeType = file.type as typeof IMAGE_LIMITS.allowedMimeTypes[number];
+      if (IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
+        onAttachImage(file);
+      }
+    }
+  }
 </script>
 
 <svelte:window onclick={handleClickOutside} />
 
-<div class="chat-input-container">
+<div 
+  class="chat-input-container"
+  class:dragging={isDraggingOver}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  role="region"
+  aria-label="Chat input area"
+>
+  {#if isDraggingOver}
+    <div class="drop-overlay">
+      <UIIcon name="image" size={24} />
+      <span>Drop image to attach</span>
+    </div>
+  {/if}
+  
   <div class="input-row">
     <!-- Attach button -->
     <div class="attach-container">
@@ -116,6 +194,17 @@
             <UIIcon name="code" size={14} />
             <span>Selection</span>
           </button>
+          {#if onAttachImageFromPicker}
+            <button
+              class="attach-option"
+              onclick={handleAttachImagePicker}
+              role="menuitem"
+              type="button"
+            >
+              <UIIcon name="image" size={14} />
+              <span>Image</span>
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -129,6 +218,7 @@
       {value}
       oninput={handleInput}
       onkeydown={handleKeydown}
+      onpaste={handlePaste}
       aria-label="Message input"
     ></textarea>
 
@@ -165,6 +255,29 @@
 <style>
   .chat-input-container {
     padding: 12px;
+    position: relative;
+  }
+
+  .chat-input-container.dragging {
+    background: var(--color-accent-alpha);
+  }
+
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--color-accent-alpha);
+    border: 2px dashed var(--color-accent);
+    border-radius: 8px;
+    color: var(--color-accent);
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 10;
+    pointer-events: none;
   }
 
   .input-row {
