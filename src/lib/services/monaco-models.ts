@@ -190,3 +190,30 @@ export function revealLine(path: string, line: number): void {
   activeEditor.revealLineInCenter(targetLine);
   activeEditor.focus();
 }
+
+/**
+ * Get the current selection from the active editor
+ * Returns the selected text and the file path
+ */
+export function getEditorSelection(): { text: string; path: string | null } | null {
+  if (!activeEditor) return null;
+  
+  const selection = activeEditor.getSelection();
+  if (!selection || selection.isEmpty()) return null;
+  
+  const model = activeEditor.getModel();
+  if (!model) return null;
+  
+  const text = model.getValueInRange(selection);
+  
+  // Find the path for this model
+  let path: string | null = null;
+  for (const [p, m] of models.entries()) {
+    if (m === model) {
+      path = p;
+      break;
+    }
+  }
+  
+  return { text, path };
+}

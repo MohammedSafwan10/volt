@@ -11,6 +11,7 @@
   import { TabBar } from '$lib/components/tabs';
   import { CommandPalette, SymbolPicker } from '$lib/components/command-palette';
   import { BottomPanel } from '$lib/components/panel';
+  import { AssistantPanel } from '$lib/components/assistant';
   import { loadMonaco } from '$lib/services/monaco-loader';
   import { loadXterm } from '$lib/services/terminal-loader';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -21,6 +22,7 @@
   import { terminalStore } from '$lib/stores/terminal.svelte';
   import { logOutput } from '$lib/stores/output.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
+  import { assistantStore } from '$lib/stores/assistant.svelte';
   import { openFolderDialog, writeFile } from '$lib/services/file-system';
   import { 
     initAutoSave, 
@@ -266,12 +268,17 @@
       (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') ||
       (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') ||
       (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') ||
-      (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote'));
+      (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote')) ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') ||
+      (isMod && !e.shiftKey && !e.altKey && e.key === '.');
 
     if (editable && !allowInEditable) return;
 
     if (e.key === 'Escape') {
       uiStore.closeMenus();
+      if (assistantStore.isStreaming) {
+        assistantStore.stopStreaming();
+      }
       return;
     }
 
@@ -385,6 +392,20 @@
       uiStore.closeMenus();
       uiStore.toggleBottomPanel();
     }
+
+    // Ctrl+L to toggle Assistant panel
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      assistantStore.togglePanel();
+    }
+
+    // Ctrl+. to cycle Assistant modes
+    if (isMod && !e.shiftKey && !e.altKey && e.key === '.') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      assistantStore.cycleMode();
+    }
   }
 
   $effect(() => {
@@ -413,28 +434,50 @@
         <Breadcrumb filepath={editorStore.activeFile.path} />
       {/if}
 
-      <!-- Editor area -->
-      <div class="editor-area">
-        {#if children}
-          {@render children()}
-        {:else if editorStore.activeFile}
-          {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
-            <div class="settings-editor" role="region" aria-label="Settings">
-              <SettingsPanel />
-            </div>
+      <!-- Editor + Right Panel container -->
+      <div class="editor-with-right-panel">
+        <!-- Editor area -->
+        <div class="editor-area">
+          {#if children}
+            {@render children()}
+          {:else if editorStore.activeFile}
+            {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
+              <div class="settings-editor" role="region" aria-label="Settings">
+                <SettingsPanel />
+              </div>
+            {:else}
+              <MonacoEditor
+                filepath={editorStore.activeFile.path}
+                value={editorStore.activeFile.content}
+                language={editorStore.activeFile.language}
+                readonly={editorStore.activeFile.readonly ?? false}
+                onchange={handleEditorChange}
+              />
+            {/if}
+          {:else if !projectStore.rootPath}
+            <WelcomeScreen />
           {:else}
-            <MonacoEditor
-              filepath={editorStore.activeFile.path}
-              value={editorStore.activeFile.content}
-              language={editorStore.activeFile.language}
-              readonly={editorStore.activeFile.readonly ?? false}
-              onchange={handleEditorChange}
-            />
+            <EmptyState hasProject={true} />
           {/if}
-        {:else if !projectStore.rootPath}
-          <WelcomeScreen />
-        {:else}
-          <EmptyState hasProject={true} />
+        </div>
+
+        <!-- Assistant Panel (Right side) -->
+        {#if assistantStore.panelOpen}
+          <ResizablePanel
+            direction="horizontal"
+            side="right"
+            size={assistantStore.panelWidth}
+            minSize={280}
+            maxSize={800}
+            onResize={(width) => assistantStore.setPanelWidth(width)}
+          />
+
+          <div
+            class="assistant-panel-container"
+            style="width: {assistantStore.panelWidth}px"
+          >
+            <AssistantPanel />
+          </div>
         {/if}
       </div>
 
@@ -504,6 +547,12 @@
     overflow: hidden;
   }
 
+  .editor-with-right-panel {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
   .editor-area {
     flex: 1;
     display: flex;
@@ -511,6 +560,13 @@
     justify-content: center;
     overflow: hidden;
     background: var(--color-bg);
+  }
+
+  .assistant-panel-container {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
   }
 
   .bottom-panel-container {

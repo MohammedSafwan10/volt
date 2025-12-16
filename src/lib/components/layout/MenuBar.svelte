@@ -7,9 +7,11 @@
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { terminalStore } from '$lib/stores/terminal.svelte';
   import { themeStore } from '$lib/stores/theme.svelte';
+  import { assistantStore } from '$lib/stores/assistant.svelte';
   import { openFileDialog, openFolderDialog } from '$lib/services/file-system';
   import { formatCurrentDocument } from '$lib/services/prettier';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { UIIcon } from '$lib/components/ui';
 
   interface Props {
     onOpenCommandPalette?: () => void;
@@ -207,6 +209,7 @@
         { label: 'Problems', shortcut: 'Ctrl+Shift+M', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('problems'); } },
         { label: 'Output', shortcut: 'Ctrl+Shift+U', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('output'); } },
         { label: 'Terminal', shortcut: 'Ctrl+`', action: handleToggleTerminal },
+        { label: 'Assistant', shortcut: 'Ctrl+L', action: () => { uiStore.closeMenus(); assistantStore.togglePanel(); } },
         { separator: true, label: '' },
         { label: 'Zoom In', shortcut: 'Ctrl++', action: handleZoomIn },
         { label: 'Zoom Out', shortcut: 'Ctrl+-', action: handleZoomOut },
@@ -258,18 +261,19 @@
 }} />
 
 <div class="menu-bar no-select" role="menubar" aria-label="Application menu">
-  {#each menus as menu (menu.id)}
-    <div class="menu-container">
-      <button
-        class="menu-trigger"
-        class:active={uiStore.activeMenu === menu.id}
-        onclick={() => handleMenuClick(menu.id)}
-        onmouseenter={() => handleMenuHover(menu.id)}
-        aria-haspopup="menu"
-        aria-expanded={uiStore.activeMenu === menu.id}
-      >
-        {menu.label}
-      </button>
+  <div class="menu-left">
+    {#each menus as menu (menu.id)}
+      <div class="menu-container">
+        <button
+          class="menu-trigger"
+          class:active={uiStore.activeMenu === menu.id}
+          onclick={() => handleMenuClick(menu.id)}
+          onmouseenter={() => handleMenuHover(menu.id)}
+          aria-haspopup="menu"
+          aria-expanded={uiStore.activeMenu === menu.id}
+        >
+          {menu.label}
+        </button>
 
       {#if uiStore.activeMenu === menu.id}
         <div class="menu-dropdown" role="menu" aria-label={menu.label}>
@@ -317,8 +321,25 @@
           {/each}
         </div>
       {/if}
-    </div>
-  {/each}
+      </div>
+    {/each}
+  </div>
+
+  <div class="menu-spacer"></div>
+
+  <div class="menu-right">
+    <button
+      class="assistant-btn"
+      class:active={assistantStore.panelOpen}
+      onclick={() => assistantStore.togglePanel()}
+      title="Assistant (Ctrl+L)"
+      aria-label="Toggle Assistant panel"
+      aria-pressed={assistantStore.panelOpen}
+      type="button"
+    >
+      <UIIcon name="sparkle" size={16} />
+    </button>
+  </div>
 </div>
 
 <style>
@@ -333,9 +354,52 @@
     gap: 2px;
   }
 
+  .menu-left {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    -webkit-app-region: no-drag;
+  }
+
+  .menu-spacer {
+    flex: 1;
+  }
+
+  .menu-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+  }
+
+  .assistant-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 22px;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    transition: all 0.15s ease;
+  }
+
+  .assistant-btn:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .assistant-btn.active {
+    background: var(--color-accent);
+    color: var(--color-bg);
+  }
+
+  .assistant-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   .menu-container {
     position: relative;
-    -webkit-app-region: no-drag;
   }
 
   .menu-trigger {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { themeStore, type ThemeMode } from '$lib/stores/theme.svelte';
+  import AISettingsSection from './AISettingsSection.svelte';
 
   function toNumber(value: string): number | null {
     if (value.trim() === '') return null;
@@ -220,6 +221,13 @@
       </div>
     </div>
   </div>
+
+  <div class="section">
+    <div class="section-title">AI</div>
+    <div class="ai-section-content">
+      <AISettingsSection />
+    </div>
+  </div>
 </div>
 
 <style>
@@ -325,6 +333,10 @@
 
   .setting:last-child {
     border-bottom: none;
+  }
+
+  .ai-section-content {
+    padding: 10px 12px;
   }
 
   .setting-label {

@@ -97,7 +97,11 @@
     | 'pause'
     | 'stop'
     | 'record'
-    | 'cloud';
+    | 'cloud'
+    | 'comment'
+    | 'sparkle'
+    | 'robot'
+    | 'send';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -192,6 +196,10 @@
     stop: 'codicon:debug-stop',
     record: 'codicon:record',
     cloud: 'codicon:cloud',
+    comment: 'codicon:comment',
+    sparkle: 'codicon:sparkle',
+    robot: 'codicon:robot',
+    send: 'codicon:send',
   };
 
   interface Props {

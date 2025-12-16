@@ -3,6 +3,7 @@ pub mod file_ops;
 pub mod file_watch;
 pub mod fs_scope;
 pub mod git;
+pub mod ai;
 pub mod lsp;
 pub mod search;
 pub mod system;

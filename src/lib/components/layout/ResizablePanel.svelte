@@ -4,10 +4,12 @@
     size: number;
     minSize?: number;
     maxSize?: number;
+    /** For horizontal: 'left' means panel is on left (drag right to grow), 'right' means panel is on right (drag left to grow) */
+    side?: 'left' | 'right' | 'top' | 'bottom';
     onResize: (size: number) => void;
   }
 
-  let { direction, size, minSize = 100, maxSize = 600, onResize }: Props = $props();
+  let { direction, size, minSize = 100, maxSize = 600, side, onResize }: Props = $props();
 
   let isDragging = $state(false);
   let startPos = $state(0);
@@ -27,10 +29,18 @@
 
     const currentPos = direction === 'horizontal' ? e.clientX : e.clientY;
     const rawDelta = currentPos - startPos;
-    const delta = rawDelta;
 
     // For vertical resizers used above a bottom panel, dragging up should increase the panel height.
-    const proposedSize = direction === 'horizontal' ? startSize + delta : startSize - delta;
+    // For horizontal resizers on the right side, dragging left should increase the panel width.
+    let proposedSize: number;
+    if (direction === 'horizontal') {
+      // Right panel: drag left (negative delta) = grow
+      proposedSize = side === 'right' ? startSize - rawDelta : startSize + rawDelta;
+    } else {
+      // Bottom panel: drag up (negative delta) = grow
+      proposedSize = startSize - rawDelta;
+    }
+    
     const newSize = Math.max(minSize, Math.min(maxSize, proposedSize));
     onResize(newSize);
   }

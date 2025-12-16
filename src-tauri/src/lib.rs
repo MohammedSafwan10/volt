@@ -27,6 +27,7 @@ use commands::search::{
     workspace_search_stream, SearchManagerState,
 };
 use commands::system::get_system_info;
+use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_list, terminal_resize, terminal_write,
 };
@@ -45,6 +46,11 @@ pub fn run() {
         .manage(FileIndexState::default())
         .manage(FileWatchState::default())
         .invoke_handler(tauri::generate_handler![
+            // AI credentials (OS secure storage)
+            ai_set_api_key,
+            ai_get_api_key,
+            ai_has_api_key,
+            ai_remove_api_key,
             // File operations
             read_file,
             write_file,

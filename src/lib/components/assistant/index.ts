@@ -1,0 +1,7 @@
+// Assistant components barrel export
+export { default as AssistantPanel } from './AssistantPanel.svelte';
+export { default as ModeSelector } from './ModeSelector.svelte';
+export { default as MessageList } from './MessageList.svelte';
+export { default as ChatInput } from './ChatInput.svelte';
+export { default as ChatInputBar } from './ChatInputBar.svelte';
+export { default as ToolCallRow } from './ToolCallRow.svelte';
