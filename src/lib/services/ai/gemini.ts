@@ -23,6 +23,19 @@ import type {
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
+const GEMINI_THINKING_SUFFIX = '|thinking';
+
+function parseGeminiModel(rawModel: string): { model: string; thinkingEnabled: boolean } {
+  const modelWithoutPrefix = rawModel.startsWith('models/') ? rawModel.slice('models/'.length) : rawModel;
+  if (modelWithoutPrefix.endsWith(GEMINI_THINKING_SUFFIX)) {
+    return {
+      model: modelWithoutPrefix.slice(0, -GEMINI_THINKING_SUFFIX.length),
+      thinkingEnabled: true
+    };
+  }
+  return { model: modelWithoutPrefix, thinkingEnabled: false };
+}
+
 // Gemini API types
 interface GeminiContent {
   role: 'user' | 'model';
@@ -267,7 +280,8 @@ export const geminiProvider: AIProvider = {
   } as ProviderCapabilities,
 
   async sendChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): Promise<ChatResponse> {
-    const url = `${GEMINI_API_BASE}/models/${request.model}:generateContent`;
+    const { model, thinkingEnabled } = parseGeminiModel(request.model);
+    const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
     
     const geminiRequest: GeminiRequest = {
       contents: toGeminiContents(request.messages)
@@ -293,6 +307,16 @@ export const geminiProvider: AIProvider = {
     }
     if (request.maxTokens !== undefined) {
       geminiRequest.generationConfig.maxOutputTokens = request.maxTokens;
+    }
+
+    // Explicit thinking toggle (UI-only model suffix)
+    if (thinkingEnabled) {
+      geminiRequest.generationConfig.thinkingConfig = {
+        // Include thought summaries as parts with thought: true
+        includeThoughts: true,
+        // Give a reasonable budget; user can change later if we expose it.
+        thinkingBudget: 1024
+      };
     }
     
     const response = await fetch(url, {
@@ -347,7 +371,8 @@ export const geminiProvider: AIProvider = {
   },
 
   async *streamChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk> {
-    const url = `${GEMINI_API_BASE}/models/${request.model}:streamGenerateContent?alt=sse`;
+    const { model, thinkingEnabled } = parseGeminiModel(request.model);
+    const url = `${GEMINI_API_BASE}/models/${model}:streamGenerateContent?alt=sse`;
     
     const geminiRequest: GeminiRequest = {
       contents: toGeminiContents(request.messages)
@@ -374,12 +399,12 @@ export const geminiProvider: AIProvider = {
     if (request.maxTokens !== undefined) {
       geminiRequest.generationConfig.maxOutputTokens = request.maxTokens;
     }
-    
-    // Enable thinking with includeThoughts for Gemini 2.5+ models
-    // This returns thought summaries as parts with thought: true
-    if (request.model.includes('2.5') || request.model.includes('3')) {
+
+    // Explicit thinking toggle (UI-only model suffix)
+    if (thinkingEnabled) {
       geminiRequest.generationConfig.thinkingConfig = {
-        includeThoughts: true
+        includeThoughts: true,
+        thinkingBudget: 1024
       };
     }
     

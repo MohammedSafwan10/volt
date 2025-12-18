@@ -116,10 +116,12 @@ export const IMAGE_LIMITS = {
 
 // Model context limits (in tokens)
 // Gemini 2.5 Flash: 1,048,576 input tokens, 65,536 output tokens
+// Gemini 3 Flash Preview: 1,048,576 input tokens, 65,536 output tokens (estimated)
 export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputTokens: number }> = {
   'gemini-2.5-flash': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-flash-lite': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-pro': { inputTokens: 1_048_576, outputTokens: 65_536 },
+  'gemini-3-flash-preview': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.0-flash': { inputTokens: 1_048_576, outputTokens: 8_192 },
   'gemini-2.0-flash-lite': { inputTokens: 1_048_576, outputTokens: 8_192 }
 };
@@ -727,7 +729,10 @@ class AssistantStore {
     isNearLimit: boolean;
     isOverLimit: boolean;
   } {
-    const limits = MODEL_CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT;
+    const normalizedModel = model
+      .replace(/\|thinking$/g, '')
+      .replace(/^models\//g, '');
+    const limits = MODEL_CONTEXT_LIMITS[normalizedModel] ?? DEFAULT_CONTEXT_LIMIT;
     const usedChars = this.getConversationContextChars();
     const usedTokens = this.estimateTokens(usedChars);
     const maxTokens = limits.inputTokens;

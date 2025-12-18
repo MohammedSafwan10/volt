@@ -1,6 +1,7 @@
 <script lang="ts">
   import { UIIcon } from '$lib/components/ui';
   import type { AIMode } from '$lib/stores/ai.svelte';
+  import { aiSettingsStore, PROVIDERS } from '$lib/stores/ai.svelte';
   import { IMAGE_LIMITS, assistantStore } from '$lib/stores/assistant.svelte';
 
   interface Props {
@@ -18,8 +19,26 @@
     onAttachImageFromPicker?: () => void;
   }
 
-  // Context usage tracking (reactive)
-  const contextUsage = $derived(assistantStore.getContextUsage('gemini-2.5-flash'));
+  let { 
+    inputRef = $bindable(),
+    value, 
+    isStreaming,
+    currentMode,
+    onInput, 
+    onSend, 
+    onStop,
+    onModeChange,
+    onAttachFile,
+    onAttachSelection,
+    onAttachImage,
+    onAttachImageFromPicker
+  }: Props = $props();
+
+  // Get current model from settings store (synced with settings panel)
+  const currentModel = $derived(aiSettingsStore.modelPerMode[currentMode]);
+  
+  // Context usage tracking (reactive) - use current model
+  const contextUsage = $derived(assistantStore.getContextUsage(currentModel));
 
   // SVG circle parameters for progress ring
   const RING_SIZE = 24;
@@ -39,25 +58,25 @@
     'var(--color-green)'
   );
 
-  let { 
-    inputRef = $bindable(),
-    value, 
-    isStreaming,
-    currentMode,
-    onInput, 
-    onSend, 
-    onStop,
-    onModeChange,
-    onAttachFile,
-    onAttachSelection,
-    onAttachImage,
-    onAttachImageFromPicker
-  }: Props = $props();
-
   let isDraggingOver = $state(false);
 
   let showModeMenu = $state(false);
   let showAttachMenu = $state(false);
+  let showModelMenu = $state(false);
+
+  // Available models from provider config
+  const availableModels = $derived(PROVIDERS[aiSettingsStore.selectedProvider].models);
+  
+  // Display-friendly model name
+  function getModelDisplayName(model: string): string {
+    const thinking = model.endsWith('|thinking');
+    const base = thinking ? model.slice(0, -'|thinking'.length) : model;
+
+    if (base === 'gemini-2.5-flash') return thinking ? 'Gemini 2.5 Flash (thinking)' : 'Gemini 2.5 Flash';
+    if (base === 'gemini-3-flash-preview') return thinking ? 'Gemini 3.0 Flash Preview (thinking)' : 'Gemini 3.0 Flash Preview';
+    // Fallback: capitalize and clean up
+    return (thinking ? base : model).replace('gemini-', 'Gemini ').replace(/-/g, ' ') + (thinking ? ' (thinking)' : '');
+  }
 
   const modes: { id: AIMode; label: string; shortcut?: string; description: string }[] = [
     { id: 'agent', label: 'Agent', description: 'Execute tasks with tools' },
@@ -176,6 +195,14 @@
     if (!target.closest('.attach-dropdown-container')) {
       showAttachMenu = false;
     }
+    if (!target.closest('.model-dropdown-container')) {
+      showModelMenu = false;
+    }
+  }
+
+  function selectModel(model: string): void {
+    aiSettingsStore.setModelForMode(currentMode, model);
+    showModelMenu = false;
   }
 </script>
 
@@ -299,11 +326,37 @@
         {/if}
       </div>
 
-      <!-- Model Selector (placeholder for now) -->
-      <button class="model-selector-btn" type="button" title="Select model">
-        <span class="model-label">Gemini 2.5</span>
-        <UIIcon name="chevron-down" size={12} />
-      </button>
+      <!-- Model Selector Dropdown -->
+      <div class="model-dropdown-container">
+        <button 
+          class="model-selector-btn" 
+          type="button" 
+          title="Select model"
+          onclick={() => showModelMenu = !showModelMenu}
+          aria-expanded={showModelMenu}
+          aria-haspopup="listbox"
+        >
+          <span class="model-label">{getModelDisplayName(currentModel)}</span>
+          <UIIcon name="chevron-down" size={12} />
+        </button>
+
+        {#if showModelMenu}
+          <div class="model-menu" role="listbox">
+            {#each availableModels as model (model)}
+              <button
+                class="model-option"
+                class:active={currentModel === model}
+                onclick={() => selectModel(model)}
+                role="option"
+                aria-selected={currentModel === model}
+                type="button"
+              >
+                {getModelDisplayName(model)}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
 
     <div class="right-controls">
@@ -599,6 +652,10 @@
   }
 
   /* Model Selector */
+  .model-dropdown-container {
+    position: relative;
+  }
+
   .model-selector-btn {
     display: flex;
     align-items: center;
@@ -608,14 +665,50 @@
     color: var(--color-text-secondary);
     font-size: 11px;
     transition: all 0.15s ease;
+    border-radius: 4px;
   }
 
   .model-selector-btn:hover {
     color: var(--color-text);
+    background: var(--color-hover);
   }
 
   .model-label {
     opacity: 0.8;
+  }
+
+  .model-menu {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    margin-bottom: 4px;
+    min-width: 160px;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-elevated);
+    padding: 4px 0;
+    z-index: 100;
+    animation: dropdownIn 0.15s ease;
+    transform-origin: bottom left;
+  }
+
+  .model-option {
+    width: 100%;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--color-text);
+    text-align: left;
+    transition: background 0.1s ease;
+  }
+
+  .model-option:hover {
+    background: var(--color-hover);
+  }
+
+  .model-option.active {
+    background: rgba(137, 180, 250, 0.15);
+    color: var(--color-accent);
   }
 
   /* Action Buttons */

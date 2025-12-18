@@ -84,6 +84,7 @@ Current mode: ${assistantStore.currentMode}.
 If canMutateFiles is false, do not instruct the app to modify files. Provide analysis, explanations, or plans only.`;
 
     let acc = '';
+    let thinkingAcc = '';
 
     try {
       for await (const chunk of streamChat({
@@ -98,6 +99,11 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
           assistantStore.updateAssistantMessage(msgId, acc, true);
         }
 
+        if (chunk.type === 'thinking' && chunk.thinking) {
+          thinkingAcc += chunk.thinking;
+          assistantStore.updateAssistantThinking(msgId, thinkingAcc, true);
+        }
+
         if (chunk.type === 'error') {
           const error = chunk.error ?? 'Unknown error';
           assistantStore.updateAssistantMessage(msgId, `Error: ${error}`, false);
@@ -106,6 +112,10 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
         }
       }
 
+      // Mark thinking as complete if we received any
+      if (thinkingAcc) {
+        assistantStore.updateAssistantThinking(msgId, thinkingAcc, false);
+      }
       assistantStore.updateAssistantMessage(msgId, acc, false);
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -119,6 +129,10 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
         assistantStore.abortController = null;
       }
       assistantStore.isStreaming = false;
+
+      if (thinkingAcc) {
+        assistantStore.updateAssistantThinking(msgId, thinkingAcc, false);
+      }
       assistantStore.updateAssistantMessage(msgId, acc, false);
     }
   }

@@ -91,6 +91,15 @@
   // Model options for current provider
   const modelOptions = $derived(currentProvider.models);
 
+  function formatModelLabel(model: string): string {
+    const thinking = model.endsWith('|thinking');
+    const base = thinking ? model.slice(0, -'|thinking'.length) : model;
+
+    // Display-friendly tweak: Gemini 3 preview is branded “3.0” in UI.
+    const displayBase = base === 'gemini-3-flash-preview' ? 'gemini-3.0-flash-preview' : base;
+    return thinking ? `${displayBase} (thinking)` : displayBase;
+  }
+
   // Mode labels
   const modeLabels: Record<AIMode, string> = {
     ask: 'Ask Mode',
@@ -213,7 +222,7 @@
           aria-label="{modeLabels[mode]} model"
         >
           {#each modelOptions as model (model)}
-            <option value={model}>{model}</option>
+            <option value={model}>{formatModelLabel(model)}</option>
           {/each}
         </select>
       </div>

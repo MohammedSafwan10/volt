@@ -40,10 +40,19 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       supportsStreaming: true,
       supportsTools: true,
       supportsJsonSchema: true,
-      maxContextHint: 1000000 // 1M tokens for Gemini 2.5
+      maxContextHint: 1000000 // 1M tokens for Gemini 2.5+
     },
-    models: ['gemini-2.5-flash'],
-    defaultModel: 'gemini-2.5-flash'
+    // NOTE: We encode “thinking enabled” as a UI-only suffix so we can offer
+    // both thinking and non-thinking variants for the same underlying model.
+    // The provider strips the suffix before calling the Gemini API.
+    models: [
+      'gemini-2.5-flash|thinking',
+      'gemini-2.5-flash',
+      // NOTE: API model name is currently gemini-3-flash-preview (not 3.0)
+      'gemini-3-flash-preview|thinking',
+      'gemini-3-flash-preview'
+    ],
+    defaultModel: 'gemini-2.5-flash|thinking'
   }
 };
 
@@ -65,9 +74,9 @@ const PREFS_STORAGE_KEY = 'volt.ai.preferences';
 const DEFAULT_PREFS: AIPreferences = {
   selectedProvider: 'gemini',
   modelPerMode: {
-    ask: 'gemini-2.5-flash',
-    plan: 'gemini-2.5-flash',
-    agent: 'gemini-2.5-flash'
+    ask: 'gemini-2.5-flash|thinking',
+    plan: 'gemini-2.5-flash|thinking',
+    agent: 'gemini-2.5-flash|thinking'
   }
 };
 
@@ -77,9 +86,9 @@ class AISettingsStore {
   
   // Model selection per mode
   modelPerMode = $state<Record<AIMode, string>>({
-    ask: 'gemini-2.5-flash',
-    plan: 'gemini-2.5-flash',
-    agent: 'gemini-2.5-flash'
+    ask: 'gemini-2.5-flash|thinking',
+    plan: 'gemini-2.5-flash|thinking',
+    agent: 'gemini-2.5-flash|thinking'
   });
   
   // API key status (not the key itself!)
@@ -242,9 +251,27 @@ class AISettingsStore {
         const planModel = stored.plan ?? stored.spec;
         const agentModel = stored.agent;
 
-        if (askModel) this.modelPerMode = { ...this.modelPerMode, ask: askModel };
-        if (planModel) this.modelPerMode = { ...this.modelPerMode, plan: planModel };
-        if (agentModel) this.modelPerMode = { ...this.modelPerMode, agent: agentModel };
+        // Migrate legacy model IDs / defaults.
+        const normalizeModel = (model: string | undefined): string | undefined => {
+          if (!model) return undefined;
+
+          // Normalize Gemini 3 preview naming (we display “3.0”, API id is “3”).
+          if (model === 'gemini-3.0-flash-preview') return 'gemini-3-flash-preview';
+          if (model === 'gemini-3.0-flash-preview|thinking') return 'gemini-3-flash-preview|thinking';
+
+          // Preserve previous behavior where 2.5 was effectively “thinking enabled”.
+          if (model === 'gemini-2.5-flash') return 'gemini-2.5-flash|thinking';
+
+          return model;
+        };
+
+        const ask = normalizeModel(askModel);
+        const plan = normalizeModel(planModel);
+        const agent = normalizeModel(agentModel);
+
+        if (ask) this.modelPerMode = { ...this.modelPerMode, ask };
+        if (plan) this.modelPerMode = { ...this.modelPerMode, plan };
+        if (agent) this.modelPerMode = { ...this.modelPerMode, agent };
       }
     } catch {
       // Ignore parse errors
