@@ -1,14 +1,29 @@
 <script lang="ts">
-  import { UIIcon } from '$lib/components/ui';
-  import type { AssistantMessage, ImageAttachment } from '$lib/stores/assistant.svelte';
+  import { UIIcon, Markdown } from '$lib/components/ui';
+  import type { AssistantMessage, ImageAttachment, ToolCall, ContentPart } from '$lib/stores/assistant.svelte';
   import type { AIMode } from '$lib/stores/ai.svelte';
+  import InlineToolCall from './InlineToolCall.svelte';
 
   interface Props {
     messages: AssistantMessage[];
     currentMode?: AIMode;
+    onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
+    onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
   }
 
-  let { messages, currentMode = 'ask' }: Props = $props();
+  let { messages, currentMode = 'ask', onToolApprove, onToolDeny }: Props = $props();
+
+  // Get content parts for a message, falling back to legacy content if no parts
+  function getContentParts(message: AssistantMessage): ContentPart[] {
+    if (message.contentParts && message.contentParts.length > 0) {
+      return message.contentParts;
+    }
+    // Fallback: convert legacy content to a single text part
+    if (message.content) {
+      return [{ type: 'text', text: message.content }];
+    }
+    return [];
+  }
 
   // Image preview modal state
   let previewImage = $state<{ src: string; alt: string } | null>(null);
@@ -191,21 +206,24 @@
             <span class="bubble-time">{formatTime(message.timestamp)}</span>
           </div>
         </div>
-      {:else}
-        <article class="message-row {message.role}" class:streaming={message.isStreaming}>
-          <div class="avatar {message.role}">
-            <UIIcon name={message.role === 'assistant' ? 'bolt' : 'terminal'} size={14} />
+      {:else if message.role === 'tool'}
+        <!-- Tool messages are internal - don't render them in the UI -->
+        <!-- They're used for conversation context with the API -->
+      {:else if message.role === 'assistant'}
+        <article class="message-row assistant" class:streaming={message.isStreaming}>
+          <div class="avatar assistant">
+            <UIIcon name="bolt" size={14} />
           </div>
           <div class="msg-body">
             <!-- Thinking indicator (collapsible) -->
             {#if message.thinking}
-              <details class="thinking-section" open={message.isThinking}>
+              <details class="thinking-section">
                 <summary class="thinking-header">
                   <span class="thinking-icon" class:active={message.isThinking}>
                     <UIIcon name="sparkle" size={12} />
                   </span>
                   <span class="thinking-label">
-                    {message.isThinking ? 'Thinking...' : 'Thought process'}
+                    {message.isThinking ? 'Thinking...' : 'Reasoning (click to view)'}
                   </span>
                   <UIIcon name="chevron-down" size={12} />
                 </summary>
@@ -214,13 +232,36 @@
                 </div>
               </details>
             {/if}
-            <div class="msg-content">
-              {#if message.isStreaming}
-                <span>{message.content}</span><span class="cursor"></span>
-              {:else}
-                <span>{message.content}</span>
+            
+            <!-- Interleaved content parts (text + tools in order, like Kiro) -->
+            {#each getContentParts(message) as part, i (part.type === 'tool' ? part.toolCall.id : `text-${i}`)}
+              {#if part.type === 'tool'}
+                <div class="inline-tool-wrapper">
+                  <InlineToolCall 
+                    toolCall={part.toolCall}
+                    streamingProgress={part.toolCall.streamingProgress}
+                    onApprove={onToolApprove ? () => onToolApprove(message.id, part.toolCall) : undefined}
+                    onDeny={onToolDeny ? () => onToolDeny(message.id, part.toolCall) : undefined}
+                  />
+                </div>
+              {:else if part.type === 'text' && part.text.trim()}
+                {@const parts = getContentParts(message)}
+                <div class="msg-content">
+                  {#if message.isStreaming && i === parts.length - 1}
+                    <Markdown content={part.text} /><span class="cursor"></span>
+                  {:else}
+                    <Markdown content={part.text} />
+                  {/if}
+                </div>
               {/if}
-            </div>
+            {/each}
+            
+            <!-- Fallback for empty streaming message -->
+            {#if getContentParts(message).length === 0 && message.isStreaming}
+              <div class="msg-content">
+                <span class="cursor"></span>
+              </div>
+            {/if}
             {#if message.role === 'assistant' && !message.isStreaming && message.content}
               <div class="msg-actions">
                 <button class="action-btn" title="Copy" type="button"><UIIcon name="copy" size={12} /></button>
@@ -413,7 +454,15 @@
   .avatar.assistant { background: linear-gradient(135deg, var(--color-accent), var(--color-mauve)); color: var(--color-bg); }
   .avatar.tool { background: var(--color-warning); color: var(--color-bg); }
 
-  .msg-body { flex: 1; min-width: 0; padding-top: 2px; }
+  .msg-body { flex: 1; min-width: 0; max-width: calc(100% - 36px); padding-top: 2px; }
+
+  .inline-tool-wrapper {
+    margin: 6px 0;
+  }
+
+  .inline-tools {
+    margin-bottom: 8px;
+  }
 
   .msg-content {
     font-size: 13px;

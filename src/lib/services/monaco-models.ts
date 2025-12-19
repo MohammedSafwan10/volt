@@ -147,6 +147,13 @@ export function setActiveEditor(editor: Monaco.editor.IStandaloneCodeEditor | nu
 }
 
 /**
+ * Get the active editor instance
+ */
+export function getActiveEditor(): Monaco.editor.IStandaloneCodeEditor | null {
+  return activeEditor;
+}
+
+/**
  * Run a Monaco editor action on the active editor.
  * Useful for invoking built-in UI like Quick Outline.
  */

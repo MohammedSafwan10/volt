@@ -21,7 +21,23 @@ export interface ImagePart {
   data: string; // Base64 encoded
 }
 
-export type ContentPart = TextPart | ImagePart;
+export interface FunctionCallPart {
+  type: 'function_call';
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  // Gemini 3 thought signature - must be preserved and sent back for multi-turn function calling
+  thoughtSignature?: string;
+}
+
+export interface FunctionResponsePart {
+  type: 'function_response';
+  id: string;
+  name: string;
+  response: Record<string, unknown>;
+}
+
+export type ContentPart = TextPart | ImagePart | FunctionCallPart | FunctionResponsePart;
 
 // Chat message (supports multimodal content)
 export interface ChatMessage {
@@ -42,6 +58,8 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  // Gemini 3 thought signature - must be preserved and sent back for multi-turn function calling
+  thoughtSignature?: string;
 }
 
 // Chat request options

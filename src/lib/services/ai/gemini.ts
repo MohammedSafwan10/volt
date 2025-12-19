@@ -25,6 +25,22 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 const GEMINI_THINKING_SUFFIX = '|thinking';
 
+function buildThinkingConfig(model: string): GeminiThinkingConfig {
+  // Some Gemini 3 preview models appear to ignore or be picky about thinkingBudget.
+  // Keep the config minimal for maximum compatibility.
+  if (/^gemini-3/i.test(model)) {
+    return {
+      includeThoughts: true
+    };
+  }
+
+  // Gemini 2.5 models support explicit budgeting.
+  return {
+    includeThoughts: true,
+    thinkingBudget: 1024
+  };
+}
+
 function parseGeminiModel(rawModel: string): { model: string; thinkingEnabled: boolean } {
   const modelWithoutPrefix = rawModel.startsWith('models/') ? rawModel.slice('models/'.length) : rawModel;
   if (modelWithoutPrefix.endsWith(GEMINI_THINKING_SUFFIX)) {
@@ -45,6 +61,7 @@ interface GeminiContent {
 interface GeminiPart {
   text?: string;
   thought?: boolean; // True if this part is a thinking/reasoning part
+  thoughtSignature?: string; // Gemini 3 thought signature - MUST be preserved for function calling
   inlineData?: {
     mimeType: string;
     data: string;
@@ -74,10 +91,20 @@ interface GeminiThinkingConfig {
   includeThoughts?: boolean; // Include thought summaries in response
 }
 
+interface GeminiFunctionCallingConfig {
+  mode: 'AUTO' | 'ANY' | 'NONE';
+  allowedFunctionNames?: string[];
+}
+
+interface GeminiToolConfig {
+  functionCallingConfig: GeminiFunctionCallingConfig;
+}
+
 interface GeminiRequest {
   contents: GeminiContent[];
   systemInstruction?: GeminiContent;
   tools?: GeminiTool[];
+  toolConfig?: GeminiToolConfig;
   generationConfig?: {
     temperature?: number;
     maxOutputTokens?: number;
@@ -127,38 +154,108 @@ interface GeminiResponse {
 
 /**
  * Convert our message format to Gemini format
- * Supports multimodal content (text + images)
+ * Supports multimodal content (text + images + function calls/responses)
+ * 
+ * CRITICAL for multi-turn function calling:
+ * - Model's function calls must be in 'model' role with functionCall parts
+ * - Function responses must be in 'user' role with functionResponse parts
+ * - The sequence must be: user -> model (with functionCall) -> user (with functionResponse) -> model continues
  */
 function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
-  return messages
-    .filter(m => m.role !== 'system') // System handled separately
-    .map(m => {
-      const parts: GeminiPart[] = [];
-      
-      // If message has multimodal parts, use them
-      if (m.parts && m.parts.length > 0) {
-        for (const part of m.parts) {
-          if (part.type === 'text') {
-            parts.push({ text: part.text });
-          } else if (part.type === 'image') {
-            parts.push({
-              inlineData: {
-                mimeType: part.mimeType,
-                data: part.data
-              }
-            });
+  const contents: GeminiContent[] = [];
+  
+  for (const m of messages) {
+    if (m.role === 'system') continue; // System handled separately
+    
+    const parts: GeminiPart[] = [];
+    let hasFunctionResponse = false;
+    
+    // If message has multimodal parts, use them
+    if (m.parts && m.parts.length > 0) {
+      for (const part of m.parts) {
+        if (part.type === 'text') {
+          parts.push({ text: part.text });
+        } else if (part.type === 'image') {
+          parts.push({
+            inlineData: {
+              mimeType: part.mimeType,
+              data: part.data
+            }
+          });
+        } else if (part.type === 'function_call') {
+          // Model's function call - must go in 'model' role
+          // CRITICAL: Include thoughtSignature for Gemini 3 models
+          const fcPart: GeminiPart = {
+            functionCall: {
+              name: part.name,
+              args: part.arguments
+            }
+          };
+          // Preserve thought signature if present (required for Gemini 3)
+          if (part.thoughtSignature) {
+            fcPart.thoughtSignature = part.thoughtSignature;
           }
+          parts.push(fcPart);
+        } else if (part.type === 'function_response') {
+          // Tool result - must go in 'user' role as functionResponse
+          // Gemini expects each functionResponse in its own content block
+          // Format: { name: string, response: { result: ... } }
+          hasFunctionResponse = true;
+          
+          // If we have accumulated parts, push them first
+          if (parts.length > 0) {
+            contents.push({
+              role: m.role === 'assistant' ? 'model' : 'user',
+              parts: [...parts]
+            });
+            parts.length = 0;
+          }
+          
+          // Add function response as separate content with 'user' role
+          // Wrap the response in 'result' key as per Gemini API spec
+          contents.push({
+            role: 'user',
+            parts: [{
+              functionResponse: {
+                name: part.name,
+                response: { result: part.response }
+              }
+            }]
+          });
         }
-      } else {
-        // Fallback to text-only content
-        parts.push({ text: m.content });
       }
-      
-      return {
+    } else if (m.content && m.content.trim()) {
+      // Fallback to text-only content (only if non-empty)
+      parts.push({ text: m.content });
+    }
+    
+    // Push remaining parts if any (and not already handled by function response)
+    // Skip empty parts arrays to avoid "Invalid request" errors
+    if (parts.length > 0) {
+      contents.push({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts
-      };
-    });
+      });
+    }
+  }
+  
+  // Filter out any content blocks with empty parts (safety check)
+  const filtered = contents.filter(c => c.parts && c.parts.length > 0);
+  
+  // Gemini requires alternating user/model roles
+  // Merge consecutive same-role messages to avoid "Invalid request" errors
+  const merged: GeminiContent[] = [];
+  for (const content of filtered) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === content.role) {
+      // Merge parts into the previous message with same role
+      last.parts = [...last.parts, ...content.parts];
+    } else {
+      merged.push(content);
+    }
+  }
+  
+  return merged;
 }
 
 /**
@@ -298,25 +395,28 @@ export const geminiProvider: AIProvider = {
     // Add tools if provided
     if (request.tools && request.tools.length > 0) {
       geminiRequest.tools = toGeminiTools(request.tools);
+      // Use AUTO mode - model decides when to call functions
+      // This allows the model to respond with text when appropriate
+      // but still use tools when needed
+      geminiRequest.toolConfig = {
+        functionCallingConfig: {
+          mode: 'AUTO'
+        }
+      };
     }
     
-    // Add generation config
-    geminiRequest.generationConfig = {};
+    // Add generation config with high output limit (Gemini supports up to 65,536)
+    geminiRequest.generationConfig = {
+      // Default to 8192 tokens for non-streaming, can be overridden
+      maxOutputTokens: request.maxTokens ?? 8192
+    };
     if (request.temperature !== undefined) {
       geminiRequest.generationConfig.temperature = request.temperature;
-    }
-    if (request.maxTokens !== undefined) {
-      geminiRequest.generationConfig.maxOutputTokens = request.maxTokens;
     }
 
     // Explicit thinking toggle (UI-only model suffix)
     if (thinkingEnabled) {
-      geminiRequest.generationConfig.thinkingConfig = {
-        // Include thought summaries as parts with thought: true
-        includeThoughts: true,
-        // Give a reasonable budget; user can change later if we expose it.
-        thinkingBudget: 1024
-      };
+		geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model);
     }
     
     const response = await fetch(url, {
@@ -389,23 +489,30 @@ export const geminiProvider: AIProvider = {
     // Add tools if provided
     if (request.tools && request.tools.length > 0) {
       geminiRequest.tools = toGeminiTools(request.tools);
+      // Use AUTO mode - model decides when to call functions
+      // This allows the model to respond with text when appropriate
+      // but still use tools when needed
+      geminiRequest.toolConfig = {
+        functionCallingConfig: {
+          mode: 'AUTO'
+        }
+      };
     }
     
-    // Add generation config
-    geminiRequest.generationConfig = {};
+    // Add generation config with high output limit for streaming
+    // Gemini 2.5/3 models support up to 65,536 output tokens
+    // Default to 16384 for streaming to allow long responses
+    geminiRequest.generationConfig = {
+      maxOutputTokens: request.maxTokens ?? 16384
+    };
     if (request.temperature !== undefined) {
       geminiRequest.generationConfig.temperature = request.temperature;
-    }
-    if (request.maxTokens !== undefined) {
-      geminiRequest.generationConfig.maxOutputTokens = request.maxTokens;
     }
 
     // Explicit thinking toggle (UI-only model suffix)
     if (thinkingEnabled) {
-      geminiRequest.generationConfig.thinkingConfig = {
-        includeThoughts: true,
-        thinkingBudget: 1024
-      };
+		// Keep stream thinking config compatible across model families.
+		geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model);
     }
     
     const response = await fetch(url, {
@@ -491,7 +598,8 @@ export const geminiProvider: AIProvider = {
               for (const part of candidate.content.parts) {
                 if (part.text) {
                   // Check if this is a thinking/reasoning part (thought: true)
-                  if (part.thought) {
+                  const isThought = Boolean((part as unknown as { thought?: unknown }).thought);
+				  if (isThought) {
                     yield { type: 'thinking', thinking: part.text };
                   } else {
                     yield { type: 'content', content: part.text };
@@ -503,7 +611,9 @@ export const geminiProvider: AIProvider = {
                     toolCall: {
                       id: `call_${Date.now()}`,
                       name: part.functionCall.name,
-                      arguments: part.functionCall.args
+                      arguments: part.functionCall.args,
+                      // Preserve thought signature for Gemini 3 multi-turn function calling
+                      thoughtSignature: part.thoughtSignature
                     }
                   };
                 }

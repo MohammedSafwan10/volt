@@ -31,6 +31,13 @@ export interface TerminalExitEvent {
 }
 
 /**
+ * Terminal ready event payload
+ */
+export interface TerminalReadyEvent {
+	terminalId: string;
+}
+
+/**
  * Terminal error types from Rust backend
  */
 interface TerminalError {
@@ -168,6 +175,17 @@ export async function onTerminalExit(
 }
 
 /**
+ * Subscribe to terminal ready events
+ */
+export async function onTerminalReady(
+	callback: (event: TerminalReadyEvent) => void
+): Promise<UnlistenFn> {
+	return listen<TerminalReadyEvent>('terminal://ready', (event) => {
+		callback(event.payload);
+	});
+}
+
+/**
  * Terminal session manager for a single terminal instance
  * Handles event subscriptions and cleanup
  */
@@ -175,15 +193,36 @@ export class TerminalSession {
 	public info: TerminalInfo;
 	private dataUnlisten: UnlistenFn | null = null;
 	private exitUnlisten: UnlistenFn | null = null;
+	private readyUnlisten: UnlistenFn | null = null;
 	private onDataCallback: ((data: string) => void) | null = null;
 	private onExitCallback: ((code: number | null) => void) | null = null;
 	// Buffer for data that arrives while no UI consumer is attached.
 	private dataBuffer: string[] = [];
 	private dataBufferChars = 0;
 	private static readonly MAX_BUFFER_CHARS = 100_000;
+	
+	// Output history buffer for AI tool access (always captures)
+	private outputHistory: string[] = [];
+	private outputHistoryChars = 0;
+	private static readonly MAX_OUTPUT_HISTORY_CHARS = 50_000;
+
+	// Backend readiness handshake
+	private backendReady = false;
+	private readyPromise: Promise<void>;
+	private resolveReady: (() => void) | null = null;
 
 	constructor(info: TerminalInfo) {
 		this.info = info;
+		this.readyPromise = new Promise((resolve) => {
+			this.resolveReady = resolve;
+		});
+	}
+
+	private markReady(): void {
+		if (this.backendReady) return;
+		this.backendReady = true;
+		this.resolveReady?.();
+		this.resolveReady = null;
 	}
 
 	get id(): string {
@@ -194,8 +233,19 @@ export class TerminalSession {
 	 * Start listening for terminal events
 	 */
 	async startListening(): Promise<void> {
+		this.readyUnlisten = await onTerminalReady((event) => {
+			if (event.terminalId === this.info.terminalId) {
+				this.markReady();
+			}
+		});
+
 		this.dataUnlisten = await onTerminalData((event) => {
 			if (event.terminalId === this.info.terminalId) {
+				// If we receive any data, the terminal is effectively ready.
+				this.markReady();
+				// Always capture to output history (for AI tools)
+				this.captureToHistory(event.data);
+				
 				if (this.onDataCallback) {
 					this.onDataCallback(event.data);
 				} else {
@@ -211,6 +261,18 @@ export class TerminalSession {
 		});
 	}
 
+	/**
+	 * Wait until the backend indicates the terminal is ready.
+	 * Falls back to "first output" readiness if the ready event is missed.
+	 */
+	async waitForReady(timeoutMs = 2000): Promise<boolean> {
+		if (this.backendReady) return true;
+		return await Promise.race([
+			this.readyPromise.then(() => true),
+			new Promise<boolean>((resolve) => setTimeout(() => resolve(this.backendReady), timeoutMs))
+		]);
+	}
+
 	private bufferData(data: string): void {
 		this.dataBuffer.push(data);
 		this.dataBufferChars += data.length;
@@ -218,6 +280,78 @@ export class TerminalSession {
 			const removed = this.dataBuffer.shift();
 			this.dataBufferChars -= removed?.length ?? 0;
 		}
+	}
+	
+	/**
+	 * Capture data to output history (for AI tool access)
+	 */
+	private captureToHistory(data: string): void {
+		this.outputHistory.push(data);
+		this.outputHistoryChars += data.length;
+		while (this.outputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS && this.outputHistory.length > 0) {
+			const removed = this.outputHistory.shift();
+			this.outputHistoryChars -= removed?.length ?? 0;
+		}
+	}
+	
+	/**
+	 * Get recent output from the terminal (for AI tools)
+	 * @param maxChars Maximum characters to return
+	 */
+	getRecentOutput(maxChars = 10000): string {
+		const fullOutput = this.outputHistory.join('');
+		if (fullOutput.length <= maxChars) {
+			return fullOutput;
+		}
+		return fullOutput.slice(-maxChars);
+	}
+	
+	/**
+	 * Clear output history
+	 */
+	clearOutputHistory(): void {
+		this.outputHistory = [];
+		this.outputHistoryChars = 0;
+	}
+	
+	/**
+	 * Wait for output matching a pattern or timeout
+	 * Useful for waiting for command completion
+	 */
+	async waitForOutput(
+		predicate: (output: string) => boolean,
+		timeoutMs = 30000
+	): Promise<string> {
+		const startOutput = this.getRecentOutput();
+		const startLen = startOutput.length;
+		
+		return new Promise((resolve) => {
+			const startTime = Date.now();
+			let checkCount = 0;
+			
+			const checkOutput = () => {
+				checkCount++;
+				const currentOutput = this.getRecentOutput();
+				const newOutput = currentOutput.slice(startLen);
+				
+				if (predicate(newOutput)) {
+					resolve(newOutput);
+					return;
+				}
+				
+				if (Date.now() - startTime > timeoutMs) {
+					// On timeout, return whatever output we have (not an error message)
+					resolve(newOutput || '');
+					return;
+				}
+				
+				// Check every 100ms
+				setTimeout(checkOutput, 100);
+			};
+			
+			// Start checking after a small delay to let initial output arrive
+			setTimeout(checkOutput, 50);
+		});
 	}
 
 	/**
@@ -279,6 +413,10 @@ export class TerminalSession {
 		if (this.exitUnlisten) {
 			this.exitUnlisten();
 			this.exitUnlisten = null;
+		}
+		if (this.readyUnlisten) {
+			this.readyUnlisten();
+			this.readyUnlisten = null;
 		}
 		this.onDataCallback = null;
 		this.onExitCallback = null;

@@ -1,0 +1,203 @@
+document.addEventListener('DOMContentLoaded', () => {
+    // Theme Toggle Logic
+    const themeToggle = document.getElementById('theme-toggle');
+    const htmlElement = document.documentElement;
+    
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    htmlElement.setAttribute('data-theme', savedTheme);
+
+    themeToggle.addEventListener('click', () => {
+        const currentTheme = htmlElement.getAttribute('data-theme');
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        htmlElement.setAttribute('data-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
+    });
+
+    // Custom Cursor Logic
+    const cursor = document.querySelector('.cursor');
+    const follower = document.querySelector('.cursor-follower');
+    let posX = 0, posY = 0;
+    let mouseX = 0, mouseY = 0;
+
+    document.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+    });
+
+    function animateCursor() {
+        posX += (mouseX - posX) / 6;
+        posY += (mouseY - posY) / 6;
+        cursor.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0)`;
+        follower.style.transform = `translate3d(${posX - 10}px, ${posY - 10}px, 0)`;
+        requestAnimationFrame(animateCursor);
+    }
+    animateCursor();
+
+    const hoverables = document.querySelectorAll('a, button, .project-card, .socials a');
+    hoverables.forEach(el => {
+        el.addEventListener('mouseenter', () => follower.classList.add('cursor-hover'));
+        el.addEventListener('mouseleave', () => follower.classList.remove('cursor-hover'));
+    });
+
+    // Typing Animation Logic
+    const typingElement = document.querySelector('.typing-text');
+    const textToType = "Next-gen AI assistant for developers.";
+    let index = 0;
+    
+    function typeEffect() {
+        if (index < textToType.length) {
+            typingElement.innerText += textToType.charAt(index);
+            index++;
+            setTimeout(typeEffect, Math.random() * 50 + 50);
+        } else {
+            setTimeout(() => {
+                typingElement.innerText = '';
+                index = 0;
+                typeEffect();
+            }, 5000);
+        }
+    }
+    
+    const typingObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                typingElement.innerText = '';
+                setTimeout(typeEffect, 500);
+                typingObserver.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.1 });
+    
+    typingObserver.observe(typingElement);
+
+    // Interactive Console Logic
+    const userInput = document.getElementById('user-input');
+    const sendBtn = document.getElementById('send-command');
+    const consoleOutput = document.getElementById('console-output');
+
+    const handleCommand = () => {
+        const text = userInput.value.trim();
+        if (!text) return;
+
+        // User Line
+        const userLine = document.createElement('div');
+        userLine.className = 'line';
+        userLine.innerHTML = `<span class="prompt">></span> ${text}`;
+        consoleOutput.appendChild(userLine);
+        userInput.value = '';
+
+        // Response
+        setTimeout(() => {
+            const respLine = document.createElement('div');
+            respLine.className = 'line response';
+            
+            if (text.toLowerCase().includes('explain')) {
+                respLine.innerText = "Volt: Analyzing project architecture... Found 14 React components and 2 API routes. Would you like a breakdown of the data flow?";
+            } else if (text.toLowerCase().includes('optimize')) {
+                respLine.innerText = "Volt: Optimization scan complete. Suggested 3 memoization hooks in 'ProductGrid.tsx' to reduce re-renders by 40%.";
+            } else {
+                respLine.innerText = "Volt: Command recognized. Processing request in your local workspace context...";
+            }
+            
+            consoleOutput.appendChild(respLine);
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
+        }, 600);
+    };
+
+    sendBtn.addEventListener('click', handleCommand);
+    userInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') handleCommand();
+    });
+
+    // Intersection Observer for Reveal Animations
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('active');
+                observer.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+    document.querySelectorAll('.reveal').forEach(el => {
+        if (!el.classList.contains('typing-text')) observer.observe(el);
+    });
+
+    // Mobile Menu Toggle
+    const burger = document.querySelector('.burger');
+    const navMenu = document.querySelector('.nav-links');
+
+    burger.addEventListener('click', () => {
+        const isActive = navMenu.classList.toggle('nav-active');
+        burger.classList.toggle('toggle');
+        burger.setAttribute('aria-expanded', isActive);
+    });
+
+    // Project Detail Modal Logic
+    const projectCards = document.querySelectorAll('.project-card');
+    const modal = document.getElementById('project-modal');
+    const modalBody = document.getElementById('modal-body');
+    const closeModal = document.querySelector('.close-modal');
+
+    const capabilityData = {
+        "Workspace Awareness": {
+            description: "Deeply indexes your entire codebase to provide contextual answers that respect your project's unique architecture and conventions.",
+            features: ["Cross-file analysis", "Symbol resolution", "Dependency mapping"],
+            tech: ["LSP Protocol", "Vector Embeddings", "Local Indexing"]
+        },
+        "Real-time Refactoring": {
+            description: "Volt watches your edits in real-time, suggesting cleaner implementations and modernizing legacy syntax as you type.",
+            features: ["Pattern matching", "Dead code detection", "Performance linting"],
+            tech: ["AST Parsing", "Heuristic Engine", "Low-latency IPC"]
+        },
+        "Security Auditing": {
+            description: "Continuous background scanning for secrets, vulnerable dependencies, and insecure coding patterns like SQL injection or XSS.",
+            features: ["Secret detection", "CVE monitoring", "Safe-fix generation"],
+            tech: ["Static Analysis (SAST)", "Semgrep Integration", "Live-patching"]
+        }
+    };
+
+    projectCards.forEach(card => {
+        card.addEventListener('click', () => {
+            const title = card.querySelector('h3').innerText;
+            const data = capabilityData[title];
+            if (!data) return;
+
+            modalBody.innerHTML = `
+                <div class="modal-project-header">
+                    <span class="badge">Volt Core Capability</span>
+                    <h2 style="margin: 1rem 0; font-size: 2.5rem;">${title}</h2>
+                </div>
+                <div class="modal-project-content" style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; margin-top: 2rem;">
+                    <div>
+                        <p style="font-size: 1.1rem; color: var(--text-dim); margin-bottom: 1.5rem;">${data.description}</p>
+                        <h4 style="margin-bottom: 1rem; color: var(--accent);">Key Features</h4>
+                        <ul style="list-style: none; padding-left: 0;">
+                            ${data.features.map(f => `<li style="margin-bottom: 0.5rem; color: var(--text-main); display: flex; align-items:center; gap: 0.5rem;"><i class="fas fa-check" style="color: var(--accent); font-size: 0.8rem;"></i> ${f}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 1rem; color: var(--accent);">Underlying Tech</h4>
+                        <div class="tags">
+                            ${data.tech.map(t => `<span style="display: inline-block; padding: 4px 10px; border: 1px solid var(--glass-border); border-radius: 4px; margin: 0 5px 5px 0; font-size: 0.8rem;">${t}</span>`).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden';
+        });
+    });
+
+    closeModal.addEventListener('click', () => {
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    });
+
+    window.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+    });
+});

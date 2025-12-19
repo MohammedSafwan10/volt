@@ -12,7 +12,9 @@ import { projectStore } from './project.svelte';
 class TerminalStore {
 	sessions = $state<TerminalSession[]>([]);
 	activeTerminalId = $state<string | null>(null);
-	private creating = false;
+	private createPromise: Promise<TerminalSession | null> | null = null;
+	private sessionLabels = $state<Record<string, string>>({});
+	private aiTerminalId = $state<string | null>(null);
 
 	/**
 	 * Get the active terminal session
@@ -26,13 +28,13 @@ class TerminalStore {
 	 * Create a new terminal session
 	 */
 	async createTerminal(cwd?: string): Promise<TerminalSession | null> {
-		// Prevent multiple simultaneous creations
-		if (this.creating) {
-			return null;
+		// If a terminal creation is already in-flight, await it.
+		// This prevents races where callers see `null` and assume terminal creation failed.
+		if (this.createPromise) {
+			return await this.createPromise;
 		}
-		this.creating = true;
 
-		try {
+		this.createPromise = (async () => {
 			// Use project root as default cwd
 			const workingDir = cwd ?? projectStore.rootPath ?? undefined;
 
@@ -52,9 +54,46 @@ class TerminalStore {
 			this.activeTerminalId = session.id;
 
 			return session;
+		})();
+
+		try {
+			return await this.createPromise;
 		} finally {
-			this.creating = false;
+			this.createPromise = null;
 		}
+	}
+
+	/**
+	 * Assign a user-visible label to a session
+	 */
+	setSessionLabel(terminalId: string, label: string): void {
+		if (!terminalId) return;
+		this.sessionLabels = { ...this.sessionLabels, [terminalId]: label };
+	}
+
+	getSessionLabel(terminalId: string): string | undefined {
+		return this.sessionLabels[terminalId];
+	}
+
+	/**
+	 * Get or create the dedicated AI terminal session.
+	 * This avoids running AI commands in a user's interactive terminal state.
+	 */
+	async getOrCreateAiTerminal(cwd?: string): Promise<TerminalSession | null> {
+		const existingId = this.aiTerminalId;
+		if (existingId) {
+			const existing = this.sessions.find((s) => s.id === existingId) ?? null;
+			if (existing) {
+				this.activeTerminalId = existing.id;
+				return existing;
+			}
+		}
+
+		const session = await this.createTerminal(cwd);
+		if (!session) return null;
+		this.aiTerminalId = session.id;
+		this.setSessionLabel(session.id, 'Volt AI');
+		return session;
 	}
 
 	/**
@@ -85,6 +124,14 @@ class TerminalStore {
 	private removeSession(terminalId: string): void {
 		// Use filter to trigger reactivity (Svelte 5 $state)
 		this.sessions = this.sessions.filter((s) => s.id !== terminalId);
+		if (this.sessionLabels[terminalId]) {
+			const next = { ...this.sessionLabels };
+			delete next[terminalId];
+			this.sessionLabels = next;
+		}
+		if (this.aiTerminalId === terminalId) {
+			this.aiTerminalId = null;
+		}
 
 		// Update active terminal if needed
 		if (this.activeTerminalId === terminalId) {

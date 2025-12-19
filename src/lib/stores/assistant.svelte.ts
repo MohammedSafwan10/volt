@@ -16,6 +16,15 @@ export type MessageRole = 'user' | 'assistant' | 'tool';
 // Tool call status
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+// Streaming progress for file write operations
+export interface StreamingProgress {
+  charsWritten: number;
+  totalChars: number;
+  linesWritten: number;
+  totalLines: number;
+  percent: number;
+}
+
 // Tool call representation
 export interface ToolCall {
   id: string;
@@ -27,7 +36,16 @@ export interface ToolCall {
   startTime?: number;
   endTime?: number;
   requiresApproval?: boolean;
+  // Gemini 3 thought signature - must be preserved for multi-turn function calling
+  thoughtSignature?: string;
+  // Streaming progress for file write tools
+  streamingProgress?: StreamingProgress;
 }
+
+// Content part types for interleaved rendering (like Kiro)
+export type ContentPart = 
+  | { type: 'text'; text: string }
+  | { type: 'tool'; toolCall: ToolCall };
 
 // Chat message with attachments
 export interface AssistantMessage {
@@ -40,6 +58,10 @@ export interface AssistantMessage {
   attachments?: MessageAttachment[];
   thinking?: string; // Model's thinking/reasoning (if available)
   isThinking?: boolean; // Currently in thinking phase
+  // For inline tool display - tool calls that belong to this message
+  inlineToolCalls?: ToolCall[];
+  // Ordered content parts for interleaved text + tool rendering (like Kiro)
+  contentParts?: ContentPart[];
 }
 
 // Conversation container
@@ -138,6 +160,8 @@ export const CONTEXT_LIMITS = {
   maxFilesPerMessage: 10
 };
 
+const MAX_THINKING_CHARS = 8000;
+
 // Secret patterns to redact
 const SECRET_PATTERNS = [
   /^\.env$/i,
@@ -160,7 +184,7 @@ export const MODE_CAPABILITIES: Record<AIMode, {
   ask: {
     canMutateFiles: false,
     canExecuteCommands: false,
-    canUseTools: false,
+    canUseTools: true, // Read-only tools are allowed
     description: 'Read-only mode for questions and explanations'
   },
   plan: {
@@ -227,7 +251,8 @@ class AssistantStore {
   panelWidth = $state(DEFAULT_PANEL_WIDTH);
 
   // Mode state
-  currentMode = $state<AIMode>('ask');
+  // Default to agent mode on startup.
+  currentMode = $state<AIMode>('agent');
 
   // Conversation state
   currentConversation = $state<Conversation | null>(null);
@@ -256,6 +281,8 @@ class AssistantStore {
    * Initialize a new conversation
    */
   private initConversation(): void {
+    // Always default to agent mode for new conversations.
+    this.currentMode = 'agent';
     this.currentConversation = {
       id: crypto.randomUUID(),
       createdAt: Date.now(),
@@ -292,24 +319,47 @@ class AssistantStore {
   }
 
   /**
-   * Validate a tool call against current mode
+   * Validate a tool call against current mode using the tool router
    * Returns error message if not allowed, null if allowed
    */
-  validateToolCall(toolName: string): string | null {
+  validateToolCall(toolName: string, _args?: Record<string, unknown>): string | null {
+    // Import validation from tool router (lazy to avoid circular deps)
+    // For now, use inline validation that matches the router
     const caps = MODE_CAPABILITIES[this.currentMode];
     
-    // In ask mode, no tools allowed
-    if (!caps.canUseTools) {
-      return `Tool "${toolName}" is not available in ${this.currentMode} mode. Switch to plan or agent mode to use tools.`;
+    // Read-only tools allowed in all modes
+    const readOnlyTools = [
+      'list_dir', 'read_file', 'get_file_info', 'workspace_search',
+      'get_active_file', 'get_selection', 'get_open_files'
+    ];
+    
+    if (readOnlyTools.includes(toolName)) {
+      return null; // Always allowed
     }
     
     // Check for mutation tools in non-agent modes
-    const mutationTools = ['write_file', 'delete_file', 'create_file', 'rename_file', 'execute_command'];
+    const mutationTools = [
+      'write_file', 'delete_path', 'create_file', 'create_dir', 
+      'rename_path', 'terminal_create', 'terminal_write', 'terminal_kill',
+      'run_check'
+    ];
+    
     if (mutationTools.includes(toolName) && !caps.canMutateFiles) {
       return `Tool "${toolName}" requires agent mode. Current mode (${this.currentMode}) is read-only.`;
     }
     
     return null;
+  }
+
+  /**
+   * Check if a tool requires user approval before execution
+   */
+  toolRequiresApproval(toolName: string): boolean {
+    const approvalRequiredTools = [
+      'terminal_create', 'terminal_write', 'terminal_kill',
+      'delete_path', 'rename_path'
+    ];
+    return approvalRequiredTools.includes(toolName);
   }
 
   // Panel controls
@@ -395,8 +445,11 @@ class AssistantStore {
   }
 
   updateAssistantThinking(id: string, thinking: string, isThinking = true): void {
+    const safeThinking = thinking.length > MAX_THINKING_CHARS
+      ? thinking.slice(-MAX_THINKING_CHARS)
+      : thinking;
     this.messages = this.messages.map(msg =>
-      msg.id === id ? { ...msg, thinking, isThinking } : msg
+      msg.id === id ? { ...msg, thinking: safeThinking, isThinking } : msg
     );
   }
 
@@ -426,6 +479,120 @@ class AssistantStore {
 
   clearToolCalls(): void {
     this.activeToolCalls = [];
+  }
+
+  /**
+   * Add a tool call to a specific assistant message (for inline display)
+   */
+  addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        const existing = msg.inlineToolCalls ?? [];
+        const existingParts = msg.contentParts ?? [];
+        return { 
+          ...msg, 
+          inlineToolCalls: [...existing, toolCall],
+          // Add tool to content parts for interleaved rendering
+          contentParts: [...existingParts, { type: 'tool' as const, toolCall }]
+        };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Update a tool call within a message
+   */
+  updateToolCallInMessage(messageId: string, toolCallId: string, updates: Partial<ToolCall>): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        // Update in inlineToolCalls
+        const updatedInline = msg.inlineToolCalls?.map(tc =>
+          tc.id === toolCallId ? { ...tc, ...updates } : tc
+        );
+        // Update in contentParts
+        const updatedParts = msg.contentParts?.map(part => {
+          if (part.type === 'tool' && part.toolCall.id === toolCallId) {
+            return { ...part, toolCall: { ...part.toolCall, ...updates } };
+          }
+          return part;
+        });
+        return {
+          ...msg,
+          inlineToolCalls: updatedInline,
+          contentParts: updatedParts
+        };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Add or update text content in a message (for interleaved rendering)
+   * This appends text to the last text part or creates a new one
+   */
+  appendTextToMessage(messageId: string, text: string, isStreaming: boolean): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        const parts = msg.contentParts ?? [];
+        const lastPart = parts[parts.length - 1];
+        
+        let newParts: ContentPart[];
+        if (lastPart && lastPart.type === 'text') {
+          // Append to existing text part
+          newParts = [
+            ...parts.slice(0, -1),
+            { type: 'text' as const, text: lastPart.text + text }
+          ];
+        } else {
+          // Create new text part
+          newParts = [...parts, { type: 'text' as const, text }];
+        }
+        
+        // Also update the legacy content field
+        const fullContent = newParts
+          .filter(p => p.type === 'text')
+          .map(p => (p as { type: 'text'; text: string }).text)
+          .join('');
+        
+        return { ...msg, contentParts: newParts, content: fullContent, isStreaming };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Set the full text content for a message (replaces all text parts)
+   */
+  setMessageContent(messageId: string, content: string, isStreaming: boolean): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        // Rebuild contentParts: keep tool parts, update/add text
+        const toolParts = (msg.contentParts ?? []).filter(p => p.type === 'tool');
+        
+        // If there's content, we need to figure out where text goes
+        // For now, put all text at the end (after tools)
+        // TODO: Track text positions more precisely
+        const newParts: ContentPart[] = content 
+          ? [...toolParts, { type: 'text' as const, text: content }]
+          : toolParts;
+        
+        return { ...msg, contentParts: newParts, content, isStreaming };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Get the last assistant message ID (for adding tool calls)
+   */
+  getLastAssistantMessageId(): string | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'assistant') {
+        return this.messages[i].id;
+      }
+    }
+    return null;
   }
 
   // Context management (legacy)

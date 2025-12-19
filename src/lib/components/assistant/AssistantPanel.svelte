@@ -1,13 +1,23 @@
 <script lang="ts">
+  /**
+   * AssistantPanel - Main AI assistant interface
+   * 
+   * Docs consulted:
+   * - Gemini API: function calling format with functionDeclarations
+   * - Tauri v2: path security and canonicalization
+   * - Security best practices for approval gates
+   */
   import { UIIcon } from '$lib/components/ui';
   import { assistantStore, type ToolCall, type ImageAttachment, IMAGE_LIMITS } from '$lib/stores/assistant.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { projectStore } from '$lib/stores/project.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
-  import type { AIMode } from '$lib/stores/ai.svelte';
-  import { streamChat, type ChatMessage, type ContentPart } from '$lib/services/ai';
+  import { aiSettingsStore, type AIMode } from '$lib/stores/ai.svelte';
+  import { streamChat, type ChatMessage, type ContentPart, type FunctionResponsePart } from '$lib/services/ai';
+  import { getSystemPrompt } from '$lib/services/ai/prompts';
+  import { getToolsForMode, validateToolCall as validateTool, executeToolCall } from '$lib/services/ai/tools';
   import MessageList from './MessageList.svelte';
   import ChatInputBar from './ChatInputBar.svelte';
-  import ToolCallRow from './ToolCallRow.svelte';
   import { open } from '@tauri-apps/plugin-dialog';
 
   // Focus the input when panel opens
@@ -23,12 +33,64 @@
     const out: ChatMessage[] = [];
 
     for (const msg of messages) {
-      if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-
-      if (msg.role === 'assistant') {
-        out.push({ role: 'assistant', content: msg.content });
+      // Handle tool messages - convert to function response
+      // These are the results of tool executions that need to go back to the model
+      if (msg.role === 'tool' && msg.toolCalls && msg.toolCalls.length > 0) {
+        for (const tc of msg.toolCalls) {
+          const responsePart: FunctionResponsePart = {
+            type: 'function_response',
+            id: tc.id,
+            name: tc.name,
+            response: {
+              success: tc.status === 'completed',
+              output: tc.output ?? tc.error ?? 'No output'
+            }
+          };
+          out.push({
+            role: 'user', // Function responses go as user role per Gemini API
+            content: '',
+            parts: [responsePart]
+          });
+        }
         continue;
       }
+
+      if (msg.role === 'assistant') {
+        // CRITICAL: Include function calls in assistant message for multi-turn
+        // Gemini requires the model's function call to be in history before function response
+        const hasToolCalls = msg.inlineToolCalls && msg.inlineToolCalls.length > 0;
+        
+        if (hasToolCalls) {
+          // Build parts: text content + function calls
+          const parts: ContentPart[] = [];
+          
+          // Add text content if present
+          if (msg.content && msg.content.trim()) {
+            parts.push({ type: 'text', text: msg.content });
+          }
+          
+          // Add function call parts - these tell Gemini what the model called
+          // CRITICAL: Include thoughtSignature for Gemini 3 models
+          for (const tc of msg.inlineToolCalls!) {
+            parts.push({
+              type: 'function_call',
+              id: tc.id,
+              name: tc.name,
+              arguments: tc.arguments,
+              // Preserve thought signature for Gemini 3 multi-turn function calling
+              thoughtSignature: tc.thoughtSignature
+            });
+          }
+          
+          out.push({ role: 'assistant', content: msg.content, parts });
+        } else {
+          // No tool calls, just text content
+          out.push({ role: 'assistant', content: msg.content });
+        }
+        continue;
+      }
+
+      if (msg.role !== 'user') continue;
 
       const attachments = msg.attachments ?? [];
       const imageAttachments = attachments.filter(a => a.type === 'image') as ImageAttachment[];
@@ -69,71 +131,385 @@
     assistantStore.setInputValue('');
     assistantStore.clearContext();
 
-    const providerMessages = toProviderMessages(assistantStore.messages);
     const controller = assistantStore.startStreaming();
-    const msgId = assistantStore.addAssistantMessage('', true);
 
-    const caps = assistantStore.modeCapabilities;
-    const systemPrompt = `You are the AI assistant inside Volt (a code editor).
+    // Use centralized system prompt from prompts module
+    // Get the selected model for the current mode from AI settings
+    const selectedModel = aiSettingsStore.modelPerMode[assistantStore.currentMode];
+    const systemPrompt = getSystemPrompt({
+      mode: assistantStore.currentMode,
+      provider: 'gemini',
+      model: selectedModel,
+      workspaceRoot: projectStore.rootPath ?? undefined
+    });
 
-Current mode: ${assistantStore.currentMode}.
-- canMutateFiles: ${caps.canMutateFiles}
-- canExecuteCommands: ${caps.canExecuteCommands}
-- canUseTools: ${caps.canUseTools}
+    // Get tools for current mode
+    const tools = getToolsForMode(assistantStore.currentMode);
 
-If canMutateFiles is false, do not instruct the app to modify files. Provide analysis, explanations, or plans only.`;
-
-    let acc = '';
-    let thinkingAcc = '';
-
+    // Tool loop: keep streaming until model finishes without tool calls
     try {
-      for await (const chunk of streamChat({
-        messages: providerMessages,
-        systemPrompt,
-        stream: true
-      }, assistantStore.currentMode, controller.signal)) {
-        if (controller.signal.aborted) return;
+      await runToolLoop(systemPrompt, tools, controller);
+    } finally {
+      // Always reset streaming state when done
+      assistantStore.isStreaming = false;
+      assistantStore.abortController = null;
+    }
+  }
 
-        if (chunk.type === 'content' && chunk.content) {
-          acc += chunk.content;
-          assistantStore.updateAssistantMessage(msgId, acc, true);
-        }
-
-        if (chunk.type === 'thinking' && chunk.thinking) {
-          thinkingAcc += chunk.thinking;
-          assistantStore.updateAssistantThinking(msgId, thinkingAcc, true);
-        }
-
-        if (chunk.type === 'error') {
-          const error = chunk.error ?? 'Unknown error';
-          assistantStore.updateAssistantMessage(msgId, `Error: ${error}`, false);
-          showToast({ message: error, type: 'error' });
-          return;
-        }
-      }
-
-      // Mark thinking as complete if we received any
-      if (thinkingAcc) {
-        assistantStore.updateAssistantThinking(msgId, thinkingAcc, false);
-      }
-      assistantStore.updateAssistantMessage(msgId, acc, false);
-    } catch (err) {
+  /**
+   * Run the tool loop - stream model response, execute tools, send results back
+   * Continues until model finishes without requesting tool calls
+   * 
+   * KEY: We use ONE assistant message for the entire interaction.
+   * Tool calls are shown inline, and content accumulates in the same message.
+   */
+  async function runToolLoop(
+    systemPrompt: string,
+    tools: ReturnType<typeof getToolsForMode>,
+    controller: AbortController,
+    maxIterations = 10
+  ): Promise<void> {
+    // Create ONE message for the entire response (like Kiro/Cursor)
+    const msgId = assistantStore.addAssistantMessage('', true);
+    let fullContent = '';
+    let fullThinking = '';
+    let iteration = 0;
+    
+    while (iteration < maxIterations) {
+      iteration++;
+      
       if (controller.signal.aborted) return;
 
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      assistantStore.updateAssistantMessage(msgId, `Error: ${msg}`, false);
-      showToast({ message: msg, type: 'error' });
-    } finally {
-      // Finish streaming without re-aborting (stopStreaming is for user-cancel)
-      if (assistantStore.abortController === controller) {
-        assistantStore.abortController = null;
-      }
-      assistantStore.isStreaming = false;
+      // Build messages for this iteration
+      const providerMessages = toProviderMessages(assistantStore.messages);
+      
+      let iterationContent = '';
+      let iterationThinking = '';
+      const pendingToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
-      if (thinkingAcc) {
-        assistantStore.updateAssistantThinking(msgId, thinkingAcc, false);
+      try {
+        for await (const chunk of streamChat({
+          messages: providerMessages,
+          systemPrompt,
+          tools,
+          stream: true
+        }, assistantStore.currentMode, controller.signal)) {
+          if (controller.signal.aborted) return;
+
+          if (chunk.type === 'content' && chunk.content) {
+            iterationContent += chunk.content;
+            // Append text to message for interleaved rendering (like Kiro)
+            assistantStore.appendTextToMessage(msgId, chunk.content, true);
+          }
+
+          if (chunk.type === 'thinking' && chunk.thinking) {
+            iterationThinking += chunk.thinking;
+            assistantStore.updateAssistantThinking(msgId, fullThinking + iterationThinking, true);
+          }
+
+          if (chunk.type === 'tool_call' && chunk.toolCall) {
+            // Collect tool calls - we'll execute them after streaming completes
+            pendingToolCalls.push(chunk.toolCall);
+            
+            // Show tool call inline in the current message immediately
+            // This adds it to contentParts in order, so it appears between text chunks
+            const validation = validateTool(chunk.toolCall.name, chunk.toolCall.arguments, assistantStore.currentMode);
+            const toolCall: ToolCall = {
+              id: chunk.toolCall.id,
+              name: chunk.toolCall.name,
+              arguments: chunk.toolCall.arguments,
+              status: 'pending' as const,
+              requiresApproval: validation.requiresApproval,
+              // Preserve thought signature for Gemini 3 multi-turn function calling
+              thoughtSignature: chunk.toolCall.thoughtSignature
+            };
+            // Add to current message for inline display (interleaved with text)
+            assistantStore.addToolCallToMessage(msgId, toolCall);
+          }
+
+          if (chunk.type === 'error') {
+            const error = chunk.error ?? 'Unknown error';
+            const currentContent = fullContent + iterationContent;
+            assistantStore.updateAssistantMessage(msgId, currentContent ? `${currentContent}\n\nError: ${error}` : `Error: ${error}`, false);
+            showToast({ message: error, type: 'error' });
+            return;
+          }
+        }
+
+        // Accumulate content from this iteration
+        fullContent += iterationContent;
+        fullThinking += iterationThinking;
+        
+        // Update thinking and streaming state (content is already updated via appendTextToMessage)
+        if (fullThinking) {
+          assistantStore.updateAssistantThinking(msgId, fullThinking, pendingToolCalls.length > 0);
+        }
+        // Just update streaming state, don't overwrite content (it's managed via contentParts)
+        assistantStore.messages = assistantStore.messages.map(msg =>
+          msg.id === msgId ? { ...msg, isStreaming: pendingToolCalls.length > 0 } : msg
+        );
+
+        // If no tool calls, we're done
+        if (pendingToolCalls.length === 0) {
+          return;
+        }
+
+        // Execute tool calls and collect results
+        const toolResults: Array<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }> = [];
+        
+        // Check if any tools require approval
+        const toolsNeedingApproval = pendingToolCalls.filter(tc => {
+          const validation = validateTool(tc.name, tc.arguments, assistantStore.currentMode);
+          return validation.requiresApproval;
+        });
+        
+        // If there are tools needing approval, PAUSE and wait for user
+        if (toolsNeedingApproval.length > 0) {
+          // Mark streaming as paused (waiting for approval)
+          assistantStore.messages = assistantStore.messages.map(msg =>
+            msg.id === msgId ? { ...msg, isStreaming: false } : msg
+          );
+          
+          // Wait for all approval-required tools to be resolved
+          // The user will click Approve/Deny buttons which update the tool status
+          await waitForToolApprovals(msgId, toolsNeedingApproval.map(tc => tc.id), controller.signal);
+          
+          if (controller.signal.aborted) return;
+        }
+        
+        // Now execute tools (approved ones will run, denied ones will be skipped)
+        for (const tc of pendingToolCalls) {
+          if (controller.signal.aborted) return;
+          
+          // Check current status - user may have approved/denied while we waited
+          const currentMsg = assistantStore.messages.find(m => m.id === msgId);
+          const currentToolCall = currentMsg?.inlineToolCalls?.find(t => t.id === tc.id);
+          
+          // Skip if already cancelled/denied
+          if (currentToolCall?.status === 'cancelled') {
+            toolResults.push({
+              id: tc.id,
+              name: tc.name,
+              result: { success: false, error: 'Tool execution denied by user' }
+            });
+            continue;
+          }
+          
+          // Skip if already completed (shouldn't happen but safety check)
+          if (currentToolCall?.status === 'completed' || currentToolCall?.status === 'failed') {
+            toolResults.push({
+              id: tc.id,
+              name: tc.name,
+              result: { 
+                success: currentToolCall.status === 'completed', 
+                output: currentToolCall.output,
+                error: currentToolCall.error 
+              }
+            });
+            continue;
+          }
+          
+          const validation = validateTool(tc.name, tc.arguments, assistantStore.currentMode);
+          
+          if (!validation.valid) {
+            toolResults.push({
+              id: tc.id,
+              name: tc.name,
+              result: { success: false, error: validation.error }
+            });
+            assistantStore.updateToolCallInMessage(msgId, tc.id, {
+              status: 'failed',
+              error: validation.error,
+              endTime: Date.now()
+            });
+            continue;
+          }
+
+          // Execute the tool - update in the message
+          assistantStore.updateToolCallInMessage(msgId, tc.id, { status: 'running', startTime: Date.now() });
+          
+          // Check if this is a file write tool that supports streaming
+          const isFileWriteTool = tc.name === 'write_file' || tc.name === 'create_file';
+          
+          try {
+            const result = await executeToolCall(tc.name, tc.arguments, {
+              signal: controller.signal,
+              enableStreaming: isFileWriteTool,
+              onStreamingProgress: isFileWriteTool ? (progress) => {
+                assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                  streamingProgress: progress
+                });
+              } : undefined
+            });
+            toolResults.push({ id: tc.id, name: tc.name, result });
+            
+            assistantStore.updateToolCallInMessage(msgId, tc.id, {
+              status: result.success ? 'completed' : 'failed',
+              output: result.output,
+              error: result.error,
+              endTime: Date.now(),
+              streamingProgress: undefined
+            });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+            toolResults.push({ id: tc.id, name: tc.name, result: { success: false, error: errorMsg } });
+            assistantStore.updateToolCallInMessage(msgId, tc.id, {
+              status: 'failed',
+              error: errorMsg,
+              endTime: Date.now(),
+              streamingProgress: undefined
+            });
+          }
+        }
+
+        // Add tool results to conversation as a special message
+        // This will be converted to functionResponse parts for the next API call
+        addToolResultsToConversation(pendingToolCalls, toolResults);
+
+      } catch (err) {
+        if (controller.signal.aborted) return;
+
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        assistantStore.updateAssistantMessage(msgId, fullContent ? `${fullContent}\n\nError: ${msg}` : `Error: ${msg}`, false);
+        showToast({ message: msg, type: 'error' });
+        return;
       }
-      assistantStore.updateAssistantMessage(msgId, acc, false);
+    }
+
+    // Max iterations reached - mark message as complete
+    assistantStore.updateAssistantMessage(msgId, fullContent, false);
+    if (fullThinking) {
+      assistantStore.updateAssistantThinking(msgId, fullThinking, false);
+    }
+    showToast({ message: 'Tool loop reached maximum iterations', type: 'warning' });
+  }
+
+  /**
+   * Add tool results to the conversation for the next API call
+   */
+  function addToolResultsToConversation(
+    toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>,
+    results: Array<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }>
+  ): void {
+    // We need to add both the assistant's function calls and the user's function responses
+    // to maintain proper conversation structure for Gemini
+    
+    // First, update the last assistant message to include function call parts
+    // (This is already done via the streaming, but we need to ensure the message structure is correct)
+    
+    // Then add a "tool" message with the results that will be converted to functionResponse
+    for (const result of results) {
+      const tc = toolCalls.find(t => t.id === result.id);
+      if (!tc) continue;
+      
+      // Add as a tool message - toProviderMessages will convert this
+      assistantStore.addToolMessage({
+        id: result.id,
+        name: result.name,
+        arguments: tc.arguments,
+        status: result.result.success ? 'completed' : 'failed',
+        output: result.result.output,
+        error: result.result.error
+      });
+    }
+  }
+
+  /**
+   * Wait for user to approve or deny tools that require approval
+   * Polls the tool status until all are resolved (not 'pending')
+   */
+  function waitForToolApprovals(
+    messageId: string,
+    toolIds: string[],
+    signal: AbortSignal
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        // Check if aborted
+        if (signal.aborted) {
+          clearInterval(checkInterval);
+          resolve();
+          return;
+        }
+        
+        // Find the message and check tool statuses
+        const msg = assistantStore.messages.find(m => m.id === messageId);
+        if (!msg?.inlineToolCalls) {
+          clearInterval(checkInterval);
+          resolve();
+          return;
+        }
+        
+        // Check if all tools needing approval have been resolved
+        const allResolved = toolIds.every(toolId => {
+          const tool = msg.inlineToolCalls?.find(t => t.id === toolId);
+          // Resolved means not 'pending' anymore
+          return tool && tool.status !== 'pending';
+        });
+        
+        if (allResolved) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100); // Check every 100ms
+      
+      // Also listen for abort
+      signal.addEventListener('abort', () => {
+        clearInterval(checkInterval);
+        resolve();
+      });
+    });
+  }
+
+
+
+  /**
+   * Execute a tool call and update its status
+   * Supports streaming progress for file write operations
+   */
+  async function executeToolAndUpdate(toolCall: ToolCall, signal?: AbortSignal): Promise<void> {
+    assistantStore.updateToolCall(toolCall.id, {
+      status: 'running',
+      startTime: Date.now()
+    });
+
+    // Check if this is a file write tool that supports streaming
+    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file';
+
+    try {
+      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
+        signal,
+        enableStreaming: isFileWriteTool,
+        onStreamingProgress: isFileWriteTool ? (progress) => {
+          assistantStore.updateToolCall(toolCall.id, {
+            streamingProgress: progress
+          });
+        } : undefined
+      });
+      
+      if (result.success) {
+        assistantStore.updateToolCall(toolCall.id, {
+          status: 'completed',
+          output: result.output,
+          endTime: Date.now(),
+          streamingProgress: undefined // Clear progress on completion
+        });
+      } else {
+        assistantStore.updateToolCall(toolCall.id, {
+          status: 'failed',
+          error: result.error,
+          endTime: Date.now(),
+          streamingProgress: undefined
+        });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      assistantStore.updateToolCall(toolCall.id, {
+        status: 'failed',
+        error: errorMsg,
+        endTime: Date.now(),
+        streamingProgress: undefined
+      });
     }
   }
 
@@ -345,7 +721,7 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
     assistantStore.clearConversation();
   }
 
-  function handleToolApprove(toolCall: ToolCall): void {
+  async function handleToolApprove(toolCall: ToolCall): Promise<void> {
     // Validate tool call against current mode
     const error = assistantStore.validateToolCall(toolCall.name);
     if (error) {
@@ -358,14 +734,76 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
       return;
     }
 
-    assistantStore.updateToolCall(toolCall.id, { 
-      status: 'running',
-      startTime: Date.now()
-    });
+    // Execute the approved tool
+    await executeToolAndUpdate(toolCall, assistantStore.abortController?.signal);
   }
 
   function handleToolDeny(toolCall: ToolCall): void {
     assistantStore.updateToolCall(toolCall.id, { 
+      status: 'cancelled',
+      endTime: Date.now()
+    });
+  }
+
+  /**
+   * Handle tool approval from inline display in message
+   * Supports streaming progress for file write operations
+   */
+  async function handleToolApproveInMessage(messageId: string, toolCall: ToolCall): Promise<void> {
+    const error = assistantStore.validateToolCall(toolCall.name);
+    if (error) {
+      showToast({ message: error, type: 'warning' });
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, { 
+        status: 'cancelled',
+        error,
+        endTime: Date.now()
+      });
+      return;
+    }
+
+    // Update status to running
+    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+      status: 'running',
+      startTime: Date.now()
+    });
+
+    // Check if this is a file write tool that supports streaming
+    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file';
+
+    try {
+      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
+        signal: assistantStore.abortController?.signal,
+        enableStreaming: isFileWriteTool,
+        onStreamingProgress: isFileWriteTool ? (progress) => {
+          assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+            streamingProgress: progress
+          });
+        } : undefined
+      });
+      
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        status: result.success ? 'completed' : 'failed',
+        output: result.output,
+        error: result.error,
+        endTime: Date.now(),
+        streamingProgress: undefined // Clear progress on completion
+      });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        status: 'failed',
+        error: errorMsg,
+        endTime: Date.now(),
+        streamingProgress: undefined
+      });
+    }
+  }
+
+  /**
+   * Handle tool denial from inline display in message
+   */
+  function handleToolDenyInMessage(messageId: string, toolCall: ToolCall): void {
+    assistantStore.updateToolCallInMessage(messageId, toolCall.id, { 
       status: 'cancelled',
       endTime: Date.now()
     });
@@ -424,20 +862,12 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
 
   <!-- Messages Area -->
   <div class="messages-area">
-    <MessageList messages={assistantStore.messages} currentMode={assistantStore.currentMode} />
-    
-    <!-- Active Tool Calls -->
-    {#if assistantStore.activeToolCalls.length > 0}
-      <div class="tool-calls-section" role="region" aria-label="Tool activity">
-        {#each assistantStore.activeToolCalls as toolCall (toolCall.id)}
-          <ToolCallRow 
-            {toolCall}
-            onApprove={() => handleToolApprove(toolCall)}
-            onDeny={() => handleToolDeny(toolCall)}
-          />
-        {/each}
-      </div>
-    {/if}
+    <MessageList 
+      messages={assistantStore.messages} 
+      currentMode={assistantStore.currentMode}
+      onToolApprove={handleToolApproveInMessage}
+      onToolDeny={handleToolDenyInMessage}
+    />
   </div>
 
   <!-- Input Area (Bottom) -->
@@ -592,12 +1022,6 @@ If canMutateFiles is false, do not instruct the app to modify files. Provide ana
     flex: 1;
     overflow: hidden;
     min-height: 0;
-  }
-
-  .tool-calls-section {
-    padding: 8px 12px;
-    border-top: 1px solid var(--color-border);
-    background: var(--color-bg-sidebar);
   }
 
   .input-area {

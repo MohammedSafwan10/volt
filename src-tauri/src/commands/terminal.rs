@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 /// Typed error enum for terminal operations
@@ -57,6 +58,13 @@ struct TerminalDataEvent {
 struct TerminalExitEvent {
     terminal_id: String,
     code: Option<i32>,
+}
+
+/// Event payload for terminal readiness
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalReadyEvent {
+    terminal_id: String,
 }
 
 
@@ -254,6 +262,24 @@ fn create_terminal_sync(
     let app_clone = app.clone();
     let terminal_id_clone = terminal_id.clone();
     let manager_clone = manager.clone();
+
+    // Emit a "ready" event shortly after creation.
+    // This helps the frontend avoid racing terminal writes against PTY/shell initialization.
+    // We delay slightly so the JS side has a chance to register event listeners after the
+    // terminal_create invoke returns.
+    {
+        let app_ready = app.clone();
+        let terminal_id_ready = terminal_id.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(75));
+            let _ = app_ready.emit(
+                "terminal://ready",
+                TerminalReadyEvent {
+                    terminal_id: terminal_id_ready,
+                },
+            );
+        });
+    }
 
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];

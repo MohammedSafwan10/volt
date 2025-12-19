@@ -426,42 +426,63 @@
     <SidePanel onFileSelect={handleFileSelect} />
 
     <div class="main-content">
-      <!-- Tab Bar (above editor only) -->
-      <TabBar />
-
-      <!-- Breadcrumb navigation -->
-      {#if editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
-        <Breadcrumb filepath={editorStore.activeFile.path} />
-      {/if}
-
-      <!-- Editor + Right Panel container -->
+      <!-- Editor region (with bottom panel) + Assistant Panel side by side -->
       <div class="editor-with-right-panel">
-        <!-- Editor area -->
-        <div class="editor-area">
-          {#if children}
-            {@render children()}
-          {:else if editorStore.activeFile}
-            {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
-              <div class="settings-editor" role="region" aria-label="Settings">
-                <SettingsPanel />
-              </div>
+        <!-- Editor region: tabs, breadcrumb, editor, bottom panel -->
+        <div class="editor-region">
+          <!-- Tab Bar (above editor only) -->
+          <TabBar />
+
+          <!-- Breadcrumb navigation -->
+          {#if editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
+            <Breadcrumb filepath={editorStore.activeFile.path} />
+          {/if}
+
+          <!-- Editor area -->
+          <div class="editor-area">
+            {#if children}
+              {@render children()}
+            {:else if editorStore.activeFile}
+              {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
+                <div class="settings-editor" role="region" aria-label="Settings">
+                  <SettingsPanel />
+                </div>
+              {:else}
+                <MonacoEditor
+                  filepath={editorStore.activeFile.path}
+                  value={editorStore.activeFile.content}
+                  language={editorStore.activeFile.language}
+                  readonly={editorStore.activeFile.readonly ?? false}
+                  onchange={handleEditorChange}
+                />
+              {/if}
+            {:else if !projectStore.rootPath}
+              <WelcomeScreen />
             {:else}
-              <MonacoEditor
-                filepath={editorStore.activeFile.path}
-                value={editorStore.activeFile.content}
-                language={editorStore.activeFile.language}
-                readonly={editorStore.activeFile.readonly ?? false}
-                onchange={handleEditorChange}
-              />
+              <EmptyState hasProject={true} />
             {/if}
-          {:else if !projectStore.rootPath}
-            <WelcomeScreen />
-          {:else}
-            <EmptyState hasProject={true} />
+          </div>
+
+          <!-- Bottom panel (Problems / Output / Terminal) - inside editor region -->
+          {#if uiStore.bottomPanelOpen}
+            <ResizablePanel
+              direction="vertical"
+              size={uiStore.bottomPanelHeight}
+              minSize={100}
+              maxSize={500}
+              onResize={(height) => uiStore.setBottomPanelHeight(height)}
+            />
+
+            <div
+              class="bottom-panel-container"
+              style="height: {uiStore.bottomPanelHeight}px"
+            >
+              <BottomPanel />
+            </div>
           {/if}
         </div>
 
-        <!-- Assistant Panel (Right side) -->
+        <!-- Assistant Panel (Right side - separate from editor region) -->
         {#if assistantStore.panelOpen}
           <ResizablePanel
             direction="horizontal"
@@ -480,24 +501,6 @@
           </div>
         {/if}
       </div>
-
-      <!-- Bottom panel (Problems / Output / Terminal) -->
-      {#if uiStore.bottomPanelOpen}
-        <ResizablePanel
-          direction="vertical"
-          size={uiStore.bottomPanelHeight}
-          minSize={100}
-          maxSize={500}
-          onResize={(height) => uiStore.setBottomPanelHeight(height)}
-        />
-
-        <div
-          class="bottom-panel-container"
-          style="height: {uiStore.bottomPanelHeight}px"
-        >
-          <BottomPanel />
-        </div>
-      {/if}
     </div>
   </div>
 
@@ -550,6 +553,14 @@
   .editor-with-right-panel {
     display: flex;
     flex: 1;
+    overflow: hidden;
+  }
+
+  .editor-region {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
   }
 

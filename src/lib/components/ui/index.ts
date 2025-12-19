@@ -6,3 +6,4 @@ export type { UIIconName } from './UIIcon.svelte';
 export { default as TextPromptModal } from './TextPromptModal.svelte';
 export { default as ConfirmModal } from './ConfirmModal.svelte';
 export { default as VirtualList } from './VirtualList.svelte';
+export { default as Markdown } from './Markdown.svelte';

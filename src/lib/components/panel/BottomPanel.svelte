@@ -45,6 +45,8 @@
   }
 
   function getTerminalLabel(session: TerminalSession, index: number): string {
+    const labeled = terminalStore.getSessionLabel(session.id);
+    if (labeled) return labeled;
     const shell = session.info.shell;
     const shellName = shell.split(/[/\\]/).pop() || 'terminal';
     return `${shellName} ${index + 1}`;
