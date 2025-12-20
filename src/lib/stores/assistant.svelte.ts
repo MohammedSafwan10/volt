@@ -9,6 +9,7 @@
  */
 
 import type { AIMode } from './ai.svelte';
+import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool';
@@ -245,6 +246,60 @@ function redactSecrets(content: string): string {
     });
 }
 
+/**
+ * Sanitize user input to remove excessive repetition
+ * This prevents the model from echoing back massive repetitive text
+ */
+function sanitizeUserInput(content: string): string {
+  // Max input length (chars) - roughly 50k tokens
+  const MAX_INPUT_LENGTH = 200_000;
+  
+  // If input is short, no need to process
+  if (content.length < 500) {
+    return content;
+  }
+  
+  // Truncate if excessively long
+  if (content.length > MAX_INPUT_LENGTH) {
+    content = content.slice(0, MAX_INPUT_LENGTH) + '\n\n[Input truncated due to length]';
+  }
+  
+  // Detect repetitive patterns (phrases repeated 3+ times consecutively)
+  // Common pattern: "make it better and add features and make it better and add features..."
+  const words = content.split(/\s+/);
+  
+  // Look for repeated phrase patterns (5-30 words)
+  for (let phraseLen = 5; phraseLen <= 30; phraseLen++) {
+    if (words.length < phraseLen * 3) continue;
+    
+    for (let start = 0; start < words.length - phraseLen * 2; start++) {
+      const phrase = words.slice(start, start + phraseLen).join(' ');
+      let repeatCount = 1;
+      let checkPos = start + phraseLen;
+      
+      while (checkPos + phraseLen <= words.length) {
+        const nextPhrase = words.slice(checkPos, checkPos + phraseLen).join(' ');
+        if (nextPhrase === phrase) {
+          repeatCount++;
+          checkPos += phraseLen;
+        } else {
+          break;
+        }
+      }
+      
+      // If phrase repeats 3+ times, collapse it
+      if (repeatCount >= 3) {
+        const beforeRepeat = words.slice(0, start).join(' ');
+        const afterRepeat = words.slice(start + phraseLen * repeatCount).join(' ');
+        const collapsed = `${beforeRepeat} ${phrase} [repeated ${repeatCount}x, collapsed] ${afterRepeat}`.trim();
+        return sanitizeUserInput(collapsed); // Recurse to catch nested patterns
+      }
+    }
+  }
+  
+  return content;
+}
+
 class AssistantStore {
   // Panel state
   panelOpen = $state(false);
@@ -323,31 +378,25 @@ class AssistantStore {
    * Returns error message if not allowed, null if allowed
    */
   validateToolCall(toolName: string, _args?: Record<string, unknown>): string | null {
-    // Import validation from tool router (lazy to avoid circular deps)
-    // For now, use inline validation that matches the router
+    const tool = getToolByName(toolName);
+    if (!tool) {
+      return `Unknown tool: "${toolName}"`;
+    }
+
+    // Mode restrictions: use the centralized allowedModes list
+    if (!tool.allowedModes.includes(this.currentMode)) {
+      return `Tool "${toolName}" is not allowed in ${this.currentMode} mode.`;
+    }
+
+    // Capability restrictions (enforced in code, not just UI)
     const caps = MODE_CAPABILITIES[this.currentMode];
-    
-    // Read-only tools allowed in all modes
-    const readOnlyTools = [
-      'list_dir', 'read_file', 'get_file_info', 'workspace_search',
-      'get_active_file', 'get_selection', 'get_open_files'
-    ];
-    
-    if (readOnlyTools.includes(toolName)) {
-      return null; // Always allowed
+    if (tool.category === 'file_write' && !caps.canMutateFiles) {
+      return `Tool "${toolName}" requires agent mode (file mutations).`;
     }
-    
-    // Check for mutation tools in non-agent modes
-    const mutationTools = [
-      'write_file', 'delete_path', 'create_file', 'create_dir', 
-      'rename_path', 'terminal_create', 'terminal_write', 'terminal_kill',
-      'run_check'
-    ];
-    
-    if (mutationTools.includes(toolName) && !caps.canMutateFiles) {
-      return `Tool "${toolName}" requires agent mode. Current mode (${this.currentMode}) is read-only.`;
+    if (tool.category === 'terminal' && !caps.canExecuteCommands) {
+      return `Tool "${toolName}" requires agent mode (terminal access).`;
     }
-    
+
     return null;
   }
 
@@ -355,11 +404,7 @@ class AssistantStore {
    * Check if a tool requires user approval before execution
    */
   toolRequiresApproval(toolName: string): boolean {
-    const approvalRequiredTools = [
-      'terminal_create', 'terminal_write', 'terminal_kill',
-      'delete_path', 'rename_path'
-    ];
-    return approvalRequiredTools.includes(toolName);
+    return doesToolRequireApproval(toolName);
   }
 
   // Panel controls
@@ -395,18 +440,21 @@ class AssistantStore {
 
   // Message management
   addUserMessage(content: string, context?: AttachedContext[]): string {
+    // Sanitize user input to remove excessive repetition
+    const sanitizedContent = sanitizeUserInput(content);
+    
     const id = crypto.randomUUID();
     const message: AssistantMessage = {
       id,
       role: 'user',
-      content,
+      content: sanitizedContent,
       timestamp: Date.now(),
       attachments: [...this.pendingAttachments] // Include pending attachments
     };
     
     // Include context in message if provided (legacy support)
     if (context && context.length > 0) {
-      message.content = this.formatMessageWithContext(content, context);
+      message.content = this.formatMessageWithContext(sanitizedContent, context);
     }
 
     this.messages = [...this.messages, message];

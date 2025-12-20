@@ -48,8 +48,8 @@ export interface StreamingOptions {
 const activeSessions = new Map<string, StreamingSession>();
 
 // Fast streaming for good UX
-const DEFAULT_CHUNK_SIZE = 25;
-const DEFAULT_CHUNK_DELAY = 2;
+const DEFAULT_CHUNK_SIZE = 100;
+const DEFAULT_CHUNK_DELAY = 0;
 
 function generateSessionId(): string {
   return `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -479,8 +479,265 @@ export function getStreamingProgress(path: string): StreamingProgress | null {
 }
 
 /**
- * Get all active streaming sessions
+ * Start streaming a surgical edit to an editor
+ * Replaces originalSnippet with newSnippet progressively
  */
-export function getActiveSessions(): StreamingSession[] {
-  return Array.from(activeSessions.values()).filter(s => s.active);
+export async function startStreamingEdit(
+  path: string,
+  originalSnippet: string,
+  newSnippet: string,
+  options: StreamingOptions = {}
+): Promise<StreamingSession> {
+  const sessionId = generateSessionId();
+  let normalizedPath = normalizePath(path);
+  const workspaceRoot = projectStore.rootPath?.replace(/\\/g, '/');
+  
+  // Normalize logic similar to startStreaming
+  if (workspaceRoot && normalizedPath.toLowerCase().startsWith(workspaceRoot.toLowerCase())) {
+    normalizedPath = normalizedPath.slice(workspaceRoot.length);
+    if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
+  }
+
+  // Cancel existing sessions
+  const existingSession = Array.from(activeSessions.values()).find(s => 
+    pathsEqual(s.path, normalizedPath)
+  );
+  if (existingSession) {
+    existingSession.abortController.abort();
+    activeSessions.delete(existingSession.id);
+  }
+
+  const session: StreamingSession = {
+    id: sessionId,
+    path: normalizedPath,
+    content: newSnippet, // We stream the NEW content
+    position: 0,
+    active: true,
+    completed: false,
+    abortController: new AbortController(),
+    userScrolledAway: false,
+    onProgress: options.onProgress,
+    onComplete: options.onComplete,
+    onError: options.onError
+  };
+
+  activeSessions.set(sessionId, session);
+
+  try {
+    const monaco = await loadMonaco();
+    
+    // Open/Find file (reusing logic from startStreaming is hard without refactoring, duplicating slightly for safety)
+    const filename = normalizedPath.split('/').pop() || 'untitled';
+    const language = detectLanguage(filename);
+    const fullPath = workspaceRoot ? `${workspaceRoot}/${normalizedPath}` : normalizedPath;
+
+    let existingFile = editorStore.openFiles.find(f => pathsEqual(f.path, normalizedPath)) ??
+      editorStore.openFiles.find(f => pathsEqual(f.path, fullPath));
+
+    if (!existingFile) {
+      const opened = await editorStore.openFile(fullPath);
+      if (opened) {
+        existingFile = editorStore.activeFile ?? 
+          editorStore.openFiles.find(f => pathsEqual(f.path, normalizedPath));
+      }
+    } else {
+      editorStore.setActiveFile(existingFile.path);
+    }
+
+    const actualPath = existingFile?.path || normalizedPath;
+    session.path = actualPath;
+
+    // Wait for editor
+    let editor = getActiveEditor();
+    let retries = 0;
+    while (!editor && retries < 10) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      editor = getActiveEditor();
+      retries++;
+    }
+
+    if (!editor) throw new Error('Editor not available');
+
+    const model = await getOrCreateModel({ path: actualPath, content: '', language }); // Content ignored if exists
+    
+    // Locate the original snippet
+    const modelContent = model.getValue();
+    // Normalize line endings for search
+    const normalizedModelContent = modelContent.replace(/\r\n/g, '\n');
+    const normalizedSnippet = originalSnippet.replace(/\r\n/g, '\n');
+    
+    const startIndex = normalizedModelContent.indexOf(normalizedSnippet);
+    if (startIndex === -1) {
+      // Try fuzzy match (trim)
+      const trimmedSnippet = normalizedSnippet.trim();
+      const trimmedStart = normalizedModelContent.indexOf(trimmedSnippet);
+      if (trimmedStart === -1) {
+        throw new Error('Original snippet not found in editor model');
+      }
+      // Use the found index
+      // Need to map back to Monaco Position. 
+      // Monaco's `getPositionAt` works on the model's text (which might be CRLF)
+      // If we used normalized search, indices might differ slightly if file matches CRLF.
+      // Ideally use model.findMatches() which is safer.
+    }
+
+    // Use Monaco's findMatches with Regex to handle CRLF/LF differences
+    // Escape the snippet for regex usage
+    const escapedSnippet = originalSnippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Replace newlines with a pattern that matches any EOL sequence
+    const regexPattern = escapedSnippet.replace(/\n/g, '\\r?\\n');
+    
+    const matches = model.findMatches(regexPattern, false, true, false, null, true);
+    let matchRange: any = null;
+    
+    if (matches.length > 0) {
+      matchRange = matches[0].range;
+    } else {
+      // Fallback: try finding trimmed version (also with regex)
+      const trimmedSnippet = originalSnippet.trim();
+      const escapedTrimmed = trimmedSnippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regexTrimmed = escapedTrimmed.replace(/\n/g, '\\r?\\n');
+      
+      const trimmedMatches = model.findMatches(regexTrimmed, false, true, false, null, true);
+      if (trimmedMatches.length > 0) {
+        matchRange = trimmedMatches[0].range;
+      } else {
+         // Debug: log what we tried to find
+         console.warn('[startStreamingEdit] Snippet not found via regex:', regexPattern.slice(0, 100));
+         throw new Error('Original snippet not found in file (visual match failed)');
+      }
+    }
+
+    // Delete the original range
+    editor.executeEdits('ai-streaming-edit', [{
+      range: matchRange,
+      text: '', // Delete
+      forceMoveMarkers: true
+    }]);
+
+    // Set cursor to start of deletion
+    const startPos = matchRange.getStartPosition();
+    editor.setPosition(startPos);
+    editor.revealPositionInCenter(startPos);
+
+    // Start streaming new content at this position
+    streamEditContentAsync(session, editor, model, monaco, startPos, options);
+
+    return session;
+
+  } catch (err) {
+    session.active = false;
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    session.onError?.(errorMsg);
+    activeSessions.delete(sessionId);
+    throw err;
+  }
+}
+
+/**
+ * Async loop for streaming edits at a specific position
+ */
+async function streamEditContentAsync(
+  session: StreamingSession,
+  editor: ReturnType<typeof getActiveEditor>,
+  model: Awaited<ReturnType<typeof getOrCreateModel>>,
+  monaco: Awaited<ReturnType<typeof loadMonaco>>,
+  startPosition: any, // monaco.Position
+  options: StreamingOptions
+): Promise<void> {
+  if (!editor) {
+    session.active = false;
+    session.onError?.('No active editor available for streaming edit');
+    return;
+  }
+
+  const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
+  const chunkDelay = options.chunkDelay ?? DEFAULT_CHUNK_DELAY;
+  
+  const totalChars = session.content.length;
+  const totalLines = countLines(session.content);
+  
+  // Track insertion point
+  let currentLine = startPosition.lineNumber;
+  let currentColumn = startPosition.column;
+
+  try {
+    while (session.position < totalChars && session.active) {
+      if (session.abortController.signal.aborted) {
+        session.active = false;
+        return;
+      }
+
+      let chunkEnd = Math.min(session.position + chunkSize, totalChars);
+      // Nice breaking at newlines
+      if (chunkEnd < totalChars) {
+        const lookAhead = session.content.slice(session.position, chunkEnd + 15);
+        const newlineIdx = lookAhead.indexOf('\n');
+        if (newlineIdx > 0 && newlineIdx <= chunkSize + 5) {
+          chunkEnd = session.position + newlineIdx + 1;
+        }
+      }
+
+      const chunk = session.content.slice(session.position, chunkEnd);
+
+      // Insert at current cursor position
+      const range = new monaco.Range(currentLine, currentColumn, currentLine, currentColumn);
+      
+      editor.executeEdits('ai-streaming-edit', [{
+        range,
+        text: chunk,
+        forceMoveMarkers: true
+      }]);
+
+      // Update position for next chunk
+      // We can rely on Monaco to move the cursor if we set it, or calculate new pos
+      // Simplest is to ask model for position after edit? 
+      // Actually `executeEdits` doesn't update cursor auto unless we tell it or read back.
+      // Better: Update our tracking based on chunk content.
+      const chunkLines = chunk.split('\n');
+      if (chunkLines.length > 1) {
+        currentLine += chunkLines.length - 1;
+        currentColumn = chunkLines[chunkLines.length - 1].length + 1;
+      } else {
+        currentColumn += chunk.length;
+      }
+
+      session.position = chunkEnd;
+
+      // Reveal cursor
+      editor.revealPosition(new monaco.Position(currentLine, currentColumn));
+
+      session.onProgress?.({
+        charsWritten: session.position,
+        totalChars,
+        linesWritten: countLines(session.content.slice(0, session.position)),
+        totalLines,
+        percent: Math.round((session.position / totalChars) * 100)
+      });
+
+      if (chunkDelay > 0 && session.position < totalChars) {
+        await new Promise(resolve => setTimeout(resolve, chunkDelay));
+      }
+    }
+
+    session.active = false;
+    session.completed = true;
+    editorStore.updateContent(session.path, model.getValue());
+    
+    session.onProgress?.({
+      charsWritten: totalChars,
+      totalChars,
+      linesWritten: totalLines,
+      totalLines,
+      percent: 100
+    });
+    
+    session.onComplete?.();
+
+  } catch (err) {
+    session.active = false;
+    session.onError?.(err instanceof Error ? err.message : 'Streaming error');
+  } finally {
+    activeSessions.delete(session.id);
+  }
 }

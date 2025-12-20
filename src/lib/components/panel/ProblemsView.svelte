@@ -4,9 +4,11 @@
    * Shows errors, warnings, and info messages grouped by file
    */
   import { SvelteSet } from 'svelte/reactivity';
-	import { tick } from 'svelte';
+  import { tick } from 'svelte';
   import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { assistantStore } from '$lib/stores/assistant.svelte';
+  import { showToast } from '$lib/stores/toast.svelte';
   import { UIIcon, type UIIconName } from '$lib/components/ui';
 
   // Track expanded files (SvelteSet is already reactive)
@@ -56,8 +58,8 @@
     // Open the file
     const opened = await editorStore.openFile(problem.file);
     if (!opened) return;
-		// Wait for the editor to switch to the requested file before navigating.
-		await tick();
+    // Wait for the editor to switch to the requested file before navigating.
+    await tick();
 
     // The editor will be focused, and we need to navigate to the position
     // This is handled by the editor component listening to a navigation event
@@ -69,6 +71,60 @@
         column: problem.column
       }
     }));
+  }
+
+  // Handle send to agent
+  function handleSendToAgent(problem: Problem, event: MouseEvent): void {
+    event.stopPropagation(); // Prevent navigation click
+
+    const content = `[${problem.severity.toUpperCase()}] ${problem.message}
+File: ${problem.file}:${problem.line}:${problem.column}
+Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
+
+    const attachmentResult = assistantStore.attachSelection(
+      content,
+      problem.file,
+      {
+        startLine: problem.line,
+        startCol: problem.column,
+        endLine: problem.endLine,
+        endCol: problem.endColumn
+      }
+    );
+
+    if (attachmentResult.success) {
+      assistantStore.openPanel();
+      // Optional: Set input value to prompt action
+      if (!assistantStore.inputValue) {
+        assistantStore.setInputValue('Fix this error');
+      }
+    } else {
+      showToast({ message: attachmentResult.error ?? 'Failed to attach problem', type: 'error' });
+    }
+  }
+
+  // Handle send all problems to agent
+  function handleSendAllToAgent(): void {
+    const allProblems = problemsStore.allProblems;
+    if (allProblems.length === 0) return;
+
+    // Format all problems into a concise list
+    const summary = allProblems.map(p => 
+      `[${p.severity.toUpperCase()}] ${p.file}:${p.line} - ${p.message}`
+    ).join('\n');
+
+    const attachmentResult = assistantStore.attachSelection(
+      `All Workspace Problems:\n${summary}`,
+      undefined, // No single file
+      undefined
+    );
+
+    if (attachmentResult.success) {
+      assistantStore.openPanel();
+      if (!assistantStore.inputValue) {
+        assistantStore.setInputValue('Fix all these errors');
+      }
+    }
   }
 
   // Check if file is expanded
@@ -104,17 +160,28 @@
     </div>
   {:else}
     <div class="problems-header">
-      <span class="problem-count">
-        {#if problemsStore.errorCount > 0}
-          <span class="count-error"><UIIcon name="error" size={14} /> {problemsStore.errorCount}</span>
-        {/if}
-        {#if problemsStore.warningCount > 0}
-          <span class="count-warning"><UIIcon name="warning" size={14} /> {problemsStore.warningCount}</span>
-        {/if}
-        {#if problemsStore.infoCount > 0}
-          <span class="count-info"><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span>
-        {/if}
-      </span>
+      <div class="header-left">
+        <span class="problem-count">
+          {#if problemsStore.errorCount > 0}
+            <span class="count-error"><UIIcon name="error" size={14} /> {problemsStore.errorCount}</span>
+          {/if}
+          {#if problemsStore.warningCount > 0}
+            <span class="count-warning"><UIIcon name="warning" size={14} /> {problemsStore.warningCount}</span>
+          {/if}
+          {#if problemsStore.infoCount > 0}
+            <span class="count-info"><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span>
+          {/if}
+        </span>
+      </div>
+
+      <button 
+        class="fix-all-btn" 
+        onclick={handleSendAllToAgent}
+        title="Fix all problems with AI"
+      >
+        <UIIcon name="sparkle" size={14} />
+        <span>Fix All with AI</span>
+      </button>
     </div>
 
     <div class="problems-list">
@@ -146,20 +213,29 @@
           {#if expanded}
             <div class="problems-items">
               {#each sortProblems(problems) as problem (problem.id)}
-                <button
-                  class="problem-item"
-                  onclick={() => handleProblemClick(problem)}
-                  title="{problem.file}:{problem.line}:{problem.column}"
-                >
-                  <span class="problem-icon {getSeverityClass(problem.severity)}">
-                    <UIIcon name={getSeverityIconName(problem.severity)} size={14} />
-                  </span>
-                  <span class="problem-message">{problem.message}</span>
-                  <span class="problem-location">[{problem.line}, {problem.column}]</span>
-                  {#if problem.code}
-                    <span class="problem-code">{problem.source}({problem.code})</span>
-                  {/if}
-                </button>
+                <div class="problem-item-row">
+                  <button
+                    class="problem-item"
+                    onclick={() => handleProblemClick(problem)}
+                    title="{problem.file}:{problem.line}:{problem.column}"
+                  >
+                    <span class="problem-icon {getSeverityClass(problem.severity)}">
+                      <UIIcon name={getSeverityIconName(problem.severity)} size={14} />
+                    </span>
+                    <span class="problem-message">{problem.message}</span>
+                    <span class="problem-location">[{problem.line}, {problem.column}]</span>
+                    {#if problem.code}
+                      <span class="problem-code">{problem.source}({problem.code})</span>
+                    {/if}
+                  </button>
+                  <button 
+                    class="problem-action-btn"
+                    onclick={(e) => handleSendToAgent(problem, e)}
+                    title="Ask Agent to Fix"
+                  >
+                    <UIIcon name="sparkle" size={12} />
+                  </button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -211,9 +287,35 @@
   .problems-header {
     display: flex;
     align-items: center;
-    padding: 6px 12px;
+    justify-content: space-between;
+    padding: 4px 12px;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-bg-header);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+  }
+
+  .fix-all-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-accent);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.1s ease;
+  }
+
+  .fix-all-btn:hover {
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+    border-color: var(--color-accent);
   }
 
   .problem-count {
@@ -310,23 +412,61 @@
     background: var(--color-bg);
   }
 
+  /* Row wrapper for item + action */
+  .problem-item-row {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding-right: 8px; /* Space for action button */
+  }
+
+  .problem-item-row:hover {
+    background: var(--color-hover);
+  }
+
+  /* Show action button on row hover only */
+  .problem-item-row:hover .problem-action-btn {
+    opacity: 1;
+  }
+
   .problem-item {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    width: 100%;
-    padding: 4px 12px 4px 30px;
+    flex: 1; /* Take remaining space */
+    min-width: 0; /* Allow truncation */
+    padding: 4px 8px 4px 30px;
     background: transparent;
     border: none;
     color: var(--color-text);
     font-size: 12px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.1s ease;
   }
 
+  /* Remove hover on inner button as row handles it */
   .problem-item:hover {
-    background: var(--color-hover);
+    background: transparent;
+  }
+
+  .problem-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.1s ease, background 0.1s ease;
+  }
+
+  .problem-action-btn:hover {
+    background: var(--color-hover-dark); /* Slightly darker than row hover */
+    color: var(--color-accent);
   }
 
   .problem-icon {

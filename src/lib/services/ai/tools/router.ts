@@ -199,7 +199,11 @@ function validatePathInWorkspace(path: string, workspaceRoot: string): { valid: 
   const normalizedFinal = finalPath.toLowerCase();
   const normalizedRootLower = normalizedRoot.toLowerCase();
 
-  if (!normalizedFinal.startsWith(normalizedRootLower)) {
+  // IMPORTANT: Prevent prefix attacks (e.g. /workspace vs /workspace2)
+  const rootWithSlash = normalizedRootLower.endsWith('/') ? normalizedRootLower : normalizedRootLower + '/';
+  const isWithin = normalizedFinal === normalizedRootLower || normalizedFinal.startsWith(rootWithSlash);
+
+  if (!isWithin) {
     return { 
       valid: false, 
       absolutePath: finalPath, 
@@ -245,13 +249,15 @@ function isPromptLine(line: string): boolean {
   if (!trimmed) return false;
   
   // PowerShell: "PS C:\path>" or "PS C:\path> "
-  if (/^PS\s+[A-Z]:\\[^>]*>\s*$/i.test(trimmed)) return true;
+  if (/^PS\s+.*>\s*$/i.test(trimmed)) return true;
   
   // CMD: "C:\path>" or "C:\path> "
-  if (/^[A-Z]:\\[^>]*>\s*$/i.test(trimmed)) return true;
+  if (/^[A-Z]:\\.*>\s*$/i.test(trimmed)) return true;
   
-  // Bash/Zsh: ends with $ or # (common prompt endings)
-  if (/[$#]\s*$/.test(trimmed) && trimmed.length < 100) return true;
+  // Common *nix prompts: ending in $, #, %, or >
+  // Avoid matching simple arrows or comparison operators by checking length or context if possible,
+  // but for a prompt at the end of a block, strict ending checks are usually safe.
+  if (/[>#$%\\]\s*$/.test(trimmed) && trimmed.length < 300) return true;
   
   return false;
 }
@@ -292,7 +298,7 @@ async function waitForCommandCompletion(
   let commandSeen = false;
   
   // Stabilization: if no new output for this many ms, consider done
-  const STABLE_THRESHOLD_MS = 800;
+  const STABLE_THRESHOLD_MS = 1000;
   
   return new Promise((resolve) => {
     const check = () => {
@@ -300,12 +306,17 @@ async function waitForCommandCompletion(
       const currentOutput = session.getRecentOutput();
       
       // Check if we've seen the command echoed
-      if (!commandSeen && currentOutput.includes(commandTrimmed)) {
+      // We look for the command logic somewhat loosely to handle variations in echo behavior
+      if (!commandSeen && currentOutput.includes(commandTrimmed.substring(0, Math.min(20, commandTrimmed.length)))) {
         commandSeen = true;
       }
       
-      // Only start checking for completion after command is echoed
-      if (commandSeen) {
+      // Only start checking for completion after command is echoed (or if enough time passed)
+      // If we never see the echo (e.g. blind typing), we rely on stabilization after a delay.
+      const echoGracePeriod = 2000;
+      const shouldCheckCompletion = commandSeen || (elapsed > echoGracePeriod);
+
+      if (shouldCheckCompletion) {
         // Check if output has changed
         if (currentOutput !== lastOutput) {
           lastOutput = currentOutput;
@@ -314,23 +325,25 @@ async function waitForCommandCompletion(
         
         // Check for output stabilization (no new output for a while)
         const timeSinceLastOutput = Date.now() - lastOutputTime;
-        if (timeSinceLastOutput >= STABLE_THRESHOLD_MS && currentOutput.length > commandTrimmed.length + 10) {
-          // Output has stabilized, check if we have a prompt at the end
-          const lines = currentOutput.split(/[\r\n]+/).filter(l => l.trim());
-          if (lines.length >= 2) {
-            const lastLine = lines[lines.length - 1];
-            // Only treat *normal* shell prompts as completion; ignore continuation prompts.
-            if (isPromptLine(lastLine) && !isContinuationPromptLine(lastLine)) {
-              resolve(currentOutput);
-              return;
+        
+        // 1. Fast path: Prompt detection
+        const lines = currentOutput.split(/[\r\n]+/).filter(l => l.trim());
+        if (lines.length > 0) {
+          const lastLine = lines[lines.length - 1];
+          if (isPromptLine(lastLine) && !isContinuationPromptLine(lastLine)) {
+            // Additional check: Ensure we aren't just seeing the *command itself* as the last line
+            if (!lastLine.includes(commandTrimmed)) {
+               resolve(currentOutput);
+               return;
             }
           }
-          
-          // Even without prompt, if output is stable for long enough, we're done
-          if (timeSinceLastOutput >= STABLE_THRESHOLD_MS * 2) {
-            resolve(currentOutput);
-            return;
-          }
+        }
+
+        // 2. Slow path: Stabilization
+        if (timeSinceLastOutput >= STABLE_THRESHOLD_MS && currentOutput.length > 0) {
+           // Output hasn't changed for 1s. Assume done.
+           resolve(currentOutput);
+           return;
         }
       }
       
@@ -468,15 +481,8 @@ export function validateToolCall(
     };
   }
 
-  // Check for required meta field
-  const meta = extractMeta(args);
-  if (!meta) {
-    return { 
-      valid: false, 
-      error: `Tool "${toolName}" requires a 'meta' field with 'why', 'risk', and 'undo'`,
-      requiresApproval: false 
-    };
-  }
+  // NOTE: `meta` is optional. It is useful for UX/auditing, but missing meta must not
+  // block tool execution (models often omit it).
 
   // Validate path arguments if present
   const workspaceRoot = projectStore.rootPath;
@@ -516,16 +522,32 @@ export async function executeToolCall(
   const { signal, onStreamingProgress, enableStreaming = true } = options;
   const workspaceRoot = projectStore.rootPath;
 
-  // Create a timeout promise
+  // Allow per-call override for tools that support timeouts (e.g. run_command)
+  const requestedTimeout = typeof args.timeout === 'number' ? args.timeout : undefined;
+  const timeoutMs = Number.isFinite(requestedTimeout)
+    ? Math.max(0, Math.min(5 * 60_000, Math.floor(requestedTimeout!)))
+    : TOOL_TIMEOUT_MS;
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+
+  // Create a timeout promise (ensure it cannot become an unhandled rejection)
   const timeoutPromise = new Promise<ToolResult>((_, reject) => {
-    setTimeout(() => reject(new Error('Tool execution timed out')), TOOL_TIMEOUT_MS);
+    if (timeoutMs <= 0) return;
+    timeoutId = setTimeout(() => reject(new Error('Tool execution timed out')), timeoutMs);
+  }).catch(() => {
+    // Swallow if it loses the race; the race winner handles the outcome.
+    return { success: false, error: 'Tool execution timed out' };
   });
 
-  // Create abort handler
+  // Create abort handler (ensure it cannot become an unhandled rejection)
   const abortPromise = new Promise<ToolResult>((_, reject) => {
-    if (signal) {
-      signal.addEventListener('abort', () => reject(new Error('Tool execution cancelled')));
-    }
+    if (!signal) return;
+    abortListener = () => reject(new Error('Tool execution cancelled'));
+    signal.addEventListener('abort', abortListener, { once: true });
+  }).catch(() => {
+    // Swallow if it loses the race; the race winner handles the outcome.
+    return { success: false, error: 'Tool execution cancelled' };
   });
 
   try {
@@ -547,6 +569,17 @@ export async function executeToolCall(
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return { success: false, error: message };
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (signal && abortListener) {
+      try {
+        signal.removeEventListener('abort', abortListener);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
@@ -837,6 +870,118 @@ async function executeToolInternal(
       }
     }
 
+    case 'apply_edit': {
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      const originalSnippet = String(args.original_snippet);
+      const newSnippet = String(args.new_snippet);
+      const { onStreamingProgress, enableStreaming } = options;
+
+      // Try streaming visual edit first if enabled
+      let streamingSuccess = false;
+      
+      if (enableStreaming && onStreamingProgress) {
+        try {
+          const { startStreamingEdit } = await import('$lib/services/editor-streaming');
+          
+          await new Promise<void>((resolve, reject) => {
+            startStreamingEdit(path, originalSnippet, newSnippet, {
+              chunkSize: 40,
+              chunkDelay: 1,
+              onProgress: onStreamingProgress,
+              onComplete: () => resolve(),
+              onError: (err) => reject(new Error(err))
+            }).catch(reject);
+          });
+          
+          streamingSuccess = true;
+          
+          // If visual streaming succeeded, the editor has the updated content.
+          // We should save THAT content to disk to ensure they match.
+          const { editorStore } = await import('$lib/stores/editor.svelte');
+          const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
+          if (openFile) {
+             await invoke('write_file', { path, content: openFile.content });
+             // Mark as saved in store
+             editorStore.markSaved(path);
+             
+             // Refresh file tree
+             const { projectStore } = await import('$lib/stores/project.svelte');
+             await projectStore.refreshTree();
+             
+             return {
+               success: true,
+               output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`
+             };
+          }
+        } catch (err) {
+          console.warn('[apply_edit] Visual streaming failed, falling back to background edit:', err);
+          // Fallthrough to standard logic
+        }
+      }
+
+      // Standard logic (Background / Fallback)
+      let fileContent = '';
+      try {
+        fileContent = await invoke<string>('read_file', { path });
+      } catch (err) {
+        return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+
+      // Normalize line endings for comparison (CRLF -> LF)
+      const normalize = (text: string) => text.replace(/\r\n/g, '\n');
+      
+      const normalizedContent = normalize(fileContent);
+      const normalizedSnippet = normalize(originalSnippet);
+
+      let startIndex = normalizedContent.indexOf(normalizedSnippet);
+      
+      if (startIndex === -1) {
+        const trimmedSnippet = normalizedSnippet.trim();
+        startIndex = normalizedContent.indexOf(trimmedSnippet);
+        
+        if (startIndex === -1) {
+           // Provide a helpful error with context
+           const snippetStart = originalSnippet.slice(0, 50) + (originalSnippet.length > 50 ? '...' : '');
+           return { 
+             success: false, 
+             error: `Could not find original_snippet in file. \n\nSnippet start: "${snippetStart}"\n\nPossible reasons:\n1. The file content has changed on disk.\n2. The snippet has formatting differences (indentation).\n\nAction: Please use 'read_file' to get the latest content of ${relativePath} and try again.` 
+           };
+        }
+      }
+
+      let newContent = '';
+      if (fileContent.includes(originalSnippet)) {
+        newContent = fileContent.replace(originalSnippet, newSnippet);
+      } else {
+        newContent = normalizedContent.replace(normalizedSnippet, newSnippet);
+      }
+
+      await invoke('write_file', { path, content: newContent });
+
+      try {
+        const { projectStore } = await import('$lib/stores/project.svelte');
+        await projectStore.refreshTree();
+        const { editorStore } = await import('$lib/stores/editor.svelte');
+        const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
+        if (openFile) {
+           await editorStore.reloadFile(path); 
+        }
+      } catch {
+        // Ignore UI refresh errors
+      }
+
+      // Calculate context preview for the AI
+      const contextStart = Math.max(0, startIndex - 200);
+      const contextEnd = Math.min(newContent.length, startIndex + newSnippet.length + 200);
+      const preview = newContent.slice(contextStart, contextEnd);
+
+      return {
+        success: true,
+        output: `Successfully applied edit to ${relativePath}.\n\nContext around edit:\n...\n${preview}\n...`
+      };
+    }
+
     case 'create_file': {
       const path = resolvePath(String(args.path));
       await invoke('create_file', { path });
@@ -921,27 +1066,27 @@ async function executeToolInternal(
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
       
-      // Give UI time to render the terminal panel
-      await new Promise(resolve => setTimeout(resolve, 150));
-      
       // VS Code-like behavior: use a dedicated AI terminal so user terminals
       // (often mid-command / REPL / multiline input) don't poison tool execution.
       let session = await terminalStore.getOrCreateAiTerminal(cwd);
       if (!session) {
         return { success: false, error: 'Failed to create terminal' };
       }
+      
+      // Activate the session BEFORE waiting for UI
       terminalStore.setActive(session.id);
       
+      // Give UI time to render the terminal panel and initialize xterm
+      // Increased to 500ms to avoid race condition where xterm isn't ready to receive initial output
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       const ensureReadyForCommand = async (attempt: number): Promise<TerminalSession | null> => {
+        // ... (rest of ensureReadyForCommand implementation remains same)
         // Wait for backend readiness signal (or first output) before sending control sequences.
-        // This avoids writing into a terminal that exists but whose PTY/shell isn't fully initialized yet.
         await session!.waitForReady(2500);
 
-        // Clear output history before running command to get clean capture
         session!.clearOutputHistory();
 
-        // Cancel any pending/incomplete input in the terminal first.
-        // ESC cancels PowerShell multi-line input; Ctrl+C cancels running programs/REPL.
         try {
           await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\x1b' });
           await new Promise(resolve => setTimeout(resolve, 50));
@@ -950,29 +1095,25 @@ async function executeToolInternal(
           await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\x03' });
           await new Promise(resolve => setTimeout(resolve, 125));
         } catch {
-          // Ignore errors from cancel sequence
+          // ignore
         }
 
-        // Nudge prompt rendering.
         try {
           await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\r\n' });
         } catch {
           // ignore
         }
 
-        // Wait briefly for a *normal* prompt.
+        // Wait briefly for *any* output to confirm the shell is reactive.
+        // We don't strictly require a prompt match here because some prompts are complex.
+        // If we get text, we assume we're good to go.
         await session!.waitForOutput((newOutput) => {
-          return (
-            /PS\s+[A-Z]:\\[^>]*>\s*$/im.test(newOutput) ||
-            /^[A-Z]:\\[^>]*>\s*$/im.test(newOutput) ||
-            /[$#]\s*$/m.test(newOutput)
-          );
-        }, 2500);
+          return Boolean(newOutput && newOutput.trim().length > 0);
+        }, 2000);
 
-        const tail = session!.getRecentOutput(8000);
+        const tail = session!.getRecentOutput(1000);
         const last = lastNonEmptyLine(tail);
 
-        // If we still ended up in a continuation/REPL prompt, the session is “dirty”.
         if (isContinuationPromptLine(last) && attempt === 0) {
           await terminalStore.killTerminal(session!.id);
           session = await terminalStore.getOrCreateAiTerminal(cwd);
@@ -989,7 +1130,6 @@ async function executeToolInternal(
         return { success: false, error: 'Failed to prepare terminal for command execution' };
       }
       
-      // Send the command with CRLF (works well across platforms; avoids PowerShell oddities on Windows)
       const commandToSend = command + '\r\n';
       
       try {
@@ -1006,14 +1146,19 @@ async function executeToolInternal(
       
       // Wait for command to complete using smart detection
       const output = await waitForCommandCompletion(session, command, timeout);
-      
-      // Extract clean output (remove command echo and prompt)
       const cleanOutput = extractCommandOutput(output, command);
       
       const { text, truncated } = truncateOutput(cleanOutput);
+      
+      let finalOutput = text;
+      if (!finalOutput && !truncated) {
+        finalOutput = '[Command executed successfully with no output]';
+      }
+      
       return { 
         success: true, 
-        output: `$ ${command}\n\n${text}`,
+        // Automatically provide output context so the AI doesn't have to ask for it separately
+        output: `$ ${command}\n\n${finalOutput}`,
         truncated 
       };
     }
@@ -1054,11 +1199,22 @@ async function executeToolInternal(
     }
 
     case 'terminal_get_output': {
-      // Terminal output is streamed via events, so we return a message
-      // In a real implementation, we'd need to capture recent output
+      const terminalId = String(args.terminalId);
+      const lines = Number(args.lines) || 100;
+      
+      const session = terminalStore.sessions.find(s => s.info.terminalId === terminalId);
+      if (!session) {
+        return { success: false, error: `Terminal session ${terminalId} not found` };
+      }
+
+      const output = session.getRecentOutput(lines * 100); // Rough estimate of chars per line
+      const cleaned = stripAnsi(output);
+      
+      const { text, truncated } = truncateOutput(cleaned);
       return { 
         success: true, 
-        output: 'Terminal output is streamed in real-time. Check the terminal panel for output.' 
+        output: text,
+        truncated
       };
     }
 
@@ -1098,6 +1254,35 @@ async function executeToolInternal(
         success: true, 
         output: `Running ${checkType} in terminal ${session.info.terminalId}. Check the terminal panel for results.` 
       };
+    }
+
+    case 'get_diagnostics': {
+      const { problemsStore } = await import('$lib/stores/problems.svelte');
+      const targetPath = args.path ? String(args.path).replace(/\\/g, '/') : null;
+      
+      const problems = targetPath 
+        ? problemsStore.getProblemsForFile(targetPath)
+        : problemsStore.allProblems;
+
+      if (problems.length === 0) {
+        return { success: true, output: 'No problems detected.' };
+      }
+
+      // Format problems, prioritize errors
+      const sorted = [...problems].sort((a, b) => {
+        const severityMap = { error: 0, warning: 1, info: 2, hint: 3 };
+        return severityMap[a.severity] - severityMap[b.severity];
+      });
+
+      const lines = sorted.slice(0, 50).map(p => 
+        `[${p.severity.toUpperCase()}] ${p.file}:${p.line}:${p.column} - ${p.message} (${p.source})`
+      );
+
+      if (sorted.length > 50) {
+        lines.push(`... and ${sorted.length - 50} more problems.`);
+      }
+
+      return { success: true, output: lines.join('\n') };
     }
 
     default:

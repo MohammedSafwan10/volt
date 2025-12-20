@@ -30,13 +30,16 @@ function buildThinkingConfig(model: string): GeminiThinkingConfig {
   // Keep the config minimal for maximum compatibility.
   if (/^gemini-3/i.test(model)) {
     return {
-      includeThoughts: true
+      // IMPORTANT: Do not request thought summaries; they can leak system/context text.
+      // We only want internal reasoning, not user-visible reasoning output.
+      includeThoughts: false
     };
   }
 
   // Gemini 2.5 models support explicit budgeting.
   return {
-    includeThoughts: true,
+    // Keep internal reasoning enabled, but do not ask Gemini to emit thought text.
+    includeThoughts: false,
     thinkingBudget: 1024
   };
 }
@@ -547,10 +550,18 @@ export const geminiProvider: AIProvider = {
     
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        let result;
+        try {
+          result = await reader.read();
+        } catch (err) {
+          console.error('[Gemini] Stream read error:', err);
+          yield { type: 'error', error: 'Connection interrupted while streaming.' };
+          break;
+        }
+
+        const { done, value } = result;
         
         if (done) {
-          // Process any remaining buffer
           if (buffer.trim()) {
             yield* processSSELine(buffer);
           }
@@ -560,8 +571,7 @@ export const geminiProvider: AIProvider = {
         
         buffer += decoder.decode(value, { stream: true });
         
-        // Process complete SSE events (separated by double newlines or single newlines)
-        // Gemini SSE format: "data: {json}\n\n" or "data: {json}\n"
+        // Handle Gemini's SSE format which can use \n\n or \n as separators
         let newlineIndex: number;
         while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, newlineIndex).trim();
@@ -577,7 +587,6 @@ export const geminiProvider: AIProvider = {
     }
     
     function* processSSELine(line: string): Generator<StreamChunk> {
-      // Handle SSE data lines
       if (line.startsWith('data:')) {
         const jsonStr = line.slice(5).trim();
         if (!jsonStr || jsonStr === '[DONE]') return;
@@ -593,13 +602,17 @@ export const geminiProvider: AIProvider = {
           if (data.candidates && data.candidates.length > 0) {
             const candidate = data.candidates[0];
             
-            // Check if content exists (streaming can have partial responses)
+            // Handle block reasons (Safety, etc.)
+            if (candidate.finishReason && ['SAFETY', 'OTHER', 'RECITATION'].includes(candidate.finishReason)) {
+               yield { type: 'error', error: `Response blocked by Gemini safety filters (${candidate.finishReason}).` };
+               return;
+            }
+
             if (candidate.content && candidate.content.parts) {
               for (const part of candidate.content.parts) {
                 if (part.text) {
-                  // Check if this is a thinking/reasoning part (thought: true)
-                  const isThought = Boolean((part as unknown as { thought?: unknown }).thought);
-				  if (isThought) {
+                  const isThought = Boolean((part as any).thought);
+                  if (isThought) {
                     yield { type: 'thinking', thinking: part.text };
                   } else {
                     yield { type: 'content', content: part.text };
@@ -609,10 +622,9 @@ export const geminiProvider: AIProvider = {
                   yield {
                     type: 'tool_call',
                     toolCall: {
-                      id: `call_${Date.now()}`,
+                      id: `call_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                       name: part.functionCall.name,
                       arguments: part.functionCall.args,
-                      // Preserve thought signature for Gemini 3 multi-turn function calling
                       thoughtSignature: part.thoughtSignature
                     }
                   };
@@ -620,8 +632,9 @@ export const geminiProvider: AIProvider = {
               }
             }
           }
-        } catch {
-          // Skip malformed JSON - this can happen with partial chunks
+        } catch (err) {
+          // Log parsing error but don't crash the stream
+          console.warn('[Gemini] Failed to parse SSE chunk:', err, line);
         }
       }
     }

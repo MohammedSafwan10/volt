@@ -4,6 +4,8 @@
   import { TerminalTabs } from '$lib/components/terminal';
   import { UIIcon } from '$lib/components/ui';
   import { terminalStore } from '$lib/stores/terminal.svelte';
+  import { assistantStore } from '$lib/stores/assistant.svelte';
+  import { showToast } from '$lib/stores/toast.svelte';
   import type { TerminalSession } from '$lib/services/terminal-client';
   import OutputView from './OutputView.svelte';
   import ProblemsView from './ProblemsView.svelte';
@@ -68,6 +70,40 @@
     terminalStore.setActive(id);
     closeTerminalMenu();
   }
+
+  /**
+   * Capture terminal output and send to AI agent
+   */
+  async function handleFixWithAi(): Promise<void> {
+    const activeSession = terminalStore.activeSession;
+    if (!activeSession) {
+      showToast({ message: 'No active terminal session', type: 'warning' });
+      return;
+    }
+
+    // Capture last ~50 lines (approx 5000 chars)
+    const output = activeSession.getRecentOutput(5000);
+    if (!output || !output.trim()) {
+      showToast({ message: 'Terminal is empty', type: 'warning' });
+      return;
+    }
+
+    // Strip ANSI codes for clean AI context (router has a stripAnsi helper but we can inline basic one or import)
+    const cleanOutput = output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
+    const attachmentResult = assistantStore.attachSelection(
+      `Terminal Output:\n${cleanOutput}`,
+      undefined, // No specific file
+      undefined  // No specific range
+    );
+
+    if (attachmentResult.success) {
+      assistantStore.openPanel();
+      if (!assistantStore.inputValue) {
+        assistantStore.setInputValue('Debug the terminal error above');
+      }
+    }
+  }
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -90,6 +126,19 @@
 
     <div class="panel-actions">
       {#if bottomPanelStore.activeTab === 'terminal'}
+        <button
+          class="panel-action fix-ai-btn"
+          onclick={handleFixWithAi}
+          aria-label="Fix with AI"
+          title="Fix Terminal Error with AI"
+          disabled={!terminalStore.activeTerminalId}
+          type="button"
+        >
+          <UIIcon name="sparkle" size={14} />
+        </button>
+
+        <div class="action-separator"></div>
+
         <button
           class="panel-action"
           onclick={handleNewTerminal}
@@ -273,6 +322,26 @@
   .panel-action:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .fix-ai-btn {
+    color: var(--color-accent) !important;
+    width: auto !important;
+    padding: 0 6px;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .fix-ai-btn:hover {
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent) !important;
+  }
+
+  .action-separator {
+    width: 1px;
+    height: 16px;
+    background: var(--color-border);
+    margin: 0 2px;
   }
 
   .panel-close {

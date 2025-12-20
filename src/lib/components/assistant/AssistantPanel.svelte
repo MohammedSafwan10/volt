@@ -15,6 +15,7 @@
   import { aiSettingsStore, type AIMode } from '$lib/stores/ai.svelte';
   import { streamChat, type ChatMessage, type ContentPart, type FunctionResponsePart } from '$lib/services/ai';
   import { getSystemPrompt } from '$lib/services/ai/prompts';
+  import { getSmartContext, formatSmartContext } from '$lib/services/ai/context';
   import { getToolsForMode, validateToolCall as validateTool, executeToolCall } from '$lib/services/ai/tools';
   import MessageList from './MessageList.svelte';
   import ChatInputBar from './ChatInputBar.svelte';
@@ -136,12 +137,16 @@
     // Use centralized system prompt from prompts module
     // Get the selected model for the current mode from AI settings
     const selectedModel = aiSettingsStore.modelPerMode[assistantStore.currentMode];
-    const systemPrompt = getSystemPrompt({
+    let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
       provider: 'gemini',
       model: selectedModel,
       workspaceRoot: projectStore.rootPath ?? undefined
     });
+
+    // Gather and append smart context (Active file, open tabs, etc.)
+    const smartContext = await getSmartContext();
+    systemPrompt += '\n\n' + formatSmartContext(smartContext);
 
     // Get tools for current mode
     const tools = getToolsForMode(assistantStore.currentMode);
@@ -159,46 +164,58 @@
   /**
    * Run the tool loop - stream model response, execute tools, send results back
    * Continues until model finishes without requesting tool calls
-   * 
-   * KEY: We use ONE assistant message for the entire interaction.
-   * Tool calls are shown inline, and content accumulates in the same message.
    */
   async function runToolLoop(
     systemPrompt: string,
     tools: ReturnType<typeof getToolsForMode>,
     controller: AbortController,
-    maxIterations = 10
+    maxIterations = 20
   ): Promise<void> {
-    // Create ONE message for the entire response (like Kiro/Cursor)
     const msgId = assistantStore.addAssistantMessage('', true);
     let fullContent = '';
     let fullThinking = '';
     let iteration = 0;
     
+    // Log start of agent loop
+    import('$lib/stores/output.svelte').then(m => m.logOutput('Volt', `Agent: Starting tool loop (max ${maxIterations} iterations)`));
+
     while (iteration < maxIterations) {
       iteration++;
       
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        import('$lib/stores/output.svelte').then(m => m.logOutput('Volt', `Agent: Loop aborted at iteration ${iteration}`));
+        return;
+      }
 
-      // Build messages for this iteration
       const providerMessages = toProviderMessages(assistantStore.messages);
       
       let iterationContent = '';
       let iterationThinking = '';
-      const pendingToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+      const pendingToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; thoughtSignature?: string }> = [];
+      const eagerPromises: Promise<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }>[] = [];
+      // If the model emits an invalid tool call (e.g. missing required args/meta),
+      // we must NOT leave it in a pending state (can deadlock approvals).
+      const immediateResults: Array<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }> = [];
 
       try {
+        // Reduce hallucinations: use conservative temperature defaults per mode.
+        const temperature = assistantStore.currentMode === 'plan'
+          ? 0.1
+          : assistantStore.currentMode === 'ask'
+            ? 0.2
+            : 0.2;
+
         for await (const chunk of streamChat({
           messages: providerMessages,
           systemPrompt,
           tools,
-          stream: true
+          stream: true,
+          temperature
         }, assistantStore.currentMode, controller.signal)) {
           if (controller.signal.aborted) return;
 
           if (chunk.type === 'content' && chunk.content) {
             iterationContent += chunk.content;
-            // Append text to message for interleaved rendering (like Kiro)
             assistantStore.appendTextToMessage(msgId, chunk.content, true);
           }
 
@@ -208,179 +225,152 @@
           }
 
           if (chunk.type === 'tool_call' && chunk.toolCall) {
-            // Collect tool calls - we'll execute them after streaming completes
-            pendingToolCalls.push(chunk.toolCall);
-            
-            // Show tool call inline in the current message immediately
-            // This adds it to contentParts in order, so it appears between text chunks
-            const validation = validateTool(chunk.toolCall.name, chunk.toolCall.arguments, assistantStore.currentMode);
+            const toolCallArgs = chunk.toolCall.arguments;
+            const toolCallName = chunk.toolCall.name;
+            const toolCallId = chunk.toolCall.id;
+            const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
+
+            const validation = validateTool(toolCallName, toolCallArgs, assistantStore.currentMode);
+            const status: ToolCall['status'] = validation.valid ? 'pending' : 'failed';
             const toolCall: ToolCall = {
-              id: chunk.toolCall.id,
-              name: chunk.toolCall.name,
-              arguments: chunk.toolCall.arguments,
-              status: 'pending' as const,
+              id: toolCallId,
+              name: toolCallName,
+              arguments: toolCallArgs,
+              status,
               requiresApproval: validation.requiresApproval,
-              // Preserve thought signature for Gemini 3 multi-turn function calling
-              thoughtSignature: chunk.toolCall.thoughtSignature
+              thoughtSignature: toolCallThoughtSignature,
+              error: validation.valid ? undefined : (validation.error ?? 'Invalid tool call'),
+              endTime: validation.valid ? undefined : Date.now()
             };
-            // Add to current message for inline display (interleaved with text)
+
             assistantStore.addToolCallToMessage(msgId, toolCall);
+
+            if (!validation.valid) {
+              // Feed an error tool result back to the model so the conversation stays consistent.
+              immediateResults.push({
+                id: toolCallId,
+                name: toolCallName,
+                result: { success: false, error: validation.error ?? 'Invalid tool call' }
+              });
+              continue;
+            }
+
+            pendingToolCalls.push({ id: toolCallId, name: toolCallName, arguments: toolCallArgs, thoughtSignature: toolCallThoughtSignature });
+
+            if (!validation.requiresApproval && validation.valid) {
+              const isFileWrite = ['write_file', 'create_file', 'apply_edit'].includes(toolCallName);
+              
+              const p = executeToolCall(toolCallName, toolCallArgs, {
+                signal: controller.signal,
+                enableStreaming: isFileWrite,
+                onStreamingProgress: isFileWrite ? (progress) => {
+                  assistantStore.updateToolCallInMessage(msgId, toolCallId, { streamingProgress: progress });
+                } : undefined
+              }).then(result => {
+                assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                  status: result.success ? 'completed' : 'failed',
+                  output: result.output,
+                  error: result.error,
+                  endTime: Date.now(),
+                  streamingProgress: undefined
+                });
+                return { id: toolCallId, name: toolCallName, result };
+              }).catch(err => {
+                const error = err instanceof Error ? err.message : String(err);
+                assistantStore.updateToolCallInMessage(msgId, toolCallId, { status: 'failed', error, endTime: Date.now() });
+                return { id: toolCallId, name: toolCallName, result: { success: false, error } };
+              });
+              eagerPromises.push(p);
+            }
           }
 
           if (chunk.type === 'error') {
-            const error = chunk.error ?? 'Unknown error';
-            const currentContent = fullContent + iterationContent;
-            assistantStore.updateAssistantMessage(msgId, currentContent ? `${currentContent}\n\nError: ${error}` : `Error: ${error}`, false);
-            showToast({ message: error, type: 'error' });
-            return;
+            throw new Error(chunk.error || 'Unknown streaming error');
           }
         }
 
-        // Accumulate content from this iteration
         fullContent += iterationContent;
         fullThinking += iterationThinking;
         
-        // Update thinking and streaming state (content is already updated via appendTextToMessage)
         if (fullThinking) {
-          assistantStore.updateAssistantThinking(msgId, fullThinking, pendingToolCalls.length > 0);
+          assistantStore.updateAssistantThinking(msgId, fullThinking, pendingToolCalls.length > 0 || eagerPromises.length > 0);
         }
-        // Just update streaming state, don't overwrite content (it's managed via contentParts)
-        assistantStore.messages = assistantStore.messages.map(msg =>
-          msg.id === msgId ? { ...msg, isStreaming: pendingToolCalls.length > 0 } : msg
-        );
+        
+        // Wait for all Eager tools from this iteration
+        const eagerResults = await Promise.all(eagerPromises);
 
-        // If no tool calls, we're done
-        if (pendingToolCalls.length === 0) {
+        if (pendingToolCalls.length === 0 && eagerResults.length === 0) {
+          import('$lib/stores/output.svelte').then(m => m.logOutput('Volt', `Agent: Task completed successfully after ${iteration} iterations.`));
+          assistantStore.updateAssistantMessage(msgId, fullContent, false);
           return;
         }
 
-        // Execute tool calls and collect results
-        const toolResults: Array<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }> = [];
+        const toolResults: Array<{ id: string; name: string; result: { success: boolean; output?: string; error?: string } }> = [
+          ...eagerResults,
+          ...immediateResults
+        ];
         
-        // Check if any tools require approval
-        const toolsNeedingApproval = pendingToolCalls.filter(tc => {
-          const validation = validateTool(tc.name, tc.arguments, assistantStore.currentMode);
-          return validation.requiresApproval;
-        });
-        
-        // If there are tools needing approval, PAUSE and wait for user
+        const eagerIds = new Set(eagerResults.map(r => r.id));
+        const toolsNeedingApproval = pendingToolCalls.filter(tc => !eagerIds.has(tc.id));
+
         if (toolsNeedingApproval.length > 0) {
-          // Mark streaming as paused (waiting for approval)
           assistantStore.messages = assistantStore.messages.map(msg =>
             msg.id === msgId ? { ...msg, isStreaming: false } : msg
           );
           
-          // Wait for all approval-required tools to be resolved
-          // The user will click Approve/Deny buttons which update the tool status
           await waitForToolApprovals(msgId, toolsNeedingApproval.map(tc => tc.id), controller.signal);
-          
           if (controller.signal.aborted) return;
-        }
-        
-        // Now execute tools (approved ones will run, denied ones will be skipped)
-        for (const tc of pendingToolCalls) {
-          if (controller.signal.aborted) return;
-          
-          // Check current status - user may have approved/denied while we waited
-          const currentMsg = assistantStore.messages.find(m => m.id === msgId);
-          const currentToolCall = currentMsg?.inlineToolCalls?.find(t => t.id === tc.id);
-          
-          // Skip if already cancelled/denied
-          if (currentToolCall?.status === 'cancelled') {
-            toolResults.push({
-              id: tc.id,
-              name: tc.name,
-              result: { success: false, error: 'Tool execution denied by user' }
-            });
-            continue;
-          }
-          
-          // Skip if already completed (shouldn't happen but safety check)
-          if (currentToolCall?.status === 'completed' || currentToolCall?.status === 'failed') {
-            toolResults.push({
-              id: tc.id,
-              name: tc.name,
-              result: { 
-                success: currentToolCall.status === 'completed', 
-                output: currentToolCall.output,
-                error: currentToolCall.error 
-              }
-            });
-            continue;
-          }
-          
-          const validation = validateTool(tc.name, tc.arguments, assistantStore.currentMode);
-          
-          if (!validation.valid) {
-            toolResults.push({
-              id: tc.id,
-              name: tc.name,
-              result: { success: false, error: validation.error }
-            });
-            assistantStore.updateToolCallInMessage(msgId, tc.id, {
-              status: 'failed',
-              error: validation.error,
-              endTime: Date.now()
-            });
-            continue;
-          }
 
-          // Execute the tool - update in the message
-          assistantStore.updateToolCallInMessage(msgId, tc.id, { status: 'running', startTime: Date.now() });
-          
-          // Check if this is a file write tool that supports streaming
-          const isFileWriteTool = tc.name === 'write_file' || tc.name === 'create_file';
-          
-          try {
-            const result = await executeToolCall(tc.name, tc.arguments, {
-              signal: controller.signal,
-              enableStreaming: isFileWriteTool,
-              onStreamingProgress: isFileWriteTool ? (progress) => {
-                assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                  streamingProgress: progress
-                });
-              } : undefined
-            });
-            toolResults.push({ id: tc.id, name: tc.name, result });
+          for (const tc of toolsNeedingApproval) {
+            const currentMsg = assistantStore.messages.find(m => m.id === msgId);
+            const currentToolCall = currentMsg?.inlineToolCalls?.find(t => t.id === tc.id);
             
-            assistantStore.updateToolCallInMessage(msgId, tc.id, {
-              status: result.success ? 'completed' : 'failed',
-              output: result.output,
-              error: result.error,
-              endTime: Date.now(),
-              streamingProgress: undefined
-            });
-          } catch (err) {
-            const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-            toolResults.push({ id: tc.id, name: tc.name, result: { success: false, error: errorMsg } });
-            assistantStore.updateToolCallInMessage(msgId, tc.id, {
-              status: 'failed',
-              error: errorMsg,
-              endTime: Date.now(),
-              streamingProgress: undefined
-            });
+            if (currentToolCall?.status === 'cancelled') {
+              toolResults.push({ id: tc.id, name: tc.name, result: { success: false, error: 'Tool execution denied by user' } });
+              continue;
+            }
+            
+            assistantStore.updateToolCallInMessage(msgId, tc.id, { status: 'running', startTime: Date.now() });
+            const isFileWriteTool = tc.name === 'write_file' || tc.name === 'create_file' || tc.name === 'apply_edit';
+            
+            try {
+              const result = await executeToolCall(tc.name, tc.arguments, {
+                signal: controller.signal,
+                enableStreaming: isFileWriteTool,
+                onStreamingProgress: isFileWriteTool ? (progress) => {
+                  assistantStore.updateToolCallInMessage(msgId, tc.id, { streamingProgress: progress });
+                } : undefined
+              });
+              toolResults.push({ id: tc.id, name: tc.name, result });
+              assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                status: result.success ? 'completed' : 'failed',
+                output: result.output,
+                error: result.error,
+                endTime: Date.now(),
+                streamingProgress: undefined
+              });
+            } catch (err) {
+              const error = err instanceof Error ? err.message : String(err);
+              toolResults.push({ id: tc.id, name: tc.name, result: { success: false, error } });
+              assistantStore.updateToolCallInMessage(msgId, tc.id, { status: 'failed', error, endTime: Date.now() });
+            }
           }
         }
 
-        // Add tool results to conversation as a special message
-        // This will be converted to functionResponse parts for the next API call
+        // Add ALL results to conversation as special tool messages
         addToolResultsToConversation(pendingToolCalls, toolResults);
 
       } catch (err) {
         if (controller.signal.aborted) return;
-
         const msg = err instanceof Error ? err.message : 'Unknown error';
+        import('$lib/stores/output.svelte').then(m => m.logOutput('Volt', `Agent Loop Error: ${msg}`));
         assistantStore.updateAssistantMessage(msgId, fullContent ? `${fullContent}\n\nError: ${msg}` : `Error: ${msg}`, false);
         showToast({ message: msg, type: 'error' });
         return;
       }
     }
 
-    // Max iterations reached - mark message as complete
     assistantStore.updateAssistantMessage(msgId, fullContent, false);
-    if (fullThinking) {
-      assistantStore.updateAssistantThinking(msgId, fullThinking, false);
-    }
     showToast({ message: 'Tool loop reached maximum iterations', type: 'warning' });
   }
 
@@ -393,9 +383,6 @@
   ): void {
     // We need to add both the assistant's function calls and the user's function responses
     // to maintain proper conversation structure for Gemini
-    
-    // First, update the last assistant message to include function call parts
-    // (This is already done via the streaming, but we need to ensure the message structure is correct)
     
     // Then add a "tool" message with the results that will be converted to functionResponse
     for (const result of results) {
@@ -474,7 +461,7 @@
     });
 
     // Check if this is a file write tool that supports streaming
-    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file';
+    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file' || toolCall.name === 'apply_edit';
 
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
@@ -586,7 +573,7 @@
     // Validate mime type
     const mimeType = file.type as typeof IMAGE_LIMITS.allowedMimeTypes[number];
     if (!IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
-      showToast({ 
+      showToast({
         message: `Unsupported image type: ${file.type}. Use PNG, JPEG, or WebP.`, 
         type: 'warning' 
       });
@@ -596,7 +583,7 @@
     // Check file size
     if (file.size > IMAGE_LIMITS.maxImageBytes) {
       const maxMB = IMAGE_LIMITS.maxImageBytes / (1024 * 1024);
-      showToast({ 
+      showToast({
         message: `Image too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum: ${maxMB}MB`, 
         type: 'warning' 
       });
@@ -722,13 +709,13 @@
   }
 
   async function handleToolApprove(toolCall: ToolCall): Promise<void> {
-    // Validate tool call against current mode
-    const error = assistantStore.validateToolCall(toolCall.name);
-    if (error) {
-      showToast({ message: error, type: 'warning' });
-      assistantStore.updateToolCall(toolCall.id, { 
+    // Validate tool call against current mode (use router validation to avoid drift)
+    const validation = validateTool(toolCall.name, toolCall.arguments, assistantStore.currentMode);
+    if (!validation.valid) {
+      showToast({ message: validation.error ?? 'Tool call is not allowed', type: 'warning' });
+      assistantStore.updateToolCall(toolCall.id, {
         status: 'cancelled',
-        error,
+        error: validation.error,
         endTime: Date.now()
       });
       return;
@@ -739,7 +726,7 @@
   }
 
   function handleToolDeny(toolCall: ToolCall): void {
-    assistantStore.updateToolCall(toolCall.id, { 
+    assistantStore.updateToolCall(toolCall.id, {
       status: 'cancelled',
       endTime: Date.now()
     });
@@ -750,12 +737,12 @@
    * Supports streaming progress for file write operations
    */
   async function handleToolApproveInMessage(messageId: string, toolCall: ToolCall): Promise<void> {
-    const error = assistantStore.validateToolCall(toolCall.name);
-    if (error) {
-      showToast({ message: error, type: 'warning' });
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, { 
+    const validation = validateTool(toolCall.name, toolCall.arguments, assistantStore.currentMode);
+    if (!validation.valid) {
+      showToast({ message: validation.error ?? 'Tool call is not allowed', type: 'warning' });
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
         status: 'cancelled',
-        error,
+        error: validation.error,
         endTime: Date.now()
       });
       return;
@@ -768,7 +755,7 @@
     });
 
     // Check if this is a file write tool that supports streaming
-    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file';
+    const isFileWriteTool = toolCall.name === 'write_file' || toolCall.name === 'create_file' || toolCall.name === 'apply_edit';
 
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
@@ -803,7 +790,7 @@
    * Handle tool denial from inline display in message
    */
   function handleToolDenyInMessage(messageId: string, toolCall: ToolCall): void {
-    assistantStore.updateToolCallInMessage(messageId, toolCall.id, { 
+    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
       status: 'cancelled',
       endTime: Date.now()
     });
@@ -885,7 +872,7 @@
               />
             {:else}
               <UIIcon 
-                name={preview.type === 'file' ? 'file' : preview.type === 'selection' ? 'code' : preview.type === 'folder' ? 'folder' : 'image'} 
+                name={preview.type === 'file' ? 'file' : preview.type === 'selection' ? 'code' : preview.type === 'folder' ? 'folder' : 'image'}
                 size={14} 
               />
             {/if}

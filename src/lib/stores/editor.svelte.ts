@@ -6,6 +6,7 @@
 import { readFile } from '$lib/services/file-system';
 import { disposeAllModels, disposeModel } from '$lib/services/monaco-models';
 import { notifyFileClosed } from '$lib/services/lsp/client';
+import { activityStore } from './activity.svelte';
 import {
   isTsJsFile,
   notifyDocumentClosed as notifyTsDocumentClosed,
@@ -168,6 +169,9 @@ class EditorStore {
     // Reset cursor position for new file
     this.cursorPosition = { line: 1, column: 1, selected: 0 };
 
+    // Record activity
+    activityStore.recordActivity(normalizedPath, 'view');
+
     return true;
   }
 
@@ -328,6 +332,7 @@ class EditorStore {
     const normalizedPath = normalizePath(path);
     if (this.openFiles.some(f => f.path === normalizedPath)) {
       this.activeFilePath = normalizedPath;
+      activityStore.recordActivity(normalizedPath, 'view');
     }
   }
 
@@ -340,6 +345,7 @@ class EditorStore {
     const currentIndex = this.openFiles.findIndex(f => f.path === this.activeFilePath);
     const nextIndex = (currentIndex + 1) % this.openFiles.length;
     this.activeFilePath = this.openFiles[nextIndex].path;
+    activityStore.recordActivity(this.activeFilePath, 'view');
   }
 
   /**
@@ -351,6 +357,7 @@ class EditorStore {
     const currentIndex = this.openFiles.findIndex(f => f.path === this.activeFilePath);
     const prevIndex = currentIndex <= 0 ? this.openFiles.length - 1 : currentIndex - 1;
     this.activeFilePath = this.openFiles[prevIndex].path;
+    activityStore.recordActivity(this.activeFilePath, 'view');
   }
 
   /**
@@ -416,6 +423,7 @@ class EditorStore {
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.content = content;
+      activityStore.recordActivity(normalizedPath, 'edit');
     }
   }
 

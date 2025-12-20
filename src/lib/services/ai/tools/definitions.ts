@@ -289,6 +289,40 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     allowedModes: ['agent']
   },
   {
+    name: 'apply_edit',
+    description: 'Apply a targeted edit to a file by replacing a specific code snippet. PREFERRED over write_file for small changes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        path: {
+          type: 'string',
+          description: 'Relative path from workspace root'
+        },
+        original_snippet: {
+          type: 'string',
+          description: 'The exact code snippet to replace (must match file content exactly)'
+        },
+        new_snippet: {
+          type: 'string',
+          description: 'The new code to insert in place of the original snippet'
+        }
+      },
+      required: ['meta', 'path', 'original_snippet', 'new_snippet']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
     name: 'create_file',
     description: 'Create a new empty file.',
     parameters: {
@@ -576,6 +610,32 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     category: 'diagnostics',
     requiresApproval: false,
     allowedModes: ['agent']
+  },
+  {
+    name: 'get_diagnostics',
+    description: 'Get current errors, warnings, and hints from the IDE problems panel. Use this to see if your changes broke anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        path: {
+          type: 'string',
+          description: 'Optional: Only get problems for this specific file'
+        }
+      },
+      required: ['meta']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
   }
 ];
 
@@ -583,9 +643,44 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
  * Get tool definitions filtered by mode
  */
 export function getToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
+  const relaxMetaRequirement = (schema: unknown): unknown => {
+    if (!schema || typeof schema !== 'object') return schema;
+
+    if (Array.isArray(schema)) {
+      return schema.map(relaxMetaRequirement);
+    }
+
+    // Clone so we don't mutate the canonical TOOL_DEFINITIONS.
+    const cloned: Record<string, unknown> = { ...(schema as Record<string, unknown>) };
+
+    // Strip `meta` from required list at the top level.
+    if (Array.isArray(cloned.required)) {
+      const filtered = (cloned.required as unknown[]).filter((x) => x !== 'meta');
+      if (filtered.length === 0) {
+        delete cloned.required;
+      } else {
+        cloned.required = filtered;
+      }
+    }
+
+    // Recursively relax nested schemas (best-effort).
+    for (const [key, value] of Object.entries(cloned)) {
+      if (key === 'required') continue;
+      if (value && typeof value === 'object') {
+        cloned[key] = relaxMetaRequirement(value);
+      }
+    }
+
+    return cloned;
+  };
+
   return TOOL_DEFINITIONS
     .filter(tool => tool.allowedModes.includes(mode))
-    .map(({ name, description, parameters }) => ({ name, description, parameters }));
+    .map(({ name, description, parameters }) => ({
+      name,
+      description,
+      parameters: relaxMetaRequirement(parameters) as ToolDefinition['parameters']
+    }));
 }
 
 /**

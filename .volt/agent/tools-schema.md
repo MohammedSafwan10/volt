@@ -49,7 +49,8 @@ Always require approval for:
 - multi-file edits where `changedFiles > 3`
 
 ## Suggested tool namespaces
-- Workspace: `workspace.listDir`, `workspace.readFile`, `workspace.search`, `workspace.applyEdits`
-- Editor: `editor.getActiveFile`, `editor.getSelection`, `editor.revealRange`
-- Terminal: `terminal.create`, `terminal.write`, `terminal.kill`, `terminal.getOutput`
+- Workspace: `workspace.listDir`, `workspace.readFile`, `workspace.search`, `workspace.applyEdits`, `workspace.applyEdit`
+- Editor: `editor.getActiveFile`, `editor.getSelection`, `editor.revealRange`, `editor.getOpenFiles`
+- Terminal: `terminal.create`, `terminal.write`, `terminal.kill`, `terminal.getOutput`, `terminal.runCommand`
 - Git: `git.status`, `git.diff`, `git.stage`, `git.commit`, `git.checkout`
+- Diagnostics: `diagnostics.getDiagnostics`, `diagnostics.runCheck`
