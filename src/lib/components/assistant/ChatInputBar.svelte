@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { UIIcon } from '$lib/components/ui';
-  import type { AIMode } from '$lib/stores/ai.svelte';
-  import { aiSettingsStore, PROVIDERS } from '$lib/stores/ai.svelte';
-  import { IMAGE_LIMITS, assistantStore } from '$lib/stores/assistant.svelte';
+  import { UIIcon } from "$lib/components/ui";
+  import type { AIMode } from "$lib/stores/ai.svelte";
+  import { aiSettingsStore, PROVIDERS } from "$lib/stores/ai.svelte";
+  import { IMAGE_LIMITS, assistantStore } from "$lib/stores/assistant.svelte";
 
   interface Props {
     inputRef?: HTMLTextAreaElement;
@@ -19,24 +19,24 @@
     onAttachImageFromPicker?: () => void;
   }
 
-  let { 
+  let {
     inputRef = $bindable(),
-    value, 
+    value,
     isStreaming,
     currentMode,
-    onInput, 
-    onSend, 
+    onInput,
+    onSend,
     onStop,
     onModeChange,
     onAttachFile,
     onAttachSelection,
     onAttachImage,
-    onAttachImageFromPicker
+    onAttachImageFromPicker,
   }: Props = $props();
 
   // Get current model from settings store (synced with settings panel)
   const currentModel = $derived(aiSettingsStore.modelPerMode[currentMode]);
-  
+
   // Context usage tracking (reactive) - use current model
   const contextUsage = $derived(assistantStore.getContextUsage(currentModel));
 
@@ -45,17 +45,19 @@
   const RING_STROKE = 2.5;
   const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
   const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-  
+
   // Calculate stroke dash offset for progress
   const strokeDashoffset = $derived(
-    RING_CIRCUMFERENCE - (contextUsage.percentage / 100) * RING_CIRCUMFERENCE
+    RING_CIRCUMFERENCE - (contextUsage.percentage / 100) * RING_CIRCUMFERENCE,
   );
 
   // Determine ring color based on usage
   const ringColor = $derived(
-    contextUsage.isOverLimit ? 'var(--color-error)' :
-    contextUsage.isNearLimit ? 'var(--color-warning)' :
-    'var(--color-green)'
+    contextUsage.isOverLimit
+      ? "var(--color-error)"
+      : contextUsage.isNearLimit
+        ? "var(--color-warning)"
+        : "var(--color-green)",
   );
 
   let isDraggingOver = $state(false);
@@ -65,36 +67,57 @@
   let showModelMenu = $state(false);
 
   // Available models from provider config
-  const availableModels = $derived(PROVIDERS[aiSettingsStore.selectedProvider].models);
-  
+  const availableModels = $derived(
+    PROVIDERS[aiSettingsStore.selectedProvider].models,
+  );
+
   // Display-friendly model name
   function getModelDisplayName(model: string): string {
-    const thinking = model.endsWith('|thinking');
-    const base = thinking ? model.slice(0, -'|thinking'.length) : model;
+    const thinking = model.endsWith("|thinking");
+    const base = thinking ? model.slice(0, -"|thinking".length) : model;
 
-    if (base === 'gemini-2.5-flash') return thinking ? 'Gemini 2.5 Flash (thinking)' : 'Gemini 2.5 Flash';
-    if (base === 'gemini-3-flash-preview') return thinking ? 'Gemini 3.0 Flash Preview (thinking)' : 'Gemini 3.0 Flash Preview';
+    if (base === "gemini-2.5-flash")
+      return thinking ? "Gemini 2.5 Flash (thinking)" : "Gemini 2.5 Flash";
+    if (base === "gemini-3-flash-preview")
+      return thinking
+        ? "Gemini 3.0 Flash Preview (thinking)"
+        : "Gemini 3.0 Flash Preview";
     // Fallback: capitalize and clean up
-    return (thinking ? base : model).replace('gemini-', 'Gemini ').replace(/-/g, ' ') + (thinking ? ' (thinking)' : '');
+    return (
+      (thinking ? base : model)
+        .replace("gemini-", "Gemini ")
+        .replace(/-/g, " ") + (thinking ? " (thinking)" : "")
+    );
   }
 
-  const modes: { id: AIMode; label: string; shortcut?: string; description: string }[] = [
-    { id: 'agent', label: 'Agent', description: 'Execute tasks with tools' },
-    { id: 'ask', label: 'Ask', description: 'Quick questions and explanations' },
-    { id: 'plan', label: 'Plan', description: 'Design and plan features' }
+  const modes: {
+    id: AIMode;
+    label: string;
+    shortcut?: string;
+    description: string;
+  }[] = [
+    { id: "agent", label: "Agent", description: "Execute tasks with tools" },
+    {
+      id: "ask",
+      label: "Ask",
+      description: "Quick questions and explanations",
+    },
+    { id: "plan", label: "Plan", description: "Design and plan features" },
   ];
 
-  const currentModeInfo = $derived(modes.find(m => m.id === currentMode) ?? modes[0]);
+  const currentModeInfo = $derived(
+    modes.find((m) => m.id === currentMode) ?? modes[0],
+  );
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (value.trim()) {
         onSend();
       }
     }
-    
-    if (e.key === 'Escape') {
+
+    if (e.key === "Escape") {
       if (showModeMenu || showAttachMenu || isStreaming) {
         e.preventDefault();
         e.stopPropagation();
@@ -112,8 +135,8 @@
   }
 
   function autoResize(textarea: HTMLTextAreaElement): void {
-    textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 150) + "px";
   }
 
   function selectMode(mode: AIMode): void {
@@ -139,12 +162,12 @@
   // Handle paste for images
   function handlePaste(e: ClipboardEvent): void {
     if (!onAttachImage) return;
-    
+
     const items = e.clipboardData?.items;
     if (!items) return;
 
     for (const item of items) {
-      if (item.type.startsWith('image/')) {
+      if (item.type.startsWith("image/")) {
         e.preventDefault();
         const file = item.getAsFile();
         if (file) {
@@ -158,7 +181,7 @@
   // Handle drag over
   function handleDragOver(e: DragEvent): void {
     e.preventDefault();
-    if (e.dataTransfer?.types.includes('Files')) {
+    if (e.dataTransfer?.types.includes("Files")) {
       isDraggingOver = true;
     }
   }
@@ -173,14 +196,15 @@
   function handleDrop(e: DragEvent): void {
     e.preventDefault();
     isDraggingOver = false;
-    
+
     if (!onAttachImage) return;
-    
+
     const files = e.dataTransfer?.files;
     if (!files) return;
 
     for (const file of files) {
-      const mimeType = file.type as typeof IMAGE_LIMITS.allowedMimeTypes[number];
+      const mimeType =
+        file.type as (typeof IMAGE_LIMITS.allowedMimeTypes)[number];
       if (IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
         onAttachImage(file);
       }
@@ -189,13 +213,13 @@
 
   function handleClickOutside(e: MouseEvent): void {
     const target = e.target as HTMLElement;
-    if (!target.closest('.mode-dropdown-container')) {
+    if (!target.closest(".mode-dropdown-container")) {
       showModeMenu = false;
     }
-    if (!target.closest('.attach-dropdown-container')) {
+    if (!target.closest(".attach-dropdown-container")) {
       showAttachMenu = false;
     }
-    if (!target.closest('.model-dropdown-container')) {
+    if (!target.closest(".model-dropdown-container")) {
       showModelMenu = false;
     }
   }
@@ -208,7 +232,7 @@
 
 <svelte:window onclick={handleClickOutside} />
 
-<div 
+<div
   class="chat-input-bar"
   class:dragging={isDraggingOver}
   ondragover={handleDragOver}
@@ -244,15 +268,21 @@
     <div class="left-controls">
       <!-- Context Usage Ring -->
       {#if assistantStore.messages.length > 0 || contextUsage.usedTokens > 100}
-        <div 
+        <div
           class="context-ring-container"
           class:near-limit={contextUsage.isNearLimit}
           class:over-limit={contextUsage.isOverLimit}
-          title="{contextUsage.percentage.toFixed(0)}% context usage ({assistantStore.formatTokenCount(contextUsage.usedTokens)} / {assistantStore.formatTokenCount(contextUsage.maxTokens)} tokens)"
+          title="{contextUsage.percentage.toFixed(
+            0,
+          )}% context usage ({assistantStore.formatTokenCount(
+            contextUsage.usedTokens,
+          )} / {assistantStore.formatTokenCount(
+            contextUsage.maxTokens,
+          )} tokens)"
         >
-          <svg 
-            class="context-ring" 
-            width={RING_SIZE} 
+          <svg
+            class="context-ring"
+            width={RING_SIZE}
             height={RING_SIZE}
             viewBox="0 0 {RING_SIZE} {RING_SIZE}"
           >
@@ -287,12 +317,12 @@
       <div class="mode-dropdown-container">
         <button
           class="mode-selector-btn"
-          onclick={() => showModeMenu = !showModeMenu}
+          onclick={() => (showModeMenu = !showModeMenu)}
           aria-expanded={showModeMenu}
           aria-haspopup="listbox"
           type="button"
         >
-          {#if currentMode === 'agent'}
+          {#if currentMode === "agent"}
             <span class="mode-check">✓</span>
           {/if}
           <span class="mode-label">{currentModeInfo.label}</span>
@@ -310,7 +340,9 @@
                 aria-selected={currentMode === mode.id}
                 type="button"
               >
-                <span class="option-check">{currentMode === mode.id ? '✓' : ''}</span>
+                <span class="option-check"
+                  >{currentMode === mode.id ? "✓" : ""}</span
+                >
                 <span class="option-label">{mode.label}</span>
                 {#if mode.shortcut}
                   <span class="option-shortcut">{mode.shortcut}</span>
@@ -320,7 +352,9 @@
             <div class="menu-divider"></div>
             <button class="mode-option configure" type="button">
               <span class="option-check"></span>
-              <span class="option-label config-label">Configure Custom Agents...</span>
+              <span class="option-label config-label"
+                >Configure Custom Agents...</span
+              >
             </button>
           </div>
         {/if}
@@ -328,11 +362,11 @@
 
       <!-- Model Selector Dropdown -->
       <div class="model-dropdown-container">
-        <button 
-          class="model-selector-btn" 
-          type="button" 
+        <button
+          class="model-selector-btn"
+          type="button"
           title="Select model"
-          onclick={() => showModelMenu = !showModelMenu}
+          onclick={() => (showModelMenu = !showModelMenu)}
           aria-expanded={showModelMenu}
           aria-haspopup="listbox"
         >
@@ -364,7 +398,7 @@
       <div class="attach-dropdown-container">
         <button
           class="action-icon-btn"
-          onclick={() => showAttachMenu = !showAttachMenu}
+          onclick={() => (showAttachMenu = !showAttachMenu)}
           title="Attach context"
           aria-label="Attach context"
           aria-expanded={showAttachMenu}
@@ -537,7 +571,9 @@
   }
 
   .progress-circle {
-    transition: stroke-dashoffset 0.3s ease, stroke 0.2s ease;
+    transition:
+      stroke-dashoffset 0.3s ease,
+      stroke 0.2s ease;
   }
 
   .right-controls {

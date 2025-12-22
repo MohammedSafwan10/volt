@@ -69,19 +69,19 @@ function handleError(
     type: 'error',
     action: shouldShowRetry
       ? {
-          label: 'Retry',
-          onClick: () => {
-            try {
-              if (retry) {
-                void retry();
-              } else {
-                console.log('[FileSystem] Retry requested');
-              }
-            } catch (retryError) {
-              console.error('[FileSystem] Retry handler error:', retryError);
+        label: 'Retry',
+        onClick: () => {
+          try {
+            if (retry) {
+              void retry();
+            } else {
+              console.log('[FileSystem] Retry requested');
             }
+          } catch (retryError) {
+            console.error('[FileSystem] Retry handler error:', retryError);
           }
         }
+      }
       : undefined
   });
 

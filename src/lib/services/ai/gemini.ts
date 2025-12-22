@@ -25,22 +25,23 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 const GEMINI_THINKING_SUFFIX = '|thinking';
 
-function buildThinkingConfig(model: string): GeminiThinkingConfig {
-  // Some Gemini 3 preview models appear to ignore or be picky about thinkingBudget.
-  // Keep the config minimal for maximum compatibility.
-  if (/^gemini-3/i.test(model)) {
+function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThinkingConfig | undefined {
+  const isGemini3 = /^gemini-3/i.test(model);
+
+  if (isGemini3) {
+    // Gemini 3 models support dynamic thinking_level
     return {
-      // IMPORTANT: Do not request thought summaries; they can leak system/context text.
-      // We only want internal reasoning, not user-visible reasoning output.
-      includeThoughts: false
+      include_thoughts: thinkingEnabled,
+      // 'HIGH' is the default dynamic level (REST API uses uppercase)
+      thinking_level: thinkingEnabled ? 'HIGH' : 'MINIMAL'
     };
   }
 
-  // Gemini 2.5 models support explicit budgeting.
+  // Gemini 2.5 series
   return {
-    // Keep internal reasoning enabled, but do not ask Gemini to emit thought text.
-    includeThoughts: false,
-    thinkingBudget: 1024
+    include_thoughts: thinkingEnabled,
+    // -1 enables dynamic thinking budget for 2.5 series
+    thinking_budget: thinkingEnabled ? -1 : 0
   };
 }
 
@@ -70,10 +71,12 @@ interface GeminiPart {
     data: string;
   };
   functionCall?: {
+    id?: string; // Optional call ID for parallel calling/Gemini 3
     name: string;
     args: Record<string, unknown>;
   };
   functionResponse?: {
+    id?: string; // Must match the functionCall.id
     name: string;
     response: Record<string, unknown>;
   };
@@ -89,9 +92,11 @@ interface GeminiFunctionDeclaration {
   parameters: Record<string, unknown>;
 }
 
+// CRITICAL: Gemini REST API uses snake_case
 interface GeminiThinkingConfig {
-  thinkingBudget?: number; // 0 to disable, positive number for token budget
-  includeThoughts?: boolean; // Include thought summaries in response
+  include_thoughts?: boolean; // Include thought summaries in response
+  thinking_budget?: number; // 2.5 series: 0 to disable, positive for token budget
+  thinking_level?: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL'; // 3 series: dynamic vs explicit
 }
 
 interface GeminiFunctionCallingConfig {
@@ -100,19 +105,22 @@ interface GeminiFunctionCallingConfig {
 }
 
 interface GeminiToolConfig {
-  functionCallingConfig: GeminiFunctionCallingConfig;
+  function_calling_config: GeminiFunctionCallingConfig;
 }
 
+// CRITICAL: Gemini REST API uses snake_case, NOT camelCase!
 interface GeminiRequest {
   contents: GeminiContent[];
-  systemInstruction?: GeminiContent;
+  system_instruction?: GeminiContent; // snake_case for REST API
   tools?: GeminiTool[];
-  toolConfig?: GeminiToolConfig;
-  generationConfig?: {
+  tool_config?: GeminiToolConfig;
+  generation_config?: {
     temperature?: number;
-    maxOutputTokens?: number;
-    stopSequences?: string[];
-    thinkingConfig?: GeminiThinkingConfig;
+    max_output_tokens?: number;
+    stop_sequences?: string[];
+    top_k?: number; // Limit token selection pool (anti-repetition)
+    top_p?: number; // Nucleus sampling threshold (anti-repetition)
+    thinking_config?: GeminiThinkingConfig;
   };
 }
 
@@ -166,13 +174,13 @@ interface GeminiResponse {
  */
 function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
   const contents: GeminiContent[] = [];
-  
+
   for (const m of messages) {
     if (m.role === 'system') continue; // System handled separately
-    
+
     const parts: GeminiPart[] = [];
     let hasFunctionResponse = false;
-    
+
     // If message has multimodal parts, use them
     if (m.parts && m.parts.length > 0) {
       for (const part of m.parts) {
@@ -185,11 +193,18 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
               data: part.data
             }
           });
+        } else if (part.type === 'thinking') {
+          // Model's previous thinking - send back as thought part
+          parts.push({
+            text: part.text,
+            thought: true
+          } as any);
         } else if (part.type === 'function_call') {
           // Model's function call - must go in 'model' role
           // CRITICAL: Include thoughtSignature for Gemini 3 models
           const fcPart: GeminiPart = {
             functionCall: {
+              id: part.id, // Include native ID for multi-turn matching
               name: part.name,
               args: part.arguments
             }
@@ -198,13 +213,18 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
           if (part.thoughtSignature) {
             fcPart.thoughtSignature = part.thoughtSignature;
           }
+          // Preserve native function call ID if present (required for Gemini 3 and 2.5)
+          if (part.id) {
+            // Note: Gemini API often expects this to be handled via the specific response object structure
+            // but we keep it here for our internal state tracking.
+          }
           parts.push(fcPart);
         } else if (part.type === 'function_response') {
           // Tool result - must go in 'user' role as functionResponse
           // Gemini expects each functionResponse in its own content block
           // Format: { name: string, response: { result: ... } }
           hasFunctionResponse = true;
-          
+
           // If we have accumulated parts, push them first
           if (parts.length > 0) {
             contents.push({
@@ -213,13 +233,14 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
             });
             parts.length = 0;
           }
-          
+
           // Add function response as separate content with 'user' role
           // Wrap the response in 'result' key as per Gemini API spec
           contents.push({
             role: 'user',
             parts: [{
               functionResponse: {
+                id: part.id, // Must match original call ID
                 name: part.name,
                 response: { result: part.response }
               }
@@ -231,7 +252,7 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
       // Fallback to text-only content (only if non-empty)
       parts.push({ text: m.content });
     }
-    
+
     // Push remaining parts if any (and not already handled by function response)
     // Skip empty parts arrays to avoid "Invalid request" errors
     if (parts.length > 0) {
@@ -241,10 +262,10 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
       });
     }
   }
-  
+
   // Filter out any content blocks with empty parts (safety check)
   const filtered = contents.filter(c => c.parts && c.parts.length > 0);
-  
+
   // Gemini requires alternating user/model roles
   // Merge consecutive same-role messages to avoid "Invalid request" errors
   const merged: GeminiContent[] = [];
@@ -257,7 +278,7 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
       merged.push(content);
     }
   }
-  
+
   return merged;
 }
 
@@ -266,7 +287,7 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
  */
 function toGeminiTools(tools: ToolDefinition[]): GeminiTool[] {
   if (tools.length === 0) return [];
-  
+
   return [{
     functionDeclarations: tools.map(t => ({
       name: t.name,
@@ -281,17 +302,17 @@ function toGeminiTools(tools: ToolDefinition[]): GeminiTool[] {
  */
 function extractToolCalls(candidate: GeminiCandidate): ToolCall[] {
   const calls: ToolCall[] = [];
-  
+
   for (const part of candidate.content.parts) {
     if (part.functionCall) {
       calls.push({
-        id: `call_${Date.now()}_${calls.length}`,
+        id: (part as any).id || (part as any).functionCall.id || `call_${Date.now()}_${calls.length}`,
         name: part.functionCall.name,
         arguments: part.functionCall.args
       });
     }
   }
-  
+
   return calls;
 }
 
@@ -301,10 +322,10 @@ function extractToolCalls(candidate: GeminiCandidate): ToolCall[] {
  */
 function mapGeminiError(error: GeminiResponse['error']): string {
   if (!error) return 'Unknown error';
-  
+
   const code = error.code;
   const status = error.status;
-  
+
   // Map common errors
   if (code === 401 || status === 'UNAUTHENTICATED') {
     return 'Invalid API key. Please check your Gemini API key.';
@@ -321,7 +342,7 @@ function mapGeminiError(error: GeminiResponse['error']): string {
   if (code === 503 || status === 'UNAVAILABLE') {
     return 'Gemini service is temporarily unavailable. Please try again later.';
   }
-  
+
   // Generic error - redact any potential sensitive data
   const safeMessage = error.message.replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
   return `Gemini API error: ${safeMessage}`;
@@ -333,7 +354,7 @@ function mapGeminiError(error: GeminiResponse['error']): string {
 export async function validateGeminiKey(apiKey: string): Promise<{ success: boolean; error?: string }> {
   try {
     const url = `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent`;
-    
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -349,12 +370,12 @@ export async function validateGeminiKey(apiKey: string): Promise<{ success: bool
         }
       })
     });
-    
+
     if (!response.ok) {
       const data = await response.json() as GeminiResponse;
       return { success: false, error: mapGeminiError(data.error) };
     }
-    
+
     return { success: true };
   } catch (err) {
     if (err instanceof TypeError && err.message.includes('fetch')) {
@@ -382,46 +403,46 @@ export const geminiProvider: AIProvider = {
   async sendChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): Promise<ChatResponse> {
     const { model, thinkingEnabled } = parseGeminiModel(request.model);
     const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
-    
+
     const geminiRequest: GeminiRequest = {
       contents: toGeminiContents(request.messages)
     };
-    
-    // Add system instruction if provided
+
+    // Add system instruction if provided (snake_case for REST API)
     if (request.systemPrompt) {
-      geminiRequest.systemInstruction = {
-        role: 'user',
+      geminiRequest.system_instruction = {
         parts: [{ text: request.systemPrompt }]
-      };
+      } as any;
     }
-    
+
     // Add tools if provided
     if (request.tools && request.tools.length > 0) {
       geminiRequest.tools = toGeminiTools(request.tools);
       // Use AUTO mode - model decides when to call functions
       // This allows the model to respond with text when appropriate
       // but still use tools when needed
-      geminiRequest.toolConfig = {
-        functionCallingConfig: {
+      geminiRequest.tool_config = {
+        function_calling_config: {
           mode: 'AUTO'
         }
       };
     }
-    
+
     // Add generation config with high output limit (Gemini supports up to 65,536)
-    geminiRequest.generationConfig = {
+    geminiRequest.generation_config = {
       // Default to 8192 tokens for non-streaming, can be overridden
-      maxOutputTokens: request.maxTokens ?? 8192
+      max_output_tokens: request.maxTokens ?? 8192,
+      // Anti-repetition: constrain token sampling
+      top_k: 40,  // Limit to top 40 tokens (prevents degeneration)
+      top_p: 0.95 // Nucleus sampling for diversity
     };
     if (request.temperature !== undefined) {
-      geminiRequest.generationConfig.temperature = request.temperature;
+      geminiRequest.generation_config.temperature = request.temperature;
     }
 
-    // Explicit thinking toggle (UI-only model suffix)
-    if (thinkingEnabled) {
-		geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model);
-    }
-    
+    // Always add thinking_config to generation_config (can be minimal/0 if disabled)
+    geminiRequest.generation_config.thinking_config = buildThinkingConfig(model, thinkingEnabled);
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -431,20 +452,20 @@ export const geminiProvider: AIProvider = {
       body: JSON.stringify(geminiRequest),
       signal
     });
-    
+
     const data = await response.json() as GeminiResponse;
-    
+
     if (!response.ok || data.error) {
       throw new Error(mapGeminiError(data.error));
     }
-    
+
     if (!data.candidates || data.candidates.length === 0) {
       throw new Error('No response from Gemini');
     }
-    
+
     const candidate = data.candidates[0];
     const toolCalls = extractToolCalls(candidate);
-    
+
     // Extract text content
     let content = '';
     for (const part of candidate.content.parts) {
@@ -452,7 +473,7 @@ export const geminiProvider: AIProvider = {
         content += part.text;
       }
     }
-    
+
     // Map finish reason
     let finishReason: ChatResponse['finishReason'] = 'stop';
     if (toolCalls.length > 0) {
@@ -460,7 +481,7 @@ export const geminiProvider: AIProvider = {
     } else if (candidate.finishReason === 'MAX_TOKENS') {
       finishReason = 'length';
     }
-    
+
     return {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -476,48 +497,47 @@ export const geminiProvider: AIProvider = {
   async *streamChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const { model, thinkingEnabled } = parseGeminiModel(request.model);
     const url = `${GEMINI_API_BASE}/models/${model}:streamGenerateContent?alt=sse`;
-    
+
     const geminiRequest: GeminiRequest = {
       contents: toGeminiContents(request.messages)
     };
-    
-    // Add system instruction if provided
+
+    // Add system instruction if provided (snake_case for REST API)
     if (request.systemPrompt) {
-      geminiRequest.systemInstruction = {
-        role: 'user',
+      geminiRequest.system_instruction = {
         parts: [{ text: request.systemPrompt }]
-      };
+      } as any;
     }
-    
+
     // Add tools if provided
     if (request.tools && request.tools.length > 0) {
       geminiRequest.tools = toGeminiTools(request.tools);
       // Use AUTO mode - model decides when to call functions
       // This allows the model to respond with text when appropriate
       // but still use tools when needed
-      geminiRequest.toolConfig = {
-        functionCallingConfig: {
+      geminiRequest.tool_config = {
+        function_calling_config: {
           mode: 'AUTO'
         }
       };
     }
-    
+
     // Add generation config with high output limit for streaming
     // Gemini 2.5/3 models support up to 65,536 output tokens
     // Default to 16384 for streaming to allow long responses
-    geminiRequest.generationConfig = {
-      maxOutputTokens: request.maxTokens ?? 16384
+    geminiRequest.generation_config = {
+      max_output_tokens: request.maxTokens ?? 16384,
+      // Anti-repetition: constrain token sampling
+      top_k: 40,  // Limit to top 40 tokens (prevents degeneration)
+      top_p: 0.95 // Nucleus sampling for diversity
     };
     if (request.temperature !== undefined) {
-      geminiRequest.generationConfig.temperature = request.temperature;
+      geminiRequest.generation_config.temperature = request.temperature;
     }
 
-    // Explicit thinking toggle (UI-only model suffix)
-    if (thinkingEnabled) {
-		// Keep stream thinking config compatible across model families.
-		geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model);
-    }
-    
+    // Always add thinking_config to generation_config (can be minimal/0 if disabled)
+    geminiRequest.generation_config.thinking_config = buildThinkingConfig(model, thinkingEnabled);
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -527,7 +547,7 @@ export const geminiProvider: AIProvider = {
       body: JSON.stringify(geminiRequest),
       signal
     });
-    
+
     if (!response.ok) {
       // Try to parse error response
       try {
@@ -538,29 +558,38 @@ export const geminiProvider: AIProvider = {
       }
       return;
     }
-    
+
     if (!response.body) {
       yield { type: 'error', error: 'No response body' };
       return;
     }
-    
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    
+
     try {
+      let result: ReadableStreamReadResult<Uint8Array> | undefined;
+
       while (true) {
-        let result;
         try {
           result = await reader.read();
-        } catch (err) {
+        } catch (err: any) {
+          // Ignore abort errors (user stopped generation)
+          // Loose check for AbortError as checking instanceof Error can fail in some environments
+          const isAbort = err?.name === 'AbortError' || err?.message?.includes('aborted');
+          if (isAbort) {
+            break;
+          }
           console.error('[Gemini] Stream read error:', err);
           yield { type: 'error', error: 'Connection interrupted while streaming.' };
           break;
         }
 
+        if (!result) break; // Safety check
+
         const { done, value } = result;
-        
+
         if (done) {
           if (buffer.trim()) {
             yield* processSSELine(buffer);
@@ -568,15 +597,15 @@ export const geminiProvider: AIProvider = {
           yield { type: 'done' };
           break;
         }
-        
+
         buffer += decoder.decode(value, { stream: true });
-        
+
         // Handle Gemini's SSE format which can use \n\n or \n as separators
         let newlineIndex: number;
         while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, newlineIndex).trim();
           buffer = buffer.slice(newlineIndex + 1);
-          
+
           if (line) {
             yield* processSSELine(line);
           }
@@ -585,27 +614,27 @@ export const geminiProvider: AIProvider = {
     } finally {
       reader.releaseLock();
     }
-    
+
     function* processSSELine(line: string): Generator<StreamChunk> {
       if (line.startsWith('data:')) {
         const jsonStr = line.slice(5).trim();
         if (!jsonStr || jsonStr === '[DONE]') return;
-        
+
         try {
           const data = JSON.parse(jsonStr) as GeminiStreamResponse;
-          
+
           if (data.error) {
             yield { type: 'error', error: mapGeminiError(data.error) };
             return;
           }
-          
+
           if (data.candidates && data.candidates.length > 0) {
             const candidate = data.candidates[0];
-            
+
             // Handle block reasons (Safety, etc.)
             if (candidate.finishReason && ['SAFETY', 'OTHER', 'RECITATION'].includes(candidate.finishReason)) {
-               yield { type: 'error', error: `Response blocked by Gemini safety filters (${candidate.finishReason}).` };
-               return;
+              yield { type: 'error', error: `Response blocked by Gemini safety filters (${candidate.finishReason}).` };
+              return;
             }
 
             if (candidate.content && candidate.content.parts) {
@@ -622,7 +651,7 @@ export const geminiProvider: AIProvider = {
                   yield {
                     type: 'tool_call',
                     toolCall: {
-                      id: `call_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                      id: (part as any).id || (part as any).functionCall.id || `call_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                       name: part.functionCall.name,
                       arguments: part.functionCall.args,
                       thoughtSignature: part.thoughtSignature

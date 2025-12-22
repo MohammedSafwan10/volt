@@ -52,25 +52,25 @@ export interface TreeNode extends FileEntry {
 class ProjectStore {
   // Current project root path
   rootPath = $state<string | null>(null);
-  
+
   // Project name (folder name)
   projectName = $state<string>('');
-  
+
   // File tree root nodes
   tree = $state<TreeNode[]>([]);
-  
+
   // Loading state for initial load
   loading = $state(false);
-  
+
   // Recent projects list
   recentProjects = $state<string[]>([]);
-  
+
   // Currently selected file path
   selectedPath = $state<string | null>(null);
-  
+
   // Detected package manager for the project
   packageManager = $state<PackageManager>('npm');
-  
+
   // File watcher cleanup function
   private unwatchLockFiles: UnwatchFn | null = null;
 
@@ -212,7 +212,7 @@ class ProjectStore {
     const parentRelPath = relativePath.includes('/')
       ? relativePath.substring(0, relativePath.lastIndexOf('/'))
       : '';
-    
+
     const sep = this.rootPath.includes('\\') ? '\\' : '/';
     const parentAbsPath = parentRelPath
       ? `${this.rootPath}${sep}${parentRelPath.replace(/\//g, sep)}`
@@ -294,7 +294,7 @@ class ProjectStore {
 
     if (changedLockFiles.length > 0) {
       console.log('[ProjectStore] Lock file changed:', changedLockFiles, 'Event:', event.type);
-      
+
       // Re-detect package manager
       void this.refreshPackageManager();
     }
@@ -384,28 +384,28 @@ class ProjectStore {
    */
   private async detectPackageManager(projectPath: string): Promise<PackageManager> {
     const sep = projectPath.includes('\\') ? '\\' : '/';
-    
+
     // Check for pnpm-lock.yaml first (most specific)
     const pnpmLock = `${projectPath}${sep}pnpm-lock.yaml`;
     const pnpmInfo = await getFileInfoQuiet(pnpmLock);
     if (pnpmInfo !== null) {
       return 'pnpm';
     }
-    
+
     // Check for yarn.lock
     const yarnLock = `${projectPath}${sep}yarn.lock`;
     const yarnInfo = await getFileInfoQuiet(yarnLock);
     if (yarnInfo !== null) {
       return 'yarn';
     }
-    
+
     // Check for package-lock.json (npm)
     const npmLock = `${projectPath}${sep}package-lock.json`;
     const npmInfo = await getFileInfoQuiet(npmLock);
     if (npmInfo !== null) {
       return 'npm';
     }
-    
+
     // Default to npm if no lock file found
     return 'npm';
   }
@@ -528,7 +528,7 @@ class ProjectStore {
     const detected = await this.detectPackageManager(this.rootPath);
     if (detected !== this.packageManager) {
       this.packageManager = detected;
-      
+
       // Notify ESLint server of the configuration change
       // This avoids a full server restart while updating the packageManager setting
       await pushEslintConfig();
@@ -578,7 +578,7 @@ class ProjectStore {
     };
 
     this.tree = removeFromArray(this.tree);
-    
+
     if (this.selectedPath === path) {
       this.selectedPath = null;
     }
@@ -592,12 +592,12 @@ class ProjectStore {
     if (node) {
       node.path = newPath;
       node.name = newName;
-      
+
       // Update children paths if it's a directory
       if (node.children) {
         this.updateChildrenPaths(node.children, oldPath, newPath);
       }
-      
+
       if (this.selectedPath === oldPath) {
         this.selectedPath = newPath;
       }

@@ -44,7 +44,7 @@ export interface ToolCall {
 }
 
 // Content part types for interleaved rendering (like Kiro)
-export type ContentPart = 
+export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'tool'; toolCall: ToolCall };
 
@@ -63,6 +63,8 @@ export interface AssistantMessage {
   inlineToolCalls?: ToolCall[];
   // Ordered content parts for interleaved text + tool rendering (like Kiro)
   contentParts?: ContentPart[];
+  // Reference context block (hidden from UI, sent to provider)
+  smartContextBlock?: string;
 }
 
 // Conversation container
@@ -253,30 +255,30 @@ function redactSecrets(content: string): string {
 function sanitizeUserInput(content: string): string {
   // Max input length (chars) - roughly 50k tokens
   const MAX_INPUT_LENGTH = 200_000;
-  
+
   // If input is short, no need to process
   if (content.length < 500) {
     return content;
   }
-  
+
   // Truncate if excessively long
   if (content.length > MAX_INPUT_LENGTH) {
     content = content.slice(0, MAX_INPUT_LENGTH) + '\n\n[Input truncated due to length]';
   }
-  
+
   // Detect repetitive patterns (phrases repeated 3+ times consecutively)
   // Common pattern: "make it better and add features and make it better and add features..."
   const words = content.split(/\s+/);
-  
+
   // Look for repeated phrase patterns (5-30 words)
   for (let phraseLen = 5; phraseLen <= 30; phraseLen++) {
     if (words.length < phraseLen * 3) continue;
-    
+
     for (let start = 0; start < words.length - phraseLen * 2; start++) {
       const phrase = words.slice(start, start + phraseLen).join(' ');
       let repeatCount = 1;
       let checkPos = start + phraseLen;
-      
+
       while (checkPos + phraseLen <= words.length) {
         const nextPhrase = words.slice(checkPos, checkPos + phraseLen).join(' ');
         if (nextPhrase === phrase) {
@@ -286,7 +288,7 @@ function sanitizeUserInput(content: string): string {
           break;
         }
       }
-      
+
       // If phrase repeats 3+ times, collapse it
       if (repeatCount >= 3) {
         const beforeRepeat = words.slice(0, start).join(' ');
@@ -296,7 +298,7 @@ function sanitizeUserInput(content: string): string {
       }
     }
   }
-  
+
   return content;
 }
 
@@ -312,11 +314,11 @@ class AssistantStore {
   // Conversation state
   currentConversation = $state<Conversation | null>(null);
   messages = $state<AssistantMessage[]>([]);
-  
+
   // Input state
   inputValue = $state('');
   attachedContext = $state<AttachedContext[]>([]);
-  
+
   // New attachment model
   pendingAttachments = $state<MessageAttachment[]>([]);
 
@@ -439,26 +441,27 @@ class AssistantStore {
   }
 
   // Message management
-  addUserMessage(content: string, context?: AttachedContext[]): string {
+  addUserMessage(content: string, context?: AttachedContext[], smartContextBlock?: string): string {
     // Sanitize user input to remove excessive repetition
     const sanitizedContent = sanitizeUserInput(content);
-    
+
     const id = crypto.randomUUID();
     const message: AssistantMessage = {
       id,
       role: 'user',
       content: sanitizedContent,
       timestamp: Date.now(),
-      attachments: [...this.pendingAttachments] // Include pending attachments
+      attachments: [...this.pendingAttachments], // Include pending attachments
+      smartContextBlock
     };
-    
+
     // Include context in message if provided (legacy support)
     if (context && context.length > 0) {
       message.content = this.formatMessageWithContext(sanitizedContent, context);
     }
 
     this.messages = [...this.messages, message];
-    
+
     // Update conversation
     if (this.currentConversation) {
       this.currentConversation = {
@@ -466,10 +469,10 @@ class AssistantStore {
         messages: [...this.currentConversation.messages, message]
       };
     }
-    
+
     // Clear pending attachments after adding to message
     this.pendingAttachments = [];
-    
+
     return id;
   }
 
@@ -537,8 +540,8 @@ class AssistantStore {
       if (msg.id === messageId) {
         const existing = msg.inlineToolCalls ?? [];
         const existingParts = msg.contentParts ?? [];
-        return { 
-          ...msg, 
+        return {
+          ...msg,
           inlineToolCalls: [...existing, toolCall],
           // Add tool to content parts for interleaved rendering
           contentParts: [...existingParts, { type: 'tool' as const, toolCall }]
@@ -584,7 +587,7 @@ class AssistantStore {
       if (msg.id === messageId) {
         const parts = msg.contentParts ?? [];
         const lastPart = parts[parts.length - 1];
-        
+
         let newParts: ContentPart[];
         if (lastPart && lastPart.type === 'text') {
           // Append to existing text part
@@ -596,13 +599,13 @@ class AssistantStore {
           // Create new text part
           newParts = [...parts, { type: 'text' as const, text }];
         }
-        
+
         // Also update the legacy content field
         const fullContent = newParts
           .filter(p => p.type === 'text')
           .map(p => (p as { type: 'text'; text: string }).text)
           .join('');
-        
+
         return { ...msg, contentParts: newParts, content: fullContent, isStreaming };
       }
       return msg;
@@ -617,14 +620,14 @@ class AssistantStore {
       if (msg.id === messageId) {
         // Rebuild contentParts: keep tool parts, update/add text
         const toolParts = (msg.contentParts ?? []).filter(p => p.type === 'tool');
-        
+
         // If there's content, we need to figure out where text goes
         // For now, put all text at the end (after tools)
         // TODO: Track text positions more precisely
-        const newParts: ContentPart[] = content 
+        const newParts: ContentPart[] = content
           ? [...toolParts, { type: 'text' as const, text: content }]
           : toolParts;
-        
+
         return { ...msg, contentParts: newParts, content, isStreaming };
       }
       return msg;
@@ -663,16 +666,16 @@ class AssistantStore {
   }
 
   // New attachment model methods
-  
+
   /**
    * Add a file attachment
    */
   attachFile(path: string, content: string, label?: string): { success: boolean; error?: string } {
     // Check for secrets
     if (isLikelySecretPath(path)) {
-      return { 
-        success: false, 
-        error: `File "${path}" appears to contain secrets. Redacting sensitive content.` 
+      return {
+        success: false,
+        error: `File "${path}" appears to contain secrets. Redacting sensitive content.`
       };
     }
 
@@ -883,7 +886,7 @@ class AssistantStore {
     const textSize = this.pendingAttachments
       .filter(a => a.type === 'file' || a.type === 'selection')
       .reduce((sum, a) => sum + (a as FileAttachment | SelectionAttachment).content.length, 0);
-    
+
     return textSize <= CONTEXT_LIMITS.maxContextSize;
   }
 
@@ -900,16 +903,16 @@ class AssistantStore {
    */
   getConversationContextChars(): number {
     let total = 0;
-    
+
     // Count all messages
     for (const msg of this.messages) {
       total += msg.content.length;
-      
+
       // Count thinking content if present
       if (msg.thinking) {
         total += msg.thinking.length;
       }
-      
+
       // Count attachments in messages
       if (msg.attachments) {
         for (const a of msg.attachments) {
@@ -923,13 +926,13 @@ class AssistantStore {
         }
       }
     }
-    
+
     // Add pending attachments
     total += this.getTotalContextSize();
-    
+
     // Add current input
     total += this.inputValue.length;
-    
+
     return total;
   }
 
@@ -952,7 +955,7 @@ class AssistantStore {
     const usedTokens = this.estimateTokens(usedChars);
     const maxTokens = limits.inputTokens;
     const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
-    
+
     return {
       usedTokens,
       maxTokens,
@@ -990,12 +993,12 @@ class AssistantStore {
       this.abortController = null;
     }
     this.isStreaming = false;
-    
+
     // Mark any streaming messages as complete
     this.messages = this.messages.map(msg =>
       msg.isStreaming ? { ...msg, isStreaming: false } : msg
     );
-    
+
     // Cancel any running tool calls
     this.activeToolCalls = this.activeToolCalls.map(tc =>
       tc.status === 'running' || tc.status === 'pending'
@@ -1022,14 +1025,14 @@ class AssistantStore {
   // Helper to format message with context
   private formatMessageWithContext(content: string, context: AttachedContext[]): string {
     if (context.length === 0) return content;
-    
+
     const contextParts = context.map(c => {
       if (c.type === 'file') {
         return `[File: ${c.path}]\n\`\`\`\n${c.content}\n\`\`\``;
       }
       return `[Selection]\n\`\`\`\n${c.content}\n\`\`\``;
     });
-    
+
     return `${contextParts.join('\n\n')}\n\n${content}`;
   }
 

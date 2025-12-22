@@ -99,16 +99,16 @@ function summarizeTextDiff(oldText: string, newText: string): {
       newLines: countLines(newText.slice(0, 50_000)),
       firstChangedLine: null,
       lastChangedLine: null,
-      note: 'Diff summary limited due to file size.'
+      note: 'File too large for detailed diff'
     };
   }
 
   const oldLinesArr = oldText.split(/\r?\n/);
   const newLinesArr = newText.split(/\r?\n/);
-  const oldLines = oldLinesArr.length;
-  const newLines = newLinesArr.length;
+  const oldLinesCount = oldLinesArr.length;
+  const newLinesCount = newLinesArr.length;
 
-  const minLen = Math.min(oldLines, newLines);
+  const minLen = Math.min(oldLinesCount, newLinesCount);
   let first = -1;
   for (let i = 0; i < minLen; i++) {
     if (oldLinesArr[i] !== newLinesArr[i]) {
@@ -118,14 +118,14 @@ function summarizeTextDiff(oldText: string, newText: string): {
   }
 
   // If all common lines match and lengths are equal, no changes.
-  if (first === -1 && oldLines === newLines) {
-    return { oldBytes, newBytes, oldLines, newLines, firstChangedLine: null, lastChangedLine: null };
+  if (first === -1 && oldLinesCount === newLinesCount) {
+    return { oldBytes, newBytes, oldLines: oldLinesCount, newLines: newLinesCount, firstChangedLine: null, lastChangedLine: null };
   }
 
   // Find last differing line by scanning from the end.
   let last = -1;
-  let iOld = oldLines - 1;
-  let iNew = newLines - 1;
+  let iOld = oldLinesCount - 1;
+  let iNew = newLinesCount - 1;
   while (iOld >= 0 && iNew >= 0) {
     if (oldLinesArr[iOld] !== newLinesArr[iNew]) {
       last = Math.max(iOld, iNew);
@@ -136,8 +136,33 @@ function summarizeTextDiff(oldText: string, newText: string): {
   }
 
   const firstChangedLine = first >= 0 ? first + 1 : 1;
-  const lastChangedLine = last >= 0 ? last + 1 : Math.max(oldLines, newLines);
-  return { oldBytes, newBytes, oldLines, newLines, firstChangedLine, lastChangedLine };
+  const lastChangedLine = last >= 0 ? last + 1 : Math.max(oldLinesCount, newLinesCount);
+
+  return {
+    oldBytes,
+    newBytes,
+    oldLines: oldLinesCount,
+    newLines: newLinesCount,
+    firstChangedLine,
+    lastChangedLine
+  };
+}
+
+/**
+ * Escapes a string for use in a regular expression
+ */
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Builds a whitespace-insensitive regex for finding a snippet
+ */
+function buildFuzzyRegex(snippet: string): RegExp {
+  const normalized = snippet.trim();
+  const parts = normalized.split(/\s+/).filter(p => p.length > 0);
+  const pattern = parts.map(p => escapeRegex(p)).join('\\s+');
+  return new RegExp(pattern, 'm');
 }
 
 /**
@@ -166,15 +191,15 @@ function validatePathInWorkspace(path: string, workspaceRoot: string): { valid: 
     absolutePath = normalizedPath;
   } else {
     // Relative path - join with workspace root
-    absolutePath = normalizedRoot.endsWith('/') 
-      ? normalizedRoot + normalizedPath 
+    absolutePath = normalizedRoot.endsWith('/')
+      ? normalizedRoot + normalizedPath
       : normalizedRoot + '/' + normalizedPath;
   }
 
   // Normalize the path (resolve . and ..)
   const parts = absolutePath.split('/').filter(p => p !== '');
   const resolved: string[] = [];
-  
+
   for (const part of parts) {
     if (part === '.') {
       continue;
@@ -204,10 +229,10 @@ function validatePathInWorkspace(path: string, workspaceRoot: string): { valid: 
   const isWithin = normalizedFinal === normalizedRootLower || normalizedFinal.startsWith(rootWithSlash);
 
   if (!isWithin) {
-    return { 
-      valid: false, 
-      absolutePath: finalPath, 
-      error: `Path "${path}" is outside the workspace` 
+    return {
+      valid: false,
+      absolutePath: finalPath,
+      error: `Path "${path}" is outside the workspace`
     };
   }
 
@@ -247,18 +272,18 @@ function truncateOutput(output: string): { text: string; truncated: boolean } {
 function isPromptLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  
+
   // PowerShell: "PS C:\path>" or "PS C:\path> "
   if (/^PS\s+.*>\s*$/i.test(trimmed)) return true;
-  
+
   // CMD: "C:\path>" or "C:\path> "
   if (/^[A-Z]:\\.*>\s*$/i.test(trimmed)) return true;
-  
+
   // Common *nix prompts: ending in $, #, %, or >
   // Avoid matching simple arrows or comparison operators by checking length or context if possible,
   // but for a prompt at the end of a block, strict ending checks are usually safe.
   if (/[>#$%\\]\s*$/.test(trimmed) && trimmed.length < 300) return true;
-  
+
   return false;
 }
 
@@ -292,25 +317,25 @@ async function waitForCommandCompletion(
 ): Promise<string> {
   const commandTrimmed = command.trim();
   const startTime = Date.now();
-  
+
   let lastOutput = '';
   let lastOutputTime = startTime;
   let commandSeen = false;
-  
+
   // Stabilization: if no new output for this many ms, consider done
   const STABLE_THRESHOLD_MS = 1000;
-  
+
   return new Promise((resolve) => {
     const check = () => {
       const elapsed = Date.now() - startTime;
       const currentOutput = session.getRecentOutput();
-      
+
       // Check if we've seen the command echoed
       // We look for the command logic somewhat loosely to handle variations in echo behavior
       if (!commandSeen && currentOutput.includes(commandTrimmed.substring(0, Math.min(20, commandTrimmed.length)))) {
         commandSeen = true;
       }
-      
+
       // Only start checking for completion after command is echoed (or if enough time passed)
       // If we never see the echo (e.g. blind typing), we rely on stabilization after a delay.
       const echoGracePeriod = 2000;
@@ -322,10 +347,10 @@ async function waitForCommandCompletion(
           lastOutput = currentOutput;
           lastOutputTime = Date.now();
         }
-        
+
         // Check for output stabilization (no new output for a while)
         const timeSinceLastOutput = Date.now() - lastOutputTime;
-        
+
         // 1. Fast path: Prompt detection
         const lines = currentOutput.split(/[\r\n]+/).filter(l => l.trim());
         if (lines.length > 0) {
@@ -333,30 +358,30 @@ async function waitForCommandCompletion(
           if (isPromptLine(lastLine) && !isContinuationPromptLine(lastLine)) {
             // Additional check: Ensure we aren't just seeing the *command itself* as the last line
             if (!lastLine.includes(commandTrimmed)) {
-               resolve(currentOutput);
-               return;
+              resolve(currentOutput);
+              return;
             }
           }
         }
 
         // 2. Slow path: Stabilization
         if (timeSinceLastOutput >= STABLE_THRESHOLD_MS && currentOutput.length > 0) {
-           // Output hasn't changed for 1s. Assume done.
-           resolve(currentOutput);
-           return;
+          // Output hasn't changed for 1s. Assume done.
+          resolve(currentOutput);
+          return;
         }
       }
-      
+
       // Timeout check
       if (elapsed >= timeoutMs) {
         resolve(currentOutput || '[Command timed out]');
         return;
       }
-      
+
       // Continue checking
       setTimeout(check, 100);
     };
-    
+
     // Start checking after initial delay
     setTimeout(check, 200);
   });
@@ -394,10 +419,10 @@ function extractCommandOutput(capture: string, command: string): string {
   let cleaned = stripAnsi(capture)
     .replace(/\r\n/g, '\n')  // Normalize CRLF to LF
     .replace(/\r/g, '\n');   // Convert remaining CR to LF
-  
+
   const lines = cleaned.split('\n');
   const commandTrimmed = command.trim();
-  
+
   // Find where the command was echoed (first occurrence only)
   let startIdx = 0;
   let foundCommand = false;
@@ -410,7 +435,7 @@ function extractCommandOutput(capture: string, command: string): string {
       break;
     }
   }
-  
+
   // Find where the next prompt starts (end of output)
   let endIdx = lines.length;
   const promptPatterns = [
@@ -421,13 +446,13 @@ function extractCommandOutput(capture: string, command: string): string {
     /^>>>\s*$/,                      // Python prompt
     /^\.\.\.\s*$/,                 // Python continuation prompt
   ];
-  
+
   // Scan from the end to find where output ends and prompt begins
   for (let i = lines.length - 1; i >= startIdx; i--) {
     const line = lines[i];
     const trimmed = line.trim();
     if (trimmed === '') continue;
-    
+
     let isPrompt = false;
     for (const pattern of promptPatterns) {
       if (pattern.test(trimmed)) {
@@ -435,13 +460,13 @@ function extractCommandOutput(capture: string, command: string): string {
         break;
       }
     }
-    
+
     if (!isPrompt) {
       endIdx = i + 1;
       break;
     }
   }
-  
+
   // Extract the output lines, filtering out empty lines at start/end
   const outputLines = lines.slice(startIdx, endIdx)
     .filter((line, idx, arr) => {
@@ -452,9 +477,9 @@ function extractCommandOutput(capture: string, command: string): string {
       const hasContentAfter = arr.slice(idx + 1).some(l => l.trim());
       return hasContentBefore && hasContentAfter;
     });
-  
+
   const cleanOutput = outputLines.join('\n').trim();
-  
+
   return cleanOutput || '[No output]';
 }
 
@@ -474,10 +499,10 @@ export function validateToolCall(
 
   // Check if tool is allowed in current mode
   if (!isToolAllowed(toolName, mode)) {
-    return { 
-      valid: false, 
+    return {
+      valid: false,
       error: `Tool "${toolName}" is not allowed in ${mode} mode. Switch to ${tool.allowedModes.join(' or ')} mode.`,
-      requiresApproval: false 
+      requiresApproval: false
     };
   }
 
@@ -505,8 +530,8 @@ export function validateToolCall(
     }
   }
 
-  return { 
-    valid: true, 
+  return {
+    valid: true,
     requiresApproval: doesToolRequireApproval(toolName)
   };
 }
@@ -552,12 +577,12 @@ export async function executeToolCall(
 
   try {
     const executionPromise = executeToolInternal(
-      toolName, 
-      args, 
+      toolName,
+      args,
       workspaceRoot || '',
       { onStreamingProgress, enableStreaming }
     );
-    
+
     // Race between execution, timeout, and abort
     const result = await Promise.race([
       executionPromise,
@@ -610,11 +635,11 @@ async function executeToolInternal(
       const path = resolvePath(String(args.path || '.'));
       // Rust list_dir returns Vec<FileEntry> directly (array), not { entries: [...] }
       const entries = await invoke<Array<{ name: string; isDir: boolean; isFile: boolean; size: number }>>('list_dir', { path });
-      
+
       if (!Array.isArray(entries) || entries.length === 0) {
         return { success: true, output: 'Empty directory' };
       }
-      
+
       const output = entries
         .map(e => `${e.isDir ? '📁' : '📄'} ${e.name}${e.isDir ? '/' : ''} (${e.size} bytes)`)
         .join('\n');
@@ -625,7 +650,7 @@ async function executeToolInternal(
     case 'read_file': {
       const path = resolvePath(String(args.path));
       const content = await invoke<string>('read_file', { path });
-      
+
       // Handle line range if specified
       let output = content;
       if (args.startLine || args.endLine) {
@@ -634,7 +659,7 @@ async function executeToolInternal(
         const end = args.endLine ? Number(args.endLine) : lines.length;
         output = lines.slice(start, end).join('\n');
       }
-      
+
       const { text, truncated } = truncateOutput(output);
       return { success: true, output: text, truncated };
     }
@@ -650,7 +675,7 @@ async function executeToolInternal(
         size: number;
         modified: number | null;
       }>('get_file_info', { path });
-      
+
       const output = [
         `Name: ${info.name}`,
         `Type: ${info.isDir ? 'Directory' : 'File'}`,
@@ -658,7 +683,7 @@ async function executeToolInternal(
         `Read-only: ${info.isReadonly}`,
         `Modified: ${info.modified ? new Date(info.modified).toISOString() : 'Unknown'}`
       ].join('\n');
-      
+
       return { success: true, output };
     }
 
@@ -729,11 +754,11 @@ async function executeToolInternal(
       // Dynamic import to avoid circular dependency
       const { getEditorSelection } = await import('$lib/services/monaco-models');
       const selection = getEditorSelection();
-      
+
       if (!selection || !selection.text) {
         return { success: true, output: 'No text is currently selected' };
       }
-      
+
       const { text, truncated } = truncateOutput(
         `Selection from ${selection.path || 'unknown file'}:\n${selection.text}`
       );
@@ -745,11 +770,11 @@ async function executeToolInternal(
       if (openFiles.length === 0) {
         return { success: true, output: 'No files are currently open' };
       }
-      
+
       const output = openFiles
         .map(f => `${editorStore.isDirty(f.path) ? '●' : '○'} ${f.path}`)
         .join('\n');
-      
+
       return { success: true, output: `Open files:\n${output}` };
     }
 
@@ -766,10 +791,10 @@ async function executeToolInternal(
       if (enableStreaming && onStreamingProgress) {
         // Read existing content in parallel (non-blocking)
         const beforePromise = invoke<string>('read_file', { path }).catch(() => '');
-        
+
         try {
           const { startStreaming } = await import('$lib/services/editor-streaming');
-          
+
           // Start streaming and wait for completion
           await new Promise<void>((resolve, reject) => {
             startStreaming(relativePath, content, {
@@ -790,16 +815,16 @@ async function executeToolInternal(
               }
             }).catch(reject);
           });
-          
+
           // Get the before content for summary (already resolved by now)
           const before = await beforePromise;
-          
+
           // If this was a new file (before was empty), refresh the file tree
           if (!before) {
             const { projectStore } = await import('$lib/stores/project.svelte');
             await projectStore.refreshTree();
           }
-          
+
           const summary = summarizeTextDiff(before, content);
           const range = (summary.firstChangedLine && summary.lastChangedLine)
             ? `Changed lines (approx): ${summary.firstChangedLine}–${summary.lastChangedLine}`
@@ -818,7 +843,7 @@ async function executeToolInternal(
           // Fallback to direct write if streaming fails
           console.warn('[write_file] Streaming failed, falling back to direct write:', err);
           await invoke('write_file', { path, content });
-          
+
           // Still try to open the file in editor so user can see it
           try {
             const { editorStore } = await import('$lib/stores/editor.svelte');
@@ -826,11 +851,11 @@ async function executeToolInternal(
           } catch {
             // Ignore - file was written, just couldn't open in editor
           }
-          
+
           // Refresh file tree for new file
           const { projectStore } = await import('$lib/stores/project.svelte');
           await projectStore.refreshTree();
-          
+
           return {
             success: true,
             output: `Wrote file: ${args.path} (${content.length} bytes)`
@@ -844,15 +869,15 @@ async function executeToolInternal(
         } catch {
           before = '';
         }
-        
+
         await invoke('write_file', { path, content });
-        
+
         // If this was a new file (before was empty), refresh the file tree
         if (!before) {
           const { projectStore } = await import('$lib/stores/project.svelte');
           await projectStore.refreshTree();
         }
-        
+
         const summary = summarizeTextDiff(before, content);
         const range = (summary.firstChangedLine && summary.lastChangedLine)
           ? `Changed lines (approx): ${summary.firstChangedLine}–${summary.lastChangedLine}`
@@ -879,11 +904,11 @@ async function executeToolInternal(
 
       // Try streaming visual edit first if enabled
       let streamingSuccess = false;
-      
+
       if (enableStreaming && onStreamingProgress) {
         try {
           const { startStreamingEdit } = await import('$lib/services/editor-streaming');
-          
+
           await new Promise<void>((resolve, reject) => {
             startStreamingEdit(path, originalSnippet, newSnippet, {
               chunkSize: 40,
@@ -893,26 +918,26 @@ async function executeToolInternal(
               onError: (err) => reject(new Error(err))
             }).catch(reject);
           });
-          
+
           streamingSuccess = true;
-          
+
           // If visual streaming succeeded, the editor has the updated content.
           // We should save THAT content to disk to ensure they match.
           const { editorStore } = await import('$lib/stores/editor.svelte');
           const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
           if (openFile) {
-             await invoke('write_file', { path, content: openFile.content });
-             // Mark as saved in store
-             editorStore.markSaved(path);
-             
-             // Refresh file tree
-             const { projectStore } = await import('$lib/stores/project.svelte');
-             await projectStore.refreshTree();
-             
-             return {
-               success: true,
-               output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`
-             };
+            await invoke('write_file', { path, content: openFile.content });
+            // Mark as saved in store
+            editorStore.markSaved(path);
+
+            // Refresh file tree
+            const { projectStore } = await import('$lib/stores/project.svelte');
+            await projectStore.refreshTree();
+
+            return {
+              success: true,
+              output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`
+            };
           }
         } catch (err) {
           console.warn('[apply_edit] Visual streaming failed, falling back to background edit:', err);
@@ -928,34 +953,24 @@ async function executeToolInternal(
         return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
       }
 
-      // Normalize line endings for comparison (CRLF -> LF)
-      const normalize = (text: string) => text.replace(/\r\n/g, '\n');
-      
-      const normalizedContent = normalize(fileContent);
-      const normalizedSnippet = normalize(originalSnippet);
+      // Robust Matching (CRLF-insensitive)
+      const fuzzyRegex = buildFuzzyRegex(originalSnippet);
+      const match = fuzzyRegex.exec(fileContent);
 
-      let startIndex = normalizedContent.indexOf(normalizedSnippet);
-      
-      if (startIndex === -1) {
-        const trimmedSnippet = normalizedSnippet.trim();
-        startIndex = normalizedContent.indexOf(trimmedSnippet);
-        
-        if (startIndex === -1) {
-           // Provide a helpful error with context
-           const snippetStart = originalSnippet.slice(0, 50) + (originalSnippet.length > 50 ? '...' : '');
-           return { 
-             success: false, 
-             error: `Could not find original_snippet in file. \n\nSnippet start: "${snippetStart}"\n\nPossible reasons:\n1. The file content has changed on disk.\n2. The snippet has formatting differences (indentation).\n\nAction: Please use 'read_file' to get the latest content of ${relativePath} and try again.` 
-           };
-        }
+      if (!match) {
+        // Provide a helpful error with context
+        const snippetStart = originalSnippet.slice(0, 50) + (originalSnippet.length > 50 ? '...' : '');
+        return {
+          success: false,
+          error: `Could not find original_snippet in file. \n\nSnippet start: "${snippetStart}"\n\nPossible reasons:\n1. The file content has changed on disk.\n2. The snippet has formatting differences (indentation).\n\nAction: Please use 'read_file' to get the latest content of ${relativePath} and try again.`
+        };
       }
 
-      let newContent = '';
-      if (fileContent.includes(originalSnippet)) {
-        newContent = fileContent.replace(originalSnippet, newSnippet);
-      } else {
-        newContent = normalizedContent.replace(normalizedSnippet, newSnippet);
-      }
+      const startIndex = match.index;
+      const matchLength = match[0].length;
+
+      // Slice-based replacement preserves CRLF in the rest of the file
+      const newContent = fileContent.slice(0, startIndex) + newSnippet + fileContent.slice(startIndex + matchLength);
 
       await invoke('write_file', { path, content: newContent });
 
@@ -965,7 +980,7 @@ async function executeToolInternal(
         const { editorStore } = await import('$lib/stores/editor.svelte');
         const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
         if (openFile) {
-           await editorStore.reloadFile(path); 
+          await editorStore.reloadFile(path);
         }
       } catch {
         // Ignore UI refresh errors
@@ -982,46 +997,130 @@ async function executeToolInternal(
       };
     }
 
+    case 'multi_replace_file_content': {
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      const chunks = args.replacement_chunks as Array<{
+        startLine: number;
+        endLine: number;
+        targetContent: string;
+        replacementContent: string;
+      }>;
+
+      let fileContent = '';
+      try {
+        fileContent = await invoke<string>('read_file', { path });
+      } catch (err) {
+        return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+
+      // Helper to find absolute char index of a line (1-indexed)
+      const getLineStartIndex = (text: string, line: number): number => {
+        if (line <= 1) return 0;
+        let currentLine = 1;
+        for (let i = 0; i < text.length; i++) {
+          if (text[i] === '\n') {
+            currentLine++;
+            if (currentLine === line) return i + 1;
+          }
+        }
+        return text.length;
+      };
+
+      // Apply chunks bottom-to-top to maintain index stability for upper chunks
+      const sortedChunks = [...chunks].sort((a, b) => b.startLine - a.startLine);
+
+      let currentContent = fileContent;
+
+      for (const chunk of sortedChunks) {
+        const fuzzyRegex = buildFuzzyRegex(chunk.targetContent);
+
+        // Restrict search to vicinity of expected lines (20 line buffer)
+        const searchStartPos = getLineStartIndex(currentContent, Math.max(1, chunk.startLine - 20));
+        const searchSlice = currentContent.slice(searchStartPos);
+
+        const match = fuzzyRegex.exec(searchSlice);
+
+        if (match) {
+          const startIndex = searchStartPos + match.index;
+          const matchLength = match[0].length;
+          currentContent = currentContent.slice(0, startIndex) + chunk.replacementContent + currentContent.slice(startIndex + matchLength);
+        } else {
+          // Fallback: search whole file
+          const globalMatch = fuzzyRegex.exec(currentContent);
+          if (globalMatch) {
+            const startIndex = globalMatch.index;
+            const matchLength = globalMatch[0].length;
+            currentContent = currentContent.slice(0, startIndex) + chunk.replacementContent + currentContent.slice(startIndex + matchLength);
+          } else {
+            return {
+              success: false,
+              error: `Failed to find target content for chunk starting at line ${chunk.startLine} in ${relativePath}.`
+            };
+          }
+        }
+      }
+
+      await invoke('write_file', { path, content: currentContent });
+
+      try {
+        const { projectStore } = await import('$lib/stores/project.svelte');
+        await projectStore.refreshTree();
+        const { editorStore } = await import('$lib/stores/editor.svelte');
+        const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
+        if (openFile) {
+          await editorStore.reloadFile(path);
+        }
+      } catch {
+        // Ignore UI refresh errors
+      }
+
+      return {
+        success: true,
+        output: `Successfully applied ${chunks.length} edits to ${relativePath}.`
+      };
+    }
+
     case 'create_file': {
       const path = resolvePath(String(args.path));
       await invoke('create_file', { path });
-      
+
       // Refresh file tree to show new file
       const { projectStore } = await import('$lib/stores/project.svelte');
       await projectStore.refreshTree();
-      
+
       return { success: true, output: `Created file: ${args.path}` };
     }
 
     case 'create_dir': {
       const path = resolvePath(String(args.path));
       await invoke('create_dir', { path });
-      
+
       // Refresh file tree to show new directory
       const { projectStore } = await import('$lib/stores/project.svelte');
       await projectStore.refreshTree();
-      
+
       return { success: true, output: `Created directory: ${args.path}` };
     }
 
     case 'delete_path': {
       const path = resolvePath(String(args.path));
       await invoke('delete_path', { path });
-      
+
       // Close the file tab if it's open
       const { editorStore } = await import('$lib/stores/editor.svelte');
       const normalizedPath = path.replace(/\\/g, '/');
-      const openFile = editorStore.openFiles.find(f => 
+      const openFile = editorStore.openFiles.find(f =>
         f.path.replace(/\\/g, '/').toLowerCase() === normalizedPath.toLowerCase()
       );
       if (openFile) {
         editorStore.closeFile(openFile.path, true); // Force close
       }
-      
+
       // Refresh file tree to remove deleted item
       const { projectStore } = await import('$lib/stores/project.svelte');
       projectStore.removeNode(path);
-      
+
       return { success: true, output: `Deleted: ${args.path}` };
     }
 
@@ -1029,11 +1128,11 @@ async function executeToolInternal(
       const oldPath = resolvePath(String(args.oldPath));
       const newPath = resolvePath(String(args.newPath));
       await invoke('rename_path', { oldPath, newPath });
-      
+
       // Update the file tab if it's open
       const { editorStore } = await import('$lib/stores/editor.svelte');
       const normalizedOldPath = oldPath.replace(/\\/g, '/');
-      const openFile = editorStore.openFiles.find(f => 
+      const openFile = editorStore.openFiles.find(f =>
         f.path.replace(/\\/g, '/').toLowerCase() === normalizedOldPath.toLowerCase()
       );
       if (openFile) {
@@ -1041,12 +1140,12 @@ async function executeToolInternal(
         editorStore.closeFile(openFile.path, true);
         await editorStore.openFile(newPath);
       }
-      
+
       // Update file tree
       const { projectStore } = await import('$lib/stores/project.svelte');
       const newName = newPath.split(/[/\\]/).pop() || '';
       projectStore.updateNodePath(oldPath, newPath, newName);
-      
+
       return { success: true, output: `Renamed ${args.oldPath} to ${args.newPath}` };
     }
 
@@ -1061,25 +1160,25 @@ async function executeToolInternal(
       const command = String(args.command).trim();
       const timeout = Number(args.timeout) || 20000;
       const cwd = args.cwd ? resolvePath(String(args.cwd)) : workspaceRoot;
-      
+
       // Open the terminal panel so user can see the command running
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
-      
+
       // VS Code-like behavior: use a dedicated AI terminal so user terminals
       // (often mid-command / REPL / multiline input) don't poison tool execution.
       let session = await terminalStore.getOrCreateAiTerminal(cwd);
       if (!session) {
         return { success: false, error: 'Failed to create terminal' };
       }
-      
+
       // Activate the session BEFORE waiting for UI
       terminalStore.setActive(session.id);
-      
+
       // Give UI time to render the terminal panel and initialize xterm
       // Increased to 500ms to avoid race condition where xterm isn't ready to receive initial output
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       const ensureReadyForCommand = async (attempt: number): Promise<TerminalSession | null> => {
         // ... (rest of ensureReadyForCommand implementation remains same)
         // Wait for backend readiness signal (or first output) before sending control sequences.
@@ -1129,47 +1228,47 @@ async function executeToolInternal(
       if (!ready) {
         return { success: false, error: 'Failed to prepare terminal for command execution' };
       }
-      
+
       const commandToSend = command + '\r\n';
-      
+
       try {
-        await invoke('terminal_write', { 
-          terminalId: session.info.terminalId, 
-          data: commandToSend 
+        await invoke('terminal_write', {
+          terminalId: session.info.terminalId,
+          data: commandToSend
         });
       } catch (err) {
-        return { 
-          success: false, 
-          error: `Failed to send command: ${err instanceof Error ? err.message : 'Unknown error'}` 
+        return {
+          success: false,
+          error: `Failed to send command: ${err instanceof Error ? err.message : 'Unknown error'}`
         };
       }
-      
+
       // Wait for command to complete using smart detection
       const output = await waitForCommandCompletion(session, command, timeout);
       const cleanOutput = extractCommandOutput(output, command);
-      
+
       const { text, truncated } = truncateOutput(cleanOutput);
-      
+
       let finalOutput = text;
       if (!finalOutput && !truncated) {
         finalOutput = '[Command executed successfully with no output]';
       }
-      
-      return { 
-        success: true, 
+
+      return {
+        success: true,
         // Automatically provide output context so the AI doesn't have to ask for it separately
         output: `$ ${command}\n\n${finalOutput}`,
-        truncated 
+        truncated
       };
     }
 
     case 'terminal_create': {
       const cwd = args.cwd ? resolvePath(String(args.cwd)) : workspaceRoot;
-      
+
       // Open the terminal panel
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
-      
+
       const session = await terminalStore.createTerminal(cwd);
       if (!session) {
         return { success: false, error: 'Failed to create terminal' };
@@ -1180,14 +1279,14 @@ async function executeToolInternal(
     case 'terminal_write': {
       const terminalId = String(args.terminalId);
       const command = String(args.command);
-      
+
       // Open the terminal panel
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
-      
+
       // Ensure command ends with newline to execute (use CRLF for cross-platform safety)
       const commandWithNewline = /\r?\n$/.test(command) ? command : command + '\r\n';
-      
+
       await invoke('terminal_write', { terminalId, data: commandWithNewline });
       return { success: true, output: `Sent command to terminal ${terminalId}: ${command}` };
     }
@@ -1201,18 +1300,186 @@ async function executeToolInternal(
     case 'terminal_get_output': {
       const terminalId = String(args.terminalId);
       const lines = Number(args.lines) || 100;
-      
+
       const session = terminalStore.sessions.find(s => s.info.terminalId === terminalId);
       if (!session) {
         return { success: false, error: `Terminal session ${terminalId} not found` };
       }
 
-      const output = session.getRecentOutput(lines * 100); // Rough estimate of chars per line
+      const output = session.getRecentOutput(lines * 120); // Roughly 120 chars per line
       const cleaned = stripAnsi(output);
-      
+
       const { text, truncated } = truncateOutput(cleaned);
-      return { 
-        success: true, 
+      return {
+        success: true,
+        output: text,
+        truncated
+      };
+    }
+
+    // ============================================
+    // WORKSPACE READ/SEARCH TOOLS (Phase 2)
+    // ============================================
+    case 'read_files': {
+      const paths = (args.paths as string[]) || [];
+      const results: Array<{ path: string; content?: string; error?: string }> = [];
+
+      for (const path of paths) {
+        try {
+          const content = await invoke('read_file', { path: resolvePath(path) }) as string;
+          results.push({ path, content });
+        } catch (err) {
+          results.push({ path, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
+      return {
+        success: true,
+        output: JSON.stringify(results, null, 2)
+      };
+    }
+
+    case 'find_files': {
+      const pattern = String(args.pattern).toLowerCase();
+      const maxResults = Number(args.maxResults) || 50;
+
+      const found: string[] = [];
+      const stack: string[] = [workspaceRoot];
+
+      while (stack.length > 0 && found.length < maxResults) {
+        const currentPath = stack.pop()!;
+        try {
+          const entries = await invoke('list_dir', { path: currentPath }) as Array<{ name: string; isDir: boolean }>;
+          for (const entry of entries) {
+            const fullPath = `${currentPath}/${entry.name}`;
+            const relativePath = fullPath.replace(`${workspaceRoot}/`, '');
+
+            if (entry.isDir) {
+              // Skip node_modules, .git, etc.
+              if (!['node_modules', '.git', 'dist', '.svelte-kit', 'target'].includes(entry.name)) {
+                stack.push(fullPath);
+              }
+            } else {
+              if (entry.name.toLowerCase().includes(pattern) || relativePath.toLowerCase().includes(pattern)) {
+                found.push(relativePath);
+                if (found.length >= maxResults) break;
+              }
+            }
+          }
+        } catch {
+          // Skip inaccessible dirs
+        }
+      }
+
+      return {
+        success: true,
+        output: found.length > 0 ? found.join('\n') : 'No files found matching the pattern.'
+      };
+    }
+
+    case 'get_file_tree': {
+      const startPath = args.path ? resolvePath(String(args.path)) : workspaceRoot;
+      const maxDepth = Number(args.depth) || 3;
+
+      async function buildTree(currentPath: string, currentDepth: number): Promise<string[]> {
+        if (currentDepth > maxDepth) return [];
+
+        try {
+          const entries = await invoke('list_dir', { path: currentPath }) as Array<{ name: string; isDir: boolean }>;
+          const lines: string[] = [];
+
+          for (const entry of entries) {
+            const indent = '  '.repeat(currentDepth);
+            if (entry.isDir) {
+              if (['node_modules', '.git', 'dist', '.svelte-kit', 'target'].includes(entry.name)) {
+                lines.push(`${indent}📁 ${entry.name}/ (skipped)`);
+                continue;
+              }
+              lines.push(`${indent}📁 ${entry.name}/`);
+              const children = await buildTree(`${currentPath}/${entry.name}`, currentDepth + 1);
+              lines.push(...children);
+            } else {
+              lines.push(`${indent}📄 ${entry.name}`);
+            }
+          }
+          return lines;
+        } catch {
+          return [`${'  '.repeat(currentDepth)}⚠️ Access denied`];
+        }
+      }
+
+      const tree = await buildTree(startPath, 0);
+      return {
+        success: true,
+        output: tree.join('\n') || 'Empty directory.'
+      };
+    }
+
+    case 'search_symbols': {
+      const query = String(args.query);
+
+      try {
+        // Use the existing workspace_search command which is highly optimized in Rust
+        const result = await invoke<{
+          files: Array<{
+            path: string;
+            matches: Array<{ line: number; lineContent: string }>;
+          }>;
+          totalMatches: number;
+          truncated: boolean;
+        }>('workspace_search', {
+          options: {
+            query,
+            rootPath: workspaceRoot,
+            useRegex: false,
+            caseSensitive: false,
+            wholeWord: true,
+            includePatterns: [],
+            excludePatterns: ['node_modules/**', '.git/**', 'dist/**', '.svelte-kit/**', 'target/**'],
+            maxResults: 100,
+            requestId: Date.now()
+          }
+        });
+
+        if (result.totalMatches === 0) {
+          return { success: true, output: `No symbols found matching "${query}"` };
+        }
+
+        const lines: string[] = [`Found ${result.totalMatches} matches:`];
+        for (const file of result.files.slice(0, 10)) {
+          for (const match of file.matches.slice(0, 5)) {
+            lines.push(`${file.path}:${match.line}: ${match.lineContent.trim()}`);
+          }
+        }
+
+        if (result.totalMatches > lines.length - 1) {
+          lines.push(`... and many more matches.`);
+        }
+
+        return {
+          success: true,
+          output: lines.join('\n')
+        };
+      } catch (err) {
+        return { success: false, error: `Search failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+
+    case 'read_terminal': {
+      const terminalId = String(args.terminalId);
+      const maxLines = Number(args.maxLines) || 100;
+
+      const session = terminalStore.sessions.find(s => s.info.terminalId === terminalId);
+      if (!session) {
+        return { success: false, error: `Terminal session ${terminalId} not found` };
+      }
+
+      const output = session.getRecentOutput(maxLines * 120);
+      const cleaned = stripAnsi(output);
+
+      const { text, truncated } = truncateOutput(cleaned);
+      return {
+        success: true,
         output: text,
         truncated
       };
@@ -1223,7 +1490,7 @@ async function executeToolInternal(
     // ============================================
     case 'run_check': {
       const checkType = String(args.checkType);
-      
+
       // Create a terminal and run the check command
       const cwd = workspaceRoot;
       const session = await terminalStore.createTerminal(cwd);
@@ -1250,17 +1517,17 @@ async function executeToolInternal(
       }
 
       await invoke('terminal_write', { terminalId: session.info.terminalId, data: command + '\n' });
-      return { 
-        success: true, 
-        output: `Running ${checkType} in terminal ${session.info.terminalId}. Check the terminal panel for results.` 
+      return {
+        success: true,
+        output: `Running ${checkType} in terminal ${session.info.terminalId}. Check the terminal panel for results.`
       };
     }
 
     case 'get_diagnostics': {
       const { problemsStore } = await import('$lib/stores/problems.svelte');
       const targetPath = args.path ? String(args.path).replace(/\\/g, '/') : null;
-      
-      const problems = targetPath 
+
+      const problems = targetPath
         ? problemsStore.getProblemsForFile(targetPath)
         : problemsStore.allProblems;
 
@@ -1274,7 +1541,7 @@ async function executeToolInternal(
         return severityMap[a.severity] - severityMap[b.severity];
       });
 
-      const lines = sorted.slice(0, 50).map(p => 
+      const lines = sorted.slice(0, 50).map(p =>
         `[${p.severity.toUpperCase()}] ${p.file}:${p.line}:${p.column} - ${p.message} (${p.source})`
       );
 
@@ -1299,15 +1566,15 @@ export function formatToolCallForDisplay(toolCall: ToolCall): string {
   delete args.meta;
 
   const parts: string[] = [toolCall.name];
-  
+
   if (meta?.why) {
     parts.push(`Why: ${meta.why}`);
   }
-  
+
   const argStr = Object.entries(args)
     .map(([k, v]) => `${k}: ${JSON.stringify(v).slice(0, 50)}`)
     .join(', ');
-  
+
   if (argStr) {
     parts.push(`Args: ${argStr}`);
   }

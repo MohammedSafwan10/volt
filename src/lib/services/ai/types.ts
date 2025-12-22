@@ -37,7 +37,12 @@ export interface FunctionResponsePart {
   response: Record<string, unknown>;
 }
 
-export type ContentPart = TextPart | ImagePart | FunctionCallPart | FunctionResponsePart;
+export interface ThinkingPart {
+  type: 'thinking';
+  text: string;
+}
+
+export type ContentPart = TextPart | ImagePart | FunctionCallPart | FunctionResponsePart | ThinkingPart;
 
 // Chat message (supports multimodal content)
 export interface ChatMessage {
@@ -107,18 +112,18 @@ export interface AIProvider {
   readonly id: string;
   readonly name: string;
   readonly capabilities: ProviderCapabilities;
-  
+
   /**
    * Send a chat request (non-streaming)
    */
   sendChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): Promise<ChatResponse>;
-  
+
   /**
    * Send a streaming chat request
    * Returns an async generator that yields chunks
    */
   streamChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk>;
-  
+
   /**
    * Validate the API key
    */

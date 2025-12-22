@@ -42,13 +42,13 @@ export interface TerminalReadyEvent {
  */
 interface TerminalError {
 	type:
-		| 'NotFound'
-		| 'CreateFailed'
-		| 'WriteFailed'
-		| 'ResizeFailed'
-		| 'KillFailed'
-		| 'AlreadyKilled'
-		| 'IoError';
+	| 'NotFound'
+	| 'CreateFailed'
+	| 'WriteFailed'
+	| 'ResizeFailed'
+	| 'KillFailed'
+	| 'AlreadyKilled'
+	| 'IoError';
 	terminal_id?: string;
 	message?: string;
 }
@@ -200,7 +200,7 @@ export class TerminalSession {
 	private dataBuffer: string[] = [];
 	private dataBufferChars = 0;
 	private static readonly MAX_BUFFER_CHARS = 100_000;
-	
+
 	// Output history buffer for AI tool access (always captures)
 	private outputHistory: string[] = [];
 	private outputHistoryChars = 0;
@@ -245,7 +245,7 @@ export class TerminalSession {
 				this.markReady();
 				// Always capture to output history (for AI tools)
 				this.captureToHistory(event.data);
-				
+
 				if (this.onDataCallback) {
 					this.onDataCallback(event.data);
 				} else {
@@ -281,7 +281,7 @@ export class TerminalSession {
 			this.dataBufferChars -= removed?.length ?? 0;
 		}
 	}
-	
+
 	/**
 	 * Capture data to output history (for AI tool access)
 	 */
@@ -293,7 +293,7 @@ export class TerminalSession {
 			this.outputHistoryChars -= removed?.length ?? 0;
 		}
 	}
-	
+
 	/**
 	 * Get recent output from the terminal (for AI tools)
 	 * @param maxChars Maximum characters to return
@@ -305,7 +305,7 @@ export class TerminalSession {
 		}
 		return fullOutput.slice(-maxChars);
 	}
-	
+
 	/**
 	 * Clear output history
 	 */
@@ -313,7 +313,7 @@ export class TerminalSession {
 		this.outputHistory = [];
 		this.outputHistoryChars = 0;
 	}
-	
+
 	/**
 	 * Wait for output matching a pattern or timeout
 	 * Useful for waiting for command completion
@@ -324,31 +324,31 @@ export class TerminalSession {
 	): Promise<string> {
 		const startOutput = this.getRecentOutput();
 		const startLen = startOutput.length;
-		
+
 		return new Promise((resolve) => {
 			const startTime = Date.now();
 			let checkCount = 0;
-			
+
 			const checkOutput = () => {
 				checkCount++;
 				const currentOutput = this.getRecentOutput();
 				const newOutput = currentOutput.slice(startLen);
-				
+
 				if (predicate(newOutput)) {
 					resolve(newOutput);
 					return;
 				}
-				
+
 				if (Date.now() - startTime > timeoutMs) {
 					// On timeout, return whatever output we have (not an error message)
 					resolve(newOutput || '');
 					return;
 				}
-				
+
 				// Check every 100ms
 				setTimeout(checkOutput, 100);
 			};
-			
+
 			// Start checking after a small delay to let initial output arrive
 			setTimeout(checkOutput, 50);
 		});

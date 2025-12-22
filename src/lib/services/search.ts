@@ -126,14 +126,14 @@ function getSearchErrorMessage(error: SearchError): string {
 export async function workspaceSearch(options: SearchOptions): Promise<SearchResults | null> {
   try {
     logOutput('Volt', `Searching for "${options.query}" in ${options.rootPath}`);
-    
+
     const results = await invoke<SearchResults>('workspace_search', { options });
-    
+
     logOutput(
       'Volt',
       `Found ${results.totalMatches} matches in ${results.totalFiles} files${results.truncated ? ' (truncated)' : ''}`
     );
-    
+
     return results;
   } catch (error) {
     if (isSearchError(error)) {
@@ -243,11 +243,11 @@ export interface ReplaceResult {
 export async function replaceInFile(options: ReplaceInFileOptions): Promise<ReplaceResult | null> {
   try {
     logOutput('Volt', `Replacing "${options.search}" with "${options.replace}" in ${options.path}`);
-    
+
     const result = await invoke<ReplaceResult>('replace_in_file', { options });
-    
+
     logOutput('Volt', `Made ${result.replacements} replacements in ${options.path}`);
-    
+
     return result;
   } catch (error) {
     if (isSearchError(error)) {

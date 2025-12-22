@@ -21,7 +21,7 @@ export interface ToolMeta {
 /**
  * Tool categories for organization
  */
-export type ToolCategory = 
+export type ToolCategory =
   | 'workspace_read'    // Read-only workspace operations
   | 'workspace_search'  // Search operations
   | 'editor_context'    // Editor state queries
@@ -349,6 +349,45 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     allowedModes: ['agent']
   },
   {
+    name: 'multi_replace_file_content',
+    description: 'Apply multiple, non-contiguous edits to a file. Use this for surgical changes in multiple locations in the same file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        path: {
+          type: 'string',
+          description: 'Relative path from workspace root'
+        },
+        replacement_chunks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              startLine: { type: 'number', description: 'Starting line of the chunk (1-indexed)' },
+              endLine: { type: 'number', description: 'Ending line of the chunk (1-indexed)' },
+              targetContent: { type: 'string', description: 'Exact content to be replaced' },
+              replacementContent: { type: 'string', description: 'New content to insert' }
+            },
+            required: ['startLine', 'endLine', 'targetContent', 'replacementContent']
+          }
+        }
+      },
+      required: ['meta', 'path', 'replacement_chunks']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
     name: 'create_dir',
     description: 'Create a new directory.',
     parameters: {
@@ -580,10 +619,149 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     requiresApproval: false,
     allowedModes: ['agent']
   },
-
-  // ============================================
-  // DIAGNOSTICS TOOLS (agent mode recommended)
-  // ============================================
+  {
+    name: 'read_terminal',
+    description: 'Poll for new output from a specific terminal session. Replaces terminal_get_output with a more reliable implementation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        terminalId: {
+          type: 'string',
+          description: 'ID of the terminal'
+        },
+        maxLines: {
+          type: 'number',
+          description: 'Maximum lines to return (default: 100)'
+        }
+      },
+      required: ['meta', 'terminalId']
+    },
+    category: 'terminal',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'read_files',
+    description: 'Read the content of multiple files at once. More efficient than multiple read_file calls.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'List of relative paths to read'
+        }
+      },
+      required: ['meta', 'paths']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'find_files',
+    description: 'Find files across the entire workspace using a fuzzy search pattern. Very efficient for locating modules.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        pattern: {
+          type: 'string',
+          description: 'Fuzzy search pattern (e.g. "assistant.svelte")'
+        },
+        maxResults: {
+          type: 'number',
+          description: 'Limit results (default: 50)'
+        }
+      },
+      required: ['meta', 'pattern']
+    },
+    category: 'workspace_search',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'get_file_tree',
+    description: 'Get the recursive file tree structure of a directory. useful for understanding architecture.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        path: {
+          type: 'string',
+          description: 'Root path for the tree (default: ".")'
+        },
+        depth: {
+          type: 'number',
+          description: 'Maximum recursion depth (default: 3)'
+        }
+      },
+      required: ['meta']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'search_symbols',
+    description: 'Search for symbols (functions, classes, variables) across the workspace using grep-style matching.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        query: {
+          type: 'string',
+          description: 'Symbol name or search query'
+        }
+      },
+      required: ['meta', 'query']
+    },
+    category: 'workspace_search',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
   {
     name: 'run_check',
     description: 'Run type checking or linting on the project (npm run check, cargo check, etc.).',
