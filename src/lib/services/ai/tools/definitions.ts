@@ -440,6 +440,35 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     allowedModes: ['agent']
   },
   {
+    name: 'delete_paths',
+    description: 'Delete multiple files/directories in one operation. DESTRUCTIVE - requires approval.',
+    parameters: {
+      type: 'object',
+      properties: {
+        meta: {
+          type: 'object',
+          properties: {
+            why: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            undo: { type: 'string' }
+          },
+          required: ['why', 'risk', 'undo']
+        },
+        paths: {
+          type: 'array',
+          description: 'Relative paths from workspace root',
+          items: {
+            type: 'string'
+          }
+        }
+      },
+      required: ['meta', 'paths']
+    },
+    category: 'file_write',
+    requiresApproval: true,
+    allowedModes: ['agent']
+  },
+  {
     name: 'rename_path',
     description: 'Rename or move a file or directory. Requires approval.',
     parameters: {
@@ -475,7 +504,24 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
   {
     name: 'run_command',
-    description: 'Execute a shell command and wait for output. The command runs in the visible terminal panel. Use this for running scripts, installing packages, checking versions, etc. Requires approval.',
+    description: `Execute a shell command and wait for output. The command runs in the visible terminal panel.
+
+BEHAVIOR:
+- By default, waits for command to complete (detects prompt return or output stabilization)
+- For long-running commands (npm install, cargo build, etc.), uses longer stability thresholds
+- Set wait=false to run in background and return immediately
+
+WHEN TO USE:
+- Running scripts, installing packages, checking versions
+- Build commands, test runners, linters
+- Any shell command that produces output
+
+AFTER RUNNING:
+- Check the output for errors or success messages
+- If output says "may still be running", use read_terminal to get more output
+- If command failed, explain the error and suggest fixes
+
+Requires approval.`,
     parameters: {
       type: 'object',
       properties: {
@@ -498,7 +544,11 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Optional: Timeout in milliseconds (default: 30000)'
+          description: 'Optional: Timeout in milliseconds (default: 60000 = 60 seconds)'
+        },
+        wait: {
+          type: 'boolean',
+          description: 'Optional: Wait for command completion (default: true). Set false for background execution.'
         }
       },
       required: ['meta', 'command']
@@ -550,14 +600,22 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
         },
         terminalId: {
           type: 'string',
-          description: 'ID of the terminal to write to'
+          description: 'ID of the terminal to write to (optional; defaults to active terminal)'
+        },
+        sessionId: {
+          type: 'string',
+          description: 'Legacy alias for terminalId (optional)'
         },
         command: {
           type: 'string',
           description: 'Command to execute'
+        },
+        waitMs: {
+          type: 'number',
+          description: 'Optional: time to wait for initial output after sending (default ~800ms)'
         }
       },
-      required: ['meta', 'terminalId', 'command']
+      required: ['meta', 'command']
     },
     category: 'terminal',
     requiresApproval: true,
@@ -606,14 +664,14 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
         },
         terminalId: {
           type: 'string',
-          description: 'ID of the terminal'
+          description: 'ID of the terminal (optional - uses AI terminal if not specified)'
         },
         lines: {
           type: 'number',
           description: 'Number of recent lines to retrieve'
         }
       },
-      required: ['meta', 'terminalId']
+      required: ['meta']
     },
     category: 'terminal',
     requiresApproval: false,
@@ -621,7 +679,13 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_terminal',
-    description: 'Poll for new output from a specific terminal session. Replaces terminal_get_output with a more reliable implementation.',
+    description: `Read output from a terminal session. Use this to:
+- Check if a long-running command has completed
+- Get more output after run_command timed out
+- Monitor ongoing processes
+
+Returns the recent terminal output with ANSI codes stripped.
+If no terminalId specified, reads from the AI terminal.`,
     parameters: {
       type: 'object',
       properties: {
@@ -636,14 +700,14 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
         },
         terminalId: {
           type: 'string',
-          description: 'ID of the terminal'
+          description: 'ID of the terminal (optional - uses AI terminal if not specified)'
         },
         maxLines: {
           type: 'number',
           description: 'Maximum lines to return (default: 100)'
         }
       },
-      required: ['meta', 'terminalId']
+      required: ['meta']
     },
     category: 'terminal',
     requiresApproval: false,

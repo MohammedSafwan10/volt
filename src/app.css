@@ -69,6 +69,10 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+ .monaco-editor .ai-edit-highlight {
+   background: rgba(166, 227, 161, 0.18) !important;
+ }
+
 /* Prevent text selection on UI elements */
 .no-select {
   user-select: none;

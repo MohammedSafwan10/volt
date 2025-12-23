@@ -56,6 +56,7 @@ export interface ToolResult {
   output?: string;
   error?: string;
   truncated?: boolean;
+  meta?: Record<string, unknown>;
 }
 
 /**
@@ -155,6 +156,291 @@ function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function makeCompletionMarker(): string {
+  const rand = Math.random().toString(36).slice(2);
+  return `__VOLT_CMD_DONE__${Date.now()}_${rand}__EXIT__`;
+}
+
+function wrapCommandWithMarker(command: string, shell: string, marker: string): string {
+  const sh = (shell || '').toLowerCase();
+
+  // PowerShell (pwsh/powershell)
+  if (sh.includes('pwsh') || sh.includes('powershell')) {
+    // Note: We type directly into the shell, so we don't need to quote the user's command.
+    // Ensure we always emit the marker even when the command fails.
+    return `& { ${command} } ; $ec = $LASTEXITCODE; if ($null -eq $ec) { $ec = if ($?) { 0 } else { 1 } } ; Write-Output "${marker}$ec"`;
+  }
+
+  // cmd.exe
+  if (sh.includes('cmd.exe') || sh === 'cmd') {
+    // %errorlevel% is expanded at runtime in cmd
+    return `${command} & echo ${marker}%errorlevel%`;
+  }
+
+  // bash/sh/zsh (best-effort)
+  return `${command} ; ec=$? ; echo ${marker}$ec`;
+}
+
+function stripMarkerFromCapture(capture: string, marker: string): { capture: string; exitCode: number | null } {
+  const idx = capture.lastIndexOf(marker);
+  if (idx === -1) return { capture, exitCode: null };
+
+  const after = capture.slice(idx + marker.length);
+  const m = after.match(/(-?\d+)/);
+  const exitCode = m ? Number(m[1]) : null;
+
+  // Remove marker line (and any trailing digits) from output for cleaner parsing
+  const before = capture.slice(0, idx);
+  return { capture: before, exitCode };
+}
+
+function normalizeForComparePath(p: string): string {
+  return p.replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Validate code syntax by checking for balanced brackets/braces/parens
+ * Returns null if valid, or an error message if invalid
+ */
+function validateCodeSyntax(content: string, filePath: string): string | null {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  
+  // Only validate code files
+  const codeExtensions = ['js', 'ts', 'jsx', 'tsx', 'svelte', 'vue', 'json', 'css', 'scss', 'less'];
+  if (!codeExtensions.includes(ext)) return null;
+  
+  // Check balanced brackets
+  const stack: string[] = [];
+  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
+  const opens = new Set(['(', '[', '{']);
+  const closes = new Set([')', ']', '}']);
+  
+  let inString = false;
+  let stringChar = '';
+  let inComment = false;
+  let inLineComment = false;
+  let inTemplateString = false;
+  let prevChar = '';
+  
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    const nextChar = content[i + 1] || '';
+    
+    // Handle line comments
+    if (!inString && !inComment && !inTemplateString && char === '/' && nextChar === '/') {
+      inLineComment = true;
+      continue;
+    }
+    if (inLineComment && char === '\n') {
+      inLineComment = false;
+      continue;
+    }
+    if (inLineComment) continue;
+    
+    // Handle block comments
+    if (!inString && !inTemplateString && char === '/' && nextChar === '*') {
+      inComment = true;
+      i++;
+      continue;
+    }
+    if (inComment && char === '*' && nextChar === '/') {
+      inComment = false;
+      i++;
+      continue;
+    }
+    if (inComment) continue;
+    
+    // Handle template strings
+    if (!inString && char === '`') {
+      inTemplateString = !inTemplateString;
+      continue;
+    }
+    if (inTemplateString) continue;
+    
+    // Handle regular strings
+    if (!inString && (char === '"' || char === "'") && prevChar !== '\\') {
+      inString = true;
+      stringChar = char;
+      prevChar = char;
+      continue;
+    }
+    if (inString && char === stringChar && prevChar !== '\\') {
+      inString = false;
+      stringChar = '';
+      prevChar = char;
+      continue;
+    }
+    if (inString) {
+      prevChar = char;
+      continue;
+    }
+    
+    // Check brackets
+    if (opens.has(char)) {
+      stack.push(char);
+    } else if (closes.has(char)) {
+      const expected = pairs[char];
+      const actual = stack.pop();
+      if (actual !== expected) {
+        // Find approximate line number
+        const lineNum = content.slice(0, i).split('\n').length;
+        return `Unbalanced '${char}' at line ${lineNum} - expected '${expected ? expected : 'nothing'}' but found '${actual || 'nothing'}'`;
+      }
+    }
+    
+    prevChar = char;
+  }
+  
+  if (stack.length > 0) {
+    const unclosed = stack[stack.length - 1];
+    const closeChar = unclosed === '(' ? ')' : unclosed === '[' ? ']' : '}';
+    return `Missing closing '${closeChar}' - file has ${stack.length} unclosed bracket(s)`;
+  }
+  
+  return null;
+}
+
+/**
+ * Count syntax errors in content (for comparison)
+ * Returns number of bracket imbalances
+ */
+function countSyntaxErrors(content: string, filePath: string): number {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const codeExtensions = ['js', 'ts', 'jsx', 'tsx', 'svelte', 'vue', 'json', 'css', 'scss', 'less'];
+  if (!codeExtensions.includes(ext)) return 0;
+  
+  let errors = 0;
+  const stack: string[] = [];
+  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
+  const opens = new Set(['(', '[', '{']);
+  const closes = new Set([')', ']', '}']);
+  
+  let inString = false;
+  let stringChar = '';
+  let inComment = false;
+  let inLineComment = false;
+  let inTemplateString = false;
+  let prevChar = '';
+  
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    const nextChar = content[i + 1] || '';
+    
+    if (!inString && !inComment && !inTemplateString && char === '/' && nextChar === '/') {
+      inLineComment = true;
+      continue;
+    }
+    if (inLineComment && char === '\n') {
+      inLineComment = false;
+      continue;
+    }
+    if (inLineComment) continue;
+    
+    if (!inString && !inTemplateString && char === '/' && nextChar === '*') {
+      inComment = true;
+      i++;
+      continue;
+    }
+    if (inComment && char === '*' && nextChar === '/') {
+      inComment = false;
+      i++;
+      continue;
+    }
+    if (inComment) continue;
+    
+    if (!inString && char === '`') {
+      inTemplateString = !inTemplateString;
+      continue;
+    }
+    if (inTemplateString) continue;
+    
+    if (!inString && (char === '"' || char === "'") && prevChar !== '\\') {
+      inString = true;
+      stringChar = char;
+      prevChar = char;
+      continue;
+    }
+    if (inString && char === stringChar && prevChar !== '\\') {
+      inString = false;
+      stringChar = '';
+      prevChar = char;
+      continue;
+    }
+    if (inString) {
+      prevChar = char;
+      continue;
+    }
+    
+    if (opens.has(char)) {
+      stack.push(char);
+    } else if (closes.has(char)) {
+      const expected = pairs[char];
+      const actual = stack.pop();
+      if (actual !== expected) {
+        errors++;
+        // Put back if we popped wrong thing
+        if (actual) stack.push(actual);
+      }
+    }
+    
+    prevChar = char;
+  }
+  
+  // Unclosed brackets are also errors
+  errors += stack.length;
+  
+  return errors;
+}
+
+/**
+ * Smart syntax validation that allows fixes for already-broken files
+ * Returns null if edit should be allowed, or error message if it should be blocked
+ */
+function validateEditSyntax(originalContent: string, newContent: string, filePath: string): string | null {
+  // Skip validation for very large files (>100KB) to avoid delays
+  if (originalContent.length > 100_000 || newContent.length > 100_000) {
+    return null;
+  }
+  
+  const originalErrors = countSyntaxErrors(originalContent, filePath);
+  const newErrors = countSyntaxErrors(newContent, filePath);
+  
+  // If original file was already broken, allow edits that don't make it worse
+  if (originalErrors > 0) {
+    if (newErrors <= originalErrors) {
+      // Edit improves or maintains - allow it
+      return null;
+    }
+    // Edit makes it worse
+    const syntaxError = validateCodeSyntax(newContent, filePath);
+    return `Edit would add more syntax errors (${originalErrors} → ${newErrors}).\n\n${syntaxError}`;
+  }
+  
+  // Original file was valid - don't allow breaking it
+  if (newErrors > 0) {
+    const syntaxError = validateCodeSyntax(newContent, filePath);
+    return `SYNTAX ERROR DETECTED - Edit would break valid code!\n\n${syntaxError}`;
+  }
+  
+  return null;
+}
+
+function isSameOrSuffixPath(openPath: string, absPath: string, relPath: string): boolean {
+  const openNorm = normalizeForComparePath(openPath);
+  const absNorm = normalizeForComparePath(absPath);
+  const relNorm = normalizeForComparePath(relPath);
+
+  if (openNorm === absNorm || openNorm === relNorm) return true;
+
+  const relSuffix = '/' + relNorm.replace(/^\/+/, '');
+  if (openNorm.endsWith(relSuffix)) return true;
+  if (openNorm.endsWith(relNorm) && (openNorm.length === relNorm.length || openNorm[openNorm.length - relNorm.length - 1] === '/')) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Builds a whitespace-insensitive regex for finding a snippet
  */
@@ -163,6 +449,113 @@ function buildFuzzyRegex(snippet: string): RegExp {
   const parts = normalized.split(/\s+/).filter(p => p.length > 0);
   const pattern = parts.map(p => escapeRegex(p)).join('\\s+');
   return new RegExp(pattern, 'm');
+}
+
+/**
+ * Calculate similarity between two strings (0-1)
+ * Uses Levenshtein-like approach but optimized for code
+ */
+function calculateSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a || !b) return 0;
+  
+  // Normalize whitespace for comparison
+  const normA = a.replace(/\s+/g, ' ').trim();
+  const normB = b.replace(/\s+/g, ' ').trim();
+  
+  if (normA === normB) return 0.95; // Almost perfect match
+  
+  // Check if one contains the other
+  if (normA.includes(normB) || normB.includes(normA)) {
+    return 0.8;
+  }
+  
+  // Simple character-based similarity
+  const longer = normA.length > normB.length ? normA : normB;
+  const shorter = normA.length > normB.length ? normB : normA;
+  
+  if (longer.length === 0) return 1;
+  
+  let matches = 0;
+  const shorterChars = shorter.split('');
+  let lastIndex = 0;
+  
+  for (const char of shorterChars) {
+    const idx = longer.indexOf(char, lastIndex);
+    if (idx !== -1) {
+      matches++;
+      lastIndex = idx + 1;
+    }
+  }
+  
+  return matches / longer.length;
+}
+
+/**
+ * Find the best matching location for a snippet in file content
+ * Returns { index, length, similarity } or null if no good match
+ */
+function findBestMatch(fileContent: string, snippet: string): { index: number; length: number; similarity: number } | null {
+  const snippetLines = snippet.trim().split('\n');
+  const fileLines = fileContent.split('\n');
+  
+  // Strategy 1: Exact match
+  const exactIndex = fileContent.indexOf(snippet);
+  if (exactIndex !== -1) {
+    return { index: exactIndex, length: snippet.length, similarity: 1 };
+  }
+  
+  // Strategy 2: Whitespace-normalized exact match
+  const normalizedSnippet = snippet.replace(/\r\n/g, '\n').trim();
+  const normalizedFile = fileContent.replace(/\r\n/g, '\n');
+  const normalizedIndex = normalizedFile.indexOf(normalizedSnippet);
+  if (normalizedIndex !== -1) {
+    return { index: normalizedIndex, length: normalizedSnippet.length, similarity: 0.98 };
+  }
+  
+  // Strategy 3: Fuzzy regex match
+  const fuzzyRegex = buildFuzzyRegex(snippet);
+  const fuzzyMatch = fuzzyRegex.exec(fileContent);
+  if (fuzzyMatch) {
+    return { index: fuzzyMatch.index, length: fuzzyMatch[0].length, similarity: 0.9 };
+  }
+  
+  // Strategy 4: Line-by-line sliding window match
+  // Find the best matching window of lines
+  if (snippetLines.length > 0 && fileLines.length >= snippetLines.length) {
+    let bestMatch: { startLine: number; similarity: number } | null = null;
+    
+    // Use first and last non-empty lines as anchors
+    const firstSnippetLine = snippetLines.find(l => l.trim().length > 0)?.trim() || '';
+    const lastSnippetLine = [...snippetLines].reverse().find(l => l.trim().length > 0)?.trim() || '';
+    
+    for (let i = 0; i <= fileLines.length - snippetLines.length; i++) {
+      const windowLines = fileLines.slice(i, i + snippetLines.length);
+      const windowText = windowLines.join('\n');
+      
+      // Quick check: first line should be similar
+      const firstFileLine = windowLines.find(l => l.trim().length > 0)?.trim() || '';
+      if (calculateSimilarity(firstFileLine, firstSnippetLine) < 0.5) continue;
+      
+      const similarity = calculateSimilarity(windowText, snippet);
+      
+      if (similarity > 0.7 && (!bestMatch || similarity > bestMatch.similarity)) {
+        bestMatch = { startLine: i, similarity };
+      }
+    }
+    
+    if (bestMatch && bestMatch.similarity > 0.7) {
+      // Calculate character index from line number
+      let charIndex = 0;
+      for (let i = 0; i < bestMatch.startLine; i++) {
+        charIndex += fileLines[i].length + 1; // +1 for newline
+      }
+      const matchedText = fileLines.slice(bestMatch.startLine, bestMatch.startLine + snippetLines.length).join('\n');
+      return { index: charIndex, length: matchedText.length, similarity: bestMatch.similarity };
+    }
+  }
+  
+  return null;
 }
 
 /**
@@ -323,7 +716,8 @@ async function waitForCommandCompletion(
   let commandSeen = false;
 
   // Stabilization: if no new output for this many ms, consider done
-  const STABLE_THRESHOLD_MS = 1000;
+  // Reduced from 1000ms to 400ms for faster responsiveness
+  const STABLE_THRESHOLD_MS = 400;
 
   return new Promise((resolve) => {
     const check = () => {
@@ -509,12 +903,130 @@ export function validateToolCall(
   // NOTE: `meta` is optional. It is useful for UX/auditing, but missing meta must not
   // block tool execution (models often omit it).
 
+  // Lightweight argument validation to prevent tool-loop degeneration.
+  // (We don't do full JSON-schema validation here; this is a pragmatic guardrail.)
+  const requireString = (key: string): string | null => {
+    const v = args[key];
+    return typeof v === 'string' && v.trim().length > 0
+      ? null
+      : `Missing or invalid "${key}" (expected non-empty string)`;
+  };
+
+  const requireArray = (key: string): string | null => {
+    const v = args[key];
+    return Array.isArray(v) ? null : `Missing or invalid "${key}" (expected array)`;
+  };
+
+  // Tool-specific required args.
+  switch (toolName) {
+    case 'read_file': {
+      const err = requireString('path');
+      if (err) return { valid: false, error: err, requiresApproval: false };
+      break;
+    }
+    case 'get_file_info': {
+      const err = requireString('path');
+      if (err) return { valid: false, error: err, requiresApproval: false };
+      break;
+    }
+    case 'workspace_search': {
+      const err = requireString('query');
+      if (err) return { valid: false, error: err, requiresApproval: false };
+      break;
+    }
+    case 'write_file':
+    case 'create_file': {
+      const err1 = requireString('path');
+      if (err1) return { valid: false, error: err1, requiresApproval: false };
+      const err2 = requireString('content');
+      if (err2) return { valid: false, error: err2, requiresApproval: false };
+      break;
+    }
+    case 'apply_edit': {
+      const err1 = requireString('path');
+      if (err1) return { valid: false, error: err1, requiresApproval: false };
+      const err2 = requireString('original_snippet');
+      if (err2) return { valid: false, error: err2, requiresApproval: false };
+      const err3 = requireString('new_snippet');
+      if (err3) return { valid: false, error: err3, requiresApproval: false };
+      break;
+    }
+    case 'multi_replace_file_content': {
+      const err1 = requireString('path');
+      if (err1) return { valid: false, error: err1, requiresApproval: false };
+      // Canonical schema uses `replacement_chunks`.
+      // Accept legacy `replacements` as a fallback to avoid breaking older prompts.
+      const err2 =
+        Array.isArray(args.replacement_chunks)
+          ? null
+          : Array.isArray(args.replacements)
+            ? null
+            : 'Missing or invalid "replacement_chunks" (expected array)';
+      if (err2) return { valid: false, error: err2, requiresApproval: false };
+      break;
+    }
+    case 'delete_path':
+    case 'delete_paths':
+    case 'create_dir': {
+      if (toolName === 'delete_paths') {
+        if (!Array.isArray(args.paths) || (args.paths as unknown[]).length === 0) {
+          return { valid: false, error: 'Missing or invalid "paths" (expected non-empty array)', requiresApproval: false };
+        }
+      } else {
+        const err = requireString('path');
+        if (err) return { valid: false, error: err, requiresApproval: false };
+      }
+      break;
+    }
+    case 'rename_path': {
+      const err1 = requireString('oldPath');
+      if (err1) return { valid: false, error: err1, requiresApproval: false };
+      const err2 = requireString('newPath');
+      if (err2) return { valid: false, error: err2, requiresApproval: false };
+      break;
+    }
+    case 'run_command': {
+      const err = requireString('command');
+      if (err) return { valid: false, error: err, requiresApproval: false };
+      break;
+    }
+    case 'terminal_write': {
+      const err2 = requireString('command');
+      if (err2) return { valid: false, error: err2, requiresApproval: false };
+
+      // Back-compat: allow either terminalId or sessionId.
+      // If neither is provided, we'll try to default to the active terminal at runtime.
+      const terminalId = args.terminalId;
+      const sessionId = args.sessionId;
+      if (terminalId != null && (typeof terminalId !== 'string' || !terminalId.trim())) {
+        return { valid: false, error: 'Missing or invalid "terminalId" (expected non-empty string)', requiresApproval: false };
+      }
+      if (sessionId != null && (typeof sessionId !== 'string' || !sessionId.trim())) {
+        return { valid: false, error: 'Missing or invalid "sessionId" (expected non-empty string)', requiresApproval: false };
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
   // Validate path arguments if present
   const workspaceRoot = projectStore.rootPath;
   if (args.path && typeof args.path === 'string') {
     const pathValidation = validatePathInWorkspace(args.path, workspaceRoot || '');
     if (!pathValidation.valid) {
       return { valid: false, error: pathValidation.error, requiresApproval: false };
+    }
+  }
+  if (Array.isArray(args.paths)) {
+    for (const p of args.paths) {
+      if (typeof p !== 'string') {
+        return { valid: false, error: 'Invalid path in "paths" (expected string)', requiresApproval: false };
+      }
+      const pathValidation = validatePathInWorkspace(p, workspaceRoot || '');
+      if (!pathValidation.valid) {
+        return { valid: false, error: pathValidation.error, requiresApproval: false };
+      }
     }
   }
   if (args.oldPath && typeof args.oldPath === 'string') {
@@ -650,18 +1162,32 @@ async function executeToolInternal(
     case 'read_file': {
       const path = resolvePath(String(args.path));
       const content = await invoke<string>('read_file', { path });
+      const totalLines = content.split('\n').length;
 
       // Handle line range if specified
       let output = content;
+      let startLine = 1;
+      let endLine = totalLines;
+      
       if (args.startLine || args.endLine) {
         const lines = content.split('\n');
-        const start = Math.max(0, (Number(args.startLine) || 1) - 1);
-        const end = args.endLine ? Number(args.endLine) : lines.length;
-        output = lines.slice(start, end).join('\n');
+        startLine = Math.max(1, Number(args.startLine) || 1);
+        endLine = args.endLine ? Math.min(Number(args.endLine), totalLines) : totalLines;
+        const start = startLine - 1;
+        output = lines.slice(start, endLine).join('\n');
       }
 
       const { text, truncated } = truncateOutput(output);
-      return { success: true, output: text, truncated };
+      return { 
+        success: true, 
+        output: text, 
+        truncated,
+        meta: {
+          startLine,
+          endLine,
+          totalLines
+        }
+      };
     }
 
     case 'get_file_info': {
@@ -788,9 +1314,30 @@ async function executeToolInternal(
       const { onStreamingProgress, enableStreaming } = options;
 
       // If streaming is enabled and we have a progress callback, stream to editor
-      if (enableStreaming && onStreamingProgress) {
-        // Read existing content in parallel (non-blocking)
-        const beforePromise = invoke<string>('read_file', { path }).catch(() => '');
+      if (enableStreaming) {
+        // Determine if this path exists on disk.
+        // This matters because `write_file` may fail for new paths and because streaming
+        // tries to open the file tab from disk.
+        let existedOnDisk = true;
+        try {
+          await invoke('get_file_info', { path });
+        } catch {
+          existedOnDisk = false;
+        }
+
+        // Read existing content (used for diff/meta). Only attempt if it existed.
+        const beforePromise = existedOnDisk
+          ? invoke<string>('read_file', { path }).catch(() => '')
+          : Promise.resolve('');
+
+        // Ensure the file exists on disk before streaming tries to open it.
+        if (!existedOnDisk) {
+          try {
+            await invoke('create_file', { path });
+          } catch {
+            // ignore (file may have been created concurrently)
+          }
+        }
 
         try {
           const { startStreaming } = await import('$lib/services/editor-streaming');
@@ -798,29 +1345,24 @@ async function executeToolInternal(
           // Start streaming and wait for completion
           await new Promise<void>((resolve, reject) => {
             startStreaming(relativePath, content, {
-              chunkSize: 40, // Larger chunks for speed
-              chunkDelay: 1, // Minimal delay
+              chunkSize: 200,
+              chunkDelay: 0,
               onProgress: onStreamingProgress,
-              onComplete: async () => {
-                // After streaming completes, save the file to disk
-                try {
-                  await invoke('write_file', { path, content });
-                  resolve();
-                } catch (err) {
-                  reject(err);
-                }
-              },
+              onComplete: () => resolve(),
               onError: (error) => {
                 reject(new Error(error));
               }
             }).catch(reject);
           });
 
+          // After streaming completes, save the file to disk
+          await invoke('write_file', { path, content });
+
           // Get the before content for summary (already resolved by now)
           const before = await beforePromise;
 
           // If this was a new file (before was empty), refresh the file tree
-          if (!before) {
+          if (!existedOnDisk) {
             const { projectStore } = await import('$lib/stores/project.svelte');
             await projectStore.refreshTree();
           }
@@ -837,11 +1379,28 @@ async function executeToolInternal(
               `Wrote file: ${args.path}\n` +
               `Before: ${summary.oldBytes} bytes, ${summary.oldLines} lines\n` +
               `After:  ${summary.newBytes} bytes, ${summary.newLines} lines\n` +
-              `${range}${note}`
+              `${range}${note}`,
+            meta: {
+              fileEdit: {
+                relativePath,
+                absolutePath: path,
+                beforeContent: (before.length <= 300_000 && content.length <= 300_000) ? before : null,
+                firstChangedLine: summary.firstChangedLine,
+                lastChangedLine: summary.lastChangedLine
+              }
+            }
           };
         } catch (err) {
           // Fallback to direct write if streaming fails
           console.warn('[write_file] Streaming failed, falling back to direct write:', err);
+          try {
+            if (!existedOnDisk) {
+              await invoke('create_file', { path });
+            }
+          } catch {
+            // ignore
+          }
+
           await invoke('write_file', { path, content });
 
           // Still try to open the file in editor so user can see it
@@ -858,7 +1417,16 @@ async function executeToolInternal(
 
           return {
             success: true,
-            output: `Wrote file: ${args.path} (${content.length} bytes)`
+            output: `Wrote file: ${args.path} (${content.length} bytes)`,
+            meta: {
+              fileEdit: {
+                relativePath,
+                absolutePath: path,
+                beforeContent: null,
+                firstChangedLine: null,
+                lastChangedLine: null
+              }
+            }
           };
         }
       } else {
@@ -890,7 +1458,16 @@ async function executeToolInternal(
             `Wrote file: ${args.path}\n` +
             `Before: ${summary.oldBytes} bytes, ${summary.oldLines} lines\n` +
             `After:  ${summary.newBytes} bytes, ${summary.newLines} lines\n` +
-            `${range}${note}`
+            `${range}${note}`,
+          meta: {
+            fileEdit: {
+              relativePath,
+              absolutePath: path,
+              beforeContent: (before.length <= 300_000 && content.length <= 300_000) ? before : null,
+              firstChangedLine: summary.firstChangedLine,
+              lastChangedLine: summary.lastChangedLine
+            }
+          }
         };
       }
     }
@@ -902,46 +1479,72 @@ async function executeToolInternal(
       const newSnippet = String(args.new_snippet);
       const { onStreamingProgress, enableStreaming } = options;
 
-      // Try streaming visual edit first if enabled
-      let streamingSuccess = false;
+      let before = '';
+      try {
+        before = await invoke<string>('read_file', { path });
+      } catch {
+        before = '';
+      }
 
-      if (enableStreaming && onStreamingProgress) {
+      // PRE-VALIDATE: Smart syntax check - allows fixes for already-broken files
+      if (before) {
+        // Simulate the edit to check syntax
+        const testContent = before.replace(originalSnippet, newSnippet);
+        const syntaxError = validateEditSyntax(before, testContent, relativePath);
+        if (syntaxError) {
+          return {
+            success: false,
+            error: `${syntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet to ensure balanced brackets/braces and try again.`
+          };
+        }
+      }
+
+      if (enableStreaming) {
         try {
           const { startStreamingEdit } = await import('$lib/services/editor-streaming');
 
           await new Promise<void>((resolve, reject) => {
             startStreamingEdit(path, originalSnippet, newSnippet, {
-              chunkSize: 40,
-              chunkDelay: 1,
+              chunkSize: 200,
+              chunkDelay: 0,
               onProgress: onStreamingProgress,
               onComplete: () => resolve(),
               onError: (err) => reject(new Error(err))
             }).catch(reject);
           });
 
-          streamingSuccess = true;
-
-          // If visual streaming succeeded, the editor has the updated content.
-          // We should save THAT content to disk to ensure they match.
           const { editorStore } = await import('$lib/stores/editor.svelte');
           const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
-          if (openFile) {
-            await invoke('write_file', { path, content: openFile.content });
-            // Mark as saved in store
-            editorStore.markSaved(path);
-
-            // Refresh file tree
-            const { projectStore } = await import('$lib/stores/project.svelte');
-            await projectStore.refreshTree();
-
-            return {
-              success: true,
-              output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`
-            };
+          if (!openFile) {
+            throw new Error('Edited file not available in editor');
           }
+
+          await invoke('write_file', { path, content: openFile.content });
+          editorStore.markSaved(path);
+
+          const { projectStore } = await import('$lib/stores/project.svelte');
+          await projectStore.refreshTree();
+
+          const summary = summarizeTextDiff(before, openFile.content);
+
+          return {
+            success: true,
+            output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`,
+            meta: {
+              fileEdit: {
+                relativePath,
+                absolutePath: path,
+                beforeContent: (before.length <= 300_000 && openFile.content.length <= 300_000) ? before : null,
+                firstChangedLine: summary.firstChangedLine,
+                lastChangedLine: summary.lastChangedLine
+              }
+            }
+          };
         } catch (err) {
+          if (err instanceof Error && /cancelled/i.test(err.message)) {
+            return { success: false, error: 'Streaming cancelled' };
+          }
           console.warn('[apply_edit] Visual streaming failed, falling back to background edit:', err);
-          // Fallthrough to standard logic
         }
       }
 
@@ -953,24 +1556,54 @@ async function executeToolInternal(
         return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
       }
 
-      // Robust Matching (CRLF-insensitive)
-      const fuzzyRegex = buildFuzzyRegex(originalSnippet);
-      const match = fuzzyRegex.exec(fileContent);
+      // Smart fuzzy matching with multiple strategies
+      const match = findBestMatch(fileContent, originalSnippet);
 
       if (!match) {
         // Provide a helpful error with context
-        const snippetStart = originalSnippet.slice(0, 50) + (originalSnippet.length > 50 ? '...' : '');
+        const snippetStart = originalSnippet.slice(0, 80).replace(/\n/g, '\\n') + (originalSnippet.length > 80 ? '...' : '');
+        
+        // Try to find similar lines to help debug
+        const snippetFirstLine = originalSnippet.trim().split('\n')[0]?.trim() || '';
+        const fileLines = fileContent.split('\n');
+        let similarLines: string[] = [];
+        
+        for (let i = 0; i < fileLines.length && similarLines.length < 3; i++) {
+          const line = fileLines[i].trim();
+          if (line.length > 10 && calculateSimilarity(line, snippetFirstLine) > 0.5) {
+            similarLines.push(`L${i + 1}: ${line.slice(0, 60)}`);
+          }
+        }
+        
+        const similarHint = similarLines.length > 0 
+          ? `\n\nSimilar lines found:\n${similarLines.join('\n')}`
+          : '';
+        
         return {
           success: false,
-          error: `Could not find original_snippet in file. \n\nSnippet start: "${snippetStart}"\n\nPossible reasons:\n1. The file content has changed on disk.\n2. The snippet has formatting differences (indentation).\n\nAction: Please use 'read_file' to get the latest content of ${relativePath} and try again.`
+          error: `EDIT FAILED: Could not find original_snippet in file.\n\nExpected: "${snippetStart}"${similarHint}\n\nACTION REQUIRED: Use read_file to get the exact current content of ${relativePath}, then retry apply_edit with the correct snippet. Do NOT give up.`
         };
       }
 
       const startIndex = match.index;
-      const matchLength = match[0].length;
+      const matchLength = match.length;
+      
+      // Log if we used fuzzy matching (for debugging)
+      const matchNote = match.similarity < 1 
+        ? ` (fuzzy match, ${Math.round(match.similarity * 100)}% confidence)` 
+        : '';
 
       // Slice-based replacement preserves CRLF in the rest of the file
       const newContent = fileContent.slice(0, startIndex) + newSnippet + fileContent.slice(startIndex + matchLength);
+
+      // SMART SYNTAX VALIDATION: Allows fixes for already-broken files
+      const syntaxError = validateEditSyntax(fileContent, newContent, relativePath);
+      if (syntaxError) {
+        return {
+          success: false,
+          error: `${syntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet and try again.`
+        };
+      }
 
       await invoke('write_file', { path, content: newContent });
 
@@ -991,21 +1624,120 @@ async function executeToolInternal(
       const contextEnd = Math.min(newContent.length, startIndex + newSnippet.length + 200);
       const preview = newContent.slice(contextStart, contextEnd);
 
+      const summary = summarizeTextDiff(fileContent, newContent);
+
       return {
         success: true,
-        output: `Successfully applied edit to ${relativePath}.\n\nContext around edit:\n...\n${preview}\n...`
+        output: `Successfully applied edit to ${relativePath}${matchNote}.\n\nContext around edit:\n...\n${preview}\n...`,
+        meta: {
+          fileEdit: {
+            relativePath,
+            absolutePath: path,
+            beforeContent: (fileContent.length <= 300_000 && newContent.length <= 300_000) ? fileContent : null,
+            firstChangedLine: summary.firstChangedLine,
+            lastChangedLine: summary.lastChangedLine
+          }
+        }
       };
     }
 
     case 'multi_replace_file_content': {
       const relativePath = String(args.path);
       const path = resolvePath(relativePath);
-      const chunks = args.replacement_chunks as Array<{
+      const chunks = (Array.isArray(args.replacement_chunks)
+        ? args.replacement_chunks
+        : args.replacements) as Array<{
         startLine: number;
         endLine: number;
         targetContent: string;
         replacementContent: string;
       }>;
+
+      const { onStreamingProgress, enableStreaming } = options;
+
+      let before = '';
+      try {
+        before = await invoke<string>('read_file', { path });
+      } catch {
+        before = '';
+      }
+
+      if (enableStreaming && Array.isArray(chunks) && chunks.length > 0) {
+        try {
+          const { startStreamingEdit } = await import('$lib/services/editor-streaming');
+
+          const sortedChunks = [...chunks].sort((a, b) => b.startLine - a.startLine);
+          const totalChars = sortedChunks.reduce((sum, c) => sum + String(c.replacementContent ?? '').length, 0);
+          const totalLines = sortedChunks.reduce((sum, c) => sum + countLines(String(c.replacementContent ?? '')), 0);
+
+          let baseChars = 0;
+          let baseLines = 0;
+
+          const reportProgress = onStreamingProgress ?? (() => {});
+
+          for (const chunk of sortedChunks) {
+            const originalSnippet = String(chunk.targetContent);
+            const newSnippet = String(chunk.replacementContent);
+            const chunkChars = newSnippet.length;
+            const chunkLines = countLines(newSnippet);
+
+            await new Promise<void>((resolve, reject) => {
+              startStreamingEdit(path, originalSnippet, newSnippet, {
+                chunkSize: 200,
+                chunkDelay: 0,
+                onProgress: (p) => {
+                  const charsWritten = baseChars + p.charsWritten;
+                  const linesWritten = baseLines + p.linesWritten;
+                  reportProgress({
+                    charsWritten,
+                    totalChars,
+                    linesWritten,
+                    totalLines,
+                    percent: totalChars > 0 ? Math.round((charsWritten / totalChars) * 100) : 100
+                  });
+                },
+                onComplete: () => resolve(),
+                onError: (err) => reject(new Error(err))
+              }).catch(reject);
+            });
+
+            baseChars += chunkChars;
+            baseLines += chunkLines;
+          }
+
+          const { editorStore } = await import('$lib/stores/editor.svelte');
+          const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
+          if (openFile) {
+            await invoke('write_file', { path, content: openFile.content });
+            editorStore.markSaved(path);
+          }
+
+          const { projectStore } = await import('$lib/stores/project.svelte');
+          await projectStore.refreshTree();
+
+          const afterContent = openFile?.content ?? '';
+          const summary = summarizeTextDiff(before, afterContent);
+
+          return {
+            success: true,
+            output: `Successfully applied ${sortedChunks.length} edits to ${relativePath} (visual stream).`,
+            meta: {
+              fileEdit: {
+                relativePath,
+                absolutePath: path,
+                beforeContent: (before.length <= 300_000 && afterContent.length <= 300_000) ? before : null,
+                firstChangedLine: summary.firstChangedLine,
+                lastChangedLine: summary.lastChangedLine
+              }
+            }
+          };
+        } catch (err) {
+          if (err instanceof Error && /cancelled/i.test(err.message)) {
+            return { success: false, error: 'Streaming cancelled' };
+          }
+          console.warn('[multi_replace_file_content] Visual streaming failed, falling back to background edit:', err);
+        }
+      }
 
       let fileContent = '';
       try {
@@ -1033,31 +1765,20 @@ async function executeToolInternal(
       let currentContent = fileContent;
 
       for (const chunk of sortedChunks) {
-        const fuzzyRegex = buildFuzzyRegex(chunk.targetContent);
+        // Use smart fuzzy matching
+        const match = findBestMatch(currentContent, chunk.targetContent);
 
-        // Restrict search to vicinity of expected lines (20 line buffer)
-        const searchStartPos = getLineStartIndex(currentContent, Math.max(1, chunk.startLine - 20));
-        const searchSlice = currentContent.slice(searchStartPos);
-
-        const match = fuzzyRegex.exec(searchSlice);
-
-        if (match) {
-          const startIndex = searchStartPos + match.index;
-          const matchLength = match[0].length;
+        if (match && match.similarity >= 0.7) {
+          const startIndex = match.index;
+          const matchLength = match.length;
           currentContent = currentContent.slice(0, startIndex) + chunk.replacementContent + currentContent.slice(startIndex + matchLength);
         } else {
-          // Fallback: search whole file
-          const globalMatch = fuzzyRegex.exec(currentContent);
-          if (globalMatch) {
-            const startIndex = globalMatch.index;
-            const matchLength = globalMatch[0].length;
-            currentContent = currentContent.slice(0, startIndex) + chunk.replacementContent + currentContent.slice(startIndex + matchLength);
-          } else {
-            return {
-              success: false,
-              error: `Failed to find target content for chunk starting at line ${chunk.startLine} in ${relativePath}.`
-            };
-          }
+          // Provide helpful error
+          const snippetStart = chunk.targetContent.slice(0, 60).replace(/\n/g, '\\n') + (chunk.targetContent.length > 60 ? '...' : '');
+          return {
+            success: false,
+            error: `EDIT FAILED: Could not find target content for chunk at line ${chunk.startLine}.\n\nExpected: "${snippetStart}"\n\nACTION REQUIRED: Use read_file to get the exact current content, then retry with correct snippets. Do NOT give up.`
+          };
         }
       }
 
@@ -1077,7 +1798,16 @@ async function executeToolInternal(
 
       return {
         success: true,
-        output: `Successfully applied ${chunks.length} edits to ${relativePath}.`
+        output: `Successfully applied ${chunks.length} edits to ${relativePath}.`,
+        meta: {
+          fileEdit: {
+            relativePath,
+            absolutePath: path,
+            beforeContent: (fileContent.length <= 300_000 && currentContent.length <= 300_000) ? fileContent : null,
+            firstChangedLine: null,
+            lastChangedLine: null
+          }
+        }
       };
     }
 
@@ -1109,12 +1839,10 @@ async function executeToolInternal(
 
       // Close the file tab if it's open
       const { editorStore } = await import('$lib/stores/editor.svelte');
-      const normalizedPath = path.replace(/\\/g, '/');
-      const openFile = editorStore.openFiles.find(f =>
-        f.path.replace(/\\/g, '/').toLowerCase() === normalizedPath.toLowerCase()
-      );
-      if (openFile) {
-        editorStore.closeFile(openFile.path, true); // Force close
+      const relPath = String(args.path);
+      const openFiles = editorStore.openFiles.filter(f => isSameOrSuffixPath(f.path, path, relPath));
+      for (const f of openFiles) {
+        editorStore.closeFile(f.path, true);
       }
 
       // Refresh file tree to remove deleted item
@@ -1122,6 +1850,66 @@ async function executeToolInternal(
       projectStore.removeNode(path);
 
       return { success: true, output: `Deleted: ${args.path}` };
+    }
+
+    case 'delete_paths': {
+      const relPaths = Array.isArray(args.paths) ? (args.paths as unknown[]) : [];
+      const relativePaths = relPaths.filter((p): p is string => typeof p === 'string');
+      const absolutePaths = relativePaths.map((p) => resolvePath(p));
+
+      const { editorStore } = await import('$lib/stores/editor.svelte');
+      const { projectStore } = await import('$lib/stores/project.svelte');
+
+      // Close any open tabs first to avoid stale models
+      const openFiles = editorStore.openFiles;
+      for (let i = 0; i < absolutePaths.length; i++) {
+        const abs = absolutePaths[i];
+        const rel = relativePaths[i] ?? '';
+        const matches = openFiles.filter(f => isSameOrSuffixPath(f.path, abs, rel));
+        for (const f of matches) {
+          editorStore.closeFile(f.path, true);
+        }
+      }
+
+      const results = await Promise.allSettled(
+        absolutePaths.map((p) => invoke('delete_path', { path: p }))
+      );
+
+      const deleted: string[] = [];
+      const failed: Array<{ path: string; error: string }> = [];
+      results.forEach((r, i) => {
+        const rel = relativePaths[i] ?? absolutePaths[i] ?? 'unknown';
+        if (r.status === 'fulfilled') {
+          deleted.push(rel);
+          try {
+            projectStore.removeNode(absolutePaths[i]);
+          } catch {
+            // ignore
+          }
+        } else {
+          failed.push({ path: rel, error: r.reason instanceof Error ? r.reason.message : String(r.reason) });
+        }
+      });
+
+      // One refresh for consistency
+      await projectStore.refreshTree();
+
+      const lines: string[] = [];
+      lines.push(`Deleted ${deleted.length}/${relativePaths.length} paths.`);
+      if (failed.length > 0) {
+        lines.push('Failures:');
+        for (const f of failed.slice(0, 20)) {
+          lines.push(`- ${f.path}: ${f.error}`);
+        }
+        if (failed.length > 20) {
+          lines.push(`- (and ${failed.length - 20} more)`);
+        }
+      }
+
+      return {
+        success: failed.length === 0,
+        output: lines.join('\n')
+      };
     }
 
     case 'rename_path': {
@@ -1158,83 +1946,37 @@ async function executeToolInternal(
         return { success: false, error: 'Command is required and cannot be empty' };
       }
       const command = String(args.command).trim();
-      const timeout = Number(args.timeout) || 20000;
+      const timeout = Number(args.timeout) || 60000; // Increased default to 60s
       const cwd = args.cwd ? resolvePath(String(args.cwd)) : workspaceRoot;
+      const waitForCompletion = args.wait !== false; // Default: wait for completion
 
       // Open the terminal panel so user can see the command running
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
 
-      // VS Code-like behavior: use a dedicated AI terminal so user terminals
-      // (often mid-command / REPL / multiline input) don't poison tool execution.
-      let session = await terminalStore.getOrCreateAiTerminal(cwd);
+      // Get or create AI terminal
+      const session = await terminalStore.getOrCreateAiTerminal(cwd);
       if (!session) {
         return { success: false, error: 'Failed to create terminal' };
       }
 
-      // Activate the session BEFORE waiting for UI
+      // Activate the session
       terminalStore.setActive(session.id);
 
-      // Give UI time to render the terminal panel and initialize xterm
-      // Increased to 500ms to avoid race condition where xterm isn't ready to receive initial output
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Wait for terminal to be ready
+      await session.waitForReady(3000);
+      
+      // Small delay for UI to render
+      await new Promise(resolve => setTimeout(resolve, 200));
 
-      const ensureReadyForCommand = async (attempt: number): Promise<TerminalSession | null> => {
-        // ... (rest of ensureReadyForCommand implementation remains same)
-        // Wait for backend readiness signal (or first output) before sending control sequences.
-        await session!.waitForReady(2500);
+      // Clear output history before sending command
+      session.clearOutputHistory();
 
-        session!.clearOutputHistory();
-
-        try {
-          await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\x1b' });
-          await new Promise(resolve => setTimeout(resolve, 50));
-          await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\x03' });
-          await new Promise(resolve => setTimeout(resolve, 75));
-          await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\x03' });
-          await new Promise(resolve => setTimeout(resolve, 125));
-        } catch {
-          // ignore
-        }
-
-        try {
-          await invoke('terminal_write', { terminalId: session!.info.terminalId, data: '\r\n' });
-        } catch {
-          // ignore
-        }
-
-        // Wait briefly for *any* output to confirm the shell is reactive.
-        // We don't strictly require a prompt match here because some prompts are complex.
-        // If we get text, we assume we're good to go.
-        await session!.waitForOutput((newOutput) => {
-          return Boolean(newOutput && newOutput.trim().length > 0);
-        }, 2000);
-
-        const tail = session!.getRecentOutput(1000);
-        const last = lastNonEmptyLine(tail);
-
-        if (isContinuationPromptLine(last) && attempt === 0) {
-          await terminalStore.killTerminal(session!.id);
-          session = await terminalStore.getOrCreateAiTerminal(cwd);
-          if (!session) return null;
-          terminalStore.setActive(session.id);
-          return await ensureReadyForCommand(1);
-        }
-
-        return session!;
-      };
-
-      const ready = await ensureReadyForCommand(0);
-      if (!ready) {
-        return { success: false, error: 'Failed to prepare terminal for command execution' };
-      }
-
-      const commandToSend = command + '\r\n';
-
+      // Send the command with newline
       try {
         await invoke('terminal_write', {
           terminalId: session.info.terminalId,
-          data: commandToSend
+          data: command + '\r\n'
         });
       } catch (err) {
         return {
@@ -1243,22 +1985,156 @@ async function executeToolInternal(
         };
       }
 
-      // Wait for command to complete using smart detection
-      const output = await waitForCommandCompletion(session, command, timeout);
-      const cleanOutput = extractCommandOutput(output, command);
-
-      const { text, truncated } = truncateOutput(cleanOutput);
-
-      let finalOutput = text;
-      if (!finalOutput && !truncated) {
-        finalOutput = '[Command executed successfully with no output]';
+      // If not waiting for completion, return immediately with terminal ID
+      if (!waitForCompletion) {
+        return {
+          success: true,
+          output: `Command started in background: $ ${command}\nTerminal ID: ${session.info.terminalId}\nUse read_terminal to check output.`,
+          meta: { terminalId: session.info.terminalId, backgrounded: true }
+        };
       }
+
+      // Smart wait for command completion
+      const startTime = Date.now();
+      let lastOutput = '';
+      let lastChangeTime = startTime;
+      let stableCount = 0;
+      let output = '';
+      
+      // Detect if this is a known long-running command
+      const longRunningPatterns = [
+        /^npm\s+(install|i|ci|run|test)/i,
+        /^yarn\s+(install|add|run|test)/i,
+        /^pnpm\s+(install|add|run|test)/i,
+        /^cargo\s+(build|test|run|check)/i,
+        /^pip\s+install/i,
+        /^npx\s+/i,
+        /^eslint/i,
+        /^tsc/i,
+        /^webpack/i,
+        /^vite/i,
+        /^jest/i,
+        /^vitest/i,
+        /^pytest/i,
+      ];
+      const isLongRunning = longRunningPatterns.some(p => p.test(command));
+      
+      // Adjust stability threshold based on command type
+      const stabilityThreshold = isLongRunning ? 2000 : 800; // 2s for long commands, 800ms for quick ones
+      const minWaitTime = isLongRunning ? 1000 : 300; // Minimum wait before checking for completion
+      
+      // Wait minimum time for command to start producing output
+      await new Promise(resolve => setTimeout(resolve, minWaitTime));
+      
+      while (Date.now() - startTime < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+        const currentOutput = session.getRecentOutput();
+        const cleanedCurrent = stripAnsi(currentOutput);
+        
+        if (currentOutput !== lastOutput) {
+          lastOutput = currentOutput;
+          lastChangeTime = Date.now();
+          stableCount = 0;
+        } else {
+          stableCount++;
+        }
+        
+        // Check for completion indicators
+        const timeSinceChange = Date.now() - lastChangeTime;
+        const lines = cleanedCurrent.split('\n').filter(l => l.trim());
+        const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : '';
+        
+        // Prompt detection patterns (command finished)
+        const promptPatterns = [
+          /[>$#%]\s*$/,                    // Unix prompts: $, #, %, >
+          /^PS\s+[A-Z]:\\.*>\s*$/i,        // PowerShell: PS C:\path>
+          /^[A-Z]:\\.*>\s*$/i,             // CMD: C:\path>
+          /^\([^)]+\)\s*[>$#%]\s*$/,       // Conda/venv: (env) $
+        ];
+        
+        const isPrompt = promptPatterns.some(p => p.test(lastLine));
+        
+        // Error/success indicators
+        const hasExitIndicator = /^(error|Error|ERROR|npm ERR!|failed|Failed|FAILED|success|Success|SUCCESS|Done|done|DONE|✓|✔|✗|✘)/m.test(cleanedCurrent);
+        
+        // Completion conditions:
+        // 1. Output stable for threshold AND we see a prompt
+        // 2. Output stable for longer threshold (command might have no final prompt)
+        // 3. We see clear success/error indicators and output is stable
+        if (isPrompt && timeSinceChange > stabilityThreshold) {
+          output = currentOutput;
+          break;
+        }
+        
+        if (timeSinceChange > stabilityThreshold * 2 && currentOutput.length > 0) {
+          // Output stable for 2x threshold, assume done
+          output = currentOutput;
+          break;
+        }
+        
+        if (hasExitIndicator && timeSinceChange > stabilityThreshold && stableCount >= 3) {
+          output = currentOutput;
+          break;
+        }
+      }
+      
+      // Get final output if loop ended by timeout
+      if (!output) {
+        output = session.getRecentOutput();
+      }
+
+      // Clean up the output - remove ANSI codes
+      const cleanedOutput = stripAnsi(output).trim();
+      
+      // Extract just the command output (remove command echo and trailing prompt)
+      const lines = cleanedOutput.split('\n');
+      let startIdx = 0;
+      
+      // Find where the command was echoed
+      const cmdPrefix = command.slice(0, Math.min(30, command.length));
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(cmdPrefix)) {
+          startIdx = i + 1;
+          break;
+        }
+      }
+      
+      // Remove trailing prompt lines
+      let endIdx = lines.length;
+      for (let i = lines.length - 1; i >= startIdx; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        // Check if it's a prompt
+        if (/[>$#%]\s*$/.test(line) || /^PS\s+.*>\s*$/i.test(line) || /^[A-Z]:\\.*>\s*$/i.test(line)) {
+          endIdx = i;
+        } else {
+          break;
+        }
+      }
+      
+      const resultLines = lines.slice(startIdx, endIdx);
+      let finalOutput = resultLines.join('\n').trim();
+      
+      // Check if command is still running (timeout reached without completion)
+      const timedOut = Date.now() - startTime >= timeout;
+      if (timedOut && finalOutput) {
+        finalOutput += '\n\n[Command may still be running - use read_terminal to check for more output]';
+      } else if (!finalOutput) {
+        finalOutput = '[Command completed with no output]';
+      }
+
+      const { text, truncated } = truncateOutput(finalOutput);
 
       return {
         success: true,
-        // Automatically provide output context so the AI doesn't have to ask for it separately
-        output: `$ ${command}\n\n${finalOutput}`,
-        truncated
+        output: `$ ${command}\n\n${text}`,
+        truncated,
+        meta: { 
+          terminalId: session.info.terminalId,
+          timedOut,
+          executionTime: Date.now() - startTime
+        }
       };
     }
 
@@ -1277,28 +2153,77 @@ async function executeToolInternal(
     }
 
     case 'terminal_write': {
-      const terminalId = String(args.terminalId);
       const command = String(args.command);
+
+      // terminalId is canonical, sessionId is a legacy alias.
+      const providedTerminalId =
+        (typeof args.terminalId === 'string' && args.terminalId.trim())
+          ? String(args.terminalId)
+          : (typeof (args as Record<string, unknown>).sessionId === 'string' && String((args as Record<string, unknown>).sessionId).trim())
+            ? String((args as Record<string, unknown>).sessionId)
+            : null;
 
       // Open the terminal panel
       const { uiStore } = await import('$lib/stores/ui.svelte');
       uiStore.openBottomPanelTab('terminal');
 
+      // If no terminal specified, default to the active session.
+      const session =
+        providedTerminalId
+          ? terminalStore.sessions.find(s => s.info.terminalId === providedTerminalId) ?? null
+          : terminalStore.activeSession;
+
+      if (!session) {
+        return {
+          success: false,
+          error: 'No active terminal session. Run terminal_create (or run_command) first, or provide terminalId.'
+        };
+      }
+
+      const terminalId = session.info.terminalId;
+
+      // Capture output delta so the AI can see results.
+      const beforeOutput = session.getRecentOutput();
+      const beforeLen = beforeOutput.length;
+
       // Ensure command ends with newline to execute (use CRLF for cross-platform safety)
       const commandWithNewline = /\r?\n$/.test(command) ? command : command + '\r\n';
 
       await invoke('terminal_write', { terminalId, data: commandWithNewline });
-      return { success: true, output: `Sent command to terminal ${terminalId}: ${command}` };
+
+      const waitMs = typeof args.waitMs === 'number' ? Math.max(0, Number(args.waitMs)) : 800;
+      const newOutput = await session.waitForOutput((delta) => {
+        const cleaned = stripAnsi(delta);
+        return Boolean(cleaned && cleaned.trim().length > 0);
+      }, Math.min(Math.max(waitMs, 0), 10_000));
+
+      const delta = session.getRecentOutput().slice(beforeLen);
+      const cleaned = stripAnsi(delta || newOutput || '').trim();
+      const { text, truncated } = truncateOutput(cleaned || '[No output yet]');
+
+      return {
+        success: true,
+        output: `$ ${command}\n\n${text}`,
+        truncated
+      };
     }
 
     case 'terminal_kill': {
-      const terminalId = String(args.terminalId);
+      const terminalId = (typeof args.terminalId === 'string' && args.terminalId.trim())
+        ? String(args.terminalId)
+        : (typeof (args as Record<string, unknown>).sessionId === 'string' && String((args as Record<string, unknown>).sessionId).trim())
+          ? String((args as Record<string, unknown>).sessionId)
+          : '';
       await invoke('terminal_kill', { terminalId });
       return { success: true, output: `Killed terminal: ${terminalId}` };
     }
 
     case 'terminal_get_output': {
-      const terminalId = String(args.terminalId);
+      const terminalId = (typeof args.terminalId === 'string' && args.terminalId.trim())
+        ? String(args.terminalId)
+        : (typeof (args as Record<string, unknown>).sessionId === 'string' && String((args as Record<string, unknown>).sessionId).trim())
+          ? String((args as Record<string, unknown>).sessionId)
+          : '';
       const lines = Number(args.lines) || 100;
 
       const session = terminalStore.sessions.find(s => s.info.terminalId === terminalId);
@@ -1322,12 +2247,15 @@ async function executeToolInternal(
     // ============================================
     case 'read_files': {
       const paths = (args.paths as string[]) || [];
-      const results: Array<{ path: string; content?: string; error?: string }> = [];
+      const results: Array<{ path: string; content?: string; error?: string; lines?: number }> = [];
+      let totalLinesRead = 0;
 
       for (const path of paths) {
         try {
           const content = await invoke('read_file', { path: resolvePath(path) }) as string;
-          results.push({ path, content });
+          const lineCount = content.split('\n').length;
+          totalLinesRead += lineCount;
+          results.push({ path, content, lines: lineCount });
         } catch (err) {
           results.push({ path, error: err instanceof Error ? err.message : String(err) });
         }
@@ -1335,7 +2263,12 @@ async function executeToolInternal(
 
       return {
         success: true,
-        output: JSON.stringify(results, null, 2)
+        output: JSON.stringify(results, null, 2),
+        meta: {
+          fileCount: paths.length,
+          totalLines: totalLinesRead,
+          files: results.map(r => ({ path: r.path, lines: r.lines || 0 }))
+        }
       };
     }
 
@@ -1466,7 +2399,29 @@ async function executeToolInternal(
     }
 
     case 'read_terminal': {
-      const terminalId = String(args.terminalId);
+      // Get terminal ID - use AI terminal if not specified
+      let terminalId = (typeof args.terminalId === 'string' && args.terminalId.trim())
+        ? String(args.terminalId)
+        : (typeof (args as Record<string, unknown>).sessionId === 'string' && String((args as Record<string, unknown>).sessionId).trim())
+          ? String((args as Record<string, unknown>).sessionId)
+          : '';
+      
+      // If no terminal ID specified, try to use the AI terminal
+      if (!terminalId) {
+        const aiSession = terminalStore.sessions.find(s => 
+          terminalStore.getSessionLabel?.(s.id) === 'Volt AI'
+        ) || terminalStore.activeSession;
+        
+        if (aiSession) {
+          terminalId = aiSession.info.terminalId;
+        } else {
+          return { 
+            success: false, 
+            error: 'No terminal session found. Run a command first with run_command.' 
+          };
+        }
+      }
+      
       const maxLines = Number(args.maxLines) || 100;
 
       const session = terminalStore.sessions.find(s => s.info.terminalId === terminalId);
@@ -1476,12 +2431,25 @@ async function executeToolInternal(
 
       const output = session.getRecentOutput(maxLines * 120);
       const cleaned = stripAnsi(output);
+      
+      // Check if command appears to still be running (no prompt at end)
+      const lines = cleaned.split('\n').filter(l => l.trim());
+      const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : '';
+      const promptPatterns = [
+        /[>$#%]\s*$/,
+        /^PS\s+[A-Z]:\\.*>\s*$/i,
+        /^[A-Z]:\\.*>\s*$/i,
+      ];
+      const hasPrompt = promptPatterns.some(p => p.test(lastLine));
+      
+      const status = hasPrompt ? 'Command completed (prompt detected)' : 'Command may still be running...';
 
       const { text, truncated } = truncateOutput(cleaned);
       return {
         success: true,
-        output: text,
-        truncated
+        output: `${status}\n\n${text}`,
+        truncated,
+        meta: { terminalId, hasPrompt }
       };
     }
 

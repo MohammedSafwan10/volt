@@ -26,22 +26,10 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GEMINI_THINKING_SUFFIX = '|thinking';
 
 function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThinkingConfig | undefined {
-  const isGemini3 = /^gemini-3/i.test(model);
-
-  if (isGemini3) {
-    // Gemini 3 models support dynamic thinking_level
-    return {
-      include_thoughts: thinkingEnabled,
-      // 'HIGH' is the default dynamic level (REST API uses uppercase)
-      thinking_level: thinkingEnabled ? 'HIGH' : 'MINIMAL'
-    };
-  }
-
-  // Gemini 2.5 series
+  // Gemini 2.5 series: use thinkingBudget (camelCase for REST API)
   return {
-    include_thoughts: thinkingEnabled,
-    // -1 enables dynamic thinking budget for 2.5 series
-    thinking_budget: thinkingEnabled ? -1 : 0
+    includeThoughts: thinkingEnabled,
+    thinkingBudget: thinkingEnabled ? -1 : 0
   };
 }
 
@@ -92,11 +80,11 @@ interface GeminiFunctionDeclaration {
   parameters: Record<string, unknown>;
 }
 
-// CRITICAL: Gemini REST API uses snake_case
+// CRITICAL: Gemini REST API uses camelCase for thinkingConfig fields!
 interface GeminiThinkingConfig {
-  include_thoughts?: boolean; // Include thought summaries in response
-  thinking_budget?: number; // 2.5 series: 0 to disable, positive for token budget
-  thinking_level?: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL'; // 3 series: dynamic vs explicit
+  includeThoughts?: boolean; // Include thought summaries in response
+  thinkingBudget?: number; // 2.5 series: 0 to disable, positive for token budget
+  thinkingLevel?: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL'; // 3 series: dynamic vs explicit
 }
 
 interface GeminiFunctionCallingConfig {
@@ -105,22 +93,23 @@ interface GeminiFunctionCallingConfig {
 }
 
 interface GeminiToolConfig {
-  function_calling_config: GeminiFunctionCallingConfig;
+  functionCallingConfig: GeminiFunctionCallingConfig;
 }
 
-// CRITICAL: Gemini REST API uses snake_case, NOT camelCase!
+// CRITICAL: Gemini REST API uses camelCase for generationConfig!
 interface GeminiRequest {
   contents: GeminiContent[];
-  system_instruction?: GeminiContent; // snake_case for REST API
+  systemInstruction?: GeminiContent; // camelCase for REST API
   tools?: GeminiTool[];
-  tool_config?: GeminiToolConfig;
-  generation_config?: {
+  toolConfig?: GeminiToolConfig;
+  generationConfig?: {
     temperature?: number;
-    max_output_tokens?: number;
-    stop_sequences?: string[];
-    top_k?: number; // Limit token selection pool (anti-repetition)
-    top_p?: number; // Nucleus sampling threshold (anti-repetition)
-    thinking_config?: GeminiThinkingConfig;
+    maxOutputTokens?: number;
+    stopSequences?: string[];
+    topK?: number;
+    topP?: number;
+    thinkingConfig?: GeminiThinkingConfig;
+    responseMimeType?: string; // Force text/plain to prevent JSON output
   };
 }
 
@@ -179,7 +168,6 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
     if (m.role === 'system') continue; // System handled separately
 
     const parts: GeminiPart[] = [];
-    let hasFunctionResponse = false;
 
     // If message has multimodal parts, use them
     if (m.parts && m.parts.length > 0) {
@@ -223,7 +211,6 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
           // Tool result - must go in 'user' role as functionResponse
           // Gemini expects each functionResponse in its own content block
           // Format: { name: string, response: { result: ... } }
-          hasFunctionResponse = true;
 
           // If we have accumulated parts, push them first
           if (parts.length > 0) {
@@ -268,10 +255,23 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
 
   // Gemini requires alternating user/model roles
   // Merge consecutive same-role messages to avoid "Invalid request" errors
+  const hasFunctionResponsePart = (c: GeminiContent): boolean =>
+    c.parts?.some((p) => Boolean((p as GeminiPart).functionResponse));
+
   const merged: GeminiContent[] = [];
   for (const content of filtered) {
     const last = merged[merged.length - 1];
     if (last && last.role === content.role) {
+      const lastHasFnResp = hasFunctionResponsePart(last);
+      const currHasFnResp = hasFunctionResponsePart(content);
+
+      // Avoid merging functionResponse parts with normal text/image parts.
+      // (Function responses are sensitive to formatting in the Gemini API.)
+      if (lastHasFnResp !== currHasFnResp) {
+        merged.push(content);
+        continue;
+      }
+
       // Merge parts into the previous message with same role
       last.parts = [...last.parts, ...content.parts];
     } else {
@@ -408,9 +408,9 @@ export const geminiProvider: AIProvider = {
       contents: toGeminiContents(request.messages)
     };
 
-    // Add system instruction if provided (snake_case for REST API)
+    // Add system instruction if provided (camelCase for REST API)
     if (request.systemPrompt) {
-      geminiRequest.system_instruction = {
+      geminiRequest.systemInstruction = {
         parts: [{ text: request.systemPrompt }]
       } as any;
     }
@@ -421,27 +421,27 @@ export const geminiProvider: AIProvider = {
       // Use AUTO mode - model decides when to call functions
       // This allows the model to respond with text when appropriate
       // but still use tools when needed
-      geminiRequest.tool_config = {
-        function_calling_config: {
+      geminiRequest.toolConfig = {
+        functionCallingConfig: {
           mode: 'AUTO'
         }
       };
     }
 
     // Add generation config with high output limit (Gemini supports up to 65,536)
-    geminiRequest.generation_config = {
-      // Default to 8192 tokens for non-streaming, can be overridden
-      max_output_tokens: request.maxTokens ?? 8192,
-      // Anti-repetition: constrain token sampling
-      top_k: 40,  // Limit to top 40 tokens (prevents degeneration)
-      top_p: 0.95 // Nucleus sampling for diversity
+    geminiRequest.generationConfig = {
+      maxOutputTokens: request.maxTokens ?? 8192,
+      stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
+      topK: 40,
+      topP: 0.95
     };
+    
     if (request.temperature !== undefined) {
-      geminiRequest.generation_config.temperature = request.temperature;
+      geminiRequest.generationConfig.temperature = request.temperature;
     }
 
-    // Always add thinking_config to generation_config (can be minimal/0 if disabled)
-    geminiRequest.generation_config.thinking_config = buildThinkingConfig(model, thinkingEnabled);
+    // Always add thinkingConfig to generationConfig
+    geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -502,9 +502,9 @@ export const geminiProvider: AIProvider = {
       contents: toGeminiContents(request.messages)
     };
 
-    // Add system instruction if provided (snake_case for REST API)
+    // Add system instruction if provided (camelCase for REST API)
     if (request.systemPrompt) {
-      geminiRequest.system_instruction = {
+      geminiRequest.systemInstruction = {
         parts: [{ text: request.systemPrompt }]
       } as any;
     }
@@ -515,28 +515,27 @@ export const geminiProvider: AIProvider = {
       // Use AUTO mode - model decides when to call functions
       // This allows the model to respond with text when appropriate
       // but still use tools when needed
-      geminiRequest.tool_config = {
-        function_calling_config: {
+      geminiRequest.toolConfig = {
+        functionCallingConfig: {
           mode: 'AUTO'
         }
       };
     }
 
     // Add generation config with high output limit for streaming
-    // Gemini 2.5/3 models support up to 65,536 output tokens
-    // Default to 16384 for streaming to allow long responses
-    geminiRequest.generation_config = {
-      max_output_tokens: request.maxTokens ?? 16384,
-      // Anti-repetition: constrain token sampling
-      top_k: 40,  // Limit to top 40 tokens (prevents degeneration)
-      top_p: 0.95 // Nucleus sampling for diversity
+    geminiRequest.generationConfig = {
+      maxOutputTokens: request.maxTokens ?? 65536, // Gemini supports up to 65,536 - use max for agentic tasks
+      stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
+      topK: 40,
+      topP: 0.95
     };
+    
     if (request.temperature !== undefined) {
-      geminiRequest.generation_config.temperature = request.temperature;
+      geminiRequest.generationConfig.temperature = request.temperature;
     }
 
-    // Always add thinking_config to generation_config (can be minimal/0 if disabled)
-    geminiRequest.generation_config.thinking_config = buildThinkingConfig(model, thinkingEnabled);
+    // Always add thinkingConfig to generationConfig
+    geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -576,7 +575,6 @@ export const geminiProvider: AIProvider = {
           result = await reader.read();
         } catch (err: any) {
           // Ignore abort errors (user stopped generation)
-          // Loose check for AbortError as checking instanceof Error can fail in some environments
           const isAbort = err?.name === 'AbortError' || err?.message?.includes('aborted');
           if (isAbort) {
             break;
@@ -586,7 +584,7 @@ export const geminiProvider: AIProvider = {
           break;
         }
 
-        if (!result) break; // Safety check
+        if (!result) break;
 
         const { done, value } = result;
 
@@ -639,12 +637,19 @@ export const geminiProvider: AIProvider = {
 
             if (candidate.content && candidate.content.parts) {
               for (const part of candidate.content.parts) {
+                // Skip empty text with thought signature
+                if (part.thoughtSignature && (!part.text || !part.text.trim())) {
+                  continue;
+                }
+                
                 if (part.text) {
+                  const text = part.text;
                   const isThought = Boolean((part as any).thought);
+                  
                   if (isThought) {
-                    yield { type: 'thinking', thinking: part.text };
+                    yield { type: 'thinking', thinking: text };
                   } else {
-                    yield { type: 'content', content: part.text };
+                    yield { type: 'content', content: text };
                   }
                 }
                 if (part.functionCall) {
@@ -662,7 +667,6 @@ export const geminiProvider: AIProvider = {
             }
           }
         } catch (err) {
-          // Log parsing error but don't crash the stream
           console.warn('[Gemini] Failed to parse SSE chunk:', err, line);
         }
       }

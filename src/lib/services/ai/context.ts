@@ -1,6 +1,12 @@
 /**
  * Smart Context Service 2.0
  * Automatically gathers relevant IDE state for AI requests with query-awareness
+ * 
+ * v2.0 improvements based on research from Claude Code, Copilot, Cursor:
+ * - Better context budget management
+ * - File content caching
+ * - Smarter relevance scoring
+ * - Clear instructions for AI on context usage
  */
 
 import { editorStore } from '$lib/stores/editor.svelte';
@@ -9,6 +15,17 @@ import { assistantStore } from '$lib/stores/assistant.svelte';
 import { activityStore } from '$lib/stores/activity.svelte';
 import { terminalStore } from '$lib/stores/terminal.svelte';
 import { readFile } from '$lib/services/file-system';
+
+// Re-export v2 for gradual migration
+export { 
+  getSmartContextV2, 
+  formatSmartContextV2,
+  clearContextCache,
+  invalidateCacheEntry,
+  isFileInContext,
+  getContextStats,
+  type SmartContextV2 
+} from './context-v2';
 
 export interface SmartContext {
   activeFile?: {
@@ -34,6 +51,8 @@ export interface SmartContext {
   terminalHistory?: string;
   workspaceRoot?: string;
   focusedSymbols?: string[];
+  /** Files already in context (v2 addition) */
+  filesInContext?: Set<string>;
 }
 
 /**
@@ -294,56 +313,69 @@ export async function getSmartContext(query?: string): Promise<SmartContext> {
 
 /**
  * Format the smart context into a string for the AI prompt
+ * Updated to include files_in_context list for AI reference
  */
 export function formatSmartContext(context: SmartContext): string {
-  let output = '<smart_context>\n';
+  let output = '<context>\n';
+  
+  // Track files in context
+  const filesInContext: string[] = [];
 
   if (context.workspaceRoot) {
-    output += `Workspace Root: ${context.workspaceRoot}\n`;
+    output += `<workspace>${context.workspaceRoot}</workspace>\n`;
   }
 
   if (context.terminalHistory) {
-    output += `\n${context.terminalHistory}\n`;
+    output += `<terminal_output>\n${context.terminalHistory}\n</terminal_output>\n`;
   }
 
   if (context.activeFile) {
-    output += `\n[Active File: ${context.activeFile.path}]\n`;
+    filesInContext.push(context.activeFile.path);
+    output += `\n<active_file path="${context.activeFile.path}">\n`;
     if (context.activeFile.cursorLine) {
       output += `Cursor: Line ${context.activeFile.cursorLine}, Col ${context.activeFile.cursorColumn}\n`;
     }
     output += '```\n';
     output += context.activeFile.content;
-    output += '\n```\n';
+    output += '\n```\n</active_file>\n';
   }
 
   if (context.openTabsContent && context.openTabsContent.length > 0) {
-    output += '\n[Open Files (Prioritized by relevance)]\n';
+    output += '\n<related_files>\n';
     for (const file of context.openTabsContent) {
-      output += `\nFile: ${file.path} ${file.isDirty ? '(Unsaved)' : ''}\n`;
+      filesInContext.push(file.path);
+      const dirtyNote = file.isDirty ? ' [unsaved]' : '';
+      output += `\n<file path="${file.path}"${dirtyNote}>\n`;
       output += '```\n';
       output += file.content;
-      output += '\n```\n';
+      output += '\n```\n</file>\n';
     }
+    output += '</related_files>\n';
   }
 
   if (context.relatedFiles.length > 0) {
-    output += '\n[Imported Logic (Sampled)]\n';
+    output += '\n<imported_files>\n';
     for (const file of context.relatedFiles) {
       if (context.openTabsContent?.some(f => f.path === file.path)) continue;
+      filesInContext.push(file.path);
 
-      output += `\nFile: ${file.path} (${file.reason})\n`;
+      output += `\n<file path="${file.path}" reason="${file.reason}">\n`;
       output += '```\n';
       const lines = file.content.split('\n');
-      output += lines.slice(0, 150).join('\n') + (lines.length > 150 ? '\n... [Truncated] ...' : '') + '\n';
-      output += '```\n';
+      output += lines.slice(0, 150).join('\n') + (lines.length > 150 ? '\n... [truncated] ...' : '') + '\n';
+      output += '```\n</file>\n';
     }
+    output += '</imported_files>\n';
   }
 
-  output += '</smart_context>\n\n';
-  output += `**CRITICAL INSTRUCTIONS FOR CONTEXT HANDLING:**
-1. This context is INTERNAL REFERENCE ONLY. NEVER echo, quote, or summarize it to the user.
-2. If the user sends a short message like "go", "start", "yes", or "ok", these are CONFIRMATIONS to BEGIN WORKING, not prompts to be continued.
-3. DO NOT attempt to complete incomplete sentences or phrases from the user. Interpret them as commands to proceed.
-4. Your response should focus on the TASK at hand, NOT on describing the context you received.`;
+  // Add files_in_context list for AI reference
+  output += `\n<files_in_context>${filesInContext.join(', ')}</files_in_context>\n`;
+  output += '</context>\n\n';
+  
+  output += `CONTEXT RULES:
+1. Files in <files_in_context> are ALREADY LOADED - do NOT call read_file for them
+2. Use EXACT content from context when editing (copy-paste, preserve whitespace)
+3. If file is [truncated], use read_file with line ranges for more content
+4. Focus on the user's request, not on describing this context`;
   return output;
 }

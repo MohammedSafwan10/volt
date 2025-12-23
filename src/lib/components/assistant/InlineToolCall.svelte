@@ -13,9 +13,11 @@
     streamingProgress?: StreamingProgress | null;
     onApprove?: () => void;
     onDeny?: () => void;
+    onAcceptEdit?: (() => void) | null;
+    onRejectEdit?: (() => void) | null;
   }
 
-  let { toolCall, streamingProgress, onApprove, onDeny }: Props = $props();
+  let { toolCall, streamingProgress, onApprove, onDeny, onAcceptEdit, onRejectEdit }: Props = $props();
 
   let expanded = $state(false);
 
@@ -84,12 +86,47 @@
   // Get summary of what the tool is doing
   function getToolSummary(): string {
     const args = toolCall.arguments;
+    const resultMeta = toolCall.meta as Record<string, unknown> | undefined;
     
     switch (toolCall.name) {
       case 'list_dir':
         return args.path ? String(args.path) : '.';
-      case 'read_file':
-        return args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
+      case 'read_file': {
+        const filename = args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
+        // Use result meta for actual lines read (more accurate than args)
+        if (resultMeta?.startLine && resultMeta?.endLine) {
+          const start = Number(resultMeta.startLine);
+          const end = Number(resultMeta.endLine);
+          const total = resultMeta.totalLines ? Number(resultMeta.totalLines) : null;
+          if (start === 1 && end === total) {
+            // Full file read
+            return `${filename} (${total} lines)`;
+          }
+          return `${filename} ${start} - ${end}`;
+        }
+        // Fallback to args if result meta not available yet
+        const startLine = args.startLine ? Number(args.startLine) : null;
+        const endLine = args.endLine ? Number(args.endLine) : null;
+        if (startLine && endLine) {
+          return `${filename} ${startLine} - ${endLine}`;
+        } else if (startLine) {
+          return `${filename} ${startLine}+`;
+        } else if (endLine) {
+          return `${filename} 1 - ${endLine}`;
+        }
+        return filename;
+      }
+      case 'read_files': {
+        const paths = args.paths as string[] | undefined;
+        if (!paths || paths.length === 0) return '';
+        const names = paths.map(p => String(p).split('/').pop() ?? p);
+        // Add total lines from result meta if available
+        const totalLines = resultMeta?.totalLines ? Number(resultMeta.totalLines) : null;
+        const suffix = totalLines ? ` (${totalLines} lines)` : '';
+        if (names.length === 1) return names[0] + suffix;
+        if (names.length === 2) return `${names[0]}, ${names[1]}${suffix}`;
+        return `${names[0]} +${names.length - 1} more${suffix}`;
+      }
       case 'workspace_search':
         return args.query ? `"${String(args.query)}"` : '';
       case 'write_file':
@@ -129,10 +166,21 @@
   const isPending = $derived(toolCall.status === 'pending' && toolCall.requiresApproval);
   const isComplete = $derived(toolCall.status === 'completed');
   const isFailed = $derived(toolCall.status === 'failed');
+
+  const isReviewPending = $derived(toolCall.reviewStatus === 'pending');
+
+  const hasRevert = $derived.by(() => {
+    const metaAny = toolCall.meta as any;
+    const before = metaAny?.fileEdit?.beforeContent;
+    return typeof before === 'string' && before.length > 0;
+  });
   
   // Check if this is a file write tool that supports streaming
   const isFileWriteTool = $derived(
-    toolCall.name === 'write_file' || toolCall.name === 'create_file'
+    toolCall.name === 'write_file' ||
+    toolCall.name === 'create_file' ||
+    toolCall.name === 'apply_edit' ||
+    toolCall.name === 'multi_replace_file_content'
   );
   const isStreaming = $derived(isFileWriteTool && isRunning && streamingProgress != null);
   
@@ -216,6 +264,22 @@
         >
           <UIIcon name="close" size={12} />
           Deny
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if isComplete && isFileWriteTool && isReviewPending && hasRevert}
+    <div class="approval-bar">
+      <span class="approval-reason">Review edit</span>
+      <div class="approval-actions">
+        <button class="approve-btn" onclick={onAcceptEdit} type="button">
+          <UIIcon name="check" size={12} />
+          Accept
+        </button>
+        <button class="deny-btn" onclick={onRejectEdit} type="button">
+          <UIIcon name="close" size={12} />
+          Reject
         </button>
       </div>
     </div>

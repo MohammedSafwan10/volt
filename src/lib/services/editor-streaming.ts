@@ -297,6 +297,11 @@ async function streamContentAsync(
   
   const totalChars = session.content.length;
   const totalLines = countLines(session.content);
+
+  const yieldEveryChunks = chunkDelay === 0 ? 2 : Infinity;
+  let chunkCounter = 0;
+  let lastProgressAt = 0;
+  const progressThrottleMs = 16;
   
   if (!editor) {
     session.active = false;
@@ -334,10 +339,13 @@ async function streamContentAsync(
   }
   
   try {
+    let linesWritten = 0;
+
     while (session.position < totalChars && session.active) {
       // Check for abort
       if (session.abortController.signal.aborted) {
         session.active = false;
+        session.onError?.('Streaming cancelled');
         return;
       }
       
@@ -367,22 +375,35 @@ async function streamContentAsync(
       }]);
       
       session.position = chunkEnd;
+
+      // Update line count incrementally (avoid O(n) slice+count each chunk)
+      linesWritten += countLines(chunk);
       
-      // Auto-scroll to keep cursor visible - but only if user hasn't scrolled away
-      if (autoScroll && !session.userScrolledAway) {
-        const newLastLine = model.getLineCount();
-        editor.revealLine(newLastLine, 1); // Smooth scroll
+      const now = Date.now();
+      if (now - lastProgressAt >= progressThrottleMs) {
+        lastProgressAt = now;
+
+        // Auto-scroll to keep cursor visible - but only if user hasn't scrolled away
+        if (autoScroll && !session.userScrolledAway) {
+          const newLastLine = model.getLineCount();
+          editor.revealLine(newLastLine, 1); // Smooth scroll
+        }
+
+        // Report progress (throttled)
+        session.onProgress?.({
+          charsWritten: session.position,
+          totalChars,
+          linesWritten: Math.min(linesWritten, totalLines),
+          totalLines,
+          percent: Math.round((session.position / totalChars) * 100)
+        });
       }
-      
-      // Report progress
-      const linesWritten = countLines(session.content.slice(0, session.position));
-      session.onProgress?.({
-        charsWritten: session.position,
-        totalChars,
-        linesWritten,
-        totalLines,
-        percent: Math.round((session.position / totalChars) * 100)
-      });
+
+      // Yield to allow UI paint when delay is 0
+      chunkCounter++;
+      if (chunkCounter % yieldEveryChunks === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
       
       // Small delay for visual effect (yield to UI)
       if (chunkDelay > 0 && session.position < totalChars) {
@@ -572,7 +593,7 @@ export async function startStreamingEdit(
       const trimmedSnippet = normalizedSnippet.trim();
       const trimmedStart = normalizedModelContent.indexOf(trimmedSnippet);
       if (trimmedStart === -1) {
-        throw new Error('Original snippet not found in editor model');
+        // Don't fail yet; Monaco regex matching below is more robust.
       }
       // Use the found index
       // Need to map back to Monaco Position. 
@@ -602,9 +623,20 @@ export async function startStreamingEdit(
       if (trimmedMatches.length > 0) {
         matchRange = trimmedMatches[0].range;
       } else {
-         // Debug: log what we tried to find
-         console.warn('[startStreamingEdit] Snippet not found via regex:', regexPattern.slice(0, 100));
-         throw new Error('Original snippet not found in file (visual match failed)');
+         const normalized = trimmedSnippet.replace(/\r\n/g, '\n').trim();
+         const parts = normalized.split(/\s+/).filter(Boolean).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+         const whitespaceRegex = parts.join('\\s+');
+         const wsMatches = whitespaceRegex
+           ? model.findMatches(whitespaceRegex, false, true, false, null, true)
+           : [];
+
+         if (wsMatches.length > 0) {
+           matchRange = wsMatches[0].range;
+         } else {
+           // Debug: log what we tried to find
+           console.warn('[startStreamingEdit] Snippet not found via regex:', regexPattern.slice(0, 100));
+           throw new Error('Original snippet not found in file (visual match failed)');
+         }
       }
     }
 
@@ -621,7 +653,7 @@ export async function startStreamingEdit(
     editor.revealPositionInCenter(startPos);
 
     // Start streaming new content at this position
-    streamEditContentAsync(session, editor, model, monaco, startPos, options);
+    streamEditContentAsync(session, editor, model, monaco, startPos, originalSnippet, options);
 
     return session;
 
@@ -643,6 +675,7 @@ async function streamEditContentAsync(
   model: Awaited<ReturnType<typeof getOrCreateModel>>,
   monaco: Awaited<ReturnType<typeof loadMonaco>>,
   startPosition: any, // monaco.Position
+  originalSnippet: string,
   options: StreamingOptions
 ): Promise<void> {
   if (!editor) {
@@ -656,15 +689,45 @@ async function streamEditContentAsync(
   
   const totalChars = session.content.length;
   const totalLines = countLines(session.content);
+
+  const yieldEveryChunks = chunkDelay === 0 ? 2 : Infinity;
+  let chunkCounter = 0;
+  let lastProgressAt = 0;
+  const progressThrottleMs = 16;
   
   // Track insertion point
   let currentLine = startPosition.lineNumber;
   let currentColumn = startPosition.column;
 
+  let linesWritten = 0;
+
+  const restoreOriginal = (reason: string): void => {
+    try {
+      const endPos = new monaco.Position(currentLine, currentColumn);
+      const range = new monaco.Range(
+        startPosition.lineNumber,
+        startPosition.column,
+        endPos.lineNumber,
+        endPos.column
+      );
+      editor.executeEdits('ai-streaming-edit-restore', [{
+        range,
+        text: originalSnippet,
+        forceMoveMarkers: true
+      }]);
+      editorStore.updateContent(session.path, model.getValue());
+    } catch (err) {
+      console.warn('[streamEditContentAsync] Failed to restore original snippet:', err);
+    } finally {
+      session.onError?.(reason);
+    }
+  };
+
   try {
     while (session.position < totalChars && session.active) {
       if (session.abortController.signal.aborted) {
         session.active = false;
+        restoreOriginal('Streaming cancelled');
         return;
       }
 
@@ -702,18 +765,30 @@ async function streamEditContentAsync(
         currentColumn += chunk.length;
       }
 
+      linesWritten += chunkLines.length;
+
       session.position = chunkEnd;
 
-      // Reveal cursor
-      editor.revealPosition(new monaco.Position(currentLine, currentColumn));
+      const now = Date.now();
+      if (now - lastProgressAt >= progressThrottleMs) {
+        lastProgressAt = now;
 
-      session.onProgress?.({
-        charsWritten: session.position,
-        totalChars,
-        linesWritten: countLines(session.content.slice(0, session.position)),
-        totalLines,
-        percent: Math.round((session.position / totalChars) * 100)
-      });
+        // Reveal cursor (throttled)
+        editor.revealPosition(new monaco.Position(currentLine, currentColumn));
+
+        session.onProgress?.({
+          charsWritten: session.position,
+          totalChars,
+          linesWritten: Math.min(linesWritten, totalLines),
+          totalLines,
+          percent: Math.round((session.position / totalChars) * 100)
+        });
+      }
+
+      chunkCounter++;
+      if (chunkCounter % yieldEveryChunks === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
 
       if (chunkDelay > 0 && session.position < totalChars) {
         await new Promise(resolve => setTimeout(resolve, chunkDelay));
@@ -736,7 +811,7 @@ async function streamEditContentAsync(
 
   } catch (err) {
     session.active = false;
-    session.onError?.(err instanceof Error ? err.message : 'Streaming error');
+    restoreOriginal(err instanceof Error ? err.message : 'Streaming error');
   } finally {
     activeSessions.delete(session.id);
   }

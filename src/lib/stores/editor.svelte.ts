@@ -472,6 +472,15 @@ class EditorStore {
 
     file.content = content;
     file.originalContent = content;
+    
+    // Also update the Monaco model so the editor shows the new content
+    try {
+      const { setModelValue } = await import('$lib/services/monaco-models');
+      setModelValue(normalizedPath, content);
+    } catch {
+      // Monaco model might not exist yet, that's ok
+    }
+    
     return true;
   }
 

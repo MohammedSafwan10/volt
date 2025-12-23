@@ -37,6 +37,8 @@
   import MessageList from "./MessageList.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { invoke } from "@tauri-apps/api/core";
+  import { setReviewHighlight, clearReviewHighlight } from "$lib/services/monaco-models";
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
@@ -46,6 +48,94 @@
       setTimeout(() => inputRef?.focus(), 50);
     }
   });
+
+  function getReviewableFilePath(meta: any): string | null {
+    const relativePath = meta?.fileEdit?.relativePath;
+    const absolutePath = meta?.fileEdit?.absolutePath;
+
+    if (absolutePath) {
+      const openFile = editorStore.openFiles.find(
+        (f) => f.path === absolutePath || (typeof relativePath === "string" && f.path.endsWith(relativePath)),
+      );
+      if (openFile) return openFile.path;
+    }
+
+    if (typeof relativePath === "string") {
+      const openFile = editorStore.openFiles.find((f) => f.path.endsWith(relativePath));
+      if (openFile) return openFile.path;
+    }
+
+    return editorStore.activeFile?.path ?? null;
+  }
+
+  function applyReviewHighlight(meta: any): string | null {
+    const path = getReviewableFilePath(meta);
+    if (!path) return null;
+
+    const first = meta?.fileEdit?.firstChangedLine;
+    const last = meta?.fileEdit?.lastChangedLine;
+    if (typeof first === "number" && typeof last === "number") {
+      setReviewHighlight(path, first, last);
+      return path;
+    }
+    if (typeof first === "number") {
+      setReviewHighlight(path, first, first);
+      return path;
+    }
+    return null;
+  }
+
+  async function handleToolAcceptEdit(
+    messageId: string,
+    toolCall: ToolCall,
+  ): Promise<void> {
+    const metaAny: any = toolCall.meta ?? {};
+    const highlightPath =
+      metaAny.reviewHighlightPath ?? getReviewableFilePath(metaAny);
+    if (typeof highlightPath === "string") {
+      clearReviewHighlight(highlightPath);
+    }
+    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+      reviewStatus: "accepted",
+    });
+  }
+
+  async function handleToolRejectEdit(
+    messageId: string,
+    toolCall: ToolCall,
+  ): Promise<void> {
+    const metaAny: any = toolCall.meta ?? {};
+    const beforeContent = metaAny?.fileEdit?.beforeContent;
+    const absolutePath = metaAny?.fileEdit?.absolutePath;
+    if (typeof beforeContent !== "string" || typeof absolutePath !== "string") {
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        reviewStatus: "rejected",
+      });
+      return;
+    }
+
+    const highlightPath =
+      metaAny.reviewHighlightPath ?? getReviewableFilePath(metaAny);
+
+    try {
+      await invoke("write_file", { path: absolutePath, content: beforeContent });
+      await projectStore.refreshTree();
+      await editorStore.reloadFile(absolutePath);
+      editorStore.markSaved(absolutePath);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        error,
+      });
+    } finally {
+      if (typeof highlightPath === "string") {
+        clearReviewHighlight(highlightPath);
+      }
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        reviewStatus: "rejected",
+      });
+    }
+  }
 
   function toProviderMessages(
     messages: typeof assistantStore.messages,
@@ -81,8 +171,8 @@
         const hasToolCalls =
           msg.inlineToolCalls && msg.inlineToolCalls.length > 0;
 
-        if (hasToolCalls || msg.thinking) {
-          // Build parts: text content + thinking + function calls
+        if (hasToolCalls) {
+          // Build parts: text content + function calls
           const parts: ContentPart[] = [];
 
           // 1. Add text content if present
@@ -90,12 +180,7 @@
             parts.push({ type: "text", text: msg.content });
           }
 
-          // 2. Add thinking content if present (Preserve reasoning across turns)
-          if (msg.thinking && msg.thinking.trim()) {
-            parts.push({ type: "thinking", text: msg.thinking });
-          }
-
-          // 3. Add function call parts - these tell Gemini what the model called
+          // 2. Add function call parts - these tell Gemini what the model called
           // CRITICAL: Include thoughtSignature for Gemini 3 models
           if (msg.inlineToolCalls) {
             for (const tc of msg.inlineToolCalls) {
@@ -226,8 +311,63 @@
   ): Promise<void> {
     const msgId = assistantStore.addAssistantMessage("", true);
     let fullContent = "";
-    let fullThinking = "";
     let iteration = 0;
+
+    // Streaming safety guards
+    let lastChunk = "";
+    let repeatedChunkCount = 0;
+
+    const shouldAbortForLeak = (text: string): boolean => {
+      const lower = text.toLowerCase();
+      return (
+        lower.includes("<system_context") ||
+        lower.includes("</system_context") ||
+        lower.includes("<smart_context") ||
+        lower.includes("</smart_context")
+      );
+    };
+
+    const isDegenerateRepeat = (chunk: string): boolean => {
+      const normalized = chunk.trim();
+      if (!normalized) return false;
+
+      if (normalized === lastChunk) {
+        repeatedChunkCount++;
+      } else {
+        lastChunk = normalized;
+        repeatedChunkCount = 1;
+      }
+
+      return repeatedChunkCount >= 6;
+    };
+
+    let lastLine = "";
+    let repeatedLineCount = 0;
+    const isDegenerateLineRepeat = (text: string): boolean => {
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const current = lines.length > 0 ? lines[lines.length - 1] : "";
+      if (!current) return false;
+
+      // Ignore very short lines (high false-positive risk)
+      if (current.length < 18) return false;
+
+      if (current === lastLine) {
+        repeatedLineCount++;
+      } else {
+        lastLine = current;
+        repeatedLineCount = 1;
+      }
+
+      if (repeatedLineCount >= 6) return true;
+
+      const lower = current.toLowerCase();
+      if (lower.startsWith("i'll also") || lower.startsWith("i will also")) {
+        const count = (text.toLowerCase().match(/\bi\s*'?ll\s+also\b/g) ?? []).length;
+        if (count >= 10) return true;
+      }
+
+      return false;
+    };
 
     // Log start of agent loop
     import("$lib/stores/output.svelte").then((m) =>
@@ -236,6 +376,9 @@
         `Agent: Starting tool loop (max ${maxIterations} iterations)`,
       ),
     );
+
+    // Track if we just processed tool results - used to detect when model doesn't respond
+    let justProcessedToolResults = false;
 
     while (iteration < maxIterations) {
       iteration++;
@@ -251,6 +394,12 @@
 
       let iterationContent = "";
       let iterationThinking = "";
+      const allToolCalls: Array<{
+        id: string;
+        name: string;
+        arguments: Record<string, unknown>;
+        thoughtSignature?: string;
+      }> = [];
       const pendingToolCalls: Array<{
         id: string;
         name: string;
@@ -277,7 +426,12 @@
             ? 0.1
             : assistantStore.currentMode === "ask"
               ? 0.2
-              : 0.2;
+              : 0.15;
+
+        // REMOVED: sawToolCallInThisTurn suppression - let text flow naturally after tool calls
+        let suppressFurtherTextInThisTurn = false;
+        let warnedAboutLooping = false;
+        // REMOVED: visibleCharBudget - show full responses like Kiro
 
         for await (const chunk of streamChat(
           {
@@ -293,20 +447,61 @@
           if (controller.signal.aborted) return;
 
           if (chunk.type === "content" && chunk.content) {
+            // REMOVED: sawToolCallInThisTurn check - allow text after tool calls
+            if (suppressFurtherTextInThisTurn) {
+              continue;
+            }
+            if (shouldAbortForLeak(chunk.content)) {
+              controller.abort();
+              showToast({
+                message: "Assistant output contained internal context markers; generation stopped.",
+                type: "warning",
+              });
+              assistantStore.updateAssistantMessage(
+                msgId,
+                fullContent + iterationContent,
+                false,
+              );
+              return;
+            }
+
+            if (isDegenerateRepeat(chunk.content)) {
+              if (!warnedAboutLooping) {
+                warnedAboutLooping = true;
+                showToast({
+                  message: "Assistant output started repeating, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                  type: "warning",
+                });
+              }
+              suppressFurtherTextInThisTurn = true;
+              continue;
+            }
+
+            if (isDegenerateLineRepeat(iterationContent + chunk.content)) {
+              if (!warnedAboutLooping) {
+                warnedAboutLooping = true;
+                showToast({
+                  message: "Assistant output started looping, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                  type: "warning",
+                });
+              }
+              suppressFurtherTextInThisTurn = true;
+              continue;
+            }
+
             iterationContent += chunk.content;
+            // Stream ALL content to UI immediately (no truncation)
             assistantStore.appendTextToMessage(msgId, chunk.content, true);
           }
 
+          // Handle thinking chunks - display in collapsible UI
           if (chunk.type === "thinking" && chunk.thinking) {
             iterationThinking += chunk.thinking;
-            assistantStore.updateAssistantThinking(
-              msgId,
-              fullThinking + iterationThinking,
-              true,
-            );
+            assistantStore.updateAssistantThinking(msgId, iterationThinking, true);
           }
 
           if (chunk.type === "tool_call" && chunk.toolCall) {
+            // REMOVED: sawToolCallInThisTurn = true - don't suppress text after tool calls
             const toolCallArgs = chunk.toolCall.arguments;
             const toolCallName = chunk.toolCall.name;
             const toolCallId = chunk.toolCall.id;
@@ -335,6 +530,15 @@
 
             assistantStore.addToolCallToMessage(msgId, toolCall);
 
+            // Track every tool call (valid or invalid) so we can always attach a tool result
+            // back to the model and keep Gemini's function-calling history consistent.
+            allToolCalls.push({
+              id: toolCallId,
+              name: toolCallName,
+              arguments: toolCallArgs,
+              thoughtSignature: toolCallThoughtSignature,
+            });
+
             if (!validation.valid) {
               // Feed an error tool result back to the model so the conversation stays consistent.
               immediateResults.push({
@@ -360,6 +564,7 @@
                 "write_file",
                 "create_file",
                 "apply_edit",
+                "multi_replace_file_content",
               ].includes(toolCallName);
 
               // Update status to running immediately for UI feedback
@@ -386,9 +591,30 @@
                     status: result.success ? "completed" : "failed",
                     output: result.output,
                     error: result.error,
+                    meta: result.meta,
                     endTime: Date.now(),
                     streamingProgress: undefined,
                   });
+
+                  if (result.success && result.meta) {
+                    const metaAny: any = result.meta;
+                    const hasFileEdit = metaAny?.fileEdit;
+                    const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
+                    
+                    if (hasFileEdit && hasLineInfo) {
+                      const highlightPath = applyReviewHighlight(metaAny);
+                      const beforeContent = metaAny?.fileEdit?.beforeContent;
+                      const mergedMeta = {
+                        ...metaAny,
+                        ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+                      };
+                      assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                        meta: mergedMeta,
+                        // Only show review buttons if we have beforeContent for revert
+                        reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
+                      });
+                    }
+                  }
                   return { id: toolCallId, name: toolCallName, result };
                 })
                 .catch((err) => {
@@ -414,21 +640,51 @@
           }
         }
 
-        fullContent += iterationContent;
-        fullThinking += iterationThinking;
-
-        if (fullThinking) {
-          assistantStore.updateAssistantThinking(
-            msgId,
-            fullThinking,
-            pendingToolCalls.length > 0 || eagerPromises.length > 0,
-          );
+        // Finalize thinking state when streaming ends
+        if (iterationThinking) {
+          assistantStore.updateAssistantThinking(msgId, iterationThinking, false);
         }
+
+        // All content already streamed to UI, just update fullContent for history
+        fullContent += iterationContent;
+
+        // Reset repetition guard per iteration boundary so we don't over-trigger
+        // on unrelated chunks in later iterations.
+        lastChunk = "";
+        repeatedChunkCount = 0;
 
         // Wait for all Eager tools from this iteration
         const eagerResults = await Promise.all(eagerPromises);
 
-        if (pendingToolCalls.length === 0 && eagerResults.length === 0) {
+        if (
+          pendingToolCalls.length === 0 &&
+          eagerResults.length === 0 &&
+          immediateResults.length === 0
+        ) {
+          // Check if we just processed tool results but model didn't respond
+          // This happens when Gemini decides to stop after seeing tool results
+          if (justProcessedToolResults && !iterationContent.trim()) {
+            import("$lib/stores/output.svelte").then((m) =>
+              m.logOutput(
+                "Volt",
+                `Agent: Model didn't respond after tool results, prompting continuation...`,
+              ),
+            );
+            
+            // Add a continuation prompt to encourage the model to respond
+            // This mimics how other AI IDEs handle silent completions
+            assistantStore.addToolMessage({
+              id: `continue_${Date.now()}`,
+              name: "_system_continuation",
+              arguments: {},
+              status: "completed",
+              output: "The tool execution has completed. You MUST now provide a response to the user explaining what happened. If the task succeeded, summarize the result. If it failed, explain why and suggest next steps. Do NOT remain silent.",
+            });
+            
+            justProcessedToolResults = false;
+            continue; // Continue to next iteration
+          }
+          
           import("$lib/stores/output.svelte").then((m) =>
             m.logOutput(
               "Volt",
@@ -438,6 +694,9 @@
           assistantStore.updateAssistantMessage(msgId, fullContent, false);
           return;
         }
+        
+        // Reset the flag since we have tool calls to process
+        justProcessedToolResults = false;
 
         const toolResults: Array<{
           id: string;
@@ -489,7 +748,8 @@
             const isFileWriteTool =
               tc.name === "write_file" ||
               tc.name === "create_file" ||
-              tc.name === "apply_edit";
+              tc.name === "apply_edit" ||
+              tc.name === "multi_replace_file_content";
 
             try {
               const result = await executeToolCall(tc.name, tc.arguments, {
@@ -508,9 +768,29 @@
                 status: result.success ? "completed" : "failed",
                 output: result.output,
                 error: result.error,
+                meta: result.meta,
                 endTime: Date.now(),
                 streamingProgress: undefined,
               });
+
+              if (result.success && result.meta) {
+                const metaAny: any = result.meta;
+                const hasFileEdit = metaAny?.fileEdit;
+                const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
+                
+                if (hasFileEdit && hasLineInfo) {
+                  const highlightPath = applyReviewHighlight(metaAny);
+                  const beforeContent = metaAny?.fileEdit?.beforeContent;
+                  const mergedMeta = {
+                    ...metaAny,
+                    ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+                  };
+                  assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                    meta: mergedMeta,
+                    reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
+                  });
+                }
+              }
             } catch (err) {
               const error = err instanceof Error ? err.message : String(err);
               toolResults.push({
@@ -528,7 +808,11 @@
         }
 
         // Add ALL results to conversation as special tool messages
-        addToolResultsToConversation(pendingToolCalls, toolResults);
+        addToolResultsToConversation(allToolCalls, toolResults);
+        
+        // Mark that we just processed tool results - if model doesn't respond next iteration,
+        // we'll prompt it to continue
+        justProcessedToolResults = true;
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -597,6 +881,7 @@
     signal: AbortSignal,
   ): Promise<void> {
     return new Promise((resolve) => {
+      // Faster polling for snappier UX (50ms instead of 100ms)
       const checkInterval = setInterval(() => {
         // Check if aborted
         if (signal.aborted) {
@@ -624,7 +909,7 @@
           clearInterval(checkInterval);
           resolve();
         }
-      }, 100); // Check every 100ms
+      }, 50); // Check every 50ms for snappier response
 
       // Also listen for abort
       signal.addEventListener("abort", () => {
@@ -651,7 +936,8 @@
     const isFileWriteTool =
       toolCall.name === "write_file" ||
       toolCall.name === "create_file" ||
-      toolCall.name === "apply_edit";
+      toolCall.name === "apply_edit" ||
+      toolCall.name === "multi_replace_file_content";
 
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
@@ -670,13 +956,33 @@
         assistantStore.updateToolCall(toolCall.id, {
           status: "completed",
           output: result.output,
+          meta: result.meta,
           endTime: Date.now(),
           streamingProgress: undefined, // Clear progress on completion
         });
+
+        if (result.meta) {
+          const metaAny: any = result.meta;
+          const hasFileEdit = metaAny?.fileEdit;
+          const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
+          
+          if (hasFileEdit && hasLineInfo) {
+            const highlightPath = applyReviewHighlight(metaAny);
+            const beforeContent = metaAny?.fileEdit?.beforeContent;
+            assistantStore.updateToolCall(toolCall.id, {
+              meta: {
+                ...metaAny,
+                ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+              },
+              reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
+            });
+          }
+        }
       } else {
         assistantStore.updateToolCall(toolCall.id, {
           status: "failed",
           error: result.error,
+          meta: result.meta,
           endTime: Date.now(),
           streamingProgress: undefined,
         });
@@ -993,47 +1299,12 @@
       return;
     }
 
-    // Update status to running
+    // Mark as approved (non-pending) so the main tool loop can execute it exactly once.
+    // The tool loop will set status/output/error when execution finishes.
     assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
       status: "running",
       startTime: Date.now(),
     });
-
-    // Check if this is a file write tool that supports streaming
-    const isFileWriteTool =
-      toolCall.name === "write_file" ||
-      toolCall.name === "create_file" ||
-      toolCall.name === "apply_edit";
-
-    try {
-      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
-        signal: assistantStore.abortController?.signal,
-        enableStreaming: isFileWriteTool,
-        onStreamingProgress: isFileWriteTool
-          ? (progress) => {
-              assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-                streamingProgress: progress,
-              });
-            }
-          : undefined,
-      });
-
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        status: result.success ? "completed" : "failed",
-        output: result.output,
-        error: result.error,
-        endTime: Date.now(),
-        streamingProgress: undefined, // Clear progress on completion
-      });
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        status: "failed",
-        error: errorMsg,
-        endTime: Date.now(),
-        streamingProgress: undefined,
-      });
-    }
   }
 
   /**
@@ -1107,6 +1378,8 @@
       currentMode={assistantStore.currentMode}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
+      onToolAcceptEdit={handleToolAcceptEdit}
+      onToolRejectEdit={handleToolRejectEdit}
     />
   </div>
 

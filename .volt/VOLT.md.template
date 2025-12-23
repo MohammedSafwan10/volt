@@ -1,0 +1,51 @@
+# Project Memory (VOLT.md)
+
+This file provides context and instructions to Volt's AI assistant.
+Copy this to `VOLT.md` in your project root and customize it.
+
+## Project Overview
+<!-- Describe your project briefly -->
+- Name: 
+- Type: (web app, library, CLI, etc.)
+- Tech Stack: 
+
+## Code Style
+<!-- Your coding conventions -->
+- Indentation: 2 spaces
+- Quotes: single
+- Semicolons: yes/no
+- Framework conventions: 
+
+## Important Patterns
+<!-- Key patterns the AI should follow -->
+- 
+- 
+
+## File Structure
+<!-- Explain your project structure -->
+```
+src/
+├── components/   # UI components
+├── services/     # Business logic
+├── stores/       # State management
+└── types/        # TypeScript types
+```
+
+## Common Commands
+<!-- Commands the AI might need to run -->
+```bash
+npm run dev       # Start dev server
+npm run build     # Build for production
+npm run test      # Run tests
+npm run lint      # Lint code
+```
+
+## Things to Avoid
+<!-- Anti-patterns or things not to do -->
+- Don't use `any` type
+- Don't leave console.log in production code
+- Don't commit .env files
+
+## Additional Context
+<!-- Any other helpful information -->
+- 

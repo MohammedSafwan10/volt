@@ -17,6 +17,8 @@ export type MessageRole = 'user' | 'assistant' | 'tool';
 // Tool call status
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export type ToolCallReviewStatus = 'pending' | 'accepted' | 'rejected';
+
 // Streaming progress for file write operations
 export interface StreamingProgress {
   charsWritten: number;
@@ -34,6 +36,7 @@ export interface ToolCall {
   status: ToolCallStatus;
   output?: string;
   error?: string;
+  meta?: Record<string, unknown>;
   startTime?: number;
   endTime?: number;
   requiresApproval?: boolean;
@@ -41,6 +44,8 @@ export interface ToolCall {
   thoughtSignature?: string;
   // Streaming progress for file write tools
   streamingProgress?: StreamingProgress;
+  // Windsurf-style edit review (optional)
+  reviewStatus?: ToolCallReviewStatus;
 }
 
 // Content part types for interleaved rendering (like Kiro)
@@ -146,7 +151,6 @@ export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputT
   'gemini-2.5-flash': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-flash-lite': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-pro': { inputTokens: 1_048_576, outputTokens: 65_536 },
-  'gemini-3-flash-preview': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.0-flash': { inputTokens: 1_048_576, outputTokens: 8_192 },
   'gemini-2.0-flash-lite': { inputTokens: 1_048_576, outputTokens: 8_192 }
 };
@@ -618,16 +622,33 @@ class AssistantStore {
   setMessageContent(messageId: string, content: string, isStreaming: boolean): void {
     this.messages = this.messages.map(msg => {
       if (msg.id === messageId) {
-        // Rebuild contentParts: keep tool parts, update/add text
-        const toolParts = (msg.contentParts ?? []).filter(p => p.type === 'tool');
+        // Preserve tool/text interleaving. We treat the message's full legacy `content`
+        // as the concatenation of all text parts in `contentParts`.
+        // If `contentParts` exists, keep tool parts in place and update only the last text part.
+        const parts = msg.contentParts ?? [];
+        const lastTextIndex = [...parts].reverse().findIndex(p => p.type === 'text');
 
-        // If there's content, we need to figure out where text goes
-        // For now, put all text at the end (after tools)
-        // TODO: Track text positions more precisely
-        const newParts: ContentPart[] = content
-          ? [...toolParts, { type: 'text' as const, text: content }]
-          : toolParts;
+        if (parts.length === 0) {
+          return {
+            ...msg,
+            contentParts: content ? [{ type: 'text' as const, text: content }] : [],
+            content,
+            isStreaming
+          };
+        }
 
+        if (lastTextIndex === -1) {
+          // No existing text parts, append one at the end
+          return {
+            ...msg,
+            contentParts: content ? [...parts, { type: 'text' as const, text: content }] : parts,
+            content,
+            isStreaming
+          };
+        }
+
+        const idx = parts.length - 1 - lastTextIndex;
+        const newParts = parts.map((p, i) => (i === idx && p.type === 'text') ? { type: 'text' as const, text: content } : p);
         return { ...msg, contentParts: newParts, content, isStreaming };
       }
       return msg;

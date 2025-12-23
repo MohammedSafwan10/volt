@@ -16,6 +16,8 @@ const accessOrder: string[] = [];
 
 const models = new Map<string, Monaco.editor.ITextModel>();
 
+const reviewDecorations = new Map<string, string[]>();
+
 /**
  * Mark a model as recently accessed (move to end of LRU list)
  */
@@ -99,7 +101,27 @@ export function getModelValue(path: string): string | null {
  * Preserves undo history by using pushEditOperations
  */
 export function setModelValue(path: string, value: string): boolean {
-  const model = models.get(path);
+  // Try to find model with various path formats
+  let model = models.get(path);
+  
+  if (!model) {
+    // Try normalized path (forward slashes)
+    const normalized = path.replace(/\\/g, '/');
+    model = models.get(normalized);
+  }
+  
+  if (!model) {
+    // Try to find by suffix match
+    for (const [modelPath, m] of models.entries()) {
+      const normalizedModelPath = modelPath.replace(/\\/g, '/');
+      const normalizedPath = path.replace(/\\/g, '/');
+      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+        model = m;
+        break;
+      }
+    }
+  }
+  
   if (!model) return false;
   
   // Use pushEditOperations to preserve undo history
@@ -196,6 +218,82 @@ export function revealLine(path: string, line: number): void {
   activeEditor.setPosition({ lineNumber: targetLine, column: 1 });
   activeEditor.revealLineInCenter(targetLine);
   activeEditor.focus();
+}
+
+export function setReviewHighlight(path: string, startLine: number, endLine: number): void {
+  // Try to find model with various path formats
+  let model = models.get(path);
+  let actualPath = path;
+  
+  if (!model) {
+    // Try normalized path (forward slashes)
+    const normalized = path.replace(/\\/g, '/');
+    model = models.get(normalized);
+    if (model) actualPath = normalized;
+  }
+  
+  if (!model) {
+    // Try to find by suffix match
+    for (const [modelPath, m] of models.entries()) {
+      const normalizedModelPath = modelPath.replace(/\\/g, '/');
+      const normalizedPath = path.replace(/\\/g, '/');
+      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+        model = m;
+        actualPath = modelPath;
+        break;
+      }
+    }
+  }
+  
+  if (!model) return;
+
+  const maxLine = model.getLineCount();
+  const start = Math.max(1, Math.min(startLine, maxLine));
+  const end = Math.max(start, Math.min(endLine, maxLine));
+  const old = reviewDecorations.get(actualPath) ?? [];
+
+  const endCol = model.getLineMaxColumn(end);
+  const next = model.deltaDecorations(old, [
+    {
+      range: { startLineNumber: start, startColumn: 1, endLineNumber: end, endColumn: endCol },
+      options: {
+        isWholeLine: true,
+        className: 'ai-edit-highlight'
+      }
+    }
+  ]);
+
+  reviewDecorations.set(actualPath, next);
+}
+
+export function clearReviewHighlight(path: string): void {
+  // Try to find model with various path formats
+  let model = models.get(path);
+  let actualPath = path;
+  
+  if (!model) {
+    const normalized = path.replace(/\\/g, '/');
+    model = models.get(normalized);
+    if (model) actualPath = normalized;
+  }
+  
+  if (!model) {
+    for (const [modelPath, m] of models.entries()) {
+      const normalizedModelPath = modelPath.replace(/\\/g, '/');
+      const normalizedPath = path.replace(/\\/g, '/');
+      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+        model = m;
+        actualPath = modelPath;
+        break;
+      }
+    }
+  }
+  
+  const old = reviewDecorations.get(actualPath);
+  if (model && old && old.length > 0) {
+    model.deltaDecorations(old, []);
+  }
+  reviewDecorations.delete(actualPath);
 }
 
 /**

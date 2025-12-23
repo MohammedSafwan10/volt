@@ -78,10 +78,6 @@
 
     if (base === "gemini-2.5-flash")
       return thinking ? "Gemini 2.5 Flash (thinking)" : "Gemini 2.5 Flash";
-    if (base === "gemini-3-flash-preview")
-      return thinking
-        ? "Gemini 3.0 Flash Preview (thinking)"
-        : "Gemini 3.0 Flash Preview";
     // Fallback: capitalize and clean up
     return (
       (thinking ? base : model)
@@ -135,9 +131,18 @@
   }
 
   function autoResize(textarea: HTMLTextAreaElement): void {
-    textarea.style.height = "auto";
-    textarea.style.height = Math.min(textarea.scrollHeight, 150) + "px";
+    // Reset to minimum first to get accurate scrollHeight
+    textarea.style.height = "24px";
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, 24), 150);
+    textarea.style.height = newHeight + "px";
   }
+
+  // Reset textarea height when value is cleared (after sending)
+  $effect(() => {
+    if (!value && inputRef) {
+      inputRef.style.height = "24px";
+    }
+  });
 
   function selectMode(mode: AIMode): void {
     onModeChange(mode);

@@ -9,9 +9,11 @@
     currentMode?: AIMode;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
+    onToolAcceptEdit?: (messageId: string, toolCall: ToolCall) => void;
+    onToolRejectEdit?: (messageId: string, toolCall: ToolCall) => void;
   }
 
-  let { messages, currentMode = 'ask', onToolApprove, onToolDeny }: Props = $props();
+  let { messages, currentMode = 'ask', onToolApprove, onToolDeny, onToolAcceptEdit, onToolRejectEdit }: Props = $props();
 
   // Get content parts for a message, falling back to legacy content if no parts
   function getContentParts(message: AssistantMessage): ContentPart[] {
@@ -54,6 +56,32 @@
   // Get image attachments from a message
   function getImageAttachments(message: AssistantMessage): ImageAttachment[] {
     return (message.attachments ?? []).filter(a => a.type === 'image') as ImageAttachment[];
+  }
+
+  function isReviewableEdit(tc: ToolCall): boolean {
+    if (tc.reviewStatus !== 'pending') return false;
+    if (tc.status !== 'completed') return false;
+    const metaAny = tc.meta as any;
+    const before = metaAny?.fileEdit?.beforeContent;
+    return typeof before === 'string' && before.length > 0;
+  }
+
+  function getPendingReviewEdits(message: AssistantMessage): ToolCall[] {
+    return (message.inlineToolCalls ?? []).filter(isReviewableEdit);
+  }
+
+  async function acceptAllEdits(messageId: string, toolCalls: ToolCall[]): Promise<void> {
+    if (!onToolAcceptEdit) return;
+    for (const tc of toolCalls) {
+      await onToolAcceptEdit(messageId, tc);
+    }
+  }
+
+  async function rejectAllEdits(messageId: string, toolCalls: ToolCall[]): Promise<void> {
+    if (!onToolRejectEdit) return;
+    for (const tc of toolCalls) {
+      await onToolRejectEdit(messageId, tc);
+    }
   }
 
   let containerRef: HTMLDivElement | undefined = $state();
@@ -232,8 +260,7 @@
                 </div>
               </details>
             {/if}
-            
-            <!-- Interleaved content parts (text + tools in order, like Kiro) -->
+
             {#each getContentParts(message) as part, i (part.type === 'tool' ? part.toolCall.id : `text-${i}`)}
               {#if part.type === 'tool'}
                 <div class="inline-tool-wrapper">
@@ -242,6 +269,8 @@
                     streamingProgress={part.toolCall.streamingProgress}
                     onApprove={onToolApprove ? () => onToolApprove(message.id, part.toolCall) : undefined}
                     onDeny={onToolDeny ? () => onToolDeny(message.id, part.toolCall) : undefined}
+                    onAcceptEdit={onToolAcceptEdit ? () => onToolAcceptEdit(message.id, part.toolCall) : undefined}
+                    onRejectEdit={onToolRejectEdit ? () => onToolRejectEdit(message.id, part.toolCall) : undefined}
                   />
                 </div>
               {:else if part.type === 'text' && part.text.trim()}
@@ -255,6 +284,32 @@
                 </div>
               {/if}
             {/each}
+            
+            <!-- Bulk review buttons at the bottom of the message -->
+            {#if !message.isStreaming && onToolAcceptEdit && onToolRejectEdit && getPendingReviewEdits(message).length >= 1}
+              {@const pendingReviewEdits = getPendingReviewEdits(message)}
+              <div class="bulk-review">
+                <span class="bulk-review-label">Review edits</span>
+                <div class="bulk-review-actions">
+                  <button
+                    class="approve-btn"
+                    onclick={() => void acceptAllEdits(message.id, pendingReviewEdits)}
+                    type="button"
+                  >
+                    <UIIcon name="check" size={12} />
+                    Accept all
+                  </button>
+                  <button
+                    class="deny-btn"
+                    onclick={() => void rejectAllEdits(message.id, pendingReviewEdits)}
+                    type="button"
+                  >
+                    <UIIcon name="close" size={12} />
+                    Reject all
+                  </button>
+                </div>
+              </div>
+            {/if}
             
             <!-- Fallback for empty streaming message -->
             {#if getContentParts(message).length === 0 && message.isStreaming}
@@ -362,6 +417,61 @@
 
   .jump-to-bottom:active {
     transform: scale(0.9);
+  }
+
+  .bulk-review {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-hover);
+    margin: 6px 0 10px 0;
+  }
+
+  .bulk-review-label {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+  }
+
+  .bulk-review-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .approve-btn,
+  .deny-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  .approve-btn {
+    border-color: rgba(0, 255, 140, 0.25);
+  }
+
+  .approve-btn:hover {
+    border-color: rgba(0, 255, 140, 0.45);
+    transform: translateY(-1px);
+  }
+
+  .deny-btn {
+    border-color: rgba(255, 80, 80, 0.25);
+  }
+
+  .deny-btn:hover {
+    border-color: rgba(255, 80, 80, 0.45);
+    transform: translateY(-1px);
   }
 
   @keyframes fadeIn {

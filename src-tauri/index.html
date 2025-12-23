@@ -1,178 +1,144 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Volt | Google's Advanced AI Code Editor Assistant</title>
-    <meta name="description" content="Meet Volt, the next-generation AI assistant integrated into your code editor. Built by Google to accelerate your workflow.">
-    
-    <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website">
-    <meta property="og:title" content="Volt | Google's Advanced AI Code Assistant">
-    <meta property="og:description" content="The powerhouse AI assistant for modern developers.">
-    
-    <!-- Fonts -->
+    <title>Volt Bird | Premium Arcade</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
-    <!-- Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <!-- Styles -->
-    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.5);
+            --bg: #0f172a;
+            --text: #f8fafc;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            border-radius: 24px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            background: linear-gradient(to bottom, #1e293b, #0f172a);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .menu {
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(12px);
+            padding: 2rem;
+            border-radius: 24px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            pointer-events: auto;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .score-display {
+            font-size: 4rem;
+            font-weight: 800;
+            position: absolute;
+            top: 2rem;
+            opacity: 0.2;
+            pointer-events: none;
+        }
+
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 15px var(--primary-glow);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px var(--primary-glow);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .hidden {
+            display: none;
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
 </head>
 <body>
-    <div class="scroll-progress"></div>
-    <div class="bg-glow" aria-hidden="true"></div>
-    <div class="grid-bg" aria-hidden="true"></div>
-    <div class="noise" aria-hidden="true"></div>
-    
-    <div class="cursor" aria-hidden="true"></div>
-    <div class="cursor-follower" aria-hidden="true"></div>
-
-    <header>
-        <nav aria-label="Main Navigation">
-            <a href="#" class="logo" aria-label="Volt Home">VOLT<span class="dot">.</span></a>
+    <div id="game-container">
+        <div id="ui-layer">
+            <div id="score" class="score-display">0</div>
             
-            <ul class="nav-links">
-                <li><a href="#capabilities" class="active">Capabilities</a></li>
-                <li><a href="#integration">Integration</a></li>
-                <li><a href="#stats">Performance</a></li>
-                <li><a href="#docs">Docs</a></li>
-            </ul>
-
-            <div class="nav-actions">
-                <button class="theme-btn" id="theme-toggle" aria-label="Toggle visual mode">
-                    <i class="fas fa-moon dark-icon"></i>
-                    <i class="fas fa-sun light-icon"></i>
-                </button>
-                <a href="#try" class="btn-sm primary magnetic">Get Started</a>
-                <button class="burger" aria-label="Menu" aria-expanded="false">
-                    <span></span><span></span><span></span>
-                </button>
+            <div id="start-menu" class="menu">
+                <h1>VOLT BIRD</h1>
+                <p style="margin-bottom: 1.5rem; opacity: 0.7;">Press Space or Click to Jump</p>
+                <button id="start-btn">Start Game</button>
             </div>
-        </nav>
-    </header>
 
-    <main id="main-content">
-        <section id="hero" class="hero">
-            <div class="hero-content">
-                <div class="badge reveal">Powered by Google AI</div>
-                <h1 class="reveal">The assistant that <br><span class="accent">thinks with you.</span></h1>
-                <p class="typing-text reveal" aria-live="polite"></p>
-                <p class="reveal subtext">Volt is a high-performance AI assistant integrated directly into your workspace. Designed for speed, accuracy, and deep contextual understanding.</p>
-                <div class="cta-group reveal">
-                    <a href="#capabilities" class="btn primary magnetic">Explore Features</a>
-                    <a href="#terminal" class="btn secondary magnetic">View Demo</a>
-                </div>
-            </div>
-            <div class="hero-visual reveal">
-                <div class="terminal-mockup">
-                    <div class="terminal-header">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <div class="title">volt --version</div>
-                    </div>
-                    <div class="terminal-body">
-                        <div class="line"><span class="prompt">></span> volt analyze project</div>
-                        <div class="line response">Analyzing workspace...</div>
-                        <div class="line response success">Done. Found 12 optimizations in 3 files.</div>
-                        <div class="line cursor-blink">_</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="stats" class="section-padding">
-            <div class="container">
-                <div class="stats-grid">
-                    <div class="stat-item reveal">
-                        <span class="stat-number" data-target="1.2">0</span><span class="stat-suffix">M+</span>
-                        <p>Lines Analyzed</p>
-                    </div>
-                    <div class="stat-item reveal">
-                        <span class="stat-number" data-target="450">0</span><span class="stat-suffix">ms</span>
-                        <p>Response Time</p>
-                    </div>
-                    <div class="stat-item reveal">
-                        <span class="stat-number" data-target="98">0</span><span class="stat-suffix">%</span>
-                        <p>Accuracy Rate</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="capabilities" class="section-padding">
-            <div class="container">
-                <h2 class="section-title reveal"><span>01.</span> Core Capabilities</h2>
-                <div class="feature-grid">
-                    <div class="feature-card reveal">
-                        <i class="fas fa-code-branch"></i>
-                        <h3>Workspace Awareness</h3>
-                        <p>Volt understands your entire project structure, not just the active file.</p>
-                    </div>
-                    <div class="feature-card reveal">
-                        <i class="fas fa-bolt"></i>
-                        <h3>Real-time Refactoring</h3>
-                        <p>Suggests modern patterns and removes technical debt as you type.</p>
-                    </div>
-                    <div class="feature-card reveal">
-                        <i class="fas fa-shield-halved"></i>
-                        <h3>Security Auditing</h3>
-                        <p>Automatically detects vulnerabilities and suggests secure alternatives.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="integration" class="section-padding">
-            <div class="container">
-                <h2 class="section-title reveal"><span>02.</span> Seamless Integration</h2>
-                <p class="reveal">Volt integrates with your favorite editors and tools through the Language Server Protocol (LSP).</p>
-            </div>
-        </section>
-
-        <section id="terminal" class="section-padding">
-            <div class="container">
-                <div class="interactive-console reveal">
-                    <div class="console-header">
-                        <h3>Ask Volt anything</h3>
-                        <div class="status-indicator"><span class="pulse"></span> Online</div>
-                    </div>
-                    <div class="console-body" id="console-output">
-                        <div class="line response">Volt: System ready. How can I help you today?</div>
-                    </div>
-                    <div class="console-input-wrapper">
-                        <input type="text" id="user-input" placeholder="e.g., How do I optimize this React component?" aria-label="AI Command">
-                        <button class="send-btn" id="send-command"><i class="fas fa-arrow-right"></i></button>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <!-- Project Detail Modal -->
-    <div id="project-modal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal">&times;</span>
-            <div id="modal-body">
-                <!-- Content injected via JS -->
+            <div id="game-over-menu" class="menu hidden">
+                <h1 style="color: #ef4444; background: none; -webkit-text-fill-color: #ef4444;">GAME OVER</h1>
+                <p id="final-score" style="font-size: 1.5rem; margin-bottom: 1.5rem;">Score: 0</p>
+                <button id="restart-btn">Try Again</button>
             </div>
         </div>
+        <canvas id="gameCanvas"></canvas>
     </div>
 
-    <footer>
-        <div class="container">
-            <div class="footer-bottom">
-                <p>&copy; 2024 Google. Volt AI Project.</p>
-                <div class="socials">
-                    <a href="#" class="magnetic"><i class="fab fa-github"></i></a>
-                    <a href="#" class="magnetic"><i class="fab fa-google"></i></a>
-                </div>
-            </div>
-        </div>
-    </footer>
-
-    <script src="script.js"></script>
+    <script src="game.js"></script>
 </body>
 </html>
