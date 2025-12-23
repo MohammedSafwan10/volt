@@ -524,6 +524,11 @@ IF THIS FAILS:
     name: 'run_command',
     description: `Execute a shell command and wait for output. The command runs in the visible terminal panel.
 
+PREREQUISITES (IMPORTANT):
+- BEFORE running commands on files, use get_file_tree or read_file to verify the file exists
+- Use forward slashes (/) in paths, even on Windows
+- For paths with spaces, use quotes: "path/with spaces/file.js"
+
 BEHAVIOR:
 - By default, waits for command to complete (detects prompt return or output stabilization)
 - For long-running commands (npm install, cargo build, etc.), uses longer stability thresholds
