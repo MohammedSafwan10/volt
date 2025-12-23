@@ -290,7 +290,25 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'apply_edit',
-    description: 'Apply a targeted edit to a file by replacing a specific code snippet. PREFERRED over write_file for small changes.',
+    description: `Apply a targeted edit to a file by replacing a specific code snippet.
+
+USE THIS FOR:
+- Small, focused changes (1-50 lines)
+- Adding, modifying, or DELETING code
+- When you know the exact text to replace
+
+HOW TO DELETE CODE:
+- Set new_snippet to empty string "" to delete the original_snippet
+
+REQUIREMENTS:
+- original_snippet must EXACTLY match file content (whitespace matters!)
+- Use content from context or read_file, never from memory
+- Include 2-3 lines of context for unique matching
+
+IF THIS FAILS:
+- Check the error message for hints
+- Use read_file to get exact current content
+- After 2 failures on same file, use write_file instead`,
     parameters: {
       type: 'object',
       properties: {
@@ -309,11 +327,11 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
         },
         original_snippet: {
           type: 'string',
-          description: 'The exact code snippet to replace (must match file content exactly)'
+          description: 'The exact code snippet to replace (must match file content exactly, including whitespace)'
         },
         new_snippet: {
           type: 'string',
-          description: 'The new code to insert in place of the original snippet'
+          description: 'The new code to insert. Use empty string "" to delete the original_snippet.'
         }
       },
       required: ['meta', 'path', 'original_snippet', 'new_snippet']

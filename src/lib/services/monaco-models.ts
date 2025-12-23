@@ -220,7 +220,7 @@ export function revealLine(path: string, line: number): void {
   activeEditor.focus();
 }
 
-export function setReviewHighlight(path: string, startLine: number, endLine: number): void {
+export function setReviewHighlight(path: string, startLine: number, endLine: number): boolean {
   // Try to find model with various path formats
   let model = models.get(path);
   let actualPath = path;
@@ -245,7 +245,12 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
     }
   }
   
-  if (!model) return;
+  if (!model) {
+    // Debug: log available models when highlight fails
+    const availableModels = Array.from(models.keys());
+    console.warn('[setReviewHighlight] Model not found for path:', path, 'Available models:', availableModels);
+    return false;
+  }
 
   const maxLine = model.getLineCount();
   const start = Math.max(1, Math.min(startLine, maxLine));
@@ -258,12 +263,16 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
       range: { startLineNumber: start, startColumn: 1, endLineNumber: end, endColumn: endCol },
       options: {
         isWholeLine: true,
-        className: 'ai-edit-highlight'
+        className: 'ai-edit-highlight',
+        // Also add line decoration for better visibility
+        linesDecorationsClassName: 'ai-edit-line-decoration'
       }
     }
   ]);
 
   reviewDecorations.set(actualPath, next);
+  console.log('[setReviewHighlight] Applied highlight to', actualPath, 'lines', start, '-', end, 'decorationIds:', next);
+  return true;
 }
 
 export function clearReviewHighlight(path: string): void {

@@ -70,7 +70,13 @@ html, body {
 }
 
  .monaco-editor .ai-edit-highlight {
-   background: rgba(166, 227, 161, 0.18) !important;
+   background: rgba(166, 227, 161, 0.25) !important;
+ }
+
+ .monaco-editor .ai-edit-line-decoration {
+   background: rgba(166, 227, 161, 0.6);
+   width: 3px !important;
+   margin-left: 3px;
  }
 
 /* Prevent text selection on UI elements */

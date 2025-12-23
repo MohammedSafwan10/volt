@@ -70,18 +70,30 @@
 
   function applyReviewHighlight(meta: any): string | null {
     const path = getReviewableFilePath(meta);
-    if (!path) return null;
+    if (!path) {
+      console.warn('[applyReviewHighlight] No reviewable file path found for meta:', meta);
+      return null;
+    }
 
     const first = meta?.fileEdit?.firstChangedLine;
     const last = meta?.fileEdit?.lastChangedLine;
+    console.log('[applyReviewHighlight] Applying highlight to', path, 'lines', first, '-', last);
+    
     if (typeof first === "number" && typeof last === "number") {
-      setReviewHighlight(path, first, last);
+      const success = setReviewHighlight(path, first, last);
+      if (!success) {
+        console.warn('[applyReviewHighlight] setReviewHighlight returned false for', path);
+      }
       return path;
     }
     if (typeof first === "number") {
-      setReviewHighlight(path, first, first);
+      const success = setReviewHighlight(path, first, first);
+      if (!success) {
+        console.warn('[applyReviewHighlight] setReviewHighlight returned false for', path);
+      }
       return path;
     }
+    console.warn('[applyReviewHighlight] No line info in meta:', meta);
     return null;
   }
 
@@ -549,6 +561,24 @@
                   error: validation.error ?? "Invalid tool call",
                 },
               });
+              
+              // CRITICAL: If a file-modifying tool fails validation, mark it so we can skip
+              // running subsequent tools that might depend on it (like eslint after write_file)
+              const isFileModifyingTool = [
+                "write_file",
+                "create_file",
+                "apply_edit",
+                "multi_replace_file_content",
+                "delete_path",
+                "delete_paths",
+              ].includes(toolCallName);
+              
+              if (isFileModifyingTool) {
+                // Set a flag to skip running other tools in this batch
+                // This prevents running eslint when write_file failed
+                (immediateResults as any).__fileModifyFailed = true;
+              }
+              
               continue;
             }
 
@@ -558,6 +588,20 @@
               arguments: toolCallArgs,
               thoughtSignature: toolCallThoughtSignature,
             });
+
+            // Check if a file-modifying tool already failed - if so, skip running this tool
+            // and add it to immediate results with a skip message
+            if ((immediateResults as any).__fileModifyFailed) {
+              immediateResults.push({
+                id: toolCallId,
+                name: toolCallName,
+                result: {
+                  success: false,
+                  error: "Skipped: A previous file operation failed. Fix that first before running this tool.",
+                },
+              });
+              continue;
+            }
 
             if (!validation.requiresApproval && validation.valid) {
               const isFileWrite = [

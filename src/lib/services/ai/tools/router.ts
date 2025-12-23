@@ -947,8 +947,10 @@ export function validateToolCall(
       if (err1) return { valid: false, error: err1, requiresApproval: false };
       const err2 = requireString('original_snippet');
       if (err2) return { valid: false, error: err2, requiresApproval: false };
-      const err3 = requireString('new_snippet');
-      if (err3) return { valid: false, error: err3, requiresApproval: false };
+      // Allow empty new_snippet for deletions - just check it exists
+      if (typeof args.new_snippet !== 'string') {
+        return { valid: false, error: 'Missing "new_snippet" (use empty string "" to delete code)', requiresApproval: false };
+      }
       break;
     }
     case 'multi_replace_file_content': {
