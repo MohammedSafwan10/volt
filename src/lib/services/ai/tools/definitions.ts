@@ -342,7 +342,7 @@ IF THIS FAILS:
   },
   {
     name: 'create_file',
-    description: 'Create a new empty file.',
+    description: 'Create a new empty file. To create a file WITH content, use write_file instead.',
     parameters: {
       type: 'object',
       properties: {

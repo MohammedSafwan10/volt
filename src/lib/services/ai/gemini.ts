@@ -630,28 +630,16 @@ export const geminiProvider: AIProvider = {
             const candidate = data.candidates[0];
 
             // Handle block reasons (Safety, etc.)
-            if (candidate.finishReason && ['SAFETY', 'OTHER', 'RECITATION'].includes(candidate.finishReason)) {
+            // Note: STOP is a normal finish reason and should NOT terminate the stream early
+            // Only block on actual safety/content issues
+            if (candidate.finishReason && ['SAFETY', 'OTHER', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(candidate.finishReason)) {
               yield { type: 'error', error: `Response blocked by Gemini safety filters (${candidate.finishReason}).` };
               return;
             }
 
             if (candidate.content && candidate.content.parts) {
               for (const part of candidate.content.parts) {
-                // Skip empty text with thought signature
-                if (part.thoughtSignature && (!part.text || !part.text.trim())) {
-                  continue;
-                }
-                
-                if (part.text) {
-                  const text = part.text;
-                  const isThought = Boolean((part as any).thought);
-                  
-                  if (isThought) {
-                    yield { type: 'thinking', thinking: text };
-                  } else {
-                    yield { type: 'content', content: text };
-                  }
-                }
+                // Handle function calls first - they may have thoughtSignature but no text
                 if (part.functionCall) {
                   yield {
                     type: 'tool_call',
@@ -662,6 +650,21 @@ export const geminiProvider: AIProvider = {
                       thoughtSignature: part.thoughtSignature
                     }
                   };
+                  continue; // Don't process text for this part
+                }
+                
+                // Skip empty text parts (with or without thought signature)
+                if (!part.text || !part.text.trim()) {
+                  continue;
+                }
+                
+                const text = part.text;
+                const isThought = Boolean((part as any).thought);
+                
+                if (isThought) {
+                  yield { type: 'thinking', thinking: text };
+                } else {
+                  yield { type: 'content', content: text };
                 }
               }
             }

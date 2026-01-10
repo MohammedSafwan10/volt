@@ -59,6 +59,7 @@ pub struct IndexDoneEvent {
 /// Index error event
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct IndexErrorEvent {
     pub request_id: u64,
     pub message: String,
@@ -185,7 +186,10 @@ fn strip_windows_long_path_prefix(path: String) -> String {
     }
 }
 
-fn get_disk_cache_paths(app: &AppHandle, root_path: &str) -> Result<(PathBuf, PathBuf), IndexError> {
+fn get_disk_cache_paths(
+    app: &AppHandle,
+    root_path: &str,
+) -> Result<(PathBuf, PathBuf), IndexError> {
     let base = get_disk_cache_dir(app)?;
 
     let key = cache_key_for_root(root_path);
@@ -346,10 +350,10 @@ pub async fn index_workspace_stream(
 
     // Cancel any previous indexing
     state.cancelled.store(true, Ordering::SeqCst);
-    
+
     // Small delay to let previous task notice cancellation
     tokio::time::sleep(Duration::from_millis(10)).await;
-    
+
     // Set new request ID and reset cancellation flag
     state.current_request_id.store(request_id, Ordering::SeqCst);
     state.cancelled.store(false, Ordering::SeqCst);
@@ -363,9 +367,9 @@ pub async fn index_workspace_stream(
                 // Send cached results immediately
                 let files = cached.files.clone();
                 drop(cache_guard);
-                
+
                 let total = files.len();
-                
+
                 // Send in batches for consistency
                 const BATCH_SIZE: usize = 500;
                 for chunk in files.chunks(BATCH_SIZE) {
@@ -379,7 +383,7 @@ pub async fn index_workspace_stream(
                         },
                     );
                 }
-                
+
                 let _ = app.emit(
                     "file-index://done",
                     IndexDoneEvent {
@@ -389,7 +393,7 @@ pub async fn index_workspace_stream(
                         duration_ms: 0, // Instant from cache
                     },
                 );
-                
+
                 return Ok(());
             }
         }
@@ -426,26 +430,35 @@ pub async fn index_workspace_stream(
         let mut total_count = 0usize;
 
         // Prepare disk cache writer (best-effort). Write incrementally to avoid huge memory usage.
-        let (meta_path, list_path, list_tmp_path, mut disk_writer): (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>, Option<BufWriter<fs::File>>) =
-            if persist_cache {
-                match get_disk_cache_paths(&app, &root_path_clone) {
-                    Ok((meta_path, list_path)) => {
-                        let base_dir = meta_path.parent().map(|p| p.to_path_buf());
-                        if let Some(dir) = base_dir {
-                            let _ = fs::create_dir_all(dir);
-                        }
-                        let tmp = list_path.with_extension("tmp");
-                        match fs::File::create(&tmp) {
-                            Ok(f) => (Some(meta_path), Some(list_path), Some(tmp), Some(BufWriter::new(f))),
-                            Err(_) => (Some(meta_path), Some(list_path), Some(tmp), None),
-                        }
+        let (meta_path, list_path, list_tmp_path, mut disk_writer): (
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<BufWriter<fs::File>>,
+        ) = if persist_cache {
+            match get_disk_cache_paths(&app, &root_path_clone) {
+                Ok((meta_path, list_path)) => {
+                    let base_dir = meta_path.parent().map(|p| p.to_path_buf());
+                    if let Some(dir) = base_dir {
+                        let _ = fs::create_dir_all(dir);
                     }
-                    Err(_) => (None, None, None, None),
+                    let tmp = list_path.with_extension("tmp");
+                    match fs::File::create(&tmp) {
+                        Ok(f) => (
+                            Some(meta_path),
+                            Some(list_path),
+                            Some(tmp),
+                            Some(BufWriter::new(f)),
+                        ),
+                        Err(_) => (Some(meta_path), Some(list_path), Some(tmp), None),
+                    }
                 }
-            } else {
-                (None, None, None, None)
-            };
-        
+                Err(_) => (None, None, None, None),
+            }
+        } else {
+            (None, None, None, None)
+        };
+
         const BATCH_SIZE: usize = 200;
         const BATCH_MAX_LATENCY: Duration = Duration::from_millis(50);
         let mut last_emit = Instant::now();
@@ -466,7 +479,8 @@ pub async fn index_workspace_stream(
 
         for entry in walker {
             // Check for cancellation
-            if cancelled.load(Ordering::Relaxed) || current_id.load(Ordering::Relaxed) != request_id {
+            if cancelled.load(Ordering::Relaxed) || current_id.load(Ordering::Relaxed) != request_id
+            {
                 if let Some(tmp) = list_tmp_path.as_ref() {
                     let _ = fs::remove_file(tmp);
                 }
@@ -601,10 +615,7 @@ pub async fn index_workspace_stream(
                         count: total_count,
                     };
 
-                    let _ = fs::write(
-                        &meta_path,
-                        serde_json::to_vec(&meta).unwrap_or_default(),
-                    );
+                    let _ = fs::write(&meta_path, serde_json::to_vec(&meta).unwrap_or_default());
                 } else {
                     let _ = fs::remove_file(&list_tmp_path);
                     let _ = fs::remove_file(&meta_path);
@@ -675,13 +686,13 @@ pub async fn get_index_status(
 ) -> Result<IndexStatus, IndexError> {
     let current_id = state.current_request_id.load(Ordering::SeqCst);
     let indexing = current_id != 0 && !state.cancelled.load(Ordering::SeqCst);
-    
+
     let cache_guard = state.cache.lock().unwrap();
     let count = cache_guard
         .get(&root_path)
         .map(|c| c.files.len())
         .unwrap_or(0);
-    
+
     Ok(IndexStatus {
         indexing,
         count,

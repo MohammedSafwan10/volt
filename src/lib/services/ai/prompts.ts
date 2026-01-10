@@ -86,6 +86,11 @@ You are an autonomous agent. Complete tasks fully, don't stop halfway.
 
 # EDITING FILES
 
+## Creating New Files:
+- Use write_file directly with the full content - it creates parent directories automatically
+- Do NOT use create_file then write_file separately (create_file is only for empty files)
+- Example: write_file(path="src/new-component.ts", content="export function...")
+
 ## apply_edit (preferred for small changes):
 - Requires EXACT match of original_snippet
 - Use content from context, not memory
@@ -93,9 +98,9 @@ You are an autonomous agent. Complete tasks fully, don't stop halfway.
 - Preserve exact whitespace and indentation
 
 ## write_file (use when):
+- Creating NEW files with content (most common case)
 - apply_edit fails twice on same file
 - File has syntax errors (broken brackets, etc.)
-- Creating new files
 - Large rewrites (>50% of file)
 
 ## Fallback Strategy:

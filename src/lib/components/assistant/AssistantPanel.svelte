@@ -619,16 +619,6 @@
 
               const p = executeToolCall(toolCallName, toolCallArgs, {
                 signal: controller.signal,
-                enableStreaming: isFileWrite,
-                onStreamingProgress: isFileWrite
-                  ? (progress) => {
-                      assistantStore.updateToolCallInMessage(
-                        msgId,
-                        toolCallId,
-                        { streamingProgress: progress },
-                      );
-                    }
-                  : undefined,
               })
                 .then((result) => {
                   assistantStore.updateToolCallInMessage(msgId, toolCallId, {
@@ -637,7 +627,6 @@
                     error: result.error,
                     meta: result.meta,
                     endTime: Date.now(),
-                    streamingProgress: undefined,
                   });
 
                   if (result.success && result.meta) {
@@ -705,6 +694,28 @@
           eagerResults.length === 0 &&
           immediateResults.length === 0
         ) {
+          // Check if model only produced thinking but no actual response
+          // This can happen with Gemini thinking mode - model thinks but doesn't act
+          if (iterationThinking && !iterationContent.trim()) {
+            import("$lib/stores/output.svelte").then((m) =>
+              m.logOutput(
+                "Volt",
+                `Agent: Model produced thinking but no response, prompting continuation...`,
+              ),
+            );
+            
+            // Add a continuation prompt to encourage the model to respond
+            assistantStore.addToolMessage({
+              id: `thinking_continue_${Date.now()}`,
+              name: "_system_continuation",
+              arguments: {},
+              status: "completed",
+              output: "You completed your reasoning but didn't provide a response or take action. Based on your thinking, please now either: (1) call the appropriate tool to execute your plan, or (2) provide a text response to the user. Do NOT remain silent after thinking.",
+            });
+            
+            continue; // Continue to next iteration
+          }
+          
           // Check if we just processed tool results but model didn't respond
           // This happens when Gemini decides to stop after seeing tool results
           if (justProcessedToolResults && !iterationContent.trim()) {
@@ -789,23 +800,10 @@
               status: "running",
               startTime: Date.now(),
             });
-            const isFileWriteTool =
-              tc.name === "write_file" ||
-              tc.name === "create_file" ||
-              tc.name === "apply_edit" ||
-              tc.name === "multi_replace_file_content";
 
             try {
               const result = await executeToolCall(tc.name, tc.arguments, {
                 signal: controller.signal,
-                enableStreaming: isFileWriteTool,
-                onStreamingProgress: isFileWriteTool
-                  ? (progress) => {
-                      assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                        streamingProgress: progress,
-                      });
-                    }
-                  : undefined,
               });
               toolResults.push({ id: tc.id, name: tc.name, result });
               assistantStore.updateToolCallInMessage(msgId, tc.id, {
@@ -976,24 +974,9 @@
       startTime: Date.now(),
     });
 
-    // Check if this is a file write tool that supports streaming
-    const isFileWriteTool =
-      toolCall.name === "write_file" ||
-      toolCall.name === "create_file" ||
-      toolCall.name === "apply_edit" ||
-      toolCall.name === "multi_replace_file_content";
-
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
         signal,
-        enableStreaming: isFileWriteTool,
-        onStreamingProgress: isFileWriteTool
-          ? (progress) => {
-              assistantStore.updateToolCall(toolCall.id, {
-                streamingProgress: progress,
-              });
-            }
-          : undefined,
       });
 
       if (result.success) {

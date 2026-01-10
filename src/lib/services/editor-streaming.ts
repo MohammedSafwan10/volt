@@ -204,34 +204,20 @@ export async function startStreaming(
       editorStore.openFiles.find(f => pathsEqual(f.path, fullPath));
     
     if (!existingFile) {
-      // Try to open the file from disk first (it's a real file in the project)
-      // fullPath is already defined above
-      
-      // Try to open as real file
-      const opened = await editorStore.openFile(fullPath);
-      
-      if (opened) {
-        // File opened successfully - find it using the active file (most reliable)
-        // or search with our improved pathsEqual that handles full vs relative paths
-        existingFile = editorStore.activeFile ?? 
-          editorStore.openFiles.find(f => pathsEqual(f.path, normalizedPath)) ??
-          editorStore.openFiles.find(f => pathsEqual(f.path, fullPath));
-      }
-      
-      // If still not found (new file), create virtual file
-      if (!existingFile) {
-        editorStore.openVirtualFile({
-          path: normalizedPath,
-          name: filename,
-          content: '', // Start empty, we'll stream content
-          language,
-          readonly: false,
-          pinned: false
-        });
-        existingFile = editorStore.openFiles.find(f => pathsEqual(f.path, normalizedPath));
-      }
+      // For streaming, ALWAYS create a virtual file first with empty content
+      // This avoids the race condition where we open an empty file from disk
+      // The streaming will fill in the content, and the caller saves to disk after
+      editorStore.openVirtualFile({
+        path: normalizedPath,
+        name: filename,
+        content: '', // Start empty, we'll stream content
+        language,
+        readonly: false,
+        pinned: false
+      });
+      existingFile = editorStore.openFiles.find(f => pathsEqual(f.path, normalizedPath));
     } else {
-      // Switch to existing file
+      // Switch to existing file and clear its content for streaming
       editorStore.setActiveFile(existingFile.path);
     }
     

@@ -24,28 +24,11 @@ const MAX_OUTPUT_SIZE = 100 * 1024;
 const TOOL_TIMEOUT_MS = 30000;
 
 /**
- * Streaming progress callback for file write operations
- */
-export interface StreamingProgressCallback {
-  (progress: {
-    charsWritten: number;
-    totalChars: number;
-    linesWritten: number;
-    totalLines: number;
-    percent: number;
-  }): void;
-}
-
-/**
  * Tool execution options
  */
 export interface ToolExecutionOptions {
   /** Abort signal for cancellation */
   signal?: AbortSignal;
-  /** Callback for streaming progress (file writes) */
-  onStreamingProgress?: StreamingProgressCallback;
-  /** Whether to enable live streaming to editor (default: true for write_file) */
-  enableStreaming?: boolean;
 }
 
 /**
@@ -934,12 +917,17 @@ export function validateToolCall(
       if (err) return { valid: false, error: err, requiresApproval: false };
       break;
     }
-    case 'write_file':
-    case 'create_file': {
+    case 'write_file': {
       const err1 = requireString('path');
       if (err1) return { valid: false, error: err1, requiresApproval: false };
       const err2 = requireString('content');
       if (err2) return { valid: false, error: err2, requiresApproval: false };
+      break;
+    }
+    case 'create_file': {
+      // create_file only needs path - it creates an empty file
+      const err = requireString('path');
+      if (err) return { valid: false, error: err, requiresApproval: false };
       break;
     }
     case 'apply_edit': {
@@ -1058,7 +1046,7 @@ export async function executeToolCall(
   args: Record<string, unknown>,
   options: ToolExecutionOptions = {}
 ): Promise<ToolResult> {
-  const { signal, onStreamingProgress, enableStreaming = true } = options;
+  const { signal } = options;
   const workspaceRoot = projectStore.rootPath;
 
   // Allow per-call override for tools that support timeouts (e.g. run_command)
@@ -1093,8 +1081,7 @@ export async function executeToolCall(
     const executionPromise = executeToolInternal(
       toolName,
       args,
-      workspaceRoot || '',
-      { onStreamingProgress, enableStreaming }
+      workspaceRoot || ''
     );
 
     // Race between execution, timeout, and abort
@@ -1106,7 +1093,8 @@ export async function executeToolCall(
 
     return result;
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
+    // Use the helper to extract meaningful error messages
+    const message = extractErrorMessage(err);
     return { success: false, error: message };
   } finally {
     if (timeoutId) {
@@ -1123,13 +1111,44 @@ export async function executeToolCall(
 }
 
 /**
+ * Extract meaningful error message from Tauri invoke errors
+ */
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === 'string') {
+    return err;
+  }
+  if (err && typeof err === 'object') {
+    const errObj = err as Record<string, unknown>;
+    // Tauri FileError format: { type: "NotFound", path: "..." }
+    if (errObj.type && typeof errObj.type === 'string') {
+      const errorType = errObj.type;
+      const path = errObj.path || '';
+      const message = errObj.message || '';
+      if (message) return String(message);
+      return `${errorType}${path ? `: ${path}` : ''}`;
+    }
+    if (errObj.message && typeof errObj.message === 'string') {
+      return errObj.message;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return 'Unknown error';
+}
+
+/**
  * Internal tool execution logic
  */
 async function executeToolInternal(
   toolName: string,
   args: Record<string, unknown>,
-  workspaceRoot: string,
-  options: { onStreamingProgress?: StreamingProgressCallback; enableStreaming?: boolean } = {}
+  workspaceRoot: string
 ): Promise<ToolResult> {
   // Helper to resolve relative paths to absolute
   const resolvePath = (relativePath: string): string => {
@@ -1162,8 +1181,17 @@ async function executeToolInternal(
     }
 
     case 'read_file': {
-      const path = resolvePath(String(args.path));
-      const content = await invoke<string>('read_file', { path });
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      
+      let content: string;
+      try {
+        content = await invoke<string>('read_file', { path });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to read file "${relativePath}": ${message}` };
+      }
+      
       const totalLines = content.split('\n').length;
 
       // Handle line range if specified
@@ -1313,165 +1341,81 @@ async function executeToolInternal(
       const relativePath = String(args.path);
       const path = resolvePath(relativePath);
       const content = String(args.content);
-      const { onStreamingProgress, enableStreaming } = options;
 
-      // If streaming is enabled and we have a progress callback, stream to editor
-      if (enableStreaming) {
-        // Determine if this path exists on disk.
-        // This matters because `write_file` may fail for new paths and because streaming
-        // tries to open the file tab from disk.
-        let existedOnDisk = true;
-        try {
-          await invoke('get_file_info', { path });
-        } catch {
-          existedOnDisk = false;
-        }
+      // Kiro-style: Write directly to disk, then open in editor
+      // Simple, reliable, no virtual files or streaming complexity
 
-        // Read existing content (used for diff/meta). Only attempt if it existed.
-        const beforePromise = existedOnDisk
-          ? invoke<string>('read_file', { path }).catch(() => '')
-          : Promise.resolve('');
-
-        // Ensure the file exists on disk before streaming tries to open it.
-        if (!existedOnDisk) {
-          try {
-            await invoke('create_file', { path });
-          } catch {
-            // ignore (file may have been created concurrently)
-          }
-        }
-
-        try {
-          const { startStreaming } = await import('$lib/services/editor-streaming');
-
-          // Start streaming and wait for completion
-          await new Promise<void>((resolve, reject) => {
-            startStreaming(relativePath, content, {
-              chunkSize: 200,
-              chunkDelay: 0,
-              onProgress: onStreamingProgress,
-              onComplete: () => resolve(),
-              onError: (error) => {
-                reject(new Error(error));
-              }
-            }).catch(reject);
-          });
-
-          // After streaming completes, save the file to disk
-          await invoke('write_file', { path, content });
-
-          // Get the before content for summary (already resolved by now)
-          const before = await beforePromise;
-
-          // If this was a new file (before was empty), refresh the file tree
-          if (!existedOnDisk) {
-            const { projectStore } = await import('$lib/stores/project.svelte');
-            await projectStore.refreshTree();
-          }
-
-          const summary = summarizeTextDiff(before, content);
-          const range = (summary.firstChangedLine && summary.lastChangedLine)
-            ? `Changed lines (approx): ${summary.firstChangedLine}–${summary.lastChangedLine}`
-            : 'Changed lines (approx): unknown';
-          const note = summary.note ? `\nNote: ${summary.note}` : '';
-
-          return {
-            success: true,
-            output:
-              `Wrote file: ${args.path}\n` +
-              `Before: ${summary.oldBytes} bytes, ${summary.oldLines} lines\n` +
-              `After:  ${summary.newBytes} bytes, ${summary.newLines} lines\n` +
-              `${range}${note}`,
-            meta: {
-              fileEdit: {
-                relativePath,
-                absolutePath: path,
-                beforeContent: (before.length <= 300_000 && content.length <= 300_000) ? before : null,
-                firstChangedLine: summary.firstChangedLine,
-                lastChangedLine: summary.lastChangedLine
-              }
-            }
-          };
-        } catch (err) {
-          // Fallback to direct write if streaming fails
-          console.warn('[write_file] Streaming failed, falling back to direct write:', err);
-          try {
-            if (!existedOnDisk) {
-              await invoke('create_file', { path });
-            }
-          } catch {
-            // ignore
-          }
-
-          await invoke('write_file', { path, content });
-
-          // Still try to open the file in editor so user can see it
-          try {
-            const { editorStore } = await import('$lib/stores/editor.svelte');
-            await editorStore.openFile(path);
-          } catch {
-            // Ignore - file was written, just couldn't open in editor
-          }
-
-          // Refresh file tree for new file
-          const { projectStore } = await import('$lib/stores/project.svelte');
-          await projectStore.refreshTree();
-
-          return {
-            success: true,
-            output: `Wrote file: ${args.path} (${content.length} bytes)`,
-            meta: {
-              fileEdit: {
-                relativePath,
-                absolutePath: path,
-                beforeContent: null,
-                firstChangedLine: null,
-                lastChangedLine: null
-              }
-            }
-          };
-        }
-      } else {
-        // Direct write without streaming
-        let before = '';
-        try {
-          before = await invoke<string>('read_file', { path });
-        } catch {
-          before = '';
-        }
-
-        await invoke('write_file', { path, content });
-
-        // If this was a new file (before was empty), refresh the file tree
-        if (!before) {
-          const { projectStore } = await import('$lib/stores/project.svelte');
-          await projectStore.refreshTree();
-        }
-
-        const summary = summarizeTextDiff(before, content);
-        const range = (summary.firstChangedLine && summary.lastChangedLine)
-          ? `Changed lines (approx): ${summary.firstChangedLine}–${summary.lastChangedLine}`
-          : 'Changed lines (approx): unknown';
-        const note = summary.note ? `\nNote: ${summary.note}` : '';
-
-        return {
-          success: true,
-          output:
-            `Wrote file: ${args.path}\n` +
-            `Before: ${summary.oldBytes} bytes, ${summary.oldLines} lines\n` +
-            `After:  ${summary.newBytes} bytes, ${summary.newLines} lines\n` +
-            `${range}${note}`,
-          meta: {
-            fileEdit: {
-              relativePath,
-              absolutePath: path,
-              beforeContent: (before.length <= 300_000 && content.length <= 300_000) ? before : null,
-              firstChangedLine: summary.firstChangedLine,
-              lastChangedLine: summary.lastChangedLine
-            }
-          }
-        };
+      // 1. Check if file exists and get before content for diff
+      let before = '';
+      let isNewFile = false;
+      try {
+        before = await invoke<string>('read_file', { path });
+      } catch {
+        before = '';
+        isNewFile = true;
       }
+
+      // 2. Write content directly to disk
+      try {
+        await invoke('write_file', { path, content });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to write file "${relativePath}": ${message}` };
+      }
+
+      // 3. Refresh file tree if new file
+      if (isNewFile) {
+        try {
+          const { projectStore } = await import('$lib/stores/project.svelte');
+          await projectStore.refreshTree();
+        } catch {
+          // Ignore tree refresh errors
+        }
+      }
+
+      // 4. Open file in editor (reads from disk - shows actual content)
+      try {
+        const { editorStore } = await import('$lib/stores/editor.svelte');
+        
+        // If file is already open, reload it to show new content
+        const existingFile = editorStore.openFiles.find(f => 
+          f.path === path || f.path === relativePath || 
+          f.path.endsWith('/' + relativePath) || f.path.endsWith('\\' + relativePath)
+        );
+        
+        if (existingFile) {
+          await editorStore.reloadFile(existingFile.path);
+        } else {
+          await editorStore.openFile(path);
+        }
+      } catch {
+        // File was written successfully, just couldn't open in editor
+      }
+
+      // 5. Return success with diff summary
+      const summary = summarizeTextDiff(before, content);
+      const range = (summary.firstChangedLine && summary.lastChangedLine)
+        ? `Changed lines (approx): ${summary.firstChangedLine}–${summary.lastChangedLine}`
+        : 'Changed lines (approx): unknown';
+      const note = summary.note ? `\nNote: ${summary.note}` : '';
+
+      return {
+        success: true,
+        output:
+          `Wrote file: ${relativePath}\n` +
+          `Before: ${summary.oldBytes} bytes, ${summary.oldLines} lines\n` +
+          `After:  ${summary.newBytes} bytes, ${summary.newLines} lines\n` +
+          `${range}${note}`,
+        meta: {
+          fileEdit: {
+            relativePath,
+            absolutePath: path,
+            beforeContent: (before.length <= 300_000 && content.length <= 300_000) ? before : null,
+            firstChangedLine: summary.firstChangedLine,
+            lastChangedLine: summary.lastChangedLine
+          }
+        }
+      };
     }
 
     case 'apply_edit': {
@@ -1479,86 +1423,29 @@ async function executeToolInternal(
       const path = resolvePath(relativePath);
       const originalSnippet = String(args.original_snippet);
       const newSnippet = String(args.new_snippet);
-      const { onStreamingProgress, enableStreaming } = options;
 
-      let before = '';
-      try {
-        before = await invoke<string>('read_file', { path });
-      } catch {
-        before = '';
-      }
+      // Kiro-style: Read file, apply edit, write to disk, reload in editor
 
-      // PRE-VALIDATE: Smart syntax check - allows fixes for already-broken files
-      if (before) {
-        // Simulate the edit to check syntax
-        const testContent = before.replace(originalSnippet, newSnippet);
-        const syntaxError = validateEditSyntax(before, testContent, relativePath);
-        if (syntaxError) {
-          return {
-            success: false,
-            error: `${syntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet to ensure balanced brackets/braces and try again.`
-          };
-        }
-      }
-
-      if (enableStreaming) {
-        try {
-          const { startStreamingEdit } = await import('$lib/services/editor-streaming');
-
-          await new Promise<void>((resolve, reject) => {
-            startStreamingEdit(path, originalSnippet, newSnippet, {
-              chunkSize: 200,
-              chunkDelay: 0,
-              onProgress: onStreamingProgress,
-              onComplete: () => resolve(),
-              onError: (err) => reject(new Error(err))
-            }).catch(reject);
-          });
-
-          const { editorStore } = await import('$lib/stores/editor.svelte');
-          const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
-          if (!openFile) {
-            throw new Error('Edited file not available in editor');
-          }
-
-          await invoke('write_file', { path, content: openFile.content });
-          editorStore.markSaved(path);
-
-          const { projectStore } = await import('$lib/stores/project.svelte');
-          await projectStore.refreshTree();
-
-          const summary = summarizeTextDiff(before, openFile.content);
-
-          return {
-            success: true,
-            output: `Successfully applied edit to ${relativePath} (visual stream).\nReplaced ${countLines(originalSnippet)} lines with ${countLines(newSnippet)} lines.`,
-            meta: {
-              fileEdit: {
-                relativePath,
-                absolutePath: path,
-                beforeContent: (before.length <= 300_000 && openFile.content.length <= 300_000) ? before : null,
-                firstChangedLine: summary.firstChangedLine,
-                lastChangedLine: summary.lastChangedLine
-              }
-            }
-          };
-        } catch (err) {
-          if (err instanceof Error && /cancelled/i.test(err.message)) {
-            return { success: false, error: 'Streaming cancelled' };
-          }
-          console.warn('[apply_edit] Visual streaming failed, falling back to background edit:', err);
-        }
-      }
-
-      // Standard logic (Background / Fallback)
+      // 1. Read current file content
       let fileContent = '';
       try {
         fileContent = await invoke<string>('read_file', { path });
       } catch (err) {
-        return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to read file "${relativePath}": ${message}` };
       }
 
-      // Smart fuzzy matching with multiple strategies
+      // 2. PRE-VALIDATE: Smart syntax check - allows fixes for already-broken files
+      const testContent = fileContent.replace(originalSnippet, newSnippet);
+      const syntaxError = validateEditSyntax(fileContent, testContent, relativePath);
+      if (syntaxError) {
+        return {
+          success: false,
+          error: `${syntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet to ensure balanced brackets/braces and try again.`
+        };
+      }
+
+      // 3. Find the snippet using smart fuzzy matching
       const match = findBestMatch(fileContent, originalSnippet);
 
       if (!match) {
@@ -1589,39 +1476,48 @@ async function executeToolInternal(
 
       const startIndex = match.index;
       const matchLength = match.length;
-      
-      // Log if we used fuzzy matching (for debugging)
       const matchNote = match.similarity < 1 
         ? ` (fuzzy match, ${Math.round(match.similarity * 100)}% confidence)` 
         : '';
 
-      // Slice-based replacement preserves CRLF in the rest of the file
+      // 4. Apply the edit
       const newContent = fileContent.slice(0, startIndex) + newSnippet + fileContent.slice(startIndex + matchLength);
 
-      // SMART SYNTAX VALIDATION: Allows fixes for already-broken files
-      const syntaxError = validateEditSyntax(fileContent, newContent, relativePath);
-      if (syntaxError) {
+      // 5. Final syntax validation
+      const finalSyntaxError = validateEditSyntax(fileContent, newContent, relativePath);
+      if (finalSyntaxError) {
         return {
           success: false,
-          error: `${syntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet and try again.`
+          error: `${finalSyntaxError}\n\nThe edit was NOT applied. Please fix the new_snippet and try again.`
         };
       }
 
-      await invoke('write_file', { path, content: newContent });
-
+      // 6. Write to disk
       try {
-        const { projectStore } = await import('$lib/stores/project.svelte');
-        await projectStore.refreshTree();
-        const { editorStore } = await import('$lib/stores/editor.svelte');
-        const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
-        if (openFile) {
-          await editorStore.reloadFile(path);
-        }
-      } catch {
-        // Ignore UI refresh errors
+        await invoke('write_file', { path, content: newContent });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to write file "${relativePath}": ${message}` };
       }
 
-      // Calculate context preview for the AI
+      // 7. Reload file in editor if open
+      try {
+        const { editorStore } = await import('$lib/stores/editor.svelte');
+        const openFile = editorStore.openFiles.find(f => 
+          f.path === path || f.path === relativePath || 
+          f.path.endsWith('/' + relativePath) || f.path.endsWith('\\' + relativePath)
+        );
+        if (openFile) {
+          await editorStore.reloadFile(openFile.path);
+        } else {
+          // Open the file so user can see the edit
+          await editorStore.openFile(path);
+        }
+      } catch {
+        // File was written successfully, just couldn't update editor
+      }
+
+      // 8. Return success with context preview
       const contextStart = Math.max(0, startIndex - 200);
       const contextEnd = Math.min(newContent.length, startIndex + newSnippet.length + 200);
       const preview = newContent.slice(contextStart, contextEnd);
@@ -1655,119 +1551,22 @@ async function executeToolInternal(
         replacementContent: string;
       }>;
 
-      const { onStreamingProgress, enableStreaming } = options;
+      // Kiro-style: Read file, apply all edits, write to disk, reload in editor
 
-      let before = '';
-      try {
-        before = await invoke<string>('read_file', { path });
-      } catch {
-        before = '';
-      }
-
-      if (enableStreaming && Array.isArray(chunks) && chunks.length > 0) {
-        try {
-          const { startStreamingEdit } = await import('$lib/services/editor-streaming');
-
-          const sortedChunks = [...chunks].sort((a, b) => b.startLine - a.startLine);
-          const totalChars = sortedChunks.reduce((sum, c) => sum + String(c.replacementContent ?? '').length, 0);
-          const totalLines = sortedChunks.reduce((sum, c) => sum + countLines(String(c.replacementContent ?? '')), 0);
-
-          let baseChars = 0;
-          let baseLines = 0;
-
-          const reportProgress = onStreamingProgress ?? (() => {});
-
-          for (const chunk of sortedChunks) {
-            const originalSnippet = String(chunk.targetContent);
-            const newSnippet = String(chunk.replacementContent);
-            const chunkChars = newSnippet.length;
-            const chunkLines = countLines(newSnippet);
-
-            await new Promise<void>((resolve, reject) => {
-              startStreamingEdit(path, originalSnippet, newSnippet, {
-                chunkSize: 200,
-                chunkDelay: 0,
-                onProgress: (p) => {
-                  const charsWritten = baseChars + p.charsWritten;
-                  const linesWritten = baseLines + p.linesWritten;
-                  reportProgress({
-                    charsWritten,
-                    totalChars,
-                    linesWritten,
-                    totalLines,
-                    percent: totalChars > 0 ? Math.round((charsWritten / totalChars) * 100) : 100
-                  });
-                },
-                onComplete: () => resolve(),
-                onError: (err) => reject(new Error(err))
-              }).catch(reject);
-            });
-
-            baseChars += chunkChars;
-            baseLines += chunkLines;
-          }
-
-          const { editorStore } = await import('$lib/stores/editor.svelte');
-          const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
-          if (openFile) {
-            await invoke('write_file', { path, content: openFile.content });
-            editorStore.markSaved(path);
-          }
-
-          const { projectStore } = await import('$lib/stores/project.svelte');
-          await projectStore.refreshTree();
-
-          const afterContent = openFile?.content ?? '';
-          const summary = summarizeTextDiff(before, afterContent);
-
-          return {
-            success: true,
-            output: `Successfully applied ${sortedChunks.length} edits to ${relativePath} (visual stream).`,
-            meta: {
-              fileEdit: {
-                relativePath,
-                absolutePath: path,
-                beforeContent: (before.length <= 300_000 && afterContent.length <= 300_000) ? before : null,
-                firstChangedLine: summary.firstChangedLine,
-                lastChangedLine: summary.lastChangedLine
-              }
-            }
-          };
-        } catch (err) {
-          if (err instanceof Error && /cancelled/i.test(err.message)) {
-            return { success: false, error: 'Streaming cancelled' };
-          }
-          console.warn('[multi_replace_file_content] Visual streaming failed, falling back to background edit:', err);
-        }
-      }
-
+      // 1. Read current file content
       let fileContent = '';
       try {
         fileContent = await invoke<string>('read_file', { path });
       } catch (err) {
-        return { success: false, error: `Failed to read file ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to read file "${relativePath}": ${message}` };
       }
 
-      // Helper to find absolute char index of a line (1-indexed)
-      const getLineStartIndex = (text: string, line: number): number => {
-        if (line <= 1) return 0;
-        let currentLine = 1;
-        for (let i = 0; i < text.length; i++) {
-          if (text[i] === '\n') {
-            currentLine++;
-            if (currentLine === line) return i + 1;
-          }
-        }
-        return text.length;
-      };
-
-      // Apply chunks bottom-to-top to maintain index stability for upper chunks
+      // 2. Apply chunks bottom-to-top to maintain index stability
       const sortedChunks = [...chunks].sort((a, b) => b.startLine - a.startLine);
-
       let currentContent = fileContent;
 
       for (const chunk of sortedChunks) {
-        // Use smart fuzzy matching
         const match = findBestMatch(currentContent, chunk.targetContent);
 
         if (match && match.similarity >= 0.7) {
@@ -1775,7 +1574,6 @@ async function executeToolInternal(
           const matchLength = match.length;
           currentContent = currentContent.slice(0, startIndex) + chunk.replacementContent + currentContent.slice(startIndex + matchLength);
         } else {
-          // Provide helpful error
           const snippetStart = chunk.targetContent.slice(0, 60).replace(/\n/g, '\\n') + (chunk.targetContent.length > 60 ? '...' : '');
           return {
             success: false,
@@ -1784,19 +1582,32 @@ async function executeToolInternal(
         }
       }
 
-      await invoke('write_file', { path, content: currentContent });
-
+      // 3. Write to disk
       try {
-        const { projectStore } = await import('$lib/stores/project.svelte');
-        await projectStore.refreshTree();
+        await invoke('write_file', { path, content: currentContent });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to write file "${relativePath}": ${message}` };
+      }
+
+      // 4. Reload file in editor if open
+      try {
         const { editorStore } = await import('$lib/stores/editor.svelte');
-        const openFile = editorStore.openFiles.find(f => f.path === path || f.path.endsWith(relativePath));
+        const openFile = editorStore.openFiles.find(f => 
+          f.path === path || f.path === relativePath || 
+          f.path.endsWith('/' + relativePath) || f.path.endsWith('\\' + relativePath)
+        );
         if (openFile) {
-          await editorStore.reloadFile(path);
+          await editorStore.reloadFile(openFile.path);
+        } else {
+          await editorStore.openFile(path);
         }
       } catch {
-        // Ignore UI refresh errors
+        // File was written successfully, just couldn't update editor
       }
+
+      // 5. Return success
+      const summary = summarizeTextDiff(fileContent, currentContent);
 
       return {
         success: true,
@@ -1806,27 +1617,41 @@ async function executeToolInternal(
             relativePath,
             absolutePath: path,
             beforeContent: (fileContent.length <= 300_000 && currentContent.length <= 300_000) ? fileContent : null,
-            firstChangedLine: null,
-            lastChangedLine: null
+            firstChangedLine: summary.firstChangedLine,
+            lastChangedLine: summary.lastChangedLine
           }
         }
       };
     }
 
     case 'create_file': {
-      const path = resolvePath(String(args.path));
-      await invoke('create_file', { path });
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      
+      try {
+        await invoke('create_file', { path });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to create file "${relativePath}": ${message}` };
+      }
 
       // Refresh file tree to show new file
       const { projectStore } = await import('$lib/stores/project.svelte');
       await projectStore.refreshTree();
 
-      return { success: true, output: `Created file: ${args.path}` };
+      return { success: true, output: `Created empty file: ${args.path}\nTip: Use write_file to add content.` };
     }
 
     case 'create_dir': {
-      const path = resolvePath(String(args.path));
-      await invoke('create_dir', { path });
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      
+      try {
+        await invoke('create_dir', { path });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to create directory "${relativePath}": ${message}` };
+      }
 
       // Refresh file tree to show new directory
       const { projectStore } = await import('$lib/stores/project.svelte');
@@ -1836,8 +1661,15 @@ async function executeToolInternal(
     }
 
     case 'delete_path': {
-      const path = resolvePath(String(args.path));
-      await invoke('delete_path', { path });
+      const relativePath = String(args.path);
+      const path = resolvePath(relativePath);
+      
+      try {
+        await invoke('delete_path', { path });
+      } catch (err) {
+        const message = extractErrorMessage(err);
+        return { success: false, error: `Failed to delete "${relativePath}": ${message}` };
+      }
 
       // Close the file tab if it's open
       const { editorStore } = await import('$lib/stores/editor.svelte');
