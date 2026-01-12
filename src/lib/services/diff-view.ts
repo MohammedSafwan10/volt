@@ -15,6 +15,10 @@ export interface DiffViewOptions {
   firstChangedLine?: number;
   /** Last changed line number */
   lastChangedLine?: number;
+  /** Original content (for combined diffs) */
+  originalContent?: string;
+  /** Tool call IDs (for combined diffs) */
+  toolCallIds?: string[];
 }
 
 // Track which tool calls have active highlights
@@ -28,7 +32,7 @@ const activeHighlights = new Map<string, string>(); // toolCallId -> filePath
  * - Clicking again toggles the highlight off
  */
 export async function openDiffView(options: DiffViewOptions, toolCallId?: string): Promise<void> {
-  const { path, absolutePath, firstChangedLine, lastChangedLine } = options;
+  const { path, absolutePath, firstChangedLine, lastChangedLine, originalContent } = options;
   
   // Use absolute path if available, otherwise use relative path
   const filePath = absolutePath || path;
@@ -64,6 +68,24 @@ export async function openDiffView(options: DiffViewOptions, toolCallId?: string
   const activeFile = editorStore.activeFile;
   if (!activeFile) return;
   
+  // For combined diffs with original content, compute the full diff range
+  if (originalContent !== undefined) {
+    const currentContent = activeFile.content;
+    const { startLine, endLine } = computeDiffRange(originalContent, currentContent);
+    
+    if (startLine > 0 && endLine >= startLine) {
+      const success = setReviewHighlight(activeFile.path, startLine, endLine);
+      if (success && toolCallId) {
+        activeHighlights.set(toolCallId, activeFile.path);
+      }
+      revealLine(activeFile.path, startLine);
+      
+      const editor = getActiveEditor();
+      if (editor) editor.focus();
+    }
+    return;
+  }
+  
   // Apply highlight if we have line info
   if (typeof firstChangedLine === 'number' && typeof lastChangedLine === 'number') {
     const success = setReviewHighlight(activeFile.path, firstChangedLine, lastChangedLine);
@@ -91,6 +113,50 @@ export async function openDiffView(options: DiffViewOptions, toolCallId?: string
     }
     revealLine(activeFile.path, firstChangedLine);
   }
+}
+
+/**
+ * Compute the range of lines that differ between original and current content
+ */
+function computeDiffRange(original: string, current: string): { startLine: number; endLine: number } {
+  const originalLines = original.split('\n');
+  const currentLines = current.split('\n');
+  
+  // Find first differing line
+  let startLine = 1;
+  const minLen = Math.min(originalLines.length, currentLines.length);
+  for (let i = 0; i < minLen; i++) {
+    if (originalLines[i] !== currentLines[i]) {
+      startLine = i + 1;
+      break;
+    }
+    if (i === minLen - 1) {
+      // All common lines match, diff starts after
+      startLine = minLen + 1;
+    }
+  }
+  
+  // Find last differing line (from the end)
+  let endLine = currentLines.length;
+  let origEnd = originalLines.length - 1;
+  let currEnd = currentLines.length - 1;
+  
+  while (origEnd >= startLine - 1 && currEnd >= startLine - 1) {
+    if (originalLines[origEnd] !== currentLines[currEnd]) {
+      endLine = currEnd + 1;
+      break;
+    }
+    origEnd--;
+    currEnd--;
+    endLine = currEnd + 1;
+  }
+  
+  // Ensure valid range
+  if (endLine < startLine) {
+    endLine = startLine;
+  }
+  
+  return { startLine, endLine };
 }
 
 /**

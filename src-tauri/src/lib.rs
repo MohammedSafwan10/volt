@@ -22,6 +22,11 @@ use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
     lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
 };
+use commands::mcp::{
+    start_mcp_server, stop_mcp_server, stop_all_mcp_servers, call_mcp_tool,
+    get_mcp_servers, get_mcp_tools, get_mcp_config_path, ensure_mcp_config, 
+    read_mcp_config, write_mcp_config, McpState,
+};
 use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
@@ -45,6 +50,7 @@ pub fn run() {
         .manage(GitProcessManager::default())
         .manage(FileIndexState::default())
         .manage(FileWatchState::default())
+        .manage(McpState::default())
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
@@ -77,6 +83,17 @@ pub fn run() {
             lsp_list_servers,
             lsp_get_server_info,
             lsp_is_server_running,
+            // MCP
+            start_mcp_server,
+            stop_mcp_server,
+            stop_all_mcp_servers,
+            call_mcp_tool,
+            get_mcp_servers,
+            get_mcp_tools,
+            get_mcp_config_path,
+            ensure_mcp_config,
+            read_mcp_config,
+            write_mcp_config,
             // System
             get_system_info,
             // Git

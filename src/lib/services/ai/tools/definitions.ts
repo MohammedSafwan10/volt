@@ -9,6 +9,7 @@
  */
 
 import type { ToolDefinition } from '../types';
+import { getMcpToolDefinitions } from './handlers/mcp';
 
 export type ToolCategory =
   | 'workspace_read'
@@ -433,4 +434,19 @@ export function doesToolRequireApproval(toolName: string): boolean {
 
 export function isToolAllowed(toolName: string, mode: 'ask' | 'plan' | 'agent'): boolean {
   return getToolByName(toolName)?.allowedModes.includes(mode) ?? false;
+}
+
+/**
+ * Get all tools for a mode, including MCP tools (agent mode only)
+ */
+export function getAllToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
+  const builtInTools = getToolsForMode(mode);
+  
+  // MCP tools only available in agent mode
+  if (mode === 'agent') {
+    const mcpTools = getMcpToolDefinitions();
+    return [...builtInTools, ...mcpTools];
+  }
+  
+  return builtInTools;
 }

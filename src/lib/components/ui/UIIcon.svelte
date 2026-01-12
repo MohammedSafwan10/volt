@@ -103,7 +103,12 @@
     | 'sparkle'
     | 'robot'
     | 'send'
-    | 'image';
+    | 'image'
+    // MCP / Connections
+    | 'plug'
+    | 'check-circle'
+    | 'circle'
+    | 'wrench';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -204,6 +209,11 @@
     robot: 'codicon:robot',
     send: 'codicon:send',
     image: 'codicon:file-media',
+    // MCP / Connections
+    plug: 'codicon:plug',
+    'check-circle': 'codicon:pass-filled',
+    circle: 'codicon:circle-outline',
+    wrench: 'codicon:wrench',
   };
 
   interface Props {

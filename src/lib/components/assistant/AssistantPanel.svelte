@@ -30,7 +30,7 @@
     formatSmartContext,
   } from "$lib/services/ai/context";
   import {
-    getToolsForMode,
+    getAllToolsForMode,
     validateToolCall as validateTool,
     executeToolCall,
   } from "$lib/services/ai/tools";
@@ -249,8 +249,8 @@
     // Add user message with content AND smart context as reference
     assistantStore.addUserMessage(content, context, contextBlock);
 
-    // Get tools for current mode
-    const tools = getToolsForMode(assistantStore.currentMode);
+    // Get tools for current mode (includes MCP tools in agent mode)
+    const tools = getAllToolsForMode(assistantStore.currentMode);
 
     // Tool loop: keep streaming until model finishes without tool calls
     try {
@@ -269,7 +269,7 @@
    */
   async function runToolLoop(
     systemPrompt: string,
-    tools: ReturnType<typeof getToolsForMode>,
+    tools: ReturnType<typeof getAllToolsForMode>,
     controller: AbortController,
     maxIterations = 30, // Increased from 20 to handle complex tasks like Kiro
   ): Promise<void> {

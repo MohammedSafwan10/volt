@@ -33,6 +33,7 @@ export interface FileChangeBatchEvent {
 // State
 let currentWorkspace: string | null = null;
 let unlistenChange: UnlistenFn | null = null;
+let pausedWorkspace: string | null = null;
 
 // Callbacks for external consumers
 type ChangeHandler = (batch: FileChangeBatchEvent) => void;
@@ -100,6 +101,28 @@ export async function stopWatching(): Promise<void> {
       // Ignore errors when stopping
     }
     currentWorkspace = null;
+  }
+}
+
+/**
+ * Temporarily pause file watching (for file move operations on Windows)
+ * Returns true if watching was paused, false if not watching
+ */
+export async function pauseWatching(): Promise<boolean> {
+  if (!currentWorkspace) return false;
+  
+  pausedWorkspace = currentWorkspace;
+  await stopWatching();
+  return true;
+}
+
+/**
+ * Resume file watching after a pause
+ */
+export async function resumeWatching(): Promise<void> {
+  if (pausedWorkspace) {
+    await startWatching(pausedWorkspace);
+    pausedWorkspace = null;
   }
 }
 

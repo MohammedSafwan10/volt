@@ -7,6 +7,7 @@
   import { SearchPanel } from '$lib/components/search';
   import { GitPanel } from '$lib/components/git';
   import SettingsPanel from './SettingsPanel.svelte';
+  import McpPanel from '$lib/components/mcp/McpPanel.svelte';
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -26,6 +27,8 @@
         return 'EXTENSIONS';
       case 'settings':
         return 'SETTINGS';
+      case 'mcp':
+        return 'MCP SERVERS';
       default:
         return '';
     }
@@ -66,6 +69,8 @@
         <ExtensionsPanel />
       {:else if uiStore.activeSidebarPanel === 'settings'}
         <SettingsPanel />
+      {:else if uiStore.activeSidebarPanel === 'mcp'}
+        <McpPanel />
       {/if}
     </div>
   </div>

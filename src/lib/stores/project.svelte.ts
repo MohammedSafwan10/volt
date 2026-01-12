@@ -27,6 +27,7 @@ import {
   onFileChange,
   type FileChangeBatchEvent,
 } from '$lib/services/file-watch';
+import { mcpStore } from './mcp.svelte';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
 import type { FileEntry } from '$lib/types/files';
@@ -120,6 +121,9 @@ class ProjectStore {
 
     // Initialize LSP registry with new project root
     initLspRegistry(path);
+
+    // Initialize MCP servers with workspace path
+    void mcpStore.initialize(path);
 
     // Start file watching for incremental index updates
     await this.startFileWatching(path);
@@ -423,6 +427,9 @@ class ProjectStore {
 
     // Stop all LSP servers when closing project
     await this.stopLspServers();
+
+    // Stop all MCP servers
+    await mcpStore.cleanup();
 
     // Cancel file indexing and clear the index
     await clearIndex(false);

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { dirname, join } from '@tauri-apps/api/path';
   import { projectStore, type TreeNode } from '$lib/stores/project.svelte';
+  import { editorStore } from '$lib/stores/editor.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { ConfirmModal, UIIcon } from '$lib/components/ui';
   import {
@@ -12,6 +13,7 @@
     renamePath,
     getFileInfo
   } from '$lib/services/file-system';
+  import { pauseWatching, resumeWatching } from '$lib/services/file-watch';
   import FileTreeItem from './FileTreeItem.svelte';
 
   interface Props {
@@ -600,8 +602,44 @@
       return;
     }
 
+    // Close any open files from the source path to release Windows file handles
+    // This prevents PermissionDenied errors when moving folders/files
+    const filesToClose: string[] = [];
+    if (sourceNode.isDir) {
+      // For folders, close all files inside the folder
+      for (const f of editorStore.openFiles) {
+        const normalizedFilePath = f.path.replace(/\\/g, '/');
+        if (normalizedFilePath.startsWith(normalizedSource + '/')) {
+          filesToClose.push(f.path);
+        }
+      }
+    } else {
+      // For single files, check if this exact file is open
+      const openFile = editorStore.openFiles.find(
+        f => f.path.replace(/\\/g, '/') === normalizedSource
+      );
+      if (openFile) {
+        filesToClose.push(openFile.path);
+      }
+    }
+    
+    // Close files (force close to avoid unsaved changes prompts during move)
+    for (const filePath of filesToClose) {
+      editorStore.closeFile(filePath, true);
+    }
+
+    // Pause file watcher to release handles on Windows
+    await pauseWatching();
+    
+    // Small delay to let OS release handles
+    await new Promise(resolve => setTimeout(resolve, 50));
+
     // Execute move
     const ok = await renamePath(sourcePath, newPath);
+    
+    // Resume file watcher
+    await resumeWatching();
+    
     if (!ok) {
       return; // Error already shown by renamePath
     }

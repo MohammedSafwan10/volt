@@ -441,6 +441,26 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), FileE
             }
         }
 
+        // On Windows, file operations can fail with PermissionDenied if file watchers
+        // or other processes have handles open. Retry with exponential backoff.
+        #[cfg(windows)]
+        {
+            let mut last_error = None;
+            for attempt in 0..5 {
+                match fs::rename(&old_path_buf, &new_path_buf) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 4 => {
+                        last_error = Some(e);
+                        // Exponential backoff: 50ms, 100ms, 200ms, 400ms
+                        std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
+                    }
+                    Err(e) => return Err(io_error_with_path(e, &old_clone)),
+                }
+            }
+            return Err(io_error_with_path(last_error.unwrap(), &old_clone));
+        }
+
+        #[cfg(not(windows))]
         fs::rename(&old_path_buf, &new_path_buf).map_err(|e| io_error_with_path(e, &old_clone))
     })
     .await

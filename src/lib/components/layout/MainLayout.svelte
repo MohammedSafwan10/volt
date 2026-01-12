@@ -32,6 +32,7 @@
   } from '$lib/services/auto-save';
   import { disposeLspRegistry } from '$lib/services/lsp/sidecar';
   import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
+  import { mcpStore } from '$lib/stores/mcp.svelte';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -122,11 +123,16 @@
     void loadXterm();
     initAutoSave();
     logOutput('Volt', 'Auto-save initialized');
+    
+    // Initialize MCP servers (global, works without project)
+    logOutput('Volt', 'Initializing MCP servers...');
+    void mcpStore.initialize();
 
     // Handle window beforeunload to clean up LSP servers
     const handleBeforeUnload = () => {
       // Synchronously trigger cleanup - browser may not wait for async
       void disposeLspRegistry();
+      void mcpStore.cleanup();
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     

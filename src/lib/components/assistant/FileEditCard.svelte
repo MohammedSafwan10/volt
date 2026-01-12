@@ -1,9 +1,7 @@
 <script lang="ts">
   /**
-   * FileEditCard - Kiro-style file edit display
-   * Single edit: ✓ Accepted edits to [filename] [View diff] [↩ Revert]
-   * Grouped edits: ▼ 3 edits to file [filename] [View diff] [↩ Revert]
-   *   └─ Expanded shows individual edits with their own buttons
+   * FileEditCard - Clean file edit display card
+   * Shows: ✓ Edited filename.ext [diff] [revert]
    */
   import { UIIcon } from '$lib/components/ui';
   import type { ToolCall } from '$lib/stores/assistant.svelte';
@@ -11,11 +9,10 @@
   interface Props {
     toolCall: ToolCall;
     groupedToolCalls?: ToolCall[];
-    onViewDiff?: (tc: ToolCall) => void;
+    onViewDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
     onRevert?: (tc: ToolCall) => void;
     onUndoRevert?: (tc: ToolCall) => void;
     isReverted?: boolean;
-    // Track which individual edits are reverted (for grouped)
     revertedIds?: Set<string>;
   }
 
@@ -31,7 +28,6 @@
 
   const allToolCalls = $derived([toolCall, ...groupedToolCalls]);
   const isGrouped = $derived(groupedToolCalls.length > 0);
-  
   let isExpanded = $state(false);
   
   const successCount = $derived(allToolCalls.filter(tc => tc.status === 'completed').length);
@@ -45,21 +41,15 @@
     return path.split('/').pop() || path.split('\\').pop() || path;
   });
 
-  const fileExt = $derived.by(() => {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ext;
-  });
+  const fileExt = $derived(filename.split('.').pop()?.toLowerCase() || '');
 
-  // Check if a specific tool call can be reverted
   function canRevertEdit(tc: ToolCall): boolean {
-    if (tc.status !== 'completed') return false;
-    if (revertedIds.has(tc.id)) return false;
+    if (tc.status !== 'completed' || revertedIds.has(tc.id)) return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     return typeof fileEdit?.beforeContent === 'string';
   }
 
-  // Check if a specific tool call can show diff
   function canViewDiffEdit(tc: ToolCall): boolean {
     if (tc.status !== 'completed') return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
@@ -69,350 +59,238 @@
 
   const canRevert = $derived(allToolCalls.some(tc => canRevertEdit(tc)));
   const canViewDiffAny = $derived(allToolCalls.some(tc => canViewDiffEdit(tc)));
-
   const hasAnyComplete = $derived(successCount > 0);
-  const hasAnyFailed = $derived(failedCount > 0);
   const isAllRunning = $derived(runningCount > 0 && successCount === 0 && failedCount === 0);
   const isAllFailed = $derived(failedCount > 0 && successCount === 0);
 
-  function getSingleEditText(tc: ToolCall): string {
-    if (revertedIds.has(tc.id)) return 'Reverted';
-    if (tc.status === 'failed') return 'Failed to edit';
-    if (tc.status === 'running') return 'Editing';
+  function getStatusText(): string {
+    if (isReverted) return 'Reverted';
+    if (isAllRunning) return 'Editing';
+    if (isAllFailed) return 'Failed';
     
-    switch (tc.name) {
-      case 'write_file':
-        const meta = tc.meta as Record<string, unknown> | undefined;
-        const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-        return fileEdit?.isNewFile ? 'Created' : 'Accepted edits to';
-      case 'str_replace':
-      case 'apply_edit':
-        return 'Accepted edits to';
-      case 'append_file':
-        return 'Appended to';
-      case 'create_file':
-        return 'Created';
-      default:
-        return 'Modified';
-    }
+    const meta = toolCall.meta as Record<string, unknown> | undefined;
+    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+    if (fileEdit?.isNewFile) return 'Created';
+    return 'Edited';
   }
 
-  const headerText = $derived.by(() => {
-    if (isReverted) return `Reverted ${totalCount} edits to`;
-    if (isAllRunning) return `Editing`;
-    if (isAllFailed) return `${totalCount} edits failed to`;
-    if (!isGrouped) return getSingleEditText(toolCall);
-    
-    if (hasAnyFailed && hasAnyComplete) {
-      return `${successCount}/${totalCount} edits to`;
-    }
-    return `${totalCount} edits to`;
-  });
-
-  const firstError = $derived.by(() => {
-    const failed = allToolCalls.find(tc => tc.status === 'failed' && tc.error);
-    return failed?.error;
-  });
-
-  // Get error count from meta (for showing in UI)
-  const errorCount = $derived.by(() => {
-    let total = 0;
-    for (const tc of allToolCalls) {
-      const meta = tc.meta as Record<string, unknown> | undefined;
-      const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-      const count = fileEdit?.errorCount as number | undefined;
-      if (typeof count === 'number') total += count;
-    }
-    return total;
-  });
+  const statusText = $derived(getStatusText());
+  const firstError = $derived(allToolCalls.find(tc => tc.status === 'failed' && tc.error)?.error);
 </script>
 
-<div class="file-edit-card" class:failed={isAllFailed} class:partial-fail={hasAnyFailed && hasAnyComplete} class:running={isAllRunning} class:reverted={isReverted} class:grouped={isGrouped}>
-  <!-- Main header row -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="card-header" class:expandable={isGrouped} onclick={isGrouped ? () => isExpanded = !isExpanded : undefined} role={isGrouped ? "button" : undefined}>
-    {#if isGrouped}
-      <button class="expand-btn" type="button" tabindex="-1">
-        <UIIcon name={isExpanded ? "chevron-down" : "chevron-right"} size={12} />
-      </button>
-    {:else}
-      <span class="status-icon" class:success={hasAnyComplete && !isAllFailed && !isReverted}>
-        {#if isAllRunning}
-          <UIIcon name="spinner" size={14} />
-        {:else if isAllFailed}
-          <UIIcon name="error" size={14} />
-        {:else if isReverted}
-          <UIIcon name="undo" size={14} />
-        {:else}
-          <UIIcon name="check" size={14} />
-        {/if}
-      </span>
-    {/if}
-
-    <span class="action-text">{headerText}</span>
-
-    <span class="file-badge" data-ext={fileExt}>
-      <UIIcon name="file" size={12} />
-      <span class="file-name">{filename}</span>
-    </span>
-
-    {#if errorCount > 0}
-      <span class="error-badge" title="{errorCount} error{errorCount > 1 ? 's' : ''} found">
-        <UIIcon name="warning" size={10} />
-        <span>{errorCount}</span>
-      </span>
-    {/if}
-
-    <span class="spacer"></span>
-
-    <!-- Header action buttons (for non-grouped or grouped header) -->
-    {#if !isGrouped && hasAnyComplete && !isAllFailed}
-      {#if isReverted}
-        {#if onUndoRevert}
-          <button class="action-btn undo-revert" onclick={(e) => { e.stopPropagation(); onUndoRevert(toolCall); }} type="button" title="Restore AI changes">
-            <UIIcon name="redo" size={12} />
-          </button>
-        {/if}
+<div 
+  class="edit-card" 
+  class:success={hasAnyComplete && !isAllFailed && !isReverted}
+  class:failed={isAllFailed}
+  class:running={isAllRunning}
+  class:reverted={isReverted}
+>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
+  <div class="card-row" role={isGrouped ? "button" : undefined} onclick={isGrouped ? () => isExpanded = !isExpanded : undefined}>
+    <!-- Status indicator -->
+    <div class="status-dot">
+      {#if isAllRunning}
+        <span class="dot running"></span>
+      {:else if isAllFailed}
+        <span class="dot failed"></span>
+      {:else if isReverted}
+        <span class="dot reverted"></span>
       {:else}
-        {#if canViewDiffAny && onViewDiff}
-          <button class="action-btn view-diff" onclick={(e) => { e.stopPropagation(); onViewDiff(toolCall); }} type="button" title="View diff">
-            <UIIcon name="replace" size={12} />
-          </button>
-        {/if}
-        {#if canRevert && onRevert}
-          <button class="action-btn revert" onclick={(e) => { e.stopPropagation(); onRevert(toolCall); }} type="button" title="Revert changes">
-            <UIIcon name="undo" size={12} />
-          </button>
+        <span class="dot success"></span>
+      {/if}
+    </div>
+
+    <!-- Main content -->
+    <div class="content">
+      <span class="status-text">{statusText}</span>
+      <span class="filename" data-ext={fileExt}>{filename}</span>
+      {#if isGrouped}
+        <span class="edit-count">+{groupedToolCalls.length}</span>
+      {/if}
+    </div>
+
+    <!-- Actions -->
+    <div class="actions">
+      {#if hasAnyComplete && !isAllFailed}
+        {#if isReverted}
+          {#if onUndoRevert}
+            <button class="action-btn restore" onclick={(e) => { e.stopPropagation(); onUndoRevert(toolCall); }} title="Restore changes">
+              <UIIcon name="redo" size={14} />
+            </button>
+          {/if}
+        {:else}
+          {#if canViewDiffAny && onViewDiff}
+            <button class="action-btn diff" onclick={(e) => { e.stopPropagation(); onViewDiff(toolCall, isGrouped ? allToolCalls : undefined); }} title="View diff">
+              <UIIcon name="replace" size={14} />
+            </button>
+          {/if}
+          {#if canRevert && onRevert}
+            <button class="action-btn revert" onclick={(e) => { e.stopPropagation(); onRevert(toolCall); }} title="Revert">
+              <UIIcon name="undo" size={14} />
+            </button>
+          {/if}
         {/if}
       {/if}
-    {/if}
+      {#if isGrouped}
+        <button class="action-btn expand" class:expanded={isExpanded}>
+          <UIIcon name="chevron-down" size={12} />
+        </button>
+      {/if}
+    </div>
   </div>
 
-  <!-- Expanded content for grouped edits -->
+  <!-- Expanded list for grouped edits -->
   {#if isGrouped && isExpanded}
-    <div class="grouped-edits">
-      {#each allToolCalls as tc (tc.id)}
-        {@const isEditReverted = revertedIds.has(tc.id)}
-        <div class="edit-item" class:failed={tc.status === 'failed'} class:running={tc.status === 'running'} class:reverted={isEditReverted}>
-          <span class="edit-status">
-            {#if tc.status === 'running'}
-              <UIIcon name="spinner" size={12} />
-            {:else if tc.status === 'failed'}
-              <UIIcon name="error" size={12} />
-            {:else if isEditReverted}
-              <UIIcon name="undo" size={12} />
-            {:else}
-              <UIIcon name="check" size={12} />
-            {/if}
-          </span>
-          <span class="edit-text">{getSingleEditText(tc)}</span>
-          <span class="edit-file">{filename}</span>
-          
-          <span class="edit-spacer"></span>
-          
-          <!-- Individual edit action buttons -->
-          {#if tc.status === 'completed'}
-            {#if isEditReverted}
-              {#if onUndoRevert}
-                <button class="edit-action-btn undo" onclick={() => onUndoRevert(tc)} type="button" title="Restore this edit">
-                  <UIIcon name="redo" size={10} />
-                </button>
-              {/if}
-            {:else}
-              {#if canViewDiffEdit(tc) && onViewDiff}
-                <button class="edit-action-btn diff" onclick={() => onViewDiff(tc)} type="button" title="View diff">
-                  <UIIcon name="replace" size={10} />
-                </button>
-              {/if}
-              {#if canRevertEdit(tc) && onRevert}
-                <button class="edit-action-btn revert" onclick={() => onRevert(tc)} type="button" title="Revert this edit">
-                  <UIIcon name="undo" size={10} />
-                </button>
+    <div class="expanded-list">
+      {#each allToolCalls as tc, i (tc.id)}
+        {@const tcReverted = revertedIds.has(tc.id)}
+        <div class="sub-item" class:reverted={tcReverted}>
+          <span class="sub-index">{i + 1}.</span>
+          <span class="sub-status">{tcReverted ? 'Reverted' : tc.status === 'failed' ? 'Failed' : 'Edited'}</span>
+          <div class="sub-actions">
+            {#if tc.status === 'completed'}
+              {#if tcReverted}
+                {#if onUndoRevert}
+                  <button class="sub-btn" onclick={() => onUndoRevert(tc)} title="Restore">
+                    <UIIcon name="redo" size={12} />
+                  </button>
+                {/if}
+              {:else}
+                {#if canViewDiffEdit(tc) && onViewDiff}
+                  <button class="sub-btn" onclick={() => onViewDiff(tc)} title="Diff">
+                    <UIIcon name="replace" size={12} />
+                  </button>
+                {/if}
+                {#if canRevertEdit(tc) && onRevert}
+                  <button class="sub-btn" onclick={() => onRevert(tc)} title="Revert">
+                    <UIIcon name="undo" size={12} />
+                  </button>
+                {/if}
               {/if}
             {/if}
-          {/if}
-          
-          {#if tc.status === 'failed' && tc.error}
-            <div class="edit-error">{tc.error.split('\n')[0]}</div>
-          {/if}
+          </div>
         </div>
       {/each}
     </div>
   {/if}
 
-  <!-- Error summary for non-grouped failed edits -->
-  {#if !isGrouped && isAllFailed && firstError}
-    <div class="error-message">{firstError}</div>
+  <!-- Error message -->
+  {#if isAllFailed && firstError}
+    <div class="error-row">{firstError.split('\n')[0]}</div>
   {/if}
 </div>
 
 <style>
-  .file-edit-card {
-    margin: 8px 0;
-    border-radius: 6px;
+  .edit-card {
+    border-radius: 8px;
     background: var(--color-surface0);
-    border: 1px solid var(--color-success);
+    border: 1px solid var(--color-border);
     overflow: hidden;
+    transition: border-color 0.15s ease;
   }
 
-  .file-edit-card.grouped {
-    border-color: var(--color-border);
+  .edit-card.success { border-left: 3px solid var(--color-success); }
+  .edit-card.failed { border-left: 3px solid var(--color-error); }
+  .edit-card.running { border-left: 3px solid var(--color-accent); }
+  .edit-card.reverted { border-left: 3px solid var(--color-warning); opacity: 0.8; }
+
+  .card-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    cursor: default;
   }
 
-  .file-edit-card.failed {
-    border-color: var(--color-error);
+  .edit-card:has(.edit-count) .card-row { cursor: pointer; }
+  .edit-card:has(.edit-count) .card-row:hover { background: var(--color-hover); }
+
+  .status-dot {
+    flex-shrink: 0;
   }
 
-  .file-edit-card.partial-fail {
-    border-color: var(--color-warning);
+  .dot {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
 
-  .file-edit-card.running {
-    border-color: var(--color-accent);
+  .dot.success { background: var(--color-success); }
+  .dot.failed { background: var(--color-error); }
+  .dot.reverted { background: var(--color-warning); }
+  .dot.running {
+    background: var(--color-accent);
+    animation: pulse 1.2s ease-in-out infinite;
   }
 
-  .file-edit-card.reverted {
-    border-color: var(--color-warning);
-    opacity: 0.7;
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
   }
 
-  .card-header {
+  .content {
+    flex: 1;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
+    min-width: 0;
   }
 
-  .card-header.expandable {
-    cursor: pointer;
-  }
-
-  .card-header.expandable:hover {
-    background: var(--color-hover);
-  }
-
-  .expand-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 4px;
-    color: var(--color-text-secondary);
-    background: transparent;
-    transition: all 0.15s ease;
-    pointer-events: none;
-  }
-
-  .status-icon {
-    display: flex;
-    align-items: center;
-    color: var(--color-text-secondary);
-  }
-
-  .status-icon.success {
-    color: var(--color-success);
-  }
-
-  .file-edit-card.failed .status-icon {
-    color: var(--color-error);
-  }
-
-  .file-edit-card.running .status-icon {
-    color: var(--color-accent);
-  }
-
-  .file-edit-card.running .status-icon :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
-  .action-text {
+  .status-text {
     font-size: 12px;
-    color: var(--color-text);
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
   }
 
-  .file-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+  .filename {
+    font-size: 12px;
+    font-family: var(--font-mono, monospace);
+    font-weight: 500;
+    color: var(--color-text);
     padding: 2px 8px;
     border-radius: 4px;
     background: var(--color-surface1);
-    font-size: 11px;
-    font-family: monospace;
-    color: var(--color-text);
-  }
-
-  .file-badge[data-ext="ts"],
-  .file-badge[data-ext="tsx"] {
-    background: color-mix(in srgb, #3178c6 20%, var(--color-surface1));
-    color: #3178c6;
-  }
-
-  .file-badge[data-ext="js"],
-  .file-badge[data-ext="jsx"] {
-    background: color-mix(in srgb, #f7df1e 15%, var(--color-surface1));
-    color: #f7df1e;
-  }
-
-  .file-badge[data-ext="svelte"] {
-    background: color-mix(in srgb, #ff3e00 15%, var(--color-surface1));
-    color: #ff3e00;
-  }
-
-  .file-badge[data-ext="css"],
-  .file-badge[data-ext="scss"] {
-    background: color-mix(in srgb, #264de4 15%, var(--color-surface1));
-    color: #264de4;
-  }
-
-  .file-badge[data-ext="json"] {
-    background: color-mix(in srgb, #cbcb41 15%, var(--color-surface1));
-    color: #cbcb41;
-  }
-
-  .file-name {
-    max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .error-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
+  /* File type colors */
+  .filename[data-ext="ts"], .filename[data-ext="tsx"] { color: #3178c6; }
+  .filename[data-ext="js"], .filename[data-ext="jsx"] { color: #f0db4f; }
+  .filename[data-ext="svelte"] { color: #ff3e00; }
+  .filename[data-ext="css"], .filename[data-ext="scss"] { color: #42a5f5; }
+  .filename[data-ext="json"] { color: #fbc02d; }
+  .filename[data-ext="html"] { color: #e44d26; }
+  .filename[data-ext="md"] { color: #42a5f5; }
+  .filename[data-ext="rs"] { color: #dea584; }
+  .filename[data-ext="py"] { color: #3572A5; }
+
+  .edit-count {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    background: var(--color-surface1);
     padding: 2px 6px;
     border-radius: 10px;
-    background: color-mix(in srgb, var(--color-error) 20%, transparent);
-    color: var(--color-error);
-    font-size: 10px;
-    font-weight: 500;
   }
 
-  .error-badge :global(svg) {
-    flex-shrink: 0;
-  }
-
-  .spacer {
-    flex: 1;
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
   }
 
   .action-btn {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 11px;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
     color: var(--color-text-secondary);
     background: transparent;
-    transition: all 0.15s ease;
+    transition: all 0.12s ease;
   }
 
   .action-btn:hover {
@@ -420,96 +298,57 @@
     color: var(--color-text);
   }
 
-  .action-btn.view-diff {
-    color: var(--color-accent);
+  .action-btn.diff:hover { color: var(--color-accent); }
+  .action-btn.revert:hover { color: var(--color-warning); }
+  .action-btn.restore { color: var(--color-success); }
+  .action-btn.restore:hover { background: color-mix(in srgb, var(--color-success) 15%, transparent); }
+
+  .action-btn.expand {
+    width: 20px;
+    height: 20px;
+    transition: transform 0.15s ease;
   }
 
-  .action-btn.view-diff:hover {
-    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  }
+  .action-btn.expand.expanded { transform: rotate(180deg); }
 
-  .action-btn.revert:hover {
-    background: color-mix(in srgb, var(--color-warning) 15%, transparent);
-    color: var(--color-warning);
-  }
-
-  .action-btn.undo-revert {
-    color: var(--color-success);
-  }
-
-  .action-btn.undo-revert:hover {
-    background: color-mix(in srgb, var(--color-success) 15%, transparent);
-  }
-
-  /* Grouped edits dropdown */
-  .grouped-edits {
+  /* Expanded list */
+  .expanded-list {
     border-top: 1px solid var(--color-border);
-    padding: 4px 8px 8px 32px;
+    padding: 6px 12px 8px 30px;
     display: flex;
     flex-direction: column;
     gap: 4px;
   }
 
-  .edit-item {
+  .sub-item {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 10px;
+    gap: 8px;
+    padding: 4px 8px;
     border-radius: 4px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-success);
     font-size: 11px;
   }
 
-  .edit-item.failed {
-    border-color: var(--color-error);
+  .sub-item:hover { background: var(--color-hover); }
+  .sub-item.reverted { opacity: 0.6; }
+
+  .sub-index {
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono, monospace);
+    min-width: 18px;
   }
 
-  .edit-item.running {
-    border-color: var(--color-accent);
-  }
-
-  .edit-item.reverted {
-    border-color: var(--color-warning);
-    opacity: 0.7;
-  }
-
-  .edit-status {
-    display: flex;
-    color: var(--color-success);
-  }
-
-  .edit-item.failed .edit-status {
-    color: var(--color-error);
-  }
-
-  .edit-item.running .edit-status {
-    color: var(--color-accent);
-  }
-
-  .edit-item.reverted .edit-status {
-    color: var(--color-warning);
-  }
-
-  .edit-item.running .edit-status :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-
-  .edit-text {
+  .sub-status {
+    flex: 1;
     color: var(--color-text);
   }
 
-  .edit-file {
-    color: var(--color-text-secondary);
-    font-family: monospace;
+  .sub-actions {
+    display: flex;
+    gap: 2px;
   }
 
-  .edit-spacer {
-    flex: 1;
-  }
-
-  .edit-action-btn {
+  .sub-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -517,54 +356,21 @@
     height: 22px;
     border-radius: 4px;
     color: var(--color-text-secondary);
-    background: transparent;
-    transition: all 0.15s ease;
+    transition: all 0.12s ease;
   }
 
-  .edit-action-btn:hover {
+  .sub-btn:hover {
     background: var(--color-surface1);
     color: var(--color-text);
   }
 
-  .edit-action-btn.diff {
-    color: var(--color-accent);
-  }
-
-  .edit-action-btn.diff:hover {
-    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  }
-
-  .edit-action-btn.revert:hover {
-    background: color-mix(in srgb, var(--color-warning) 15%, transparent);
-    color: var(--color-warning);
-  }
-
-  .edit-action-btn.undo {
-    color: var(--color-success);
-  }
-
-  .edit-action-btn.undo:hover {
-    background: color-mix(in srgb, var(--color-success) 15%, transparent);
-  }
-
-  .edit-error {
-    width: 100%;
-    margin-top: 4px;
-    padding: 4px 6px;
-    background: color-mix(in srgb, var(--color-error) 10%, transparent);
-    border-radius: 3px;
-    color: var(--color-error);
-    font-size: 10px;
-    font-family: monospace;
-  }
-
-  .error-message {
+  /* Error row */
+  .error-row {
     padding: 8px 12px;
     font-size: 11px;
+    font-family: var(--font-mono, monospace);
     color: var(--color-error);
-    background: color-mix(in srgb, var(--color-error) 10%, var(--color-bg));
+    background: color-mix(in srgb, var(--color-error) 8%, transparent);
     border-top: 1px solid var(--color-border);
-    font-family: monospace;
-    white-space: pre-wrap;
   }
 </style>

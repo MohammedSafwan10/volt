@@ -219,6 +219,15 @@ This is slower but MUCH more reliable than batching edits.
 | list_processes | See running background processes |
 | get_process_output | Check output from background process |
 
+## MCP TOOLS
+
+You may have access to additional tools from MCP (Model Context Protocol) servers.
+These tools are prefixed with "mcp_" followed by the server name and tool name.
+Example: mcp_weather_get_forecast, mcp_database_query
+
+MCP tools work like built-in tools - call them when needed for their specific functionality.
+Check tool descriptions to understand what each MCP tool does.
+
 ## TERMINAL TOOLS
 
 **run_command** - For commands that complete quickly:

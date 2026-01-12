@@ -4,6 +4,9 @@
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
   import { openDiffView } from "$lib/services/diff-view";
+  import { writeFile } from "$lib/services/file-system";
+  import { showToast } from "$lib/stores/toast.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
 
   interface Props {
     message: AssistantMessage;
@@ -14,6 +17,9 @@
   }
 
   let { message, msgIdx, onToolApprove, onToolDeny, elapsedTime }: Props = $props();
+
+  // Track reverted tool calls
+  let revertedIds = $state<Set<string>>(new Set());
 
   const FILE_EDIT_TOOLS = ['write_file', 'str_replace', 'apply_edit', 'append_file', 'create_file', 'replace_lines', 'multi_replace_file_content'];
 
@@ -66,7 +72,35 @@
     return false;
   }
 
-  async function handleViewDiff(toolCall: ToolCall): Promise<void> {
+  async function handleViewDiff(toolCall: ToolCall, allToolCalls?: ToolCall[]): Promise<void> {
+    // If multiple tool calls provided (grouped edits), show combined diff
+    if (allToolCalls && allToolCalls.length > 1) {
+      // Get the first tool call's beforeContent as the original
+      const firstMeta = allToolCalls[0].meta as Record<string, unknown> | undefined;
+      const firstFileEdit = firstMeta?.fileEdit as Record<string, unknown> | undefined;
+      const originalContent = firstFileEdit?.beforeContent as string | undefined;
+      
+      // Get the last tool call's afterContent as the final result
+      const lastMeta = allToolCalls[allToolCalls.length - 1].meta as Record<string, unknown> | undefined;
+      const lastFileEdit = lastMeta?.fileEdit as Record<string, unknown> | undefined;
+      
+      const path = toolCall.arguments.path as string || firstFileEdit?.relativePath as string || '';
+      const absolutePath = firstFileEdit?.absolutePath as string | undefined;
+      
+      if (!path && !absolutePath) return;
+      
+      // Pass combined info - the diff view will show original vs final
+      await openDiffView({ 
+        path, 
+        absolutePath,
+        originalContent,
+        // Use a combined ID for the grouped diff
+        toolCallIds: allToolCalls.map(tc => tc.id)
+      }, `grouped-${allToolCalls.map(tc => tc.id).join('-')}`);
+      return;
+    }
+    
+    // Single tool call - show individual diff
     const meta = toolCall.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     const path = toolCall.arguments.path as string || fileEdit?.relativePath as string || '';
@@ -75,6 +109,66 @@
     const lastChangedLine = fileEdit?.lastChangedLine as number | undefined;
     if (!path && !absolutePath) return;
     await openDiffView({ path, absolutePath, firstChangedLine, lastChangedLine }, toolCall.id);
+  }
+
+  async function handleRevert(toolCall: ToolCall): Promise<void> {
+    const meta = toolCall.meta as Record<string, unknown> | undefined;
+    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+    const beforeContent = fileEdit?.beforeContent as string | undefined;
+    const absolutePath = fileEdit?.absolutePath as string | undefined;
+    
+    if (typeof beforeContent !== 'string' || !absolutePath) {
+      showToast({ message: 'Cannot revert: original content not available', type: 'error' });
+      return;
+    }
+
+    // Store current content for undo
+    const afterContent = fileEdit?.afterContent as string | undefined;
+    if (afterContent !== undefined) {
+      // Store in meta for undo
+      (fileEdit as Record<string, unknown>).revertedContent = afterContent;
+    }
+
+    // Write the original content back
+    const success = await writeFile(absolutePath, beforeContent);
+    if (success) {
+      revertedIds = new Set([...revertedIds, toolCall.id]);
+      showToast({ message: 'Changes reverted', type: 'success' });
+      
+      // Reload file in editor if open
+      await editorStore.reloadFile(absolutePath);
+    } else {
+      showToast({ message: 'Failed to revert changes', type: 'error' });
+    }
+  }
+
+  async function handleUndoRevert(toolCall: ToolCall): Promise<void> {
+    const meta = toolCall.meta as Record<string, unknown> | undefined;
+    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+    const afterContent = fileEdit?.afterContent as string | undefined;
+    const revertedContent = fileEdit?.revertedContent as string | undefined;
+    const absolutePath = fileEdit?.absolutePath as string | undefined;
+    
+    const contentToRestore = revertedContent ?? afterContent;
+    
+    if (typeof contentToRestore !== 'string' || !absolutePath) {
+      showToast({ message: 'Cannot restore: content not available', type: 'error' });
+      return;
+    }
+
+    // Write the AI content back
+    const success = await writeFile(absolutePath, contentToRestore);
+    if (success) {
+      const newSet = new Set(revertedIds);
+      newSet.delete(toolCall.id);
+      revertedIds = newSet;
+      showToast({ message: 'Changes restored', type: 'success' });
+      
+      // Reload file in editor if open
+      await editorStore.reloadFile(absolutePath);
+    } else {
+      showToast({ message: 'Failed to restore changes', type: 'error' });
+    }
   }
 
   const contentParts = $derived(getContentParts(message));
@@ -102,7 +196,15 @@
           <div class="inline-tool-wrapper">
             {#if isFileEditTool(part.toolCall)}
               {@const group = fileEditGroups.get(part.toolCall.id)}
-              <FileEditCard toolCall={part.toolCall} groupedToolCalls={group?.grouped ?? []} onViewDiff={handleViewDiff} />
+              <FileEditCard 
+                toolCall={part.toolCall} 
+                groupedToolCalls={group?.grouped ?? []} 
+                onViewDiff={handleViewDiff}
+                onRevert={handleRevert}
+                onUndoRevert={handleUndoRevert}
+                isReverted={revertedIds.has(part.toolCall.id)}
+                {revertedIds}
+              />
             {:else}
               <InlineToolCall
                 toolCall={part.toolCall}
@@ -139,7 +241,7 @@
         <button class="action-btn" title="Regenerate" type="button"><UIIcon name="refresh" size={12} /></button>
       </div>
       {#if elapsedTime}
-        <div class="elapsed-time"><UIIcon name="clock" size={10} /><span>{elapsedTime}</span></div>
+        <div class="elapsed-time"><UIIcon name="clock" size={10} /><span>Elapsed time: {elapsedTime}</span></div>
       {/if}
     {/if}
   </div>

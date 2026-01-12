@@ -5,6 +5,7 @@ pub mod fs_scope;
 pub mod git;
 pub mod ai;
 pub mod lsp;
+pub mod mcp;
 pub mod search;
 pub mod system;
 pub mod terminal;

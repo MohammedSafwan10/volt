@@ -12,6 +12,7 @@ import { projectStore } from '$lib/stores/project.svelte';
 import { getToolByName, isToolAllowed } from './definitions';
 import { validatePathInWorkspace, type ToolResult } from './utils';
 import { toolHandlers } from './handlers';
+import { isMcpTool, executeMcpTool, isMcpToolAutoApproved, getMcpToolInfo } from './handlers/mcp';
 import type { AIMode } from '$lib/stores/ai.svelte';
 
 // Timeout for tool operations (30 seconds default)
@@ -45,6 +46,22 @@ export function validateToolCall(
   args: Record<string, unknown>,
   mode: AIMode
 ): ToolValidation {
+  // Check if it's an MCP tool
+  if (isMcpTool(toolName)) {
+    // MCP tools are allowed in agent mode only
+    if (mode !== 'agent') {
+      return {
+        valid: false,
+        error: `MCP tools are only available in agent mode`,
+        requiresApproval: false
+      };
+    }
+    
+    // Check if auto-approved
+    const requiresApproval = !isMcpToolAutoApproved(toolName);
+    return { valid: true, requiresApproval };
+  }
+
   // Check if tool exists
   const tool = getToolByName(toolName);
   if (!tool) {
@@ -202,6 +219,11 @@ export async function executeToolCall(
   options: ToolExecutionOptions = {}
 ): Promise<ToolResult> {
   const { signal } = options;
+
+  // Handle MCP tools
+  if (isMcpTool(toolName)) {
+    return executeMcpTool(toolName, args);
+  }
 
   // Get timeout from args or use default
   const requestedTimeout = typeof args.timeout === 'number' ? args.timeout : DEFAULT_TIMEOUT_MS;
