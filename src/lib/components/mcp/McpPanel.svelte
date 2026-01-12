@@ -12,11 +12,14 @@
   let expandedServers = $state<Set<string>>(new Set());
   let configPath = $state<string>('~/.volt/settings/mcp.json');
 
-  // Get actual config path on mount
+  // Get actual config path on mount and auto-open the config file
   onMount(async () => {
     try {
       const path = await invoke<string>('get_mcp_config_path');
       configPath = path.replace(/^[A-Z]:\\Users\\[^\\]+/i, '~').replace(/\\/g, '/');
+      
+      // Auto-open mcp.json in editor when panel opens
+      await editorStore.openFile(path);
     } catch {
       // Keep default
     }

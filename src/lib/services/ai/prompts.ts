@@ -17,6 +17,7 @@ export interface SystemPromptOptions {
   provider: AIProvider;
   model: string;
   workspaceRoot?: string;
+  mcpTools?: Array<{ serverId: string; toolName: string; description?: string }>;
 }
 
 /**
@@ -268,7 +269,7 @@ const PROVIDER_OVERLAYS: Record<AIProvider, string> = {
  * Generate the complete system prompt for a given configuration
  */
 export function getSystemPrompt(options: SystemPromptOptions): string {
-  const { mode, provider, workspaceRoot } = options;
+  const { mode, provider, workspaceRoot, mcpTools } = options;
 
   const parts: string[] = [BASE_PROMPT];
 
@@ -285,7 +286,57 @@ WORKSPACE: ${workspaceRoot}
 All file operations are scoped to this directory.`);
   }
 
+  // Add MCP tools info if available
+  if (mcpTools && mcpTools.length > 0) {
+    const mcpSection = buildMcpToolsSection(mcpTools);
+    parts.push(mcpSection);
+  }
+
   return parts.join('\n\n---\n');
+}
+
+/**
+ * Build MCP tools section for system prompt
+ */
+function buildMcpToolsSection(mcpTools: Array<{ serverId: string; toolName: string; description?: string }>): string {
+  // Group tools by server
+  const byServer = new Map<string, Array<{ toolName: string; description?: string }>>();
+  for (const tool of mcpTools) {
+    const existing = byServer.get(tool.serverId) || [];
+    existing.push({ toolName: tool.toolName, description: tool.description });
+    byServer.set(tool.serverId, existing);
+  }
+
+  let section = `
+# MCP TOOLS (External Capabilities)
+
+You have access to ${mcpTools.length} tools from ${byServer.size} MCP server(s):
+
+`;
+
+  for (const [serverId, tools] of byServer) {
+    section += `## ${serverId}\n`;
+    for (const tool of tools) {
+      const fullName = `mcp_${serverId}_${tool.toolName}`;
+      section += `- **${fullName}**`;
+      if (tool.description) {
+        section += `: ${tool.description.slice(0, 100)}${tool.description.length > 100 ? '...' : ''}`;
+      }
+      section += '\n';
+    }
+    section += '\n';
+  }
+
+  section += `
+**Usage**: Call MCP tools like built-in tools. Example:
+\`\`\`
+mcp_fetch_fetch({ url: "https://example.com" })
+mcp_context7_resolve_library_id({ libraryName: "react" })
+\`\`\`
+
+MCP tools extend your capabilities with external services and APIs.`;
+
+  return section;
 }
 
 /**

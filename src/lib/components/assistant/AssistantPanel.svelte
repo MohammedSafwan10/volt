@@ -234,11 +234,21 @@
     // Get the selected model for the current mode from AI settings
     const selectedModel =
       aiSettingsStore.modelPerMode[assistantStore.currentMode];
+    
+    // Get MCP tools info for system prompt
+    const { mcpStore } = await import('$lib/stores/mcp.svelte');
+    const mcpToolsInfo = mcpStore.tools.map(({ serverId, tool }) => ({
+      serverId,
+      toolName: tool.name,
+      description: tool.description,
+    }));
+    
     let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
       provider: "gemini",
       model: selectedModel,
       workspaceRoot: projectStore.rootPath ?? undefined,
+      mcpTools: mcpToolsInfo.length > 0 ? mcpToolsInfo : undefined,
     });
 
     // Gather smart context (Active file, open tabs, terminal, etc.)
