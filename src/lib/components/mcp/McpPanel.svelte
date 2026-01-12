@@ -5,6 +5,7 @@
   import { UIIcon } from '$lib/components/ui';
   import { mcpStore, type McpServerState } from '$lib/stores/mcp.svelte';
   import { editorStore } from '$lib/stores/editor.svelte';
+  import { assistantStore } from '$lib/stores/assistant.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
 
@@ -304,6 +305,19 @@
           <div class="error-message">
             <UIIcon name="error" size={12} />
             <span>{server.error}</span>
+            <button 
+              class="fix-error-btn" 
+              title="Fix with Volt"
+              onclick={(e) => {
+                e.stopPropagation();
+                const errorMsg = `MCP server "${server.id}" failed to start with error:\n\n${server.error}\n\nPlease help me fix this MCP configuration.`;
+                assistantStore.setInputValue(errorMsg);
+                assistantStore.openPanel();
+              }}
+            >
+              <UIIcon name="sparkles" size={10} />
+              <span>Fix</span>
+            </button>
           </div>
         {/if}
 
@@ -675,6 +689,31 @@
     font-size: 11px;
     color: var(--color-error);
     margin-bottom: 8px;
+    word-break: break-word;
+  }
+
+  .error-message span {
+    flex: 1;
+    user-select: text;
+    cursor: text;
+  }
+
+  .fix-error-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    background: var(--color-accent);
+    color: var(--color-bg);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+
+  .fix-error-btn:hover {
+    filter: brightness(1.1);
   }
 
   .tools-list {

@@ -168,8 +168,22 @@ pub async fn start_mcp_server(
     mcp.states.write().await.insert(server_id.clone(), init_state.clone());
     emit_state(&app, &server_id, &init_state);
 
-    // Spawn process
-    let mut cmd = Command::new(&config.command);
+    // Spawn process - handle Windows command resolution
+    let cmd_name = if cfg!(windows) {
+        // On Windows, resolve .cmd/.bat extensions for npm/npx/yarn etc
+        match config.command.as_str() {
+            "npx" => "npx.cmd".to_string(),
+            "npm" => "npm.cmd".to_string(),
+            "yarn" => "yarn.cmd".to_string(),
+            "pnpm" => "pnpm.cmd".to_string(),
+            "node" => "node.exe".to_string(),
+            other => other.to_string(),
+        }
+    } else {
+        config.command.clone()
+    };
+    
+    let mut cmd = Command::new(&cmd_name);
     cmd.args(&config.args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
