@@ -263,15 +263,45 @@ fn create_terminal_sync(
     let terminal_id_clone = terminal_id.clone();
     let manager_clone = manager.clone();
 
-    // Emit a "ready" event shortly after creation.
-    // This helps the frontend avoid racing terminal writes against PTY/shell initialization.
-    // We delay slightly so the JS side has a chance to register event listeners after the
-    // terminal_create invoke returns.
+    // Emit a "ready" event and trigger initial resize to show prompt.
+    // ConPTY on Windows often needs a resize event to trigger the shell prompt.
+    // We delay to let the shell initialize first.
     {
         let app_ready = app.clone();
         let terminal_id_ready = terminal_id.clone();
+        let manager_ready = manager.clone();
+        let initial_cols = cols;
+        let initial_rows = rows;
+        
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(75));
+            // Wait for shell to initialize
+            thread::sleep(Duration::from_millis(150));
+            
+            // Trigger a resize to force prompt display (ConPTY quirk)
+            // First resize to slightly different size, then back to original
+            if let Ok(mut mgr) = manager_ready.lock() {
+                if let Some(session) = mgr.sessions.get_mut(&terminal_id_ready) {
+                    // Resize to trigger prompt
+                    let _ = session.master.resize(PtySize {
+                        rows: initial_rows,
+                        cols: initial_cols + 1,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                    
+                    thread::sleep(Duration::from_millis(50));
+                    
+                    // Resize back to original
+                    let _ = session.master.resize(PtySize {
+                        rows: initial_rows,
+                        cols: initial_cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
+            }
+            
+            // Emit ready event
             let _ = app_ready.emit(
                 "terminal://ready",
                 TerminalReadyEvent {

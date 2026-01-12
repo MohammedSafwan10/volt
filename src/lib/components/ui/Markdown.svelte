@@ -88,13 +88,13 @@
 <style>
   .markdown {
     font-size: 13px;
-    line-height: 1.6;
+    line-height: 1.5;
     color: var(--color-text);
     word-break: break-word;
   }
 
   .markdown :global(p) {
-    margin: 0 0 8px 0;
+    margin: 0 0 6px 0;
   }
 
   .markdown :global(p:last-child) {
@@ -106,30 +106,40 @@
     margin: 0;
   }
 
+  /* Compact headers - less margin */
   .markdown :global(h1),
   .markdown :global(h2),
   .markdown :global(h3),
   .markdown :global(h4) {
-    margin: 16px 0 8px 0;
+    margin: 10px 0 4px 0;
     font-weight: 600;
     color: var(--color-text);
+    line-height: 1.3;
   }
 
-  .markdown :global(h1) { font-size: 18px; }
-  .markdown :global(h2) { font-size: 16px; }
-  .markdown :global(h3) { font-size: 14px; }
-  .markdown :global(h4) { font-size: 13px; }
+  .markdown :global(h1:first-child),
+  .markdown :global(h2:first-child),
+  .markdown :global(h3:first-child),
+  .markdown :global(h4:first-child) {
+    margin-top: 0;
+  }
 
+  .markdown :global(h1) { font-size: 16px; }
+  .markdown :global(h2) { font-size: 14px; }
+  .markdown :global(h3) { font-size: 13px; }
+  .markdown :global(h4) { font-size: 13px; font-weight: 500; }
+
+  /* Compact lists */
   .markdown :global(ul),
   .markdown :global(ol) {
     margin: 4px 0;
-    padding-left: 18px;
+    padding-left: 16px;
   }
 
   .markdown :global(li) {
-    margin: 2px 0;
+    margin: 1px 0;
     padding: 0;
-    line-height: 1.5;
+    line-height: 1.4;
   }
 
   .markdown :global(li p) {
@@ -140,6 +150,11 @@
   .markdown :global(li > ul),
   .markdown :global(li > ol) {
     margin: 2px 0 2px 0;
+  }
+
+  /* Nested list items even more compact */
+  .markdown :global(li li) {
+    margin: 0;
   }
 
   .markdown :global(a) {
@@ -160,12 +175,13 @@
     font-style: italic;
   }
 
+  /* Compact blockquotes */
   .markdown :global(blockquote) {
-    margin: 8px 0;
-    padding: 8px 12px;
-    border-left: 3px solid var(--color-accent);
+    margin: 6px 0;
+    padding: 6px 10px;
+    border-left: 2px solid var(--color-accent);
     background: var(--color-surface0);
-    border-radius: 0 6px 6px 0;
+    border-radius: 0 4px 4px 0;
   }
 
   .markdown :global(blockquote p) {
@@ -173,25 +189,25 @@
   }
 
   .markdown :global(hr) {
-    margin: 16px 0;
+    margin: 10px 0;
     border: none;
     border-top: 1px solid var(--color-border);
   }
 
-  /* Inline code */
+  /* Inline code - more compact */
   .markdown :global(.inline-code) {
-    padding: 2px 6px;
+    padding: 1px 5px;
     background: var(--color-surface0);
-    border-radius: 4px;
+    border-radius: 3px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 12px;
     color: var(--color-mauve);
   }
 
-  /* Code blocks */
+  /* Code blocks - more compact */
   .markdown :global(.code-block) {
-    margin: 12px 0;
-    border-radius: 8px;
+    margin: 8px 0;
+    border-radius: 6px;
     background: var(--color-mantle);
     border: 1px solid var(--color-border);
     overflow: hidden;
@@ -201,13 +217,13 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 12px;
+    padding: 4px 10px;
     background: var(--color-surface0);
     border-bottom: 1px solid var(--color-border);
   }
 
   .markdown :global(.code-lang) {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     color: var(--color-text-secondary);
     text-transform: uppercase;
@@ -218,10 +234,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 4px;
+    padding: 3px;
     background: transparent;
     border: none;
-    border-radius: 4px;
+    border-radius: 3px;
     color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
@@ -234,29 +250,29 @@
 
   .markdown :global(.code-block pre) {
     margin: 0;
-    padding: 12px;
+    padding: 10px;
     overflow-x: auto;
   }
 
   .markdown :global(.code-block code) {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.4;
     color: var(--color-text);
     white-space: pre;
   }
 
-  /* Tables */
+  /* Tables - more compact */
   .markdown :global(table) {
     width: 100%;
-    margin: 12px 0;
+    margin: 8px 0;
     border-collapse: collapse;
     font-size: 12px;
   }
 
   .markdown :global(th),
   .markdown :global(td) {
-    padding: 8px 12px;
+    padding: 5px 10px;
     border: 1px solid var(--color-border);
     text-align: left;
   }

@@ -62,7 +62,8 @@ export function getTerminalTheme(): XtermTheme {
 	const background = readCssVar('--color-bg', '#1e1e2e');
 	const foreground = readCssVar('--color-text', '#cdd6f4');
 	const cursor = readCssVar('--color-text', '#cdd6f4');
-	const selectionBackground = readCssVar('--color-active', '#45475a');
+	// Use a more subtle selection color (semi-transparent)
+	const selectionBackground = readCssVar('--color-surface1', '#45475a');
 
 	return {
 		background,
@@ -71,6 +72,8 @@ export function getTerminalTheme(): XtermTheme {
 		cursorAccent: background,
 		selectionBackground,
 		selectionForeground: foreground,
+		// Use selectionInactiveBackground for when terminal loses focus
+		selectionInactiveBackground: readCssVar('--color-surface0', '#313244'),
 		black: readCssVar('--color-surface1', '#45475a'),
 		red: readCssVar('--color-red', '#f38ba8'),
 		green: readCssVar('--color-green', '#a6e3a1'),

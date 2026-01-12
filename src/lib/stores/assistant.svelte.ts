@@ -59,6 +59,7 @@ export interface AssistantMessage {
   role: MessageRole;
   content: string;
   timestamp: number;
+  endTime?: number; // When the message/response completed
   toolCalls?: ToolCall[];
   isStreaming?: boolean;
   attachments?: MessageAttachment[];
@@ -494,9 +495,12 @@ class AssistantStore {
   }
 
   updateAssistantMessage(id: string, content: string, isStreaming = false): void {
-    this.messages = this.messages.map(msg =>
-      msg.id === id ? { ...msg, content, isStreaming } : msg
-    );
+    this.messages = this.messages.map(msg => {
+      if (msg.id !== id) return msg;
+      // Set endTime when streaming ends
+      const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
+      return { ...msg, content, isStreaming, endTime };
+    });
   }
 
   updateAssistantThinking(id: string, thinking: string, isThinking = true): void {

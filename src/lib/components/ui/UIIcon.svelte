@@ -86,6 +86,7 @@
     | 'upload'
     | 'sync'
     | 'clock'
+    | 'history'
     | 'calendar'
     | 'star'
     | 'star-filled'
@@ -185,6 +186,7 @@
     upload: 'codicon:cloud-upload',
     sync: 'codicon:sync',
     clock: 'codicon:clock',
+    history: 'codicon:history',
     calendar: 'codicon:calendar',
     star: 'codicon:star-empty',
     'star-filled': 'codicon:star-full',

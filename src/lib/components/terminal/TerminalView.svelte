@@ -157,63 +157,12 @@
 		// This avoids racing prompt kicks against PTY/shell startup.
 		await session.waitForReady(2500);
 
-		// Some shells (notably PowerShell under certain ConPTY timing) may not
-		// render an initial prompt until they receive input. If we have received
-		// no output shortly after attach + fit/resizes, send a newline to coax the
-		// prompt to appear. Retry once because a very-early newline can be ignored.
-		const kickPrompt = async (): Promise<boolean> => {
-			try {
-				const recent = session.getRecentOutput(2048);
-				if (recent && recent.trim()) return true;
-				await session.write('\r\n');
-				return false;
-			} catch {
-				return false;
-			}
-		};
-
-		setTimeout(async () => {
-			const alreadyHadOutput = await kickPrompt();
-			if (alreadyHadOutput) return;
-			setTimeout(async () => {
-				// Retry once if still silent
-				try {
-					const recent = session.getRecentOutput(2048);
-					if (!recent || !recent.trim()) {
-						await session.write('\r\n');
-					}
-				} catch {
-					// ignore
-				}
-			}, 900);
-		}, 350);
-
-		// Re-fit after a short delay to ensure container has final dimensions
-		// and send a resize to the backend to trigger prompt redraw
+		// Backend now handles initial resize to trigger prompt.
+		// Just do a final fit after everything is ready.
 		requestAnimationFrame(() => {
 			setTimeout(async () => {
 				await fitTerminal();
-				// Force a resize notification to backend to ensure prompt is drawn
-				if (terminal) {
-					const { cols, rows } = terminal;
-					if (cols > 0 && rows > 0) {
-						await session.resize(cols, rows);
-					}
-				}
-			}, 50);
-			
-			// Second resize after shell has had time to initialize
-			// PowerShell on Windows sometimes needs a resize to trigger prompt output
-			setTimeout(async () => {
-				if (terminal) {
-					const { cols, rows } = terminal;
-					if (cols > 0 && rows > 0) {
-						// Force resize by sending slightly different size then correct size
-						await session.resize(cols + 1, rows);
-						await session.resize(cols, rows);
-					}
-				}
-			}, 250);
+			}, 100);
 		});
 	}
 
@@ -328,6 +277,21 @@
 
 	:global(.terminal-view .xterm-screen) {
 		height: 100%;
+	}
+
+	/* Prevent browser's native text selection - xterm handles its own selection */
+	:global(.terminal-view .xterm-screen canvas) {
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	/* Override any browser selection highlight in terminal */
+	:global(.terminal-view ::selection) {
+		background: transparent;
+	}
+
+	:global(.terminal-view ::-moz-selection) {
+		background: transparent;
 	}
 
 	/* Clickable links - underline on hover */

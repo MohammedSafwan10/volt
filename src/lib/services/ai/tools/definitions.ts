@@ -1,72 +1,42 @@
 /**
- * AI Tool Definitions
- * Defines all available tools for the AI assistant with JSON Schema validation
+ * AI Tool Definitions - Kiro-style
  * 
- * Docs consulted:
- * - Gemini API: function calling format with functionDeclarations
- * - JSON Schema patterns for tool arguments validation
+ * Design principles:
+ * - Simple, short parameter names
+ * - No meta required (optional for audit)
+ * - Clear descriptions with examples
+ * - Minimal required params
  */
 
 import type { ToolDefinition } from '../types';
 
-/**
- * Tool metadata for UX and auditing
- */
-export interface ToolMeta {
-  why: string;      // One sentence explaining the purpose
-  risk: 'low' | 'medium' | 'high';
-  undo: string;     // One sentence describing rollback plan
-}
-
-/**
- * Tool categories for organization
- */
 export type ToolCategory =
-  | 'workspace_read'    // Read-only workspace operations
-  | 'workspace_search'  // Search operations
-  | 'editor_context'    // Editor state queries
-  | 'file_write'        // File mutation operations
-  | 'terminal'          // Terminal operations
-  | 'diagnostics';      // Code checking operations
+  | 'workspace_read'
+  | 'workspace_search'
+  | 'editor_context'
+  | 'file_write'
+  | 'terminal'
+  | 'diagnostics';
 
-/**
- * Extended tool definition with category and approval info
- */
 export interface VoltToolDefinition extends ToolDefinition {
   category: ToolCategory;
   requiresApproval: boolean;
   allowedModes: ('ask' | 'plan' | 'agent')[];
 }
 
-/**
- * All available tools for the AI assistant
- */
 export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
-  // WORKSPACE READ TOOLS (allowed in all modes)
+  // READ TOOLS
   // ============================================
   {
     name: 'list_dir',
-    description: 'List contents of a directory. Returns file names, types, and sizes.',
+    description: 'List directory contents. Returns names, types, sizes.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          description: 'Metadata for UX and auditing',
-          properties: {
-            why: { type: 'string', description: 'One sentence explaining the purpose' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string', description: 'One sentence rollback plan' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root. Use "." for root.'
-        }
+        path: { type: 'string', description: 'Directory path, e.g. "src" or "."' }
       },
-      required: ['meta', 'path']
+      required: ['path']
     },
     category: 'workspace_read',
     requiresApproval: false,
@@ -74,59 +44,43 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read the contents of a file. Returns the file content as text.',
+    description: 'Read file contents. Use start_line/end_line for partial reads.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        },
-        startLine: {
-          type: 'number',
-          description: 'Optional: Start reading from this line (1-based)'
-        },
-        endLine: {
-          type: 'number',
-          description: 'Optional: Stop reading at this line (inclusive)'
-        }
+        path: { type: 'string', description: 'File path, e.g. "src/app.ts"' },
+        start_line: { type: 'number', description: 'Start line (1-based)' },
+        end_line: { type: 'number', description: 'End line (inclusive)' }
       },
-      required: ['meta', 'path']
+      required: ['path']
     },
     category: 'workspace_read',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
   {
-    name: 'get_file_info',
-    description: 'Get detailed information about a file or directory (size, modified date, permissions).',
+    name: 'read_files',
+    description: 'Read multiple files at once.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        }
+        paths: { type: 'array', items: { type: 'string' }, description: 'List of file paths' }
       },
-      required: ['meta', 'path']
+      required: ['paths']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'get_file_tree',
+    description: 'Get directory tree structure.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Root path (default: ".")' },
+        depth: { type: 'number', description: 'Max depth (default: 3)' }
+      }
     },
     category: 'workspace_read',
     requiresApproval: false,
@@ -134,51 +88,33 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
 
   // ============================================
-  // WORKSPACE SEARCH TOOLS (allowed in all modes)
+  // SEARCH TOOLS
   // ============================================
   {
     name: 'workspace_search',
-    description: 'Search for text or patterns across all files in the workspace.',
+    description: 'Search for text/regex in files. Returns matches with 2 lines of context.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        query: {
-          type: 'string',
-          description: 'Search query (plain text or regex)'
-        },
-        useRegex: {
-          type: 'boolean',
-          description: 'Whether to treat query as regex pattern'
-        },
-        caseSensitive: {
-          type: 'boolean',
-          description: 'Whether search is case-sensitive'
-        },
-        includePatterns: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Glob patterns for files to include (e.g., "*.ts")'
-        },
-        excludePatterns: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Glob patterns for files to exclude'
-        },
-        maxResults: {
-          type: 'number',
-          description: 'Maximum number of results to return'
-        }
+        query: { type: 'string', description: 'Search text or regex' },
+        includePattern: { type: 'string', description: 'Glob filter, e.g. "**/*.ts"' },
+        caseSensitive: { type: 'boolean', description: 'Case sensitive (default: false)' }
       },
-      required: ['meta', 'query']
+      required: ['query']
+    },
+    category: 'workspace_search',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'find_files',
+    description: 'Find files by name (fuzzy search).',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'File name pattern' }
+      },
+      required: ['query']
     },
     category: 'workspace_search',
     requiresApproval: false,
@@ -186,220 +122,99 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
 
   // ============================================
-  // EDITOR CONTEXT TOOLS (allowed in all modes)
+  // EDITOR TOOLS
   // ============================================
   {
     name: 'get_active_file',
-    description: 'Get the currently active file in the editor (path and content).',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        }
-      },
-      required: ['meta']
-    },
+    description: 'Get currently open file path and content.',
+    parameters: { type: 'object', properties: {} },
     category: 'editor_context',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
   {
     name: 'get_selection',
-    description: 'Get the currently selected text in the editor.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        }
-      },
-      required: ['meta']
-    },
+    description: 'Get selected text in editor.',
+    parameters: { type: 'object', properties: {} },
     category: 'editor_context',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
   {
     name: 'get_open_files',
-    description: 'Get a list of all currently open files in the editor.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        }
-      },
-      required: ['meta']
-    },
+    description: 'Get list of open tabs.',
+    parameters: { type: 'object', properties: {} },
     category: 'editor_context',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
 
   // ============================================
-  // FILE WRITE TOOLS (agent mode only)
+  // FILE WRITE TOOLS
   // ============================================
   {
     name: 'write_file',
-    description: 'Write content to a file. Creates the file if it does not exist, overwrites if it does.',
+    description: 'Create or overwrite a file.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        },
-        content: {
-          type: 'string',
-          description: 'Content to write to the file'
-        }
+        path: { type: 'string', description: 'File path, e.g. "src/utils.ts"' },
+        text: { type: 'string', description: 'File contents' }
       },
-      required: ['meta', 'path', 'content']
+      required: ['path', 'text']
     },
     category: 'file_write',
     requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'apply_edit',
-    description: `Apply a targeted edit to a file by replacing a specific code snippet.
-
-USE THIS FOR:
-- Small, focused changes (1-50 lines)
-- Adding, modifying, or DELETING code
-- When you know the exact text to replace
-
-HOW TO DELETE CODE:
-- Set new_snippet to empty string "" to delete the original_snippet
-
-REQUIREMENTS:
-- original_snippet must EXACTLY match file content (whitespace matters!)
-- Use content from context or read_file, never from memory
-- Include 2-3 lines of context for unique matching
-
-IF THIS FAILS:
-- Check the error message for hints
-- Use read_file to get exact current content
-- After 2 failures on same file, use write_file instead`,
+    name: 'append_file',
+    description: 'Append text to end of existing file.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        },
-        original_snippet: {
-          type: 'string',
-          description: 'The exact code snippet to replace (must match file content exactly, including whitespace)'
-        },
-        new_snippet: {
-          type: 'string',
-          description: 'The new code to insert. Use empty string "" to delete the original_snippet.'
-        }
+        path: { type: 'string', description: 'File path' },
+        text: { type: 'string', description: 'Text to append' }
       },
-      required: ['meta', 'path', 'original_snippet', 'new_snippet']
+      required: ['path', 'text']
     },
     category: 'file_write',
     requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'create_file',
-    description: 'Create a new empty file. To create a file WITH content, use write_file instead.',
+    name: 'str_replace',
+    description: `Replace text in a file. oldStr must match EXACTLY.
+
+To delete code: set newStr to ""
+If match fails: use read_file to get exact content first.`,
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        }
+        path: { type: 'string', description: 'File path' },
+        oldStr: { type: 'string', description: 'Exact text to find' },
+        newStr: { type: 'string', description: 'Replacement text' }
       },
-      required: ['meta', 'path']
+      required: ['path', 'oldStr', 'newStr']
     },
     category: 'file_write',
     requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'multi_replace_file_content',
-    description: 'Apply multiple, non-contiguous edits to a file. Use this for surgical changes in multiple locations in the same file.',
+    name: 'replace_lines',
+    description: `Replace lines in a file by line numbers. Use when str_replace fails or for large edits.
+
+Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with new content.`,
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        },
-        replacement_chunks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              startLine: { type: 'number', description: 'Starting line of the chunk (1-indexed)' },
-              endLine: { type: 'number', description: 'Ending line of the chunk (1-indexed)' },
-              targetContent: { type: 'string', description: 'Exact content to be replaced' },
-              replacementContent: { type: 'string', description: 'New content to insert' }
-            },
-            required: ['startLine', 'endLine', 'targetContent', 'replacementContent']
-          }
-        }
+        path: { type: 'string', description: 'File path' },
+        start_line: { type: 'number', description: 'First line to replace (1-based)' },
+        end_line: { type: 'number', description: 'Last line to replace (inclusive)' },
+        content: { type: 'string', description: 'New content to insert' }
       },
-      required: ['meta', 'path', 'replacement_chunks']
+      required: ['path', 'start_line', 'end_line', 'content']
     },
     category: 'file_write',
     requiresApproval: false,
@@ -407,80 +222,28 @@ IF THIS FAILS:
   },
   {
     name: 'create_dir',
-    description: 'Create a new directory.',
+    description: 'Create a directory.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        }
+        path: { type: 'string', description: 'Directory path' }
       },
-      required: ['meta', 'path']
+      required: ['path']
     },
     category: 'file_write',
     requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'delete_path',
-    description: 'Delete a file or directory. DESTRUCTIVE - requires approval.',
+    name: 'delete_file',
+    description: 'Delete a file or directory. Requires approval. Use with caution - deletion is permanent.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Relative path from workspace root'
-        }
+        path: { type: 'string', description: 'File or directory path to delete (relative to workspace root)' },
+        explanation: { type: 'string', description: 'One sentence explanation of why this file is being deleted and how it contributes to the goal' }
       },
-      required: ['meta', 'path']
-    },
-    category: 'file_write',
-    requiresApproval: true,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'delete_paths',
-    description: 'Delete multiple files/directories in one operation. DESTRUCTIVE - requires approval.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        paths: {
-          type: 'array',
-          description: 'Relative paths from workspace root',
-          items: {
-            type: 'string'
-          }
-        }
-      },
-      required: ['meta', 'paths']
+      required: ['path', 'explanation']
     },
     category: 'file_write',
     requiresApproval: true,
@@ -488,29 +251,14 @@ IF THIS FAILS:
   },
   {
     name: 'rename_path',
-    description: 'Rename or move a file or directory. Requires approval.',
+    description: 'Rename or move a file/directory.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        oldPath: {
-          type: 'string',
-          description: 'Current relative path from workspace root'
-        },
-        newPath: {
-          type: 'string',
-          description: 'New relative path from workspace root'
-        }
+        oldPath: { type: 'string', description: 'Current path' },
+        newPath: { type: 'string', description: 'New path' }
       },
-      required: ['meta', 'oldPath', 'newPath']
+      required: ['oldPath', 'newPath']
     },
     category: 'file_write',
     requiresApproval: true,
@@ -518,183 +266,92 @@ IF THIS FAILS:
   },
 
   // ============================================
-  // TERMINAL TOOLS (agent mode only, requires approval)
+  // TERMINAL TOOLS
   // ============================================
   {
     name: 'run_command',
-    description: `Execute a shell command and wait for output. The command runs in the visible terminal panel.
+    description: `Run a shell command and wait for completion.
 
-PREREQUISITES (IMPORTANT):
-- BEFORE running commands on files, use get_file_tree or read_file to verify the file exists
-- Use forward slashes (/) in paths, even on Windows
-- For paths with spaces, use quotes: "path/with spaces/file.js"
+IMPORTANT: Do NOT use for long-running commands like dev servers or watchers.
+For those, use "start_process" instead.
 
-BEHAVIOR:
-- By default, waits for command to complete (detects prompt return or output stabilization)
-- For long-running commands (npm install, cargo build, etc.), uses longer stability thresholds
-- Set wait=false to run in background and return immediately
-
-WHEN TO USE:
-- Running scripts, installing packages, checking versions
-- Build commands, test runners, linters
-- Any shell command that produces output
-
-AFTER RUNNING:
-- Check the output for errors or success messages
-- If output says "may still be running", use read_terminal to get more output
-- If command failed, explain the error and suggest fixes
-
-Requires approval.`,
+Examples of commands to run here:
+- npm install, npm run build
+- git status, git commit
+- mkdir, cp, mv, rm
+- cargo build, go build`,
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        command: {
-          type: 'string',
-          description: 'Shell command to execute (e.g., "npm install", "python --version")'
-        },
-        cwd: {
-          type: 'string',
-          description: 'Optional: Working directory relative to workspace root'
-        },
-        timeout: {
-          type: 'number',
-          description: 'Optional: Timeout in milliseconds (default: 60000 = 60 seconds)'
-        },
-        wait: {
-          type: 'boolean',
-          description: 'Optional: Wait for command completion (default: true). Set false for background execution.'
-        }
+        command: { type: 'string', description: 'Command to run' },
+        cwd: { type: 'string', description: 'Working directory (optional)' },
+        timeout: { type: 'number', description: 'Timeout ms (default: 60000)' }
       },
-      required: ['meta', 'command']
+      required: ['command']
     },
     category: 'terminal',
     requiresApproval: true,
     allowedModes: ['agent']
   },
   {
-    name: 'terminal_create',
-    description: 'Create a new terminal session. Requires approval.',
+    name: 'start_process',
+    description: `Start a background process (dev servers, watchers, etc.).
+Returns a processId to track the process.
+
+Use this for:
+- npm run dev, yarn start, pnpm dev
+- webpack --watch, vite
+- nodemon, ts-node-dev
+- Any long-running command
+
+After starting, use "get_process_output" to check status.`,
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        cwd: {
-          type: 'string',
-          description: 'Working directory for the terminal (relative to workspace root)'
-        }
+        command: { type: 'string', description: 'Command to run in background' },
+        cwd: { type: 'string', description: 'Working directory (optional)' }
       },
-      required: ['meta']
+      required: ['command']
     },
     category: 'terminal',
     requiresApproval: true,
     allowedModes: ['agent']
   },
   {
-    name: 'terminal_write',
-    description: 'Write/execute a command in a terminal. DANGEROUS - requires approval.',
+    name: 'stop_process',
+    description: 'Stop a background process by its processId.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        terminalId: {
-          type: 'string',
-          description: 'ID of the terminal to write to (optional; defaults to active terminal)'
-        },
-        sessionId: {
-          type: 'string',
-          description: 'Legacy alias for terminalId (optional)'
-        },
-        command: {
-          type: 'string',
-          description: 'Command to execute'
-        },
-        waitMs: {
-          type: 'number',
-          description: 'Optional: time to wait for initial output after sending (default ~800ms)'
-        }
+        processId: { type: 'number', description: 'Process ID from start_process' }
       },
-      required: ['meta', 'command']
+      required: ['processId']
     },
     category: 'terminal',
-    requiresApproval: true,
+    requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'terminal_kill',
-    description: 'Kill a terminal session. Requires approval.',
+    name: 'list_processes',
+    description: 'List all background processes started by start_process.',
     parameters: {
       type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        terminalId: {
-          type: 'string',
-          description: 'ID of the terminal to kill'
-        }
-      },
-      required: ['meta', 'terminalId']
+      properties: {}
     },
     category: 'terminal',
-    requiresApproval: true,
+    requiresApproval: false,
     allowedModes: ['agent']
   },
   {
-    name: 'terminal_get_output',
-    description: 'Get recent output from a terminal.',
+    name: 'get_process_output',
+    description: 'Read output from a background process. Use to check if dev server started successfully or to debug errors.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        terminalId: {
-          type: 'string',
-          description: 'ID of the terminal (optional - uses AI terminal if not specified)'
-        },
-        lines: {
-          type: 'number',
-          description: 'Number of recent lines to retrieve'
-        }
+        processId: { type: 'number', description: 'Process ID from start_process' },
+        maxLines: { type: 'number', description: 'Lines to return (default: 100)' }
       },
-      required: ['meta']
+      required: ['processId']
     },
     category: 'terminal',
     requiresApproval: false,
@@ -702,271 +359,78 @@ Requires approval.`,
   },
   {
     name: 'read_terminal',
-    description: `Read output from a terminal session. Use this to:
-- Check if a long-running command has completed
-- Get more output after run_command timed out
-- Monitor ongoing processes
-
-Returns the recent terminal output with ANSI codes stripped.
-If no terminalId specified, reads from the AI terminal.`,
+    description: 'Read recent output from the AI terminal session.',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        terminalId: {
-          type: 'string',
-          description: 'ID of the terminal (optional - uses AI terminal if not specified)'
-        },
-        maxLines: {
-          type: 'number',
-          description: 'Maximum lines to return (default: 100)'
-        }
-      },
-      required: ['meta']
+        maxLines: { type: 'number', description: 'Lines to return (default: 100)' }
+      }
     },
     category: 'terminal',
     requiresApproval: false,
     allowedModes: ['agent']
   },
-  {
-    name: 'read_files',
-    description: 'Read the content of multiple files at once. More efficient than multiple read_file calls.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        paths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'List of relative paths to read'
-        }
-      },
-      required: ['meta', 'paths']
-    },
-    category: 'workspace_read',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'find_files',
-    description: 'Find files across the entire workspace using a fuzzy search pattern. Very efficient for locating modules.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        pattern: {
-          type: 'string',
-          description: 'Fuzzy search pattern (e.g. "assistant.svelte")'
-        },
-        maxResults: {
-          type: 'number',
-          description: 'Limit results (default: 50)'
-        }
-      },
-      required: ['meta', 'pattern']
-    },
-    category: 'workspace_search',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'get_file_tree',
-    description: 'Get the recursive file tree structure of a directory. useful for understanding architecture.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Root path for the tree (default: ".")'
-        },
-        depth: {
-          type: 'number',
-          description: 'Maximum recursion depth (default: 3)'
-        }
-      },
-      required: ['meta']
-    },
-    category: 'workspace_read',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'search_symbols',
-    description: 'Search for symbols (functions, classes, variables) across the workspace using grep-style matching.',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        query: {
-          type: 'string',
-          description: 'Symbol name or search query'
-        }
-      },
-      required: ['meta', 'query']
-    },
-    category: 'workspace_search',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'run_check',
-    description: 'Run type checking or linting on the project (npm run check, cargo check, etc.).',
-    parameters: {
-      type: 'object',
-      properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        checkType: {
-          type: 'string',
-          enum: ['npm_check', 'cargo_check', 'eslint', 'typescript'],
-          description: 'Type of check to run'
-        }
-      },
-      required: ['meta', 'checkType']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
+
+  // ============================================
+  // DIAGNOSTICS
+  // ============================================
   {
     name: 'get_diagnostics',
-    description: 'Get current errors, warnings, and hints from the IDE problems panel. Use this to see if your changes broke anything.',
+    description: 'Get errors/warnings from IDE (TypeScript, ESLint, Svelte, etc.).',
     parameters: {
       type: 'object',
       properties: {
-        meta: {
-          type: 'object',
-          properties: {
-            why: { type: 'string' },
-            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
-            undo: { type: 'string' }
-          },
-          required: ['why', 'risk', 'undo']
-        },
-        path: {
-          type: 'string',
-          description: 'Optional: Only get problems for this specific file'
+        paths: { 
+          type: 'array', 
+          items: { type: 'string' }, 
+          description: 'Files to check, e.g. ["src/app.ts", "src/utils.ts"]' 
         }
-      },
-      required: ['meta']
+      }
     },
     category: 'diagnostics',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
+  },
+  
+  // Plan mode tool
+  {
+    name: 'write_plan_file',
+    description: 'Write a plan/spec file to .volt/plans/ directory. Use this to save implementation plans that can be executed later in Agent mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filename: { type: 'string', description: 'Plan filename (without path), e.g. "refactor-auth.md"' },
+        content: { type: 'string', description: 'Plan content in markdown format' }
+      },
+      required: ['filename', 'content']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['plan']
   }
 ];
 
-/**
- * Get tool definitions filtered by mode
- */
+// Keep old tool names as aliases for backward compatibility
+const TOOL_ALIASES: Record<string, string> = {
+  'apply_edit': 'str_replace',
+  'delete_path': 'delete_file'
+};
+
 export function getToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
-  const relaxMetaRequirement = (schema: unknown): unknown => {
-    if (!schema || typeof schema !== 'object') return schema;
-
-    if (Array.isArray(schema)) {
-      return schema.map(relaxMetaRequirement);
-    }
-
-    // Clone so we don't mutate the canonical TOOL_DEFINITIONS.
-    const cloned: Record<string, unknown> = { ...(schema as Record<string, unknown>) };
-
-    // Strip `meta` from required list at the top level.
-    if (Array.isArray(cloned.required)) {
-      const filtered = (cloned.required as unknown[]).filter((x) => x !== 'meta');
-      if (filtered.length === 0) {
-        delete cloned.required;
-      } else {
-        cloned.required = filtered;
-      }
-    }
-
-    // Recursively relax nested schemas (best-effort).
-    for (const [key, value] of Object.entries(cloned)) {
-      if (key === 'required') continue;
-      if (value && typeof value === 'object') {
-        cloned[key] = relaxMetaRequirement(value);
-      }
-    }
-
-    return cloned;
-  };
-
   return TOOL_DEFINITIONS
     .filter(tool => tool.allowedModes.includes(mode))
-    .map(({ name, description, parameters }) => ({
-      name,
-      description,
-      parameters: relaxMetaRequirement(parameters) as ToolDefinition['parameters']
-    }));
+    .map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
-/**
- * Get a tool definition by name
- */
 export function getToolByName(name: string): VoltToolDefinition | undefined {
-  return TOOL_DEFINITIONS.find(tool => tool.name === name);
+  const aliasedName = TOOL_ALIASES[name] || name;
+  return TOOL_DEFINITIONS.find(tool => tool.name === aliasedName);
 }
 
-/**
- * Check if a tool requires approval
- */
 export function doesToolRequireApproval(toolName: string): boolean {
-  const tool = getToolByName(toolName);
-  return tool?.requiresApproval ?? false;
+  return getToolByName(toolName)?.requiresApproval ?? false;
 }
 
-/**
- * Check if a tool is allowed in a given mode
- */
 export function isToolAllowed(toolName: string, mode: 'ask' | 'plan' | 'agent'): boolean {
-  const tool = getToolByName(toolName);
-  return tool?.allowedModes.includes(mode) ?? false;
+  return getToolByName(toolName)?.allowedModes.includes(mode) ?? false;
 }

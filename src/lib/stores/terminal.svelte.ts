@@ -13,6 +13,7 @@ class TerminalStore {
 	sessions = $state<TerminalSession[]>([]);
 	activeTerminalId = $state<string | null>(null);
 	private createPromise: Promise<TerminalSession | null> | null = null;
+	private aiCreatePromise: Promise<TerminalSession | null> | null = null;
 	private sessionLabels = $state<Record<string, string>>({});
 	private aiTerminalId = $state<string | null>(null);
 
@@ -37,14 +38,19 @@ class TerminalStore {
 		this.createPromise = (async () => {
 			// Use project root as default cwd
 			const workingDir = cwd ?? projectStore.rootPath ?? undefined;
+			console.log('[TerminalStore] Creating terminal in:', workingDir || '(default)');
 
 			const session = await createTerminalSession(workingDir);
 			if (!session) {
+				console.error('[TerminalStore] createTerminalSession returned null');
 				return null;
 			}
 
+			console.log('[TerminalStore] Terminal created:', session.id);
+
 			// Set up exit handler to remove session when terminal exits
 			session.onExit(() => {
+				console.log('[TerminalStore] Terminal exited:', session.id);
 				void session.dispose();
 				this.removeSession(session.id);
 			});
@@ -80,20 +86,46 @@ class TerminalStore {
 	 * This avoids running AI commands in a user's interactive terminal state.
 	 */
 	async getOrCreateAiTerminal(cwd?: string): Promise<TerminalSession | null> {
+		// If AI terminal creation is already in-flight, await it
+		if (this.aiCreatePromise) {
+			console.log('[TerminalStore] AI terminal creation in progress, waiting...');
+			return await this.aiCreatePromise;
+		}
+
+		// Check for existing AI terminal first
 		const existingId = this.aiTerminalId;
 		if (existingId) {
 			const existing = this.sessions.find((s) => s.id === existingId) ?? null;
 			if (existing) {
+				console.log('[TerminalStore] Reusing existing AI terminal:', existingId);
+				console.log('[TerminalStore] AI terminal output history chars:', existing.getRecentOutput().length);
 				this.activeTerminalId = existing.id;
 				return existing;
 			}
+			// AI terminal ID exists but session is gone, clear it
+			console.log('[TerminalStore] AI terminal ID exists but session gone, clearing');
+			this.aiTerminalId = null;
 		}
 
-		const session = await this.createTerminal(cwd);
-		if (!session) return null;
-		this.aiTerminalId = session.id;
-		this.setSessionLabel(session.id, 'Volt AI');
-		return session;
+		// Create new AI terminal with mutex protection
+		this.aiCreatePromise = (async () => {
+			console.log('[TerminalStore] Creating new AI terminal');
+			const session = await this.createTerminal(cwd);
+			if (!session) {
+				console.error('[TerminalStore] Failed to create AI terminal');
+				return null;
+			}
+			this.aiTerminalId = session.id;
+			this.setSessionLabel(session.id, 'Volt AI');
+			console.log('[TerminalStore] AI terminal created:', session.id);
+			return session;
+		})();
+
+		try {
+			return await this.aiCreatePromise;
+		} finally {
+			this.aiCreatePromise = null;
+		}
 	}
 
 	/**

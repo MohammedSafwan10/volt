@@ -97,58 +97,6 @@
     return null;
   }
 
-  async function handleToolAcceptEdit(
-    messageId: string,
-    toolCall: ToolCall,
-  ): Promise<void> {
-    const metaAny: any = toolCall.meta ?? {};
-    const highlightPath =
-      metaAny.reviewHighlightPath ?? getReviewableFilePath(metaAny);
-    if (typeof highlightPath === "string") {
-      clearReviewHighlight(highlightPath);
-    }
-    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-      reviewStatus: "accepted",
-    });
-  }
-
-  async function handleToolRejectEdit(
-    messageId: string,
-    toolCall: ToolCall,
-  ): Promise<void> {
-    const metaAny: any = toolCall.meta ?? {};
-    const beforeContent = metaAny?.fileEdit?.beforeContent;
-    const absolutePath = metaAny?.fileEdit?.absolutePath;
-    if (typeof beforeContent !== "string" || typeof absolutePath !== "string") {
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        reviewStatus: "rejected",
-      });
-      return;
-    }
-
-    const highlightPath =
-      metaAny.reviewHighlightPath ?? getReviewableFilePath(metaAny);
-
-    try {
-      await invoke("write_file", { path: absolutePath, content: beforeContent });
-      await projectStore.refreshTree();
-      await editorStore.reloadFile(absolutePath);
-      editorStore.markSaved(absolutePath);
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        error,
-      });
-    } finally {
-      if (typeof highlightPath === "string") {
-        clearReviewHighlight(highlightPath);
-      }
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        reviewStatus: "rejected",
-      });
-    }
-  }
-
   function toProviderMessages(
     messages: typeof assistantStore.messages,
   ): ChatMessage[] {
@@ -262,7 +210,8 @@
   }
 
   async function handleSend(): Promise<void> {
-    const content = assistantStore.inputValue.trim();
+    // Use inputRef value as fallback in case store value is out of sync
+    const content = (assistantStore.inputValue || inputRef?.value || '').trim();
     if (!content && assistantStore.pendingAttachments.length === 0) return;
 
     // Cancel any existing stream (cancel-by-default policy)
@@ -274,8 +223,9 @@
     const context = [...assistantStore.attachedContext];
     // assistantStore.addUserMessage(content, context); // REMOVED: Redundant
 
-    // Clear input and context
+    // Clear input and context - also clear the textarea directly
     assistantStore.setInputValue("");
+    if (inputRef) inputRef.value = "";
     assistantStore.clearContext();
 
     const controller = assistantStore.startStreaming();
@@ -292,6 +242,7 @@
     });
 
     // Gather smart context (Active file, open tabs, terminal, etc.)
+    // This provides background context - AI will use tools for additional searching
     const smartContext = await getSmartContext(content);
     const contextBlock = formatSmartContext(smartContext);
 
@@ -314,16 +265,21 @@
   /**
    * Run the tool loop - stream model response, execute tools, send results back
    * Continues until model finishes without requesting tool calls
+   * Kiro-style: robust error recovery, continuation prompts, high iteration limit
    */
   async function runToolLoop(
     systemPrompt: string,
     tools: ReturnType<typeof getToolsForMode>,
     controller: AbortController,
-    maxIterations = 20,
+    maxIterations = 30, // Increased from 20 to handle complex tasks like Kiro
   ): Promise<void> {
     const msgId = assistantStore.addAssistantMessage("", true);
     let fullContent = "";
     let iteration = 0;
+    
+    // Kiro-style: Track consecutive empty responses to detect stuck model
+    let consecutiveEmptyResponses = 0;
+    const MAX_EMPTY_RESPONSES = 3;
 
     // Streaming safety guards
     let lastChunk = "";
@@ -423,6 +379,12 @@
         name: string;
         result: { success: boolean; output?: string; error?: string };
       }>[] = [];
+      // Queue for sequential file edits - edits to the same file run one after another
+      const fileEditQueues = new Map<string, Array<{
+        id: string;
+        name: string;
+        args: Record<string, unknown>;
+      }>>();
       // If the model emits an invalid tool call (e.g. missing required args/meta),
       // we must NOT leave it in a pending state (can deadlock approvals).
       const immediateResults: Array<{
@@ -604,67 +566,58 @@
             }
 
             if (!validation.requiresApproval && validation.valid) {
-              const isFileWrite = [
+              const FILE_EDIT_TOOLS = [
                 "write_file",
-                "create_file",
+                "create_file", 
                 "apply_edit",
+                "str_replace",
+                "append_file",
                 "multi_replace_file_content",
-              ].includes(toolCallName);
+              ];
+              const isFileEdit = FILE_EDIT_TOOLS.includes(toolCallName);
+              const filePath = isFileEdit ? String(toolCallArgs.path || '') : null;
 
-              // Update status to running immediately for UI feedback
-              assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                status: "running" as const,
-                startTime: Date.now(),
-              });
-
-              const p = executeToolCall(toolCallName, toolCallArgs, {
-                signal: controller.signal,
-              })
-                .then((result) => {
-                  assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                    status: result.success ? "completed" : "failed",
-                    output: result.output,
-                    error: result.error,
-                    meta: result.meta,
-                    endTime: Date.now(),
-                  });
-
-                  if (result.success && result.meta) {
-                    const metaAny: any = result.meta;
-                    const hasFileEdit = metaAny?.fileEdit;
-                    const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
-                    
-                    if (hasFileEdit && hasLineInfo) {
-                      const highlightPath = applyReviewHighlight(metaAny);
-                      const beforeContent = metaAny?.fileEdit?.beforeContent;
-                      const mergedMeta = {
-                        ...metaAny,
-                        ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
-                      };
-                      assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                        meta: mergedMeta,
-                        // Only show review buttons if we have beforeContent for revert
-                        reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
-                      });
-                    }
-                  }
-                  return { id: toolCallId, name: toolCallName, result };
-                })
-                .catch((err) => {
-                  const error =
-                    err instanceof Error ? err.message : String(err);
-                  assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                    status: "failed",
-                    error,
-                    endTime: Date.now(),
-                  });
-                  return {
-                    id: toolCallId,
-                    name: toolCallName,
-                    result: { success: false, error },
-                  };
+              // Group file edits by path for sequential execution
+              if (isFileEdit && filePath) {
+                if (!fileEditQueues.has(filePath)) {
+                  fileEditQueues.set(filePath, []);
+                }
+                fileEditQueues.get(filePath)!.push({
+                  id: toolCallId,
+                  name: toolCallName,
+                  args: toolCallArgs,
                 });
-              eagerPromises.push(p);
+              } else {
+                // Non-file-edit tools run in parallel as before
+                assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                  status: "running" as const,
+                  startTime: Date.now(),
+                });
+
+                const p = executeToolCall(toolCallName, toolCallArgs, {
+                  signal: controller.signal,
+                })
+                  .then((result) => {
+                    assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                      status: result.success ? "completed" : "failed",
+                      output: result.output,
+                      error: result.error,
+                      meta: result.meta,
+                      endTime: Date.now(),
+                    });
+                    return { id: toolCallId, name: toolCallName, result };
+                  })
+                  .catch((err) => {
+                    const error = err instanceof Error ? err.message : String(err);
+                    assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                      status: "failed",
+                      error,
+                      endTime: Date.now(),
+                    });
+                    return { id: toolCallId, name: toolCallName, result: { success: false, error } };
+                  });
+                eagerPromises.push(p);
+              }
             }
           }
 
@@ -686,23 +639,123 @@
         lastChunk = "";
         repeatedChunkCount = 0;
 
-        // Wait for all Eager tools from this iteration
+        // Wait for all Eager tools from this iteration (non-file-edit tools)
         const eagerResults = await Promise.all(eagerPromises);
+
+        // Execute file edits SEQUENTIALLY per file path
+        // This prevents race conditions where multiple str_replace calls to the same file
+        // fail because the file content changed between reads
+        const fileEditResults: Array<{
+          id: string;
+          name: string;
+          result: { success: boolean; output?: string; error?: string; meta?: any };
+        }> = [];
+        
+        for (const [filePath, edits] of fileEditQueues) {
+          let previousFailed = false;
+          
+          for (const edit of edits) {
+            // If a previous edit to this file failed, skip remaining edits
+            if (previousFailed) {
+              assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                status: "failed",
+                error: "Skipped: A previous edit to this file failed.",
+                endTime: Date.now(),
+              });
+              fileEditResults.push({
+                id: edit.id,
+                name: edit.name,
+                result: { success: false, error: "Skipped: A previous edit to this file failed." },
+              });
+              continue;
+            }
+            
+            // Update UI to show running
+            assistantStore.updateToolCallInMessage(msgId, edit.id, {
+              status: "running" as const,
+              startTime: Date.now(),
+            });
+            
+            try {
+              const result = await executeToolCall(edit.name, edit.args, {
+                signal: controller.signal,
+              });
+              
+              assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                status: result.success ? "completed" : "failed",
+                output: result.output,
+                error: result.error,
+                meta: result.meta,
+                endTime: Date.now(),
+              });
+              
+              // Apply review highlight if we have line info
+              if (result.success && result.meta) {
+                const metaAny: any = result.meta;
+                if (metaAny?.fileEdit && typeof metaAny?.fileEdit?.firstChangedLine === "number") {
+                  const highlightPath = applyReviewHighlight(metaAny);
+                  if (highlightPath) {
+                    assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                      meta: { ...metaAny, reviewHighlightPath: highlightPath },
+                    });
+                  }
+                }
+              }
+              
+              fileEditResults.push({ id: edit.id, name: edit.name, result });
+              
+              if (!result.success) {
+                previousFailed = true;
+              }
+            } catch (err) {
+              const error = err instanceof Error ? err.message : String(err);
+              assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                status: "failed",
+                error,
+                endTime: Date.now(),
+              });
+              fileEditResults.push({
+                id: edit.id,
+                name: edit.name,
+                result: { success: false, error },
+              });
+              previousFailed = true;
+            }
+          }
+        }
+        
+        // Combine all results
+        const allEagerResults = [...eagerResults, ...fileEditResults];
 
         if (
           pendingToolCalls.length === 0 &&
-          eagerResults.length === 0 &&
+          allEagerResults.length === 0 &&
           immediateResults.length === 0
         ) {
           // Check if model only produced thinking but no actual response
           // This can happen with Gemini thinking mode - model thinks but doesn't act
           if (iterationThinking && !iterationContent.trim()) {
+            consecutiveEmptyResponses++;
+            
             import("$lib/stores/output.svelte").then((m) =>
               m.logOutput(
                 "Volt",
-                `Agent: Model produced thinking but no response, prompting continuation...`,
+                `Agent: Model produced thinking but no response (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
               ),
             );
+            
+            // Check if we've hit max empty responses
+            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
+              import("$lib/stores/output.svelte").then((m) =>
+                m.logOutput("Volt", `Agent: Too many empty responses, stopping.`),
+              );
+              assistantStore.updateAssistantMessage(
+                msgId,
+                fullContent || "I apologize, but I'm having trouble generating a response. Please try rephrasing your request.",
+                false,
+              );
+              return;
+            }
             
             // Add a continuation prompt to encourage the model to respond
             assistantStore.addToolMessage({
@@ -719,12 +772,27 @@
           // Check if we just processed tool results but model didn't respond
           // This happens when Gemini decides to stop after seeing tool results
           if (justProcessedToolResults && !iterationContent.trim()) {
+            consecutiveEmptyResponses++;
+            
             import("$lib/stores/output.svelte").then((m) =>
               m.logOutput(
                 "Volt",
-                `Agent: Model didn't respond after tool results, prompting continuation...`,
+                `Agent: Model didn't respond after tool results (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
               ),
             );
+            
+            // Check if we've hit max empty responses
+            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
+              import("$lib/stores/output.svelte").then((m) =>
+                m.logOutput("Volt", `Agent: Too many empty responses after tools, stopping.`),
+              );
+              assistantStore.updateAssistantMessage(
+                msgId,
+                fullContent || "The tools completed but I couldn't generate a summary. Please check the tool results above.",
+                false,
+              );
+              return;
+            }
             
             // Add a continuation prompt to encourage the model to respond
             // This mimics how other AI IDEs handle silent completions
@@ -740,6 +808,7 @@
             continue; // Continue to next iteration
           }
           
+          // Successful completion with content
           import("$lib/stores/output.svelte").then((m) =>
             m.logOutput(
               "Volt",
@@ -750,16 +819,17 @@
           return;
         }
         
-        // Reset the flag since we have tool calls to process
+        // Reset counters since we have tool calls to process
         justProcessedToolResults = false;
+        consecutiveEmptyResponses = 0; // Reset on successful tool calls
 
         const toolResults: Array<{
           id: string;
           name: string;
           result: { success: boolean; output?: string; error?: string };
-        }> = [...eagerResults, ...immediateResults];
+        }> = [...allEagerResults, ...immediateResults];
 
-        const eagerIds = new Set(eagerResults.map((r) => r.id));
+        const eagerIds = new Set(allEagerResults.map((r) => r.id));
         const toolsNeedingApproval = pendingToolCalls.filter(
           (tc) => !eagerIds.has(tc.id),
         );
@@ -829,7 +899,6 @@
                   };
                   assistantStore.updateToolCallInMessage(msgId, tc.id, {
                     meta: mergedMeta,
-                    reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
                   });
                 }
               }
@@ -858,12 +927,38 @@
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
+        
+        // Kiro-style: Check if this is a retryable error
+        const isRetryable = /network|timeout|connection|interrupted|503|502|504|429/i.test(msg);
+        
         import("$lib/stores/output.svelte").then((m) =>
-          m.logOutput("Volt", `Agent Loop Error: ${msg}`),
+          m.logOutput("Volt", `Agent Loop Error (iteration ${iteration}): ${msg}`),
         );
+        
+        // If retryable and we have content, try to continue
+        if (isRetryable && iteration < maxIterations - 1) {
+          import("$lib/stores/output.svelte").then((m) =>
+            m.logOutput("Volt", `Retryable error detected, attempting to continue...`),
+          );
+          
+          // Add a system message to help model recover
+          assistantStore.addToolMessage({
+            id: `error_recovery_${Date.now()}`,
+            name: "_system_error_recovery",
+            arguments: {},
+            status: "completed",
+            output: `A temporary error occurred: ${msg}. Please continue with your task. If you were in the middle of something, resume from where you left off.`,
+          });
+          
+          // Small delay before retry
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue; // Continue to next iteration
+        }
+        
+        // Non-retryable or exhausted retries
         assistantStore.updateAssistantMessage(
           msgId,
-          fullContent ? `${fullContent}\n\nError: ${msg}` : `Error: ${msg}`,
+          fullContent ? `${fullContent}\n\n⚠️ Error: ${msg}` : `⚠️ Error: ${msg}`,
           false,
         );
         showToast({ message: msg, type: "error" });
@@ -1001,7 +1096,6 @@
                 ...metaAny,
                 ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
               },
-              reviewStatus: typeof beforeContent === "string" ? "pending" : undefined,
             });
           }
         }
@@ -1303,6 +1397,7 @@
   /**
    * Handle tool approval from inline display in message
    * Supports streaming progress for file write operations
+   * OPTIMIZED: Execute immediately on approval instead of waiting for tool loop
    */
   async function handleToolApproveInMessage(
     messageId: string,
@@ -1326,12 +1421,46 @@
       return;
     }
 
-    // Mark as approved (non-pending) so the main tool loop can execute it exactly once.
-    // The tool loop will set status/output/error when execution finishes.
+    // Mark as running immediately for instant UI feedback
     assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
       status: "running",
       startTime: Date.now(),
     });
+
+    // Execute the tool immediately (don't wait for tool loop)
+    try {
+      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
+        signal: assistantStore.abortController?.signal,
+      });
+      
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        status: result.success ? "completed" : "failed",
+        output: result.output,
+        error: result.error,
+        meta: result.meta,
+        endTime: Date.now(),
+      });
+
+      // Apply review highlight if applicable
+      if (result.success && result.meta) {
+        const metaAny: any = result.meta;
+        if (metaAny?.fileEdit && typeof metaAny?.fileEdit?.firstChangedLine === "number") {
+          const highlightPath = applyReviewHighlight(metaAny);
+          if (highlightPath) {
+            assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+              meta: { ...metaAny, reviewHighlightPath: highlightPath },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+        status: "failed",
+        error,
+        endTime: Date.now(),
+      });
+    }
   }
 
   /**
@@ -1345,6 +1474,35 @@
       status: "cancelled",
       endTime: Date.now(),
     });
+  }
+
+  /**
+   * Handle "Start Implementation" button click from Plan mode
+   * Switches to Agent mode and sends the plan content for execution
+   */
+  function handleStartImplementation(planContent: string): void {
+    // Switch to Agent mode
+    assistantStore.setMode("agent");
+    
+    // Create a prompt that instructs the agent to execute the plan
+    const implementationPrompt = `Execute the following implementation plan step by step. Read files as needed, make the changes described, and verify each step works before moving to the next.
+
+---
+${planContent}
+---
+
+Start implementing now. Work through each step carefully.`;
+    
+    // Set the input and trigger send
+    assistantStore.setInputValue(implementationPrompt);
+    if (inputRef) {
+      inputRef.value = implementationPrompt;
+    }
+    
+    // Trigger send after a brief delay to ensure UI updates
+    setTimeout(() => {
+      handleSend();
+    }, 100);
   }
 
   // Get attachment previews for display
@@ -1403,10 +1561,10 @@
     <MessageList
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
+      isStreaming={assistantStore.isStreaming}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
-      onToolAcceptEdit={handleToolAcceptEdit}
-      onToolRejectEdit={handleToolRejectEdit}
+      onStartImplementation={handleStartImplementation}
     />
   </div>
 

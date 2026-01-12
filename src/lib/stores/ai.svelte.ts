@@ -43,10 +43,12 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       maxContextHint: 1000000
     },
     models: [
+      'gemini-3-flash-preview|thinking',
+      'gemini-3-flash-preview',
       'gemini-2.5-flash|thinking',
       'gemini-2.5-flash'
     ],
-    defaultModel: 'gemini-2.5-flash|thinking'
+    defaultModel: 'gemini-3-flash-preview|thinking'
   }
 };
 
@@ -68,9 +70,9 @@ class AISettingsStore {
   selectedProvider = $state<AIProvider>('gemini');
   
   modelPerMode = $state<Record<AIMode, string>>({
-    ask: 'gemini-2.5-flash|thinking',
-    plan: 'gemini-2.5-flash|thinking',
-    agent: 'gemini-2.5-flash|thinking'
+    ask: 'gemini-3-flash-preview|thinking',
+    plan: 'gemini-3-flash-preview|thinking',
+    agent: 'gemini-3-flash-preview|thinking'
   });
   
   hasApiKey = $state<Record<AIProvider, boolean>>({
@@ -187,8 +189,10 @@ class AISettingsStore {
 
         const normalizeModel = (model: string | undefined): string | undefined => {
           if (!model) return undefined;
-          if (model.includes('gemini-3')) return 'gemini-2.5-flash|thinking';
-          if (model === 'gemini-2.5-flash') return 'gemini-2.5-flash|thinking';
+          // Keep Gemini 3 models as-is
+          if (model.includes('gemini-3')) return model;
+          // Keep Gemini 2.5 models as-is
+          if (model.includes('gemini-2.5')) return model;
           return model;
         };
 

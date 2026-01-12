@@ -232,6 +232,23 @@ export async function getFileInfo(path: string): Promise<FileInfo | null> {
 }
 
 /**
+ * Read file contents without showing toast notifications on error.
+ * Useful for optional files like VOLT.md, CLAUDE.md, etc.
+ */
+export async function readFileQuiet(path: string): Promise<string | null> {
+  try {
+    const content = await invoke<string>('read_file', { path });
+    return content;
+  } catch (error) {
+    if (isFileError(error) && error.type === 'NotFound') {
+      return null;
+    }
+    console.error(`[FileSystem] Read file (quiet) error for ${path}:`, error);
+    return null;
+  }
+}
+
+/**
  * Get detailed file information, but treat NotFound as a normal "null" result
  * and do not show toast notifications.
  *

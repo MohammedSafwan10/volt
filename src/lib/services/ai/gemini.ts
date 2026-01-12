@@ -25,7 +25,27 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 const GEMINI_THINKING_SUFFIX = '|thinking';
 
+/**
+ * Check if model is Gemini 3 series
+ */
+function isGemini3Model(model: string): boolean {
+  return model.includes('gemini-3');
+}
+
+/**
+ * Build thinking config based on model series
+ * - Gemini 2.5: uses thinkingBudget (0 to disable, -1 for unlimited)
+ * - Gemini 3: uses thinkingLevel (HIGH, MEDIUM, LOW, MINIMAL)
+ */
 function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThinkingConfig | undefined {
+  if (isGemini3Model(model)) {
+    // Gemini 3 series: use thinkingLevel
+    return {
+      includeThoughts: thinkingEnabled,
+      thinkingLevel: thinkingEnabled ? 'HIGH' : 'LOW'
+    };
+  }
+  
   // Gemini 2.5 series: use thinkingBudget (camelCase for REST API)
   return {
     includeThoughts: thinkingEnabled,
@@ -566,13 +586,38 @@ export const geminiProvider: AIProvider = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    
+    // Keepalive timeout - if no data received for this long, consider connection dead
+    // Kiro-style: detect stalled connections
+    const KEEPALIVE_TIMEOUT_MS = 60000; // 60 seconds
+    let lastDataTime = Date.now();
 
     try {
       let result: ReadableStreamReadResult<Uint8Array> | undefined;
 
       while (true) {
         try {
-          result = await reader.read();
+          // Race between read and timeout (Kiro-style keepalive detection)
+          const readPromise = reader.read();
+          const timeoutPromise = new Promise<{ timeout: true }>((resolve) => {
+            const remaining = KEEPALIVE_TIMEOUT_MS - (Date.now() - lastDataTime);
+            if (remaining <= 0) {
+              resolve({ timeout: true });
+            } else {
+              setTimeout(() => resolve({ timeout: true }), remaining);
+            }
+          });
+          
+          const raceResult = await Promise.race([readPromise, timeoutPromise]);
+          
+          if ('timeout' in raceResult) {
+            console.warn('[Gemini] Stream timeout - no data received for', KEEPALIVE_TIMEOUT_MS, 'ms');
+            yield { type: 'error', error: 'Connection timeout - no response from server.' };
+            break;
+          }
+          
+          result = raceResult;
+          lastDataTime = Date.now(); // Reset keepalive timer
         } catch (err: any) {
           // Ignore abort errors (user stopped generation)
           const isAbort = err?.name === 'AbortError' || err?.message?.includes('aborted');

@@ -76,12 +76,19 @@
     const thinking = model.endsWith("|thinking");
     const base = thinking ? model.slice(0, -"|thinking".length) : model;
 
+    // Gemini 3 Flash
+    if (base === "gemini-3-flash-preview")
+      return thinking ? "Gemini 3 Flash (thinking)" : "Gemini 3 Flash";
+    
+    // Gemini 2.5 Flash
     if (base === "gemini-2.5-flash")
       return thinking ? "Gemini 2.5 Flash (thinking)" : "Gemini 2.5 Flash";
+    
     // Fallback: capitalize and clean up
     return (
       (thinking ? base : model)
         .replace("gemini-", "Gemini ")
+        .replace("-preview", "")
         .replace(/-/g, " ") + (thinking ? " (thinking)" : "")
     );
   }
@@ -472,7 +479,7 @@
         <button
           class="send-btn"
           onclick={onSend}
-          disabled={!value.trim()}
+          disabled={!value.trim() && !inputRef?.value?.trim()}
           title="Send (Enter)"
           aria-label="Send message"
           type="button"

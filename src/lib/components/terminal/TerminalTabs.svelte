@@ -3,15 +3,36 @@
 	import { terminalStore } from '$lib/stores/terminal.svelte';
 	import TerminalView from './TerminalView.svelte';
 
-	// Create first terminal only once when component mounts (not on every reactive update)
+	let createError = $state<string | null>(null);
+	let isCreating = $state(false);
+
+	// Create first terminal only once when component mounts
 	onMount(() => {
 		if (terminalStore.sessions.length === 0) {
-			void terminalStore.createTerminal();
+			void createFirstTerminal();
 		}
 	});
 
-	function handleNewTerminal(): void {
-		void terminalStore.createTerminal();
+	async function createFirstTerminal(): Promise<void> {
+		if (isCreating) return;
+		isCreating = true;
+		createError = null;
+		
+		try {
+			const session = await terminalStore.createTerminal();
+			if (!session) {
+				createError = 'Failed to create terminal session';
+			}
+		} catch (err) {
+			createError = err instanceof Error ? err.message : 'Unknown error';
+			console.error('[TerminalTabs] Failed to create terminal:', err);
+		} finally {
+			isCreating = false;
+		}
+	}
+
+	async function handleNewTerminal(): Promise<void> {
+		await createFirstTerminal();
 	}
 </script>
 
@@ -27,10 +48,19 @@
 
 		{#if terminalStore.sessions.length === 0}
 			<div class="no-terminals">
-				<p>No terminals open</p>
-				<button class="create-btn" onclick={handleNewTerminal}>
-					Create Terminal
-				</button>
+				{#if isCreating}
+					<p>Creating terminal...</p>
+				{:else if createError}
+					<p class="error-text">Error: {createError}</p>
+					<button class="create-btn" onclick={handleNewTerminal}>
+						Retry
+					</button>
+				{:else}
+					<p>No terminals open</p>
+					<button class="create-btn" onclick={handleNewTerminal}>
+						Create Terminal
+					</button>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -63,6 +93,10 @@
 	.no-terminals p {
 		font-size: 13px;
 		margin: 0;
+	}
+
+	.no-terminals .error-text {
+		color: var(--color-error);
 	}
 
 	.create-btn {

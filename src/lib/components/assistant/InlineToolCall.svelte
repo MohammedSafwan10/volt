@@ -13,56 +13,102 @@
     streamingProgress?: StreamingProgress | null;
     onApprove?: () => void;
     onDeny?: () => void;
-    onAcceptEdit?: (() => void) | null;
-    onRejectEdit?: (() => void) | null;
   }
 
-  let { toolCall, streamingProgress, onApprove, onDeny, onAcceptEdit, onRejectEdit }: Props = $props();
+  let { toolCall, streamingProgress, onApprove, onDeny }: Props = $props();
 
   let expanded = $state(false);
 
+  // Format output with clickable URLs (global handler in layout opens them in browser)
+  function formatOutputWithLinks(text: string): string {
+    return text.replace(
+      /(https?:\/\/[^\s<>"']+)/gi,
+      '<a href="$1" class="output-link">$1</a>'
+    );
+  }
+
   // Tool display names (more user-friendly)
   const toolDisplayNames: Record<string, string> = {
-    list_dir: 'List directory',
-    read_file: 'Read file(s)',
-    get_file_info: 'Get file info',
-    workspace_search: 'Search workspace',
-    get_active_file: 'Get active file',
-    get_selection: 'Get selection',
-    get_open_files: 'Get open files',
-    write_file: 'Write file',
-    create_file: 'Create file',
-    create_dir: 'Create directory',
-    delete_path: 'Delete',
-    rename_path: 'Rename',
-    run_command: 'Run command',
-    terminal_create: 'Create terminal',
-    terminal_write: 'Execute in terminal',
-    terminal_kill: 'Kill terminal',
-    terminal_get_output: 'Get terminal output',
-    run_check: 'Run check'
+    // Context & Search
+    gather_context: 'Gathering context',
+    workspace_search: 'Searched workspace',
+    list_dir: 'Listed directory',
+    read_file: 'Read file',
+    read_files: 'Read files',
+    get_file_info: 'Got file info',
+    get_file_tree: 'Got file tree',
+    find_files: 'Found files',
+    search_symbols: 'Searched symbols',
+    // Editor
+    get_active_file: 'Got active file',
+    get_selection: 'Got selection',
+    get_open_files: 'Got open files',
+    // File operations
+    write_file: 'Wrote file',
+    append_file: 'Appended to file',
+    str_replace: 'Edited file',
+    apply_edit: 'Edited file',
+    create_file: 'Created file',
+    create_dir: 'Created directory',
+    delete_file: 'Deleted file',
+    delete_path: 'Deleted',
+    rename_path: 'Renamed',
+    // Terminal
+    run_command: 'Ran command',
+    start_process: 'Started process',
+    stop_process: 'Stopped process',
+    list_processes: 'Listed processes',
+    get_process_output: 'Got process output',
+    terminal_create: 'Created terminal',
+    terminal_write: 'Executed command',
+    terminal_kill: 'Killed terminal',
+    terminal_get_output: 'Got terminal output',
+    read_terminal: 'Read terminal',
+    // Diagnostics
+    run_check: 'Ran check',
+    get_diagnostics: 'Got diagnostics'
   };
 
   // Tool icons - using valid UIIconName values
   const toolIcons: Record<string, UIIconName> = {
+    // Context & Search
+    gather_context: 'search',
+    workspace_search: 'search',
     list_dir: 'folder',
     read_file: 'file',
+    read_files: 'files',
     get_file_info: 'info',
-    workspace_search: 'search',
+    get_file_tree: 'files',
+    find_files: 'search',
+    search_symbols: 'symbol-class',
+    // Editor
     get_active_file: 'file',
     get_selection: 'code',
     get_open_files: 'files',
+    // File operations
     write_file: 'pencil',
+    append_file: 'file-plus',
+    str_replace: 'pencil',
+    apply_edit: 'pencil',
     create_file: 'file-plus',
     create_dir: 'folder-plus',
+    delete_file: 'trash',
     delete_path: 'trash',
     rename_path: 'pencil',
+    // Terminal
     run_command: 'terminal',
+    start_process: 'play',
+    stop_process: 'stop',
+    list_processes: 'files',
+    get_process_output: 'terminal',
     terminal_create: 'terminal',
     terminal_write: 'terminal',
     terminal_kill: 'close',
     terminal_get_output: 'terminal',
-    run_check: 'check'
+    read_terminal: 'terminal',
+    // Diagnostics
+    run_check: 'check',
+    get_diagnostics: 'warning'
   };
 
   const statusIcons: Record<ToolCallStatus, UIIconName> = {
@@ -127,9 +173,13 @@
         if (names.length === 2) return `${names[0]}, ${names[1]}${suffix}`;
         return `${names[0]} +${names.length - 1} more${suffix}`;
       }
-      case 'workspace_search':
-        return args.query ? `"${String(args.query)}"` : '';
+      case 'workspace_search': {
+        const query = args.query ? String(args.query) : '';
+        const pattern = args.includePattern ? ` in ${String(args.includePattern)}` : '';
+        return query ? `"${query}"${pattern}` : '';
+      }
       case 'write_file':
+      case 'append_file':
       case 'create_file':
         return args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
       case 'create_dir':
@@ -140,8 +190,25 @@
         return args.oldPath ? `${String(args.oldPath).split('/').pop()} → ${String(args.newPath).split('/').pop()}` : '';
       case 'run_command':
         return args.command ? String(args.command).slice(0, 50) : '';
+      case 'start_process':
+        return args.command ? String(args.command).slice(0, 50) : '';
+      case 'stop_process':
+        return args.processId ? `Process ${args.processId}` : '';
+      case 'get_process_output':
+        return args.processId ? `Process ${args.processId}` : '';
+      case 'list_processes':
+        return '';
       case 'terminal_write':
         return args.command ? String(args.command).slice(0, 40) : '';
+      case 'get_diagnostics': {
+        // Show which files were checked (Kiro-style)
+        const paths = args.paths as string[] | undefined;
+        if (!paths || paths.length === 0) return 'all files';
+        const names = paths.map(p => String(p).split('/').pop() ?? p);
+        if (names.length === 1) return names[0];
+        if (names.length === 2) return `${names[0]}, ${names[1]}`;
+        return `${names[0]} +${names.length - 1} more`;
+      }
       case 'run_check':
         return args.checkType ? String(args.checkType) : '';
       default:
@@ -166,14 +233,6 @@
   const isPending = $derived(toolCall.status === 'pending' && toolCall.requiresApproval);
   const isComplete = $derived(toolCall.status === 'completed');
   const isFailed = $derived(toolCall.status === 'failed');
-
-  const isReviewPending = $derived(toolCall.reviewStatus === 'pending');
-
-  const hasRevert = $derived.by(() => {
-    const metaAny = toolCall.meta as any;
-    const before = metaAny?.fileEdit?.beforeContent;
-    return typeof before === 'string' && before.length > 0;
-  });
   
   // Check if this is a file write tool that supports streaming
   const isFileWriteTool = $derived(
@@ -269,22 +328,6 @@
     </div>
   {/if}
 
-  {#if isComplete && isFileWriteTool && isReviewPending && hasRevert}
-    <div class="approval-bar">
-      <span class="approval-reason">Review edit</span>
-      <div class="approval-actions">
-        <button class="approve-btn" onclick={onAcceptEdit} type="button">
-          <UIIcon name="check" size={12} />
-          Accept
-        </button>
-        <button class="deny-btn" onclick={onRejectEdit} type="button">
-          <UIIcon name="close" size={12} />
-          Reject
-        </button>
-      </div>
-    </div>
-  {/if}
-
   {#if expanded}
     <div class="tool-details">
       {#if meta?.why && !isPending}
@@ -304,7 +347,7 @@
       {#if toolCall.output}
         <div class="detail-section">
           <span class="detail-label">Output:</span>
-          <pre class="detail-output">{toolCall.output}</pre>
+          <pre class="detail-output">{@html formatOutputWithLinks(toolCall.output)}</pre>
         </div>
       {/if}
       
@@ -583,5 +626,17 @@
     border-radius: 4px;
     max-height: 200px;
     overflow-y: auto;
+  }
+
+  .detail-output :global(.output-link) {
+    color: var(--color-accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .detail-output :global(.output-link:hover) {
+    color: var(--color-accent);
+    text-decoration: underline;
+    opacity: 0.8;
   }
 </style>
