@@ -318,7 +318,7 @@
                 assistantStore.openPanel();
               }}
             >
-              <UIIcon name="sparkles" size={10} />
+              <UIIcon name="sparkle" size={10} />
               <span>Fix</span>
             </button>
           </div>
