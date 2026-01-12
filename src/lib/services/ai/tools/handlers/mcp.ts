@@ -30,16 +30,24 @@ export function getMcpToolDefinitions(): Array<{
 
   for (const { serverId, tool } of mcpStore.tools) {
     // Prefix tool name with server ID to avoid conflicts
-    const toolName = `mcp_${serverId}_${tool.name}`;
+    // Replace hyphens with underscores for valid function names
+    const safeName = tool.name.replace(/-/g, '_');
+    const toolName = `mcp_${serverId}_${safeName}`;
     
     // Parse input schema or use empty object
     const inputSchema = tool.inputSchema || {};
     const properties = ((inputSchema as Record<string, unknown>).properties || {}) as Record<string, unknown>;
     const required = (inputSchema as Record<string, unknown>).required as string[] | undefined;
 
+    // Build a better description that includes required params
+    let description = tool.description || `MCP tool: ${tool.name} from ${serverId}`;
+    if (required && required.length > 0) {
+      description += ` (Required: ${required.join(', ')})`;
+    }
+
     definitions.push({
       name: toolName,
-      description: tool.description || `MCP tool: ${tool.name} from ${serverId}`,
+      description,
       parameters: {
         type: 'object',
         properties,
@@ -64,13 +72,33 @@ export function isMcpTool(toolName: string): boolean {
 export function parseMcpToolName(toolName: string): { serverId: string; toolName: string } | null {
   if (!toolName.startsWith('mcp_')) return null;
   
-  // Format: mcp_serverId_toolName
-  const parts = toolName.slice(4).split('_');
-  if (parts.length < 2) return null;
+  // Format: mcp_serverId_safeName (where safeName has underscores instead of hyphens)
+  const rest = toolName.slice(4); // Remove 'mcp_'
+  const firstUnderscore = rest.indexOf('_');
+  if (firstUnderscore === -1) return null;
   
-  const serverId = parts[0];
-  const actualToolName = parts.slice(1).join('_');
+  const serverId = rest.slice(0, firstUnderscore);
+  const safeName = rest.slice(firstUnderscore + 1);
   
+  // Convert underscores back to hyphens for the actual tool name
+  // But only for tool names that originally had hyphens
+  // Try the safe name first, then try with hyphens
+  const actualToolName = safeName.replace(/_/g, '-');
+  
+  // Check if the tool exists with hyphens or underscores
+  const toolExists = mcpStore.tools.some(
+    t => t.serverId === serverId && (t.tool.name === safeName || t.tool.name === actualToolName)
+  );
+  
+  if (toolExists) {
+    // Find the actual tool name
+    const found = mcpStore.tools.find(
+      t => t.serverId === serverId && (t.tool.name === safeName || t.tool.name === actualToolName)
+    );
+    return { serverId, toolName: found?.tool.name || actualToolName };
+  }
+  
+  // Fallback - try with hyphens
   return { serverId, toolName: actualToolName };
 }
 
