@@ -157,8 +157,8 @@ impl CdpManager {
             // Find page with matching URL
             let mut found_page = None;
             for p in pages {
-                if let Ok(page_url) = p.url().await {
-                    if page_url.as_str().contains(url) {
+                if let Ok(Some(page_url)) = p.url().await {
+                    if page_url.contains(url) {
                         found_page = Some(p);
                         break;
                     }
@@ -170,13 +170,12 @@ impl CdpManager {
             // The browser webview will have http://localhost:XXXX or similar
             let mut found_page = None;
             for p in pages {
-                if let Ok(page_url) = p.url().await {
-                    let url_str = page_url.as_str();
+                if let Ok(Some(page_url)) = p.url().await {
                     // Skip Volt's main window and about:blank
-                    if !url_str.starts_with("tauri://") && 
-                       !url_str.starts_with("about:") &&
-                       !url_str.is_empty() {
-                        tracing::info!("CDP: Found browser page: {}", url_str);
+                    if !page_url.starts_with("tauri://") && 
+                       !page_url.starts_with("about:") &&
+                       !page_url.is_empty() {
+                        tracing::info!("CDP: Found browser page: {}", page_url);
                         found_page = Some(p);
                         break;
                     }
