@@ -488,7 +488,10 @@
           <div class="editor-area">
             {#if browserStore.isVisible}
               <!-- Browser Panel (replaces editor when visible) -->
-              <BrowserPanel />
+              <BrowserPanel onAskAI={(context) => {
+                assistantStore.setInputValue(`Help me debug this:\n\n${context}`);
+                assistantStore.openPanel();
+              }} />
             {:else if children}
               {@render children()}
             {:else if editorStore.activeFile}

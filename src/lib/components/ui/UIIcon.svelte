@@ -112,7 +112,9 @@
     // Browser
     | 'globe'
     | 'target'
-    | 'screenshot';
+    | 'screenshot'
+    | 'device-mobile'
+    | 'device-desktop';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -222,6 +224,8 @@
     globe: 'codicon:globe',
     target: 'codicon:target',
     screenshot: 'codicon:device-camera',
+    'device-mobile': 'codicon:device-mobile',
+    'device-desktop': 'codicon:device-desktop',
   };
 
   interface Props {

@@ -315,6 +315,91 @@ Total: ~12-16 hours of development
 4. ~~Add browser icon to sidebar~~ ✅
 5. ~~Implement native Tauri webview~~ ✅ (Phase 2)
 6. ~~Add element selection via injected scripts~~ ✅ (Phase 2)
-7. Test with localhost and external URLs
-8. Add screenshot functionality (Phase 3)
-9. Add console log capture (Phase 4)
+7. ~~Test with localhost and external URLs~~ ✅
+8. ~~Add screenshot functionality~~ ✅ (Phase 3)
+9. ~~Add console log capture~~ ✅ (Phase 4 - Sprint 1)
+10. ~~Add AI browser tools~~ ✅ (9 tools registered)
+11. Add Network Panel UI (Phase 4 - Sprint 2)
+12. Add Performance Panel UI (Phase 4 - Sprint 2)
+
+---
+
+## How to Select Element & Send to AI
+
+### Step 1: Enable Select Mode
+Click the **target icon** (🎯) in the browser toolbar to enter element selection mode.
+
+### Step 2: Select an Element
+- Hover over elements to see them highlighted with a blue border
+- Click on any element to select it
+- The **Element Inspector** panel appears on the right
+
+### Step 3: Send to AI
+In the Element Inspector, you have 4 AI action buttons:
+
+| Button | What it does |
+|--------|--------------|
+| **Improve UI/UX** | Asks AI to suggest better colors, spacing, typography |
+| **Check Accessibility** | Asks AI to check WCAG compliance issues |
+| **Make Responsive** | Asks AI to suggest mobile/tablet/desktop CSS |
+| **Modernize CSS** | Asks AI to suggest flexbox, grid, modern properties |
+
+Clicking any button:
+1. Opens the AI Assistant panel
+2. Pre-fills the input with your selected element's HTML, CSS, and selector
+3. You can add your own instructions before sending
+
+### Custom Instructions
+You can also:
+1. Select an element
+2. Copy the selector (CSS or XPath)
+3. Open AI chat manually
+4. Type your own question like: "How do I animate this button on hover?"
+
+---
+
+## AI Browser Tools (Available to AI)
+
+The AI can now use these tools to help debug:
+
+| Tool | Description |
+|------|-------------|
+| `browser_get_console_logs` | Get console logs with filtering |
+| `browser_get_errors` | Get JS errors with stack traces |
+| `browser_get_network_requests` | Get network requests |
+| `browser_get_performance` | Get page load metrics |
+| `browser_get_selected_element` | Get currently selected element |
+| `browser_get_summary` | Quick overview of browser state |
+| `browser_navigate` | Navigate to URL |
+| `browser_click` | Click element by selector |
+| `browser_type` | Type into input field |
+
+---
+
+## Current Implementation Status
+
+### ✅ Completed
+- Basic browser with navigation
+- URL bar, back/forward/reload
+- Bookmarks (add/remove/view)
+- History tracking
+- Zoom controls
+- Responsive mode presets
+- Element selection mode
+- Element Inspector with AI actions
+- Console log capture
+- Error capture (JS errors + unhandled rejections)
+- Network request capture
+- Performance metrics capture
+- DevTools panel UI (Console tab)
+- AI browser tools (9 tools)
+
+### 🔄 In Progress
+- Network Panel UI (data captured, UI placeholder)
+- Performance Panel UI (data captured, UI placeholder)
+
+### 📋 Future
+- Multiple browser tabs
+- Record user actions → generate test code
+- Ad blocker (CSS injection)
+- Auto-refresh on file save
