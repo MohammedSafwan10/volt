@@ -1,6 +1,6 @@
 /**
  * Browser Panel Store - Svelte 5 runes
- * Controls embedded browser via Rust commands (truly embedded using add_child)
+ * Full-featured browser with zoom, find, bookmarks, history, responsive mode
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -27,11 +27,54 @@ export interface BrowserBounds {
   height: number;
 }
 
+export interface Bookmark {
+  id: string;
+  url: string;
+  title: string;
+  favicon?: string;
+  created_at: number;
+}
+
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  visited_at: number;
+}
+
+export interface ResponsivePreset {
+  name: string;
+  width: number;
+  height: number;
+  icon: string;
+}
+
+export interface PageContent {
+  text: string;
+  headings: { level: number; text: string }[];
+  links: { text: string; href: string }[];
+  images: { alt: string; src: string }[];
+  meta: { title: string; description: string; url: string };
+}
+
 interface BrowserInfo {
   is_open: boolean;
   url: string;
+  title: string;
   select_mode: boolean;
+  zoom_level: number;
+  can_go_back: boolean;
+  can_go_forward: boolean;
 }
+
+// Common responsive presets
+export const RESPONSIVE_PRESETS: ResponsivePreset[] = [
+  { name: 'iPhone SE', width: 375, height: 667, icon: 'smartphone' },
+  { name: 'iPhone 14', width: 390, height: 844, icon: 'smartphone' },
+  { name: 'iPhone 14 Pro Max', width: 430, height: 932, icon: 'smartphone' },
+  { name: 'iPad Mini', width: 768, height: 1024, icon: 'tablet' },
+  { name: 'iPad Pro', width: 1024, height: 1366, icon: 'tablet' },
+  { name: 'Desktop', width: 1920, height: 1080, icon: 'monitor' },
+];
 
 class BrowserStore {
   // State
@@ -44,10 +87,20 @@ class BrowserStore {
   selectedElement = $state<SelectedElement | null>(null);
   error = $state<string | null>(null);
   isOpen = $state(false);
-  isVisible = $state(false); // Track if webview should be visible
+  isVisible = $state(false);
+  
+  // New features
+  zoomLevel = $state(1.0);
+  findQuery = $state('');
+  findCount = $state(0);
+  findIndex = $state(-1);
+  bookmarks = $state<Bookmark[]>([]);
+  history = $state<HistoryEntry[]>([]);
+  responsiveMode = $state<{ width: number; height: number } | null>(null);
+  extractedContent = $state<PageContent | null>(null);
 
   // Internal
-  private history: string[] = [];
+  private historyStack: string[] = [];
   private historyIndex = -1;
   private unlisteners: UnlistenFn[] = [];
   private initialized = false;
@@ -56,52 +109,64 @@ class BrowserStore {
   private pendingBounds: BrowserBounds | null = null;
 
   private static STORAGE_KEY = 'volt-browser-url';
+  private static BOOKMARKS_KEY = 'volt-browser-bookmarks';
 
   constructor() {
-    // Load last URL from localStorage
+    // Load from localStorage
     if (typeof localStorage !== 'undefined') {
       const savedUrl = localStorage.getItem(BrowserStore.STORAGE_KEY);
-      if (savedUrl) {
-        this.url = savedUrl;
+      if (savedUrl) this.url = savedUrl;
+      
+      const savedBookmarks = localStorage.getItem(BrowserStore.BOOKMARKS_KEY);
+      if (savedBookmarks) {
+        try {
+          this.bookmarks = JSON.parse(savedBookmarks);
+        } catch { /* ignore */ }
       }
     }
   }
 
-  // Save URL to localStorage
   private saveUrl(url: string): void {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(BrowserStore.STORAGE_KEY, url);
     }
   }
 
-  /**
-   * Open the browser panel with embedded webview
-   */
+  private saveBookmarks(): void {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(BrowserStore.BOOKMARKS_KEY, JSON.stringify(this.bookmarks));
+    }
+  }
+
   async open(initialUrl?: string): Promise<void> {
     if (this.isOpen) return;
 
-    const url = initialUrl || 'https://www.google.com';
+    const url = initialUrl || this.url || 'https://www.google.com';
 
     this.isOpen = true;
     this.isVisible = true;
     this.url = url;
     this.status = 'loading';
     this.error = null;
-    this.history = [url];
+    this.historyStack = [url];
     this.historyIndex = 0;
     this.canGoBack = false;
     this.canGoForward = false;
     this.selectedElement = null;
     this.mode = 'normal';
+    this.zoomLevel = 1.0;
+    this.findQuery = '';
+    this.findCount = 0;
+    this.findIndex = -1;
+    this.responsiveMode = null;
+    this.extractedContent = null;
 
     try {
-      // Setup event listeners first
       if (!this.initialized) {
         await this.setupListeners();
         this.initialized = true;
       }
-
-      console.log('[Browser] Ready - waiting for bounds to create webview');
+      console.log('[Browser] Ready - waiting for bounds');
     } catch (err) {
       console.error('[Browser] Failed to open:', err);
       this.status = 'error';
@@ -109,13 +174,9 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Close the browser panel
-   */
   async close(): Promise<void> {
     if (!this.isOpen) return;
 
-    // Clear timers
     if (this.boundsTimer) {
       clearTimeout(this.boundsTimer);
       this.boundsTimer = null;
@@ -133,15 +194,16 @@ class BrowserStore {
     this.mode = 'normal';
     this.selectedElement = null;
     this.error = null;
-    this.history = [];
+    this.historyStack = [];
     this.historyIndex = -1;
     this.lastBounds = null;
     this.pendingBounds = null;
+    this.findQuery = '';
+    this.findCount = 0;
+    this.responsiveMode = null;
+    this.extractedContent = null;
   }
 
-  /**
-   * Set browser visibility (hide/show webview without closing)
-   */
   async setVisible(visible: boolean): Promise<void> {
     if (!this.isOpen) return;
     if (this.isVisible === visible) return;
@@ -151,7 +213,6 @@ class BrowserStore {
     try {
       if (visible) {
         await invoke('browser_show');
-        // Force bounds update when showing (reset cache)
         this.lastBounds = null;
       } else {
         await invoke('browser_hide');
@@ -161,16 +222,12 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Navigate to URL
-   */
   async navigate(url: string): Promise<void> {
     if (!this.isOpen) return;
 
     let finalUrl = url.trim();
     if (!finalUrl) return;
 
-    // Add protocol if missing
     if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
       if (finalUrl.includes(' ') || !finalUrl.includes('.')) {
         finalUrl = `https://www.google.com/search?q=${encodeURIComponent(finalUrl)}`;
@@ -183,13 +240,10 @@ class BrowserStore {
     this.url = finalUrl;
     this.error = null;
 
-    // Update history
     this.historyIndex++;
-    this.history = this.history.slice(0, this.historyIndex);
-    this.history.push(finalUrl);
+    this.historyStack = this.historyStack.slice(0, this.historyIndex);
+    this.historyStack.push(finalUrl);
     this.updateNavState();
-
-    // Save URL to localStorage for persistence
     this.saveUrl(finalUrl);
 
     try {
@@ -202,17 +256,12 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Go back in history
-   */
   async goBack(): Promise<void> {
     if (!this.canGoBack || this.historyIndex <= 0) return;
-
     this.historyIndex--;
-    this.url = this.history[this.historyIndex];
+    this.url = this.historyStack[this.historyIndex];
     this.status = 'loading';
     this.updateNavState();
-
     try {
       await invoke('browser_back');
       this.status = 'ready';
@@ -221,17 +270,12 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Go forward in history
-   */
   async goForward(): Promise<void> {
-    if (!this.canGoForward || this.historyIndex >= this.history.length - 1) return;
-
+    if (!this.canGoForward || this.historyIndex >= this.historyStack.length - 1) return;
     this.historyIndex++;
-    this.url = this.history[this.historyIndex];
+    this.url = this.historyStack[this.historyIndex];
     this.status = 'loading';
     this.updateNavState();
-
     try {
       await invoke('browser_forward');
       this.status = 'ready';
@@ -240,15 +284,10 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Reload current page
-   */
   async reload(): Promise<void> {
     if (!this.isOpen) return;
-
     this.status = 'loading';
     this.error = null;
-
     try {
       await invoke('browser_reload');
       this.status = 'ready';
@@ -259,18 +298,228 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Toggle element selection mode
-   */
+  async hardReload(): Promise<void> {
+    if (!this.isOpen) return;
+    this.status = 'loading';
+    try {
+      await invoke('browser_hard_reload');
+      this.status = 'ready';
+    } catch (err) {
+      console.error('[Browser] Hard reload failed:', err);
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('browser_stop');
+      this.status = 'ready';
+    } catch (err) {
+      console.error('[Browser] Stop failed:', err);
+    }
+  }
+
+  // Zoom controls
+  async zoomIn(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      const level = await invoke<number>('browser_zoom_in');
+      this.zoomLevel = level;
+    } catch (err) {
+      console.error('[Browser] Zoom in failed:', err);
+    }
+  }
+
+  async zoomOut(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      const level = await invoke<number>('browser_zoom_out');
+      this.zoomLevel = level;
+    } catch (err) {
+      console.error('[Browser] Zoom out failed:', err);
+    }
+  }
+
+  async zoomReset(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      const level = await invoke<number>('browser_zoom_reset');
+      this.zoomLevel = level;
+    } catch (err) {
+      console.error('[Browser] Zoom reset failed:', err);
+    }
+  }
+
+  async setZoom(level: number): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      const newLevel = await invoke<number>('browser_set_zoom', { level });
+      this.zoomLevel = newLevel;
+    } catch (err) {
+      console.error('[Browser] Set zoom failed:', err);
+    }
+  }
+
+  // Find in page
+  async find(query: string): Promise<void> {
+    if (!this.isOpen) return;
+    this.findQuery = query;
+    try {
+      await invoke('browser_find', { query, highlight: true });
+    } catch (err) {
+      console.error('[Browser] Find failed:', err);
+    }
+  }
+
+  async findNext(): Promise<void> {
+    if (!this.isOpen || !this.findQuery) return;
+    try {
+      await invoke('browser_find_next');
+    } catch (err) {
+      console.error('[Browser] Find next failed:', err);
+    }
+  }
+
+  async findPrev(): Promise<void> {
+    if (!this.isOpen || !this.findQuery) return;
+    try {
+      await invoke('browser_find_prev');
+    } catch (err) {
+      console.error('[Browser] Find prev failed:', err);
+    }
+  }
+
+  async findClear(): Promise<void> {
+    if (!this.isOpen) return;
+    this.findQuery = '';
+    this.findCount = 0;
+    this.findIndex = -1;
+    try {
+      await invoke('browser_find_clear');
+    } catch (err) {
+      console.error('[Browser] Find clear failed:', err);
+    }
+  }
+
+  // Bookmarks
+  async addBookmark(): Promise<void> {
+    if (!this.isOpen || !this.url) return;
+    try {
+      const bookmark = await invoke<Bookmark>('browser_add_bookmark', {
+        url: this.url,
+        title: this.title || this.url,
+      });
+      this.bookmarks = [...this.bookmarks, bookmark];
+      this.saveBookmarks();
+    } catch (err) {
+      console.error('[Browser] Add bookmark failed:', err);
+    }
+  }
+
+  async removeBookmark(id: string): Promise<void> {
+    try {
+      await invoke('browser_remove_bookmark', { id });
+      this.bookmarks = this.bookmarks.filter(b => b.id !== id);
+      this.saveBookmarks();
+    } catch (err) {
+      console.error('[Browser] Remove bookmark failed:', err);
+    }
+  }
+
+  isBookmarked(url: string): boolean {
+    return this.bookmarks.some(b => b.url === url);
+  }
+
+  // History
+  async loadHistory(): Promise<void> {
+    try {
+      const history = await invoke<HistoryEntry[]>('browser_get_history', { limit: 100 });
+      this.history = history;
+    } catch (err) {
+      console.error('[Browser] Load history failed:', err);
+    }
+  }
+
+  async clearHistory(): Promise<void> {
+    try {
+      await invoke('browser_clear_history');
+      this.history = [];
+    } catch (err) {
+      console.error('[Browser] Clear history failed:', err);
+    }
+  }
+
+  // Responsive mode
+  async setResponsiveMode(width?: number, height?: number): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('browser_set_responsive_mode', { width, height });
+      this.responsiveMode = width && height ? { width, height } : null;
+    } catch (err) {
+      console.error('[Browser] Set responsive mode failed:', err);
+    }
+  }
+
+  async clearResponsiveMode(): Promise<void> {
+    await this.setResponsiveMode();
+  }
+
+  // DevTools
+  async openDevTools(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('browser_open_devtools');
+    } catch (err) {
+      console.error('[Browser] Open devtools failed:', err);
+    }
+  }
+
+  // AI Integration
+  async extractContent(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('browser_extract_content');
+    } catch (err) {
+      console.error('[Browser] Extract content failed:', err);
+    }
+  }
+
+  async generateCode(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('browser_generate_code');
+    } catch (err) {
+      console.error('[Browser] Generate code failed:', err);
+    }
+  }
+
+  // Element selection
   async toggleSelectMode(): Promise<void> {
     if (!this.isOpen) return;
-
     const newMode = this.mode === 'select' ? 'normal' : 'select';
-
+    
     try {
-      await invoke('browser_set_select_mode', { enabled: newMode === 'select' });
-      this.mode = newMode;
-      if (newMode === 'normal') {
+      if (newMode === 'select') {
+        // Try CDP-based element picker first (more reliable)
+        try {
+          await invoke('cdp_enable_element_picker');
+          this.mode = 'select';
+          console.log('[Browser] CDP element picker enabled');
+        } catch (cdpErr) {
+          // Fallback to old JS injection method
+          console.warn('[Browser] CDP element picker failed, using fallback:', cdpErr);
+          await invoke('browser_set_select_mode', { enabled: true });
+          this.mode = 'select';
+        }
+      } else {
+        // Disable element picker
+        try {
+          await invoke('cdp_disable_element_picker');
+        } catch { /* ignore */ }
+        try {
+          await invoke('browser_set_select_mode', { enabled: false });
+        } catch { /* ignore */ }
+        this.mode = 'normal';
         this.selectedElement = null;
       }
     } catch (err) {
@@ -278,12 +527,8 @@ class BrowserStore {
     }
   }
 
-  /**
-   * Execute JavaScript in the browser
-   */
   async executeJs(script: string): Promise<void> {
     if (!this.isOpen) return;
-
     try {
       await invoke('browser_execute_js', { script });
     } catch (err) {
@@ -291,13 +536,57 @@ class BrowserStore {
     }
   }
 
+  clearSelection(): void {
+    this.selectedElement = null;
+    // Clear the highlight in the browser
+    this.clearSelectionHighlight();
+  }
+
+  /** Clear the selection highlight in the browser (without clearing selectedElement state) */
+  private async clearSelectionHighlight(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      // Try CDP method first
+      await invoke('cdp_disable_element_picker');
+    } catch {
+      // Fallback to JS injection
+      try {
+        await invoke('browser_execute_js', { 
+          script: 'if(window.__voltClearSelectionHighlight) window.__voltClearSelectionHighlight();' 
+        });
+      } catch { /* ignore */ }
+    }
+  }
+
+  private updateNavState(): void {
+    this.canGoBack = this.historyIndex > 0;
+    this.canGoForward = this.historyIndex < this.historyStack.length - 1;
+  }
+
   /**
-   * Update webview bounds (creates webview if needed)
+   * Inject devtools capture scripts into the browser
+   * Called after navigation to capture console, errors, network
    */
+  private async injectDevToolsScripts(): Promise<void> {
+    if (!this.isOpen) return;
+    
+    // Wait a bit for page to start loading
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    try {
+      // Import dynamically to avoid circular deps
+      const { getDevToolsScript } = await import('$lib/services/browser/devtools-inject');
+      const script = getDevToolsScript();
+      await this.executeJs(script);
+      console.log('[Browser] DevTools scripts injected');
+    } catch (err) {
+      console.error('[Browser] Failed to inject devtools:', err);
+    }
+  }
+
   async setBounds(bounds: BrowserBounds): Promise<void> {
     if (!this.isOpen) return;
 
-    // Skip if bounds haven't changed at all
     if (this.lastBounds) {
       const dx = Math.abs(bounds.x - this.lastBounds.x);
       const dy = Math.abs(bounds.y - this.lastBounds.y);
@@ -308,7 +597,6 @@ class BrowserStore {
 
     this.pendingBounds = { ...bounds };
 
-    // Debounce updates (shorter delay for responsiveness)
     if (this.boundsTimer) {
       clearTimeout(this.boundsTimer);
     }
@@ -319,20 +607,16 @@ class BrowserStore {
       const b = this.pendingBounds;
       this.lastBounds = { ...b };
       
-      // Need minimum size
       if (b.width < 50 || b.height < 50) return;
 
       try {
-        // Check if browser exists
         const state = await invoke<BrowserInfo>('browser_get_state');
         
         if (!state.is_open) {
-          // Create the browser
-          console.log('[Browser] Creating embedded webview at:', b);
+          console.log('[Browser] Creating webview at:', b);
           await invoke('browser_create', { url: this.url, bounds: b });
           this.status = 'ready';
         } else {
-          // Update bounds
           await invoke('browser_set_bounds', { bounds: b });
         }
       } catch (err) {
@@ -343,70 +627,71 @@ class BrowserStore {
     }, 30);
   }
 
-  /**
-   * Hide the browser webview
-   */
   async hide(): Promise<void> {
     try {
       await invoke('browser_hide');
-    } catch (err) {
-      // Ignore if not open
-    }
+    } catch { /* ignore */ }
   }
 
-  /**
-   * Show the browser webview
-   */
   async show(): Promise<void> {
     try {
       await invoke('browser_show');
-    } catch (err) {
-      // Ignore if not open
-    }
+    } catch { /* ignore */ }
   }
 
-  /**
-   * Clear selected element
-   */
-  clearSelection(): void {
-    this.selectedElement = null;
-  }
-
-  /**
-   * Update navigation state
-   */
-  private updateNavState(): void {
-    this.canGoBack = this.historyIndex > 0;
-    this.canGoForward = this.historyIndex < this.history.length - 1;
-  }
-
-  /**
-   * Setup event listeners
-   */
   private async setupListeners(): Promise<void> {
-    // Element selection events from Rust
     const unlistenSelect = await listen<SelectedElement>('browser://element-selected', (event) => {
       console.log('[Browser] Element selected:', event.payload);
       this.selectedElement = event.payload;
     });
     this.unlisteners.push(unlistenSelect);
 
-    // Navigation events
-    const unlistenNav = await listen<string>('browser://navigated', (event) => {
+    const unlistenNav = await listen<string>('browser://navigated', async (event) => {
       console.log('[Browser] Navigated to:', event.payload);
       this.url = event.payload;
       this.status = 'ready';
+      
+      // Check if CDP is connected, if not try to connect or fallback to JS injection
+      try {
+        const { cdp } = await import('$lib/services/browser/cdp');
+        const status = await cdp.getStatus();
+        if (!status.connected) {
+          // Try CDP first
+          const { connectCdpToBrowser } = await import('$lib/services/browser');
+          const cdpConnected = await connectCdpToBrowser();
+          if (!cdpConnected) {
+            this.injectDevToolsScripts();
+          }
+        }
+        // CDP is connected, events will flow through CDP
+      } catch {
+        // Fallback to JS injection
+        this.injectDevToolsScripts();
+      }
     });
     this.unlisteners.push(unlistenNav);
 
-    // Created event
-    const unlistenCreated = await listen<string>('browser://created', (event) => {
+    const unlistenCreated = await listen<string>('browser://created', async (event) => {
       console.log('[Browser] Created with URL:', event.payload);
       this.status = 'ready';
+      
+      // Try to connect CDP for professional browser automation
+      try {
+        const { connectCdpToBrowser } = await import('$lib/services/browser');
+        const cdpConnected = await connectCdpToBrowser();
+        if (cdpConnected) {
+          console.log('[Browser] CDP connected - element selection will use CDP');
+        } else {
+          // Fallback to JS injection
+          this.injectDevToolsScripts();
+        }
+      } catch (err) {
+        console.warn('[Browser] CDP connection failed, using JS injection:', err);
+        this.injectDevToolsScripts();
+      }
     });
     this.unlisteners.push(unlistenCreated);
 
-    // Closed event
     const unlistenClosed = await listen('browser://closed', () => {
       console.log('[Browser] Closed');
       this.isOpen = false;
@@ -414,16 +699,33 @@ class BrowserStore {
     });
     this.unlisteners.push(unlistenClosed);
 
-    // Select mode event
     const unlistenSelectMode = await listen<boolean>('browser://select-mode', (event) => {
       this.mode = event.payload ? 'select' : 'normal';
     });
     this.unlisteners.push(unlistenSelectMode);
+
+    const unlistenZoom = await listen<number>('browser://zoom-changed', (event) => {
+      this.zoomLevel = event.payload;
+    });
+    this.unlisteners.push(unlistenZoom);
+
+    const unlistenFindResult = await listen<number>('browser://find-result', (event) => {
+      this.findCount = event.payload;
+    });
+    this.unlisteners.push(unlistenFindResult);
+
+    const unlistenContent = await listen<PageContent>('browser://content-extracted', (event) => {
+      this.extractedContent = event.payload;
+    });
+    this.unlisteners.push(unlistenContent);
+
+    const unlistenResponsive = await listen<[number | null, number | null]>('browser://responsive-mode-changed', (event) => {
+      const [w, h] = event.payload;
+      this.responsiveMode = w && h ? { width: w, height: h } : null;
+    });
+    this.unlisteners.push(unlistenResponsive);
   }
 
-  /**
-   * Cleanup
-   */
   async cleanup(): Promise<void> {
     for (const unlisten of this.unlisteners) {
       unlisten();
