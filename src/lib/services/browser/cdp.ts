@@ -164,10 +164,10 @@ class CdpClient {
   }
 
   /** Auto-connect to CDP - discovers URL and connects */
-  async autoConnect(): Promise<void> {
+  async autoConnect(targetUrl?: string): Promise<void> {
     const wsUrl = await this.discoverUrl();
     await this.connect(wsUrl);
-    await this.attachToPage();
+    await this.attachToPage(targetUrl);
   }
 
   /** Disconnect from CDP */

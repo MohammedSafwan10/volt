@@ -763,9 +763,9 @@ class BrowserStore {
         const { cdp } = await import('$lib/services/browser/cdp');
         const status = await cdp.getStatus();
         if (!status.connected) {
-          // Try CDP first
+          // Try CDP first - pass the browser URL so it attaches to the right page
           const { connectCdpToBrowser } = await import('$lib/services/browser');
-          const cdpConnected = await connectCdpToBrowser();
+          const cdpConnected = await connectCdpToBrowser(this.url);
           if (!cdpConnected) {
             this.injectDevToolsScripts();
           }
@@ -784,7 +784,8 @@ class BrowserStore {
       // Try to connect CDP for professional browser automation
       try {
         const { connectCdpToBrowser } = await import('$lib/services/browser');
-        const cdpConnected = await connectCdpToBrowser();
+        // Pass the browser URL so CDP attaches to the browser webview, not Volt's main window
+        const cdpConnected = await connectCdpToBrowser(this.url);
         if (cdpConnected) {
           // CDP connected - element selection will use CDP
         } else {

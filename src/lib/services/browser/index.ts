@@ -64,8 +64,9 @@ export async function initializeBrowserDevTools(): Promise<void> {
 /**
  * Connect CDP after browser is created
  * Should be called after browser_create succeeds
+ * @param browserUrl - The URL loaded in the browser (e.g., http://localhost:3000)
  */
-export async function connectCdpToBrowser(): Promise<boolean> {
+export async function connectCdpToBrowser(browserUrl?: string): Promise<boolean> {
   const cdpAvailable = await cdp.isAvailable();
   if (!cdpAvailable) return false;
   
@@ -73,10 +74,10 @@ export async function connectCdpToBrowser(): Promise<boolean> {
   await new Promise(resolve => setTimeout(resolve, 1000));
   
   try {
-    await cdp.autoConnect();
+    // Pass the browser URL so CDP attaches to the correct page (not Volt's main window)
+    await cdp.autoConnect(browserUrl);
     await cdp.enableConsole();
     await cdp.enableNetwork();
-    console.log('[Browser] CDP connected successfully');
     return true;
   } catch (err) {
     console.warn('[Browser] CDP connection failed:', err);

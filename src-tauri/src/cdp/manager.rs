@@ -139,13 +139,51 @@ impl CdpManager {
     }
 
     /// Attach to a specific page/target
-    pub async fn attach_to_page(&self, _target_id: Option<&str>) -> Result<(), String> {
+    /// If target_url is provided, finds the page with that URL
+    /// Otherwise attaches to the first non-Volt page (filters out tauri://localhost)
+    pub async fn attach_to_page(&self, target_url: Option<&str>) -> Result<(), String> {
         let browser = self.browser.read().await;
         let browser = browser.as_ref().ok_or("CDP not connected")?;
 
-        // Get first available page
+        // Get all available pages
         let pages = browser.pages().await.map_err(|e| e.to_string())?;
-        let page = pages.into_iter().next().ok_or("No pages available")?;
+        
+        if pages.is_empty() {
+            return Err("No pages available".to_string());
+        }
+        
+        // Find the right page
+        let page = if let Some(url) = target_url {
+            // Find page with matching URL
+            let mut found_page = None;
+            for p in pages {
+                if let Ok(page_url) = p.url().await {
+                    if page_url.as_str().contains(url) {
+                        found_page = Some(p);
+                        break;
+                    }
+                }
+            }
+            found_page.ok_or_else(|| format!("No page found with URL containing: {}", url))?
+        } else {
+            // Find first page that's NOT Volt's main window (tauri://localhost)
+            // The browser webview will have http://localhost:XXXX or similar
+            let mut found_page = None;
+            for p in pages {
+                if let Ok(page_url) = p.url().await {
+                    let url_str = page_url.as_str();
+                    // Skip Volt's main window and about:blank
+                    if !url_str.starts_with("tauri://") && 
+                       !url_str.starts_with("about:") &&
+                       !url_str.is_empty() {
+                        tracing::info!("CDP: Found browser page: {}", url_str);
+                        found_page = Some(p);
+                        break;
+                    }
+                }
+            }
+            found_page.ok_or("No browser page found (only Volt main window detected)")?
+        };
 
         *self.page.write().await = Some(page);
         Ok(())
