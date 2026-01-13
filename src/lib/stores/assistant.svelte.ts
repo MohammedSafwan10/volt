@@ -126,8 +126,18 @@ export interface ImageAttachment extends BaseAttachment {
   dimensions?: { width: number; height: number };
 }
 
+// Browser element attachment (hidden context, shown as chip)
+export interface ElementAttachment extends BaseAttachment {
+  type: 'element';
+  tagName: string;
+  selector: string;
+  html: string;
+  css: Record<string, string>;
+  rect: { x: number; y: number; width: number; height: number };
+}
+
 // Union type for all attachments
-export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment;
+export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment | ElementAttachment;
 
 // Legacy attached context (for backward compatibility)
 export interface AttachedContext {
@@ -834,6 +844,42 @@ class AssistantStore {
   }
 
   /**
+   * Add a browser element attachment (shown as chip, context hidden)
+   */
+  attachElement(element: {
+    tagName: string;
+    id?: string;
+    classes: string[];
+    html: string;
+    css: Record<string, string>;
+    rect: { x: number; y: number; width: number; height: number };
+    selector: string;
+  }): { success: boolean; error?: string } {
+    // Remove any existing element attachment (only one at a time)
+    this.pendingAttachments = this.pendingAttachments.filter(a => a.type !== 'element');
+
+    const label = element.id 
+      ? `<${element.tagName}#${element.id}>` 
+      : element.classes.length > 0 
+        ? `<${element.tagName}.${element.classes[0]}>` 
+        : `<${element.tagName}>`;
+
+    const attachment: ElementAttachment = {
+      id: crypto.randomUUID(),
+      type: 'element',
+      tagName: element.tagName,
+      selector: element.selector,
+      html: element.html.slice(0, 3000), // Limit HTML size
+      css: element.css,
+      rect: element.rect,
+      label,
+    };
+
+    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    return { success: true };
+  }
+
+  /**
    * Remove a pending attachment by ID
    */
   removeAttachment(id: string): void {
@@ -882,6 +928,14 @@ class AssistantStore {
         return {
           ...base,
           size: `${content.length} chars`
+        };
+      }
+
+      if (a.type === 'element') {
+        const el = a as ElementAttachment;
+        return {
+          ...base,
+          size: `${Math.round(el.rect.width)}×${Math.round(el.rect.height)}`
         };
       }
 

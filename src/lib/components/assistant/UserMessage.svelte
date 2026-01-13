@@ -1,6 +1,6 @@
 <script lang="ts">
   import { UIIcon } from "$lib/components/ui";
-  import type { AssistantMessage, ImageAttachment } from "$lib/stores/assistant.svelte";
+  import type { AssistantMessage, ImageAttachment, ElementAttachment } from "$lib/stores/assistant.svelte";
 
   interface Props {
     message: AssistantMessage;
@@ -13,6 +13,10 @@
 
   const images = $derived(
     (message.attachments ?? []).filter((a) => a.type === "image") as ImageAttachment[]
+  );
+
+  const elements = $derived(
+    (message.attachments ?? []).filter((a) => a.type === "element") as ElementAttachment[]
   );
 
   const isLong = $derived(message.content.length > 500);
@@ -42,6 +46,18 @@
               class="message-image-thumb"
             />
           </button>
+        {/each}
+      </div>
+    {/if}
+
+    {#if elements.length > 0}
+      <div class="message-elements">
+        {#each elements as el (el.id)}
+          <div class="element-chip">
+            <UIIcon name="target" size={12} />
+            <span class="element-label">{el.label}</span>
+            <span class="element-size">{Math.round(el.rect.width)}×{Math.round(el.rect.height)}</span>
+          </div>
         {/each}
       </div>
     {/if}
@@ -157,4 +173,35 @@
   }
 
   .expand-msg-btn:hover { opacity: 1; }
+
+  .message-elements {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .element-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    font-size: 11px;
+  }
+
+  .element-chip :global(.ui-icon) {
+    opacity: 0.8;
+  }
+
+  .element-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+  }
+
+  .element-size {
+    opacity: 0.7;
+    font-size: 10px;
+  }
 </style>

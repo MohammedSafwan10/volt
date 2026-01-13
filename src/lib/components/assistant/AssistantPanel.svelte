@@ -12,6 +12,7 @@
     assistantStore,
     type ToolCall,
     type ImageAttachment,
+    type ElementAttachment,
     IMAGE_LIMITS,
   } from "$lib/stores/assistant.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
@@ -169,6 +170,9 @@
       const imageAttachments = attachments.filter(
         (a) => a.type === "image",
       ) as ImageAttachment[];
+      const elementAttachments = attachments.filter(
+        (a) => a.type === "element",
+      ) as ElementAttachment[];
 
       // Build parts for multimodal or context-rich messages
       const parts: ContentPart[] = [];
@@ -181,6 +185,21 @@
           type: "text",
           text: `<system_context>\n${msg.smartContextBlock}\n</system_context>`,
         });
+      }
+
+      // 1.5. Add Element Context (hidden from UI, shown as chip)
+      for (const el of elementAttachments) {
+        const elementContext = `<selected_element>
+Element: <${el.tagName}${el.selector ? ` selector="${el.selector}"` : ''}>
+HTML:
+\`\`\`html
+${el.html}
+\`\`\`
+CSS Properties:
+${Object.entries(el.css).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
+Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Math.round(el.rect.x)}, ${Math.round(el.rect.y)})
+</selected_element>`;
+        parts.push({ type: "text", text: elementContext });
       }
 
       // 2. Add User Content
@@ -1607,7 +1626,9 @@ Start implementing now. Work through each step carefully.`;
                     ? "code"
                     : preview.type === "folder"
                       ? "folder"
-                      : "image"}
+                      : preview.type === "element"
+                        ? "target"
+                        : "image"}
                 size={14}
               />
             {/if}
