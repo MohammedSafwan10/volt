@@ -194,8 +194,8 @@ pub async fn start_mcp_server(
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt as _;
-        cmd.creation_flags(0x08000000);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
     let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;

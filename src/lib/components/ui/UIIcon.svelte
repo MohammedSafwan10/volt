@@ -108,7 +108,11 @@
     | 'plug'
     | 'check-circle'
     | 'circle'
-    | 'wrench';
+    | 'wrench'
+    // Browser
+    | 'globe'
+    | 'target'
+    | 'screenshot';
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -214,6 +218,10 @@
     'check-circle': 'codicon:pass-filled',
     circle: 'codicon:circle-outline',
     wrench: 'codicon:wrench',
+    // Browser
+    globe: 'codicon:globe',
+    target: 'codicon:target',
+    screenshot: 'codicon:device-camera',
   };
 
   interface Props {

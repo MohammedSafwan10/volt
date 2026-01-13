@@ -12,6 +12,7 @@
   import { CommandPalette, SymbolPicker } from '$lib/components/command-palette';
   import { BottomPanel } from '$lib/components/panel';
   import { AssistantPanel } from '$lib/components/assistant';
+  import { BrowserPanel } from '$lib/components/browser';
   import { loadMonaco } from '$lib/services/monaco-loader';
   import { loadXterm } from '$lib/services/terminal-loader';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -23,6 +24,7 @@
   import { logOutput } from '$lib/stores/output.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { assistantStore } from '$lib/stores/assistant.svelte';
+  import { browserStore } from '$lib/stores/browser.svelte';
   import { openFolderDialog, writeFile } from '$lib/services/file-system';
   import { 
     initAutoSave, 
@@ -146,6 +148,8 @@
       void terminalStore.killAll();
       // Stop all LSP servers on unmount
       void disposeLspRegistry();
+      // Cleanup browser
+      void browserStore.cleanup();
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('volt:open-symbol-picker', handleOpenSymbolPicker as EventListener);
       window.removeEventListener('volt:open-go-to-line', handleOpenGoToLine as EventListener);
@@ -225,6 +229,25 @@
     return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
   }
 
+  // Hide browser webview when opening command palette (so it appears on top)
+  function openCommandPaletteWithBrowserHide(mode: 'command' | 'file'): void {
+    if (browserStore.isVisible) {
+      browserStore.hide();
+    }
+    if (mode === 'command') {
+      commandPalette?.openCommandMode();
+    } else {
+      commandPalette?.openFileMode();
+    }
+  }
+
+  // Show browser again when command palette closes
+  function handleCommandPaletteClose(): void {
+    if (browserStore.isVisible) {
+      browserStore.show();
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Ctrl+Shift+P / Ctrl+K chords should work even in editable targets
     const isMod = e.ctrlKey || e.metaKey;
@@ -233,7 +256,7 @@
     if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       uiStore.closeMenus();
-      commandPalette?.openCommandMode();
+      openCommandPaletteWithBrowserHide('command');
       return;
     }
 
@@ -241,7 +264,7 @@
     if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       uiStore.closeMenus();
-      commandPalette?.openFileMode();
+      openCommandPaletteWithBrowserHide('file');
       return;
     }
 
@@ -292,6 +315,19 @@
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.toggleSidebar();
+    }
+
+    // Ctrl+Shift+B to toggle browser panel visibility
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      uiStore.closeMenus();
+      if (browserStore.isOpen) {
+        // Toggle visibility (hide/show without destroying)
+        browserStore.setVisible(!browserStore.isVisible);
+      } else {
+        // First time - open browser
+        browserStore.open();
+      }
     }
 
     // Ctrl+S to save
@@ -422,31 +458,38 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="main-layout">
-  <MenuBar onOpenCommandPalette={() => commandPalette?.openCommandMode()} />
+  <MenuBar onOpenCommandPalette={() => openCommandPaletteWithBrowserHide('command')} />
 
   <div class="content-area">
     <!-- Activity Bar (always visible) -->
     <ActivityBar />
 
-    <!-- Side Panel (toggleable) -->
-    <SidePanel onFileSelect={handleFileSelect} />
+    <!-- Side Panel (toggleable, hidden when browser is visible) -->
+    {#if !browserStore.isVisible}
+      <SidePanel onFileSelect={handleFileSelect} />
+    {/if}
 
     <div class="main-content">
       <!-- Editor region (with bottom panel) + Assistant Panel side by side -->
       <div class="editor-with-right-panel">
         <!-- Editor region: tabs, breadcrumb, editor, bottom panel -->
         <div class="editor-region">
-          <!-- Tab Bar (above editor only) -->
-          <TabBar />
+          <!-- Tab Bar (hidden when browser is visible) -->
+          {#if !browserStore.isVisible}
+            <TabBar />
+          {/if}
 
-          <!-- Breadcrumb navigation -->
-          {#if editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
+          <!-- Breadcrumb navigation (hidden when browser is visible) -->
+          {#if !browserStore.isVisible && editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
             <Breadcrumb filepath={editorStore.activeFile.path} />
           {/if}
 
           <!-- Editor area -->
           <div class="editor-area">
-            {#if children}
+            {#if browserStore.isVisible}
+              <!-- Browser Panel (replaces editor when visible) -->
+              <BrowserPanel />
+            {:else if children}
               {@render children()}
             {:else if editorStore.activeFile}
               {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
@@ -512,7 +555,7 @@
 
   <StatusBar />
   <AboutModal />
-  <CommandPalette bind:this={commandPalette} />
+  <CommandPalette bind:this={commandPalette} onClose={handleCommandPaletteClose} />
   <GoToLineDialog
     open={goToLineOpen}
     maxLine={goToLineMax}

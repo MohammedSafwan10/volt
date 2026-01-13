@@ -20,6 +20,12 @@
     getRecentCommandIds
   } from './commands';
 
+  interface Props {
+    onClose?: () => void;
+  }
+
+  let { onClose }: Props = $props();
+
   type PaletteMode = 'file' | 'command';
 
   // Debounce delay for file search (ms)
@@ -444,6 +450,7 @@
     searchQuery = '';
     selectedIndex = 0;
     mode = 'file';
+    onClose?.();
   }
 
   export function toggle(): void {

@@ -27,6 +27,12 @@ use commands::mcp::{
     get_mcp_servers, get_mcp_tools, get_mcp_config_path, ensure_mcp_config, 
     read_mcp_config, write_mcp_config, McpState,
 };
+use commands::browser::{
+    browser_create, browser_close, browser_navigate, browser_back, browser_forward,
+    browser_reload, browser_set_select_mode, browser_execute_js, browser_screenshot,
+    browser_element_selected, browser_get_state, browser_set_bounds, browser_hide,
+    browser_show, BrowserState,
+};
 use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
@@ -51,6 +57,7 @@ pub fn run() {
         .manage(FileIndexState::default())
         .manage(FileWatchState::default())
         .manage(McpState::default())
+        .manage(BrowserState::default())
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
@@ -94,6 +101,21 @@ pub fn run() {
             ensure_mcp_config,
             read_mcp_config,
             write_mcp_config,
+            // Browser
+            browser_create,
+            browser_close,
+            browser_navigate,
+            browser_back,
+            browser_forward,
+            browser_reload,
+            browser_set_select_mode,
+            browser_execute_js,
+            browser_screenshot,
+            browser_element_selected,
+            browser_get_state,
+            browser_set_bounds,
+            browser_hide,
+            browser_show,
             // System
             get_system_info,
             // Git

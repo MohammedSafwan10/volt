@@ -1,6 +1,7 @@
 <script lang="ts">
   import { uiStore, type SidebarPanel } from '$lib/stores/ui.svelte';
   import { editorStore, VOLT_SETTINGS_PATH } from '$lib/stores/editor.svelte';
+  import { browserStore } from '$lib/stores/browser.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { UIIcon, type UIIconName } from '$lib/components/ui';
 
@@ -16,7 +17,8 @@
     { id: 'search', icon: 'search', label: 'Search', implemented: true },
     { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: true },
     { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true },
-    { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true }
+    { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true },
+    { id: 'browser', icon: 'globe', label: 'Browser', implemented: true }
   ];
 
   const bottomItems: ActivityItem[] = [
@@ -26,7 +28,35 @@
   function handleClick(item: ActivityItem): void {
     if (item.id === 'settings') {
       editorStore.openSettingsTab();
+      // Hide browser if showing (don't destroy it)
+      if (browserStore.isOpen && browserStore.isVisible) {
+        browserStore.setVisible(false);
+      }
       return;
+    }
+
+    // Browser opens full screen (replaces editor area)
+    if (item.id === 'browser') {
+      if (browserStore.isOpen) {
+        if (browserStore.isVisible) {
+          // Hide browser (keep it alive)
+          browserStore.setVisible(false);
+        } else {
+          // Show browser again
+          browserStore.setVisible(true);
+          uiStore.sidebarOpen = false;
+        }
+      } else {
+        // First time opening - create browser
+        browserStore.open();
+        uiStore.sidebarOpen = false;
+      }
+      return;
+    }
+
+    // Hide browser when switching to any other sidebar panel (don't destroy it)
+    if (browserStore.isOpen && browserStore.isVisible) {
+      browserStore.setVisible(false);
     }
 
     uiStore.setActiveSidebarPanel(item.id);
@@ -50,6 +80,9 @@
   function isActive(itemId: SidebarPanel): boolean {
     if (itemId === 'settings') {
       return editorStore.activeFilePath === VOLT_SETTINGS_PATH;
+    }
+    if (itemId === 'browser') {
+      return browserStore.isOpen && browserStore.isVisible;
     }
     return uiStore.sidebarOpen && uiStore.activeSidebarPanel === itemId;
   }

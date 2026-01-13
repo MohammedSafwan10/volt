@@ -6,6 +6,7 @@ pub mod git;
 pub mod ai;
 pub mod lsp;
 pub mod mcp;
+pub mod browser;
 pub mod search;
 pub mod system;
 pub mod terminal;

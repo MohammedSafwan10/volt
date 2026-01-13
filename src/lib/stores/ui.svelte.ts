@@ -5,7 +5,7 @@
 
 import { bottomPanelStore, type BottomPanelTab } from './bottom-panel.svelte';
 
-export type SidebarPanel = 'explorer' | 'search' | 'git' | 'extensions' | 'settings' | 'mcp' | null;
+export type SidebarPanel = 'explorer' | 'search' | 'git' | 'extensions' | 'settings' | 'mcp' | 'browser' | null;
 
 const ZOOM_MIN_PERCENT = 50;
 const ZOOM_MAX_PERCENT = 200;

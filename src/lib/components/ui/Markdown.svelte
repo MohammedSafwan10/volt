@@ -4,6 +4,7 @@
    * Uses marked for parsing and custom styling for code blocks
    */
   import { marked } from 'marked';
+  import { browserStore } from '$lib/stores/browser.svelte';
 
   interface Props {
     content: string;
@@ -51,6 +52,16 @@
     return `<code class="inline-code">${escaped}</code>`;
   };
 
+  // Custom link renderer - add data attribute for interception
+  renderer.link = ({ href, title, text }) => {
+    const titleAttr = title ? ` title="${title}"` : '';
+    const isExternal = href.startsWith('http://') || href.startsWith('https://');
+    if (isExternal) {
+      return `<a href="${href}"${titleAttr} data-external-link="true">${text}</a>`;
+    }
+    return `<a href="${href}"${titleAttr}>${text}</a>`;
+  };
+
   marked.use({ renderer });
 
   // Pre-process content to normalize whitespace before parsing
@@ -79,9 +90,28 @@
   }
 
   const html = $derived.by(() => postProcessHtml(marked.parse(preProcessContent(content)) as string));
+
+  // Handle link clicks - open in built-in browser
+  function handleClick(e: MouseEvent): void {
+    const target = e.target as HTMLElement;
+    const link = target.closest('a[data-external-link="true"]') as HTMLAnchorElement | null;
+    
+    if (link) {
+      e.preventDefault();
+      e.stopPropagation();
+      const url = link.href;
+      
+      // Open in built-in browser
+      if (browserStore.isOpen) {
+        browserStore.navigate(url);
+      } else {
+        browserStore.open(url);
+      }
+    }
+  }
 </script>
 
-<div class="markdown {className}">
+<div class="markdown {className}" onclick={handleClick} role="presentation">
   {@html html}
 </div>
 
