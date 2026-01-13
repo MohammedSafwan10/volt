@@ -38,6 +38,14 @@ notify-debouncer-mini = "0.5"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 dirs = "5"
 urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }
+
+# CDP (Chrome DevTools Protocol) - Browser automation like Playwright/Puppeteer
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"] }
+futures = "0.3"
+base64 = "0.22"
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"

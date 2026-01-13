@@ -1,5 +1,6 @@
 mod commands;
 mod lsp;
+mod cdp;
 
 use commands::file_index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
@@ -29,9 +30,30 @@ use commands::mcp::{
 };
 use commands::browser::{
     browser_create, browser_close, browser_navigate, browser_back, browser_forward,
-    browser_reload, browser_set_select_mode, browser_execute_js, browser_screenshot,
-    browser_element_selected, browser_get_state, browser_set_bounds, browser_hide,
-    browser_show, BrowserState,
+    browser_reload, browser_hard_reload, browser_stop, browser_set_select_mode,
+    browser_execute_js, browser_set_bounds, browser_hide, browser_show,
+    browser_zoom_in, browser_zoom_out, browser_zoom_reset, browser_set_zoom,
+    browser_find, browser_find_next, browser_find_prev, browser_find_clear, browser_find_result,
+    browser_extract_content, browser_content_extracted, browser_generate_code,
+    browser_element_selected, browser_get_state,
+    browser_add_bookmark, browser_remove_bookmark, browser_get_bookmarks,
+    browser_get_history, browser_clear_history,
+    browser_set_responsive_mode, browser_open_devtools, browser_screenshot,
+    BrowserState,
+};
+use cdp::commands::{
+    cdp_is_available, cdp_get_status, cdp_discover_url, cdp_connect, cdp_disconnect, cdp_attach_to_page,
+    cdp_enable_console, cdp_enable_network,
+    cdp_get_console_logs, cdp_get_js_errors, cdp_get_network_requests,
+    cdp_clear_console, cdp_clear_errors, cdp_clear_network,
+    cdp_navigate, cdp_get_url, cdp_get_title, cdp_get_content,
+    cdp_click, cdp_type, cdp_press_key, cdp_evaluate,
+    cdp_screenshot, cdp_screenshot_element,
+    cdp_get_element, cdp_get_elements, cdp_wait_for_selector,
+    cdp_scroll_to_element, cdp_scroll_by,
+    cdp_get_performance, cdp_set_viewport, cdp_emulate_device,
+    cdp_enable_element_picker, cdp_disable_element_picker,
+    CdpState,
 };
 use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
@@ -58,6 +80,7 @@ pub fn run() {
         .manage(FileWatchState::default())
         .manage(McpState::default())
         .manage(BrowserState::default())
+        .manage(CdpState::default())
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
@@ -108,14 +131,70 @@ pub fn run() {
             browser_back,
             browser_forward,
             browser_reload,
+            browser_hard_reload,
+            browser_stop,
             browser_set_select_mode,
             browser_execute_js,
-            browser_screenshot,
-            browser_element_selected,
-            browser_get_state,
             browser_set_bounds,
             browser_hide,
             browser_show,
+            browser_zoom_in,
+            browser_zoom_out,
+            browser_zoom_reset,
+            browser_set_zoom,
+            browser_find,
+            browser_find_next,
+            browser_find_prev,
+            browser_find_clear,
+            browser_find_result,
+            browser_extract_content,
+            browser_content_extracted,
+            browser_generate_code,
+            browser_element_selected,
+            browser_get_state,
+            browser_add_bookmark,
+            browser_remove_bookmark,
+            browser_get_bookmarks,
+            browser_get_history,
+            browser_clear_history,
+            browser_set_responsive_mode,
+            browser_open_devtools,
+            browser_screenshot,
+            // CDP (Chrome DevTools Protocol) - Professional browser automation
+            cdp_is_available,
+            cdp_get_status,
+            cdp_discover_url,
+            cdp_connect,
+            cdp_disconnect,
+            cdp_attach_to_page,
+            cdp_enable_console,
+            cdp_enable_network,
+            cdp_get_console_logs,
+            cdp_get_js_errors,
+            cdp_get_network_requests,
+            cdp_clear_console,
+            cdp_clear_errors,
+            cdp_clear_network,
+            cdp_navigate,
+            cdp_get_url,
+            cdp_get_title,
+            cdp_get_content,
+            cdp_click,
+            cdp_type,
+            cdp_press_key,
+            cdp_evaluate,
+            cdp_screenshot,
+            cdp_screenshot_element,
+            cdp_get_element,
+            cdp_get_elements,
+            cdp_wait_for_selector,
+            cdp_scroll_to_element,
+            cdp_scroll_by,
+            cdp_get_performance,
+            cdp_set_viewport,
+            cdp_emulate_device,
+            cdp_enable_element_picker,
+            cdp_disable_element_picker,
             // System
             get_system_info,
             // Git
