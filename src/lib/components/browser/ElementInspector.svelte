@@ -1,6 +1,7 @@
 <script lang="ts">
   /**
-   * ElementInspector - Shows selected element details and AI actions
+   * ElementInspector - Shows selected element details
+   * Simplified: Just shows element info and "Attach to Chat" button
    */
   import { UIIcon } from '$lib/components/ui';
   import { browserStore, type SelectedElement } from '$lib/stores/browser.svelte';
@@ -20,23 +21,23 @@
     setTimeout(() => { copied = null; }, 1500);
   }
 
-  function askAI(prompt: string): void {
-    const context = `
-Selected Element: <${element.tagName}${element.id ? ` id="${element.id}"` : ''}${element.classes.length ? ` class="${element.classes.join(' ')}"` : ''}>
-
-HTML:
-\`\`\`html
-${element.html}
-\`\`\`
-
-CSS Properties:
-${Object.entries(element.css).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
-
-Selector: ${element.selector}
-`;
+  function attachToChat(): void {
+    // Attach element as hidden context (shows as chip in main chat input)
+    assistantStore.attachElement({
+      tagName: element.tagName,
+      id: element.id || undefined,
+      classes: element.classes,
+      html: element.html,
+      css: element.css,
+      rect: element.rect,
+      selector: element.selector,
+    });
     
-    assistantStore.setInputValue(`${prompt}\n\n${context}`);
+    // Open the assistant panel so user can type their instruction
     assistantStore.openPanel();
+    
+    // Clear selection
+    browserStore.clearSelection();
   }
 
   function clearSelection(): void {
@@ -76,6 +77,12 @@ Selector: ${element.selector}
   </div>
 
   <div class="inspector-content">
+    <!-- Attach to Chat Button (Primary Action) -->
+    <button class="attach-btn" onclick={attachToChat}>
+      <UIIcon name="sparkle" size={14} />
+      <span>Ask AI about this element</span>
+    </button>
+
     <!-- Selectors -->
     <div class="section">
       <div class="section-header">
@@ -135,32 +142,6 @@ Selector: ${element.selector}
         <span class="pos">at ({Math.round(element.rect.x)}, {Math.round(element.rect.y)})</span>
       </div>
     </div>
-
-    <!-- AI Actions -->
-    <div class="section ai-section">
-      <div class="section-header">
-        <UIIcon name="sparkle" size={12} />
-        <span>AI Actions</span>
-      </div>
-      <div class="ai-actions">
-        <button class="ai-btn" onclick={() => askAI('Improve the UI/UX of this element. Suggest better colors, spacing, typography, and modern design patterns.')}>
-          <UIIcon name="sparkle" size={12} />
-          <span>Improve UI/UX</span>
-        </button>
-        <button class="ai-btn" onclick={() => askAI('Check this element for accessibility issues and suggest improvements for WCAG compliance.')}>
-          <UIIcon name="eye" size={12} />
-          <span>Check Accessibility</span>
-        </button>
-        <button class="ai-btn" onclick={() => askAI('Make this element responsive. Suggest CSS changes for mobile, tablet, and desktop breakpoints.')}>
-          <UIIcon name="split" size={12} />
-          <span>Make Responsive</span>
-        </button>
-        <button class="ai-btn" onclick={() => askAI('Suggest modern CSS alternatives and improvements for this element. Use flexbox, grid, or modern properties.')}>
-          <UIIcon name="code" size={12} />
-          <span>Modernize CSS</span>
-        </button>
-      </div>
-    </div>
   </div>
 </div>
 
@@ -168,7 +149,7 @@ Selector: ${element.selector}
   .element-inspector {
     display: flex;
     flex-direction: column;
-    width: 280px;
+    width: 260px;
     background: var(--color-bg-panel);
     border-left: 1px solid var(--color-border);
     overflow: hidden;
@@ -232,6 +213,26 @@ Selector: ${element.selector}
     flex: 1;
     overflow-y: auto;
     padding: 8px;
+  }
+
+  .attach-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: var(--color-accent);
+    color: var(--color-bg);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+  }
+
+  .attach-btn:hover {
+    filter: brightness(1.1);
   }
 
   .section {
@@ -342,41 +343,5 @@ Selector: ${element.selector}
 
   .pos {
     color: var(--color-text-secondary);
-  }
-
-  .ai-section {
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--color-border);
-  }
-
-  .ai-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .ai-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    font-size: 11px;
-    color: var(--color-text);
-    transition: all 0.15s ease;
-    text-align: left;
-  }
-
-  .ai-btn:hover {
-    background: var(--color-hover);
-    border-color: var(--color-accent);
-  }
-
-  .ai-btn :global(.ui-icon) {
-    color: var(--color-accent);
-    flex-shrink: 0;
   }
 </style>
