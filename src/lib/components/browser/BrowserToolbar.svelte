@@ -221,6 +221,12 @@
             <span class="shortcut">Ctrl+Shift+R</span>
           </button>
           
+          <button class="menu-item" class:active={browserStore.liveReloadEnabled} onclick={() => handleMenuAction(() => browserStore.setLiveReload(!browserStore.liveReloadEnabled))}>
+            <UIIcon name="bolt" size={14} />
+            <span>Live Reload</span>
+            <span class="badge" class:on={browserStore.liveReloadEnabled}>{browserStore.liveReloadEnabled ? 'ON' : 'OFF'}</span>
+          </button>
+          
           <button class="menu-item" onclick={() => handleMenuAction(() => browserStore.openDevTools())}>
             <UIIcon name="code" size={14} />
             <span>Developer Tools</span>
@@ -671,10 +677,19 @@
   .badge {
     font-size: 9px;
     padding: 2px 6px;
-    background: var(--color-accent);
-    color: var(--color-bg);
+    background: var(--color-surface1);
+    color: var(--color-text-secondary);
     border-radius: 8px;
     font-weight: 500;
+  }
+
+  .badge.on {
+    background: var(--color-success, #22c55e);
+    color: white;
+  }
+
+  .menu-item.active {
+    background: var(--color-surface0);
   }
 
   .submenu {

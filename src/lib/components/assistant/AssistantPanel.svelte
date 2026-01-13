@@ -798,6 +798,51 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             continue; // Continue to next iteration
           }
           
+          // Check if model said it would do something but stopped without calling tools
+          // This happens when Gemini stream ends prematurely before emitting tool call
+          // Detect phrases like "I'll", "I will", "First,", "Let me" followed by action words
+          const incompleteActionPatterns = [
+            /\b(i'll|i will|let me|first,?\s*i'll|first,?\s*i will)\s+(update|edit|modify|change|fix|add|create|search|find|read|write|replace)/i,
+            /\bfirst,?\s*(i'll|i will|let me)\b/i,
+            /\b(updating|editing|modifying|searching|reading)\s+the\s+/i,
+          ];
+          const looksIncomplete = incompleteActionPatterns.some(p => p.test(iterationContent));
+          
+          if (looksIncomplete && iterationContent.trim()) {
+            consecutiveEmptyResponses++;
+            
+            import("$lib/stores/output.svelte").then((m) =>
+              m.logOutput(
+                "Volt",
+                `Agent: Model said it would act but stopped without tool call (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
+              ),
+            );
+            
+            // Check if we've hit max empty responses
+            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
+              import("$lib/stores/output.svelte").then((m) =>
+                m.logOutput("Volt", `Agent: Too many incomplete actions, stopping.`),
+              );
+              assistantStore.updateAssistantMessage(
+                msgId,
+                fullContent + "\n\n(Stream ended unexpectedly. Please try again.)",
+                false,
+              );
+              return;
+            }
+            
+            // Add a continuation prompt to nudge the model to actually call the tool
+            assistantStore.addToolMessage({
+              id: `incomplete_action_${Date.now()}`,
+              name: "_system_continuation",
+              arguments: {},
+              status: "completed",
+              output: "You said you would take an action but the stream ended before you called any tools. Please NOW call the tool you mentioned. Do not describe what you will do - actually call the tool using function calling.",
+            });
+            
+            continue; // Continue to next iteration
+          }
+          
           // Check if we just processed tool results but model didn't respond
           // This happens when Gemini decides to stop after seeing tool results
           if (justProcessedToolResults && !iterationContent.trim()) {

@@ -233,10 +233,7 @@ export class TerminalSession {
 	 * Start listening for terminal events
 	 */
 	async startListening(): Promise<void> {
-		console.log('[TerminalSession] startListening for:', this.info.terminalId);
-		
 		this.readyUnlisten = await onTerminalReady((event) => {
-			console.log('[TerminalSession] Ready event received:', event.terminalId, 'mine:', this.info.terminalId);
 			if (event.terminalId === this.info.terminalId) {
 				this.markReady();
 			}
@@ -244,7 +241,6 @@ export class TerminalSession {
 
 		this.dataUnlisten = await onTerminalData((event) => {
 			if (event.terminalId === this.info.terminalId) {
-				console.log('[TerminalSession] Data event for', this.info.terminalId, 'length:', event.data.length);
 				// If we receive any data, the terminal is effectively ready.
 				this.markReady();
 				// Always capture to output history (for AI tools)
@@ -259,13 +255,10 @@ export class TerminalSession {
 		});
 
 		this.exitUnlisten = await onTerminalExit((event) => {
-			console.log('[TerminalSession] Exit event received:', event.terminalId);
 			if (event.terminalId === this.info.terminalId && this.onExitCallback) {
 				this.onExitCallback(event.code);
 			}
 		});
-		
-		console.log('[TerminalSession] Listeners set up for:', this.info.terminalId);
 	}
 
 	/**
@@ -294,14 +287,12 @@ export class TerminalSession {
 	 */
 	private captureToHistory(data: string): void {
 		if (!data || data.length === 0) return;
-		console.log('[TerminalSession] captureToHistory:', this.info.terminalId, 'data length:', data.length, 'preview:', data.slice(0, 50).replace(/\r?\n/g, '\\n'));
 		this.outputHistory.push(data);
 		this.outputHistoryChars += data.length;
 		while (this.outputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS && this.outputHistory.length > 0) {
 			const removed = this.outputHistory.shift();
 			this.outputHistoryChars -= removed?.length ?? 0;
 		}
-		console.log('[TerminalSession] outputHistory total chars:', this.outputHistoryChars, 'chunks:', this.outputHistory.length);
 	}
 
 	/**
@@ -309,9 +300,7 @@ export class TerminalSession {
 	 * @param maxChars Maximum characters to return
 	 */
 	getRecentOutput(maxChars = 10000): string {
-		console.log('[TerminalSession] getRecentOutput called, history chunks:', this.outputHistory.length, 'total chars:', this.outputHistoryChars);
 		const fullOutput = this.outputHistory.join('');
-		console.log('[TerminalSession] Full output length:', fullOutput.length);
 		if (fullOutput.length <= maxChars) {
 			return fullOutput;
 		}
@@ -449,15 +438,12 @@ export async function createTerminalSession(
 	let targetTerminalId: string | null = null;
 	let sessionListenersReady = false;
 	
-	console.log('[createTerminalSession] Setting up early data listener');
-	
 	// Set up temporary global listeners to capture early events
 	// These will capture events that arrive before the session's own listeners are ready
 	const earlyDataUnlisten = await onTerminalData((event) => {
 		// Only buffer if session listeners aren't ready yet
 		if (sessionListenersReady) return;
 		
-		console.log('[createTerminalSession] Early data event:', event.terminalId, 'length:', event.data.length);
 		// If we know the terminal ID, check if it matches
 		if (targetTerminalId && event.terminalId === targetTerminalId) {
 			earlyDataBuffer.push(event);
@@ -470,7 +456,6 @@ export async function createTerminalSession(
 	const earlyReadyUnlisten = await onTerminalReady((event) => {
 		if (sessionListenersReady) return;
 		
-		console.log('[createTerminalSession] Early ready event:', event.terminalId);
 		if (targetTerminalId && event.terminalId === targetTerminalId) {
 			earlyReadyBuffer.push(event);
 		} else if (!targetTerminalId) {
@@ -489,7 +474,6 @@ export async function createTerminalSession(
 		
 		// Now we know the terminal ID
 		targetTerminalId = info.terminalId;
-		console.log('[createTerminalSession] Terminal created:', targetTerminalId);
 
 		// Create session and start listening
 		const session = new TerminalSession(info);
@@ -505,13 +489,11 @@ export async function createTerminalSession(
 		// Replay any early ready events
 		const relevantReadyEvents = earlyReadyBuffer.filter(e => e.terminalId === info.terminalId);
 		for (const event of relevantReadyEvents) {
-			console.log('[createTerminalSession] Replaying early ready event');
 			(session as any).markReady();
 		}
 		
 		// Replay any early data that was captured for this terminal
 		const relevantEarlyData = earlyDataBuffer.filter(e => e.terminalId === info.terminalId);
-		console.log('[createTerminalSession] Replaying', relevantEarlyData.length, 'early data events');
 		for (const event of relevantEarlyData) {
 			// Manually trigger the data capture and buffering
 			(session as any).captureToHistory(event.data);
@@ -521,8 +503,6 @@ export async function createTerminalSession(
 				(session as any).bufferData(event.data);
 			}
 		}
-		
-		console.log('[createTerminalSession] Session ready, output history:', session.getRecentOutput().length, 'chars');
 		
 		return session;
 	} catch (err) {

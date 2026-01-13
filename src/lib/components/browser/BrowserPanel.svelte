@@ -82,7 +82,6 @@
     
     // Only update if we have valid dimensions
     if (bounds.width > 10 && bounds.height > 10) {
-      console.log('[Browser] Updating bounds:', bounds);
       browserStore.setBounds(bounds);
     }
   }

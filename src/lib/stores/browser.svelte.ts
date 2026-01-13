@@ -98,6 +98,12 @@ class BrowserStore {
   history = $state<HistoryEntry[]>([]);
   responsiveMode = $state<{ width: number; height: number } | null>(null);
   extractedContent = $state<PageContent | null>(null);
+  
+  // Live Reload feature
+  liveReloadEnabled = $state(true);
+  private liveReloadUnlisten: UnlistenFn | null = null;
+  private lastReloadTime = 0;
+  private reloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Internal
   private historyStack: string[] = [];
@@ -110,6 +116,7 @@ class BrowserStore {
 
   private static STORAGE_KEY = 'volt-browser-url';
   private static BOOKMARKS_KEY = 'volt-browser-bookmarks';
+  private static LIVE_RELOAD_KEY = 'volt-browser-live-reload';
 
   constructor() {
     // Load from localStorage
@@ -122,6 +129,12 @@ class BrowserStore {
         try {
           this.bookmarks = JSON.parse(savedBookmarks);
         } catch { /* ignore */ }
+      }
+      
+      // Load live reload preference (default: enabled)
+      const savedLiveReload = localStorage.getItem(BrowserStore.LIVE_RELOAD_KEY);
+      if (savedLiveReload !== null) {
+        this.liveReloadEnabled = savedLiveReload === 'true';
       }
     }
   }
@@ -166,7 +179,11 @@ class BrowserStore {
         await this.setupListeners();
         this.initialized = true;
       }
-      console.log('[Browser] Ready - waiting for bounds');
+      
+      // Start live reload if enabled
+      if (this.liveReloadEnabled) {
+        this.startLiveReload();
+      }
     } catch (err) {
       console.error('[Browser] Failed to open:', err);
       this.status = 'error';
@@ -181,6 +198,9 @@ class BrowserStore {
       clearTimeout(this.boundsTimer);
       this.boundsTimer = null;
     }
+    
+    // Stop live reload
+    this.stopLiveReload();
 
     try {
       await invoke('browser_close');
@@ -504,7 +524,6 @@ class BrowserStore {
         try {
           await invoke('cdp_enable_element_picker');
           this.mode = 'select';
-          console.log('[Browser] CDP element picker enabled');
         } catch (cdpErr) {
           // Fallback to old JS injection method
           console.warn('[Browser] CDP element picker failed, using fallback:', cdpErr);
@@ -558,6 +577,98 @@ class BrowserStore {
     }
   }
 
+  // ==================== LIVE RELOAD ====================
+  
+  /**
+   * Toggle live reload on/off
+   */
+  setLiveReload(enabled: boolean): void {
+    this.liveReloadEnabled = enabled;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(BrowserStore.LIVE_RELOAD_KEY, String(enabled));
+    }
+    
+    if (enabled && this.isOpen) {
+      this.startLiveReload();
+    } else {
+      this.stopLiveReload();
+    }
+  }
+
+  /**
+   * Start watching project files for changes
+   * Triggers browser reload when files change
+   */
+  private async startLiveReload(): Promise<void> {
+    if (this.liveReloadUnlisten) return; // Already watching
+    
+    try {
+      // Listen for file change events from Tauri file watcher
+      this.liveReloadUnlisten = await listen<{ changes: Array<{ kind: string; paths: string[] }> }>('file-watch://change', (event) => {
+        if (!this.liveReloadEnabled || !this.isOpen || !this.isVisible) return;
+        
+        const { changes } = event.payload;
+        
+        // Check if any change is a web file we care about
+        const webExtensions = ['.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.vue', '.svelte', '.json'];
+        
+        for (const change of changes) {
+          // Only reload on modify or create events
+          if (change.kind !== 'modify' && change.kind !== 'create') continue;
+          
+          for (const path of change.paths) {
+            const isWebFile = webExtensions.some(ext => path.toLowerCase().endsWith(ext));
+            if (isWebFile) {
+              this.triggerLiveReload();
+              return; // One reload is enough
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.error('[Browser] Failed to start live reload:', err);
+    }
+  }
+
+  /**
+   * Stop watching for file changes
+   */
+  private stopLiveReload(): void {
+    if (this.liveReloadUnlisten) {
+      this.liveReloadUnlisten();
+      this.liveReloadUnlisten = null;
+    }
+    if (this.reloadDebounceTimer) {
+      clearTimeout(this.reloadDebounceTimer);
+      this.reloadDebounceTimer = null;
+    }
+  }
+
+  /**
+   * Trigger a debounced reload
+   * Prevents multiple rapid reloads and avoids conflict with native HMR
+   */
+  private triggerLiveReload(): void {
+    // Clear any pending reload
+    if (this.reloadDebounceTimer) {
+      clearTimeout(this.reloadDebounceTimer);
+    }
+    
+    // Debounce: wait 300ms before reloading
+    this.reloadDebounceTimer = setTimeout(async () => {
+      // Check if we recently reloaded (native HMR might have handled it)
+      const now = Date.now();
+      if (now - this.lastReloadTime < 1000) {
+        return; // Skip - likely native HMR already handled it
+      }
+      
+      this.lastReloadTime = now;
+      await this.reload();
+    }, 300);
+  }
+
+  // ==================== END LIVE RELOAD ====================
+
   private updateNavState(): void {
     this.canGoBack = this.historyIndex > 0;
     this.canGoForward = this.historyIndex < this.historyStack.length - 1;
@@ -578,7 +689,6 @@ class BrowserStore {
       const { getDevToolsScript } = await import('$lib/services/browser/devtools-inject');
       const script = getDevToolsScript();
       await this.executeJs(script);
-      console.log('[Browser] DevTools scripts injected');
     } catch (err) {
       console.error('[Browser] Failed to inject devtools:', err);
     }
@@ -613,7 +723,6 @@ class BrowserStore {
         const state = await invoke<BrowserInfo>('browser_get_state');
         
         if (!state.is_open) {
-          console.log('[Browser] Creating webview at:', b);
           await invoke('browser_create', { url: this.url, bounds: b });
           this.status = 'ready';
         } else {
@@ -641,13 +750,11 @@ class BrowserStore {
 
   private async setupListeners(): Promise<void> {
     const unlistenSelect = await listen<SelectedElement>('browser://element-selected', (event) => {
-      console.log('[Browser] Element selected:', event.payload);
       this.selectedElement = event.payload;
     });
     this.unlisteners.push(unlistenSelect);
 
     const unlistenNav = await listen<string>('browser://navigated', async (event) => {
-      console.log('[Browser] Navigated to:', event.payload);
       this.url = event.payload;
       this.status = 'ready';
       
@@ -672,7 +779,6 @@ class BrowserStore {
     this.unlisteners.push(unlistenNav);
 
     const unlistenCreated = await listen<string>('browser://created', async (event) => {
-      console.log('[Browser] Created with URL:', event.payload);
       this.status = 'ready';
       
       // Try to connect CDP for professional browser automation
@@ -680,7 +786,7 @@ class BrowserStore {
         const { connectCdpToBrowser } = await import('$lib/services/browser');
         const cdpConnected = await connectCdpToBrowser();
         if (cdpConnected) {
-          console.log('[Browser] CDP connected - element selection will use CDP');
+          // CDP connected - element selection will use CDP
         } else {
           // Fallback to JS injection
           this.injectDevToolsScripts();
@@ -693,7 +799,6 @@ class BrowserStore {
     this.unlisteners.push(unlistenCreated);
 
     const unlistenClosed = await listen('browser://closed', () => {
-      console.log('[Browser] Closed');
       this.isOpen = false;
       this.status = 'idle';
     });
