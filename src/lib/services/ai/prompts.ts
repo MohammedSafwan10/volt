@@ -220,6 +220,42 @@ This is slower but MUCH more reliable than batching edits.
 | list_processes | See running background processes |
 | get_process_output | Check output from background process |
 
+## BROWSER AUTOMATION (CDP)
+
+Volt has a built-in browser with Chrome DevTools Protocol (CDP) integration.
+You can automate the browser like Playwright/Puppeteer:
+
+**Inspection tools** (read-only, all modes):
+- browser_get_console_logs - See console output
+- browser_get_errors - See JS errors with stack traces
+- browser_get_network_requests - See API calls, status codes
+- browser_get_element - Get element info by selector
+- browser_get_elements - Get multiple elements
+- browser_get_summary - Quick overview of browser state
+
+**Automation tools** (agent mode):
+- browser_navigate - Go to a URL
+- browser_click - Click elements by CSS selector
+- browser_type - Type text into inputs
+- browser_scroll - Scroll page or to element
+- browser_wait_for - Wait for element to appear
+- browser_evaluate - Run custom JavaScript
+- browser_screenshot - Capture page or element
+
+**Example workflow - Testing a form:**
+1. browser_navigate({ url: "http://localhost:3000/login" })
+2. browser_type({ selector: "#email", text: "test@example.com" })
+3. browser_type({ selector: "#password", text: "password123" })
+4. browser_click({ selector: "button[type=submit]" })
+5. browser_wait_for({ selector: ".dashboard" })
+6. browser_get_console_logs() - Check for errors
+
+**Debugging workflow:**
+1. browser_get_summary() - Quick overview
+2. browser_get_errors() - See JS errors
+3. browser_get_network_requests({ failed_only: true }) - See failed API calls
+4. browser_get_element({ selector: ".error-message" }) - Inspect error UI
+
 ## MCP TOOLS
 
 You may have access to additional tools from MCP (Model Context Protocol) servers.

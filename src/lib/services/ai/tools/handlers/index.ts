@@ -51,6 +51,26 @@ export {
   handleGetDiagnostics 
 } from './diagnostics';
 
+// Browser tools
+export {
+  browser_get_console_logs,
+  browser_get_errors,
+  browser_get_network_requests,
+  browser_get_network_request_details,
+  browser_get_performance,
+  browser_get_selected_element,
+  browser_get_summary,
+  browser_screenshot,
+  browser_navigate,
+  browser_click,
+  browser_type,
+  browser_get_element,
+  browser_get_elements,
+  browser_evaluate,
+  browser_scroll,
+  browser_wait_for,
+} from './browser';
+
 /**
  * Tool handler map - maps tool names to handlers
  */
@@ -99,4 +119,21 @@ export const toolHandlers: Record<string, ToolHandler> = {
   
   // Diagnostics
   'get_diagnostics': (args) => import('./diagnostics').then(m => m.handleGetDiagnostics(args)),
+  
+  // Browser DevTools
+  'browser_get_console_logs': (args) => import('./browser').then(m => m.browser_get_console_logs(args as any).then(r => ({ success: true, data: r }))),
+  'browser_get_errors': (args) => import('./browser').then(m => m.browser_get_errors(args as any).then(r => ({ success: true, data: r }))),
+  'browser_get_network_requests': (args) => import('./browser').then(m => m.browser_get_network_requests(args as any).then(r => ({ success: true, data: r }))),
+  'browser_get_performance': () => import('./browser').then(m => m.browser_get_performance().then(r => ({ success: true, data: r }))),
+  'browser_get_selected_element': () => import('./browser').then(m => m.browser_get_selected_element().then(r => ({ success: true, data: r }))),
+  'browser_get_summary': () => import('./browser').then(m => m.browser_get_summary().then(r => ({ success: true, data: r }))),
+  'browser_navigate': (args) => import('./browser').then(m => m.browser_navigate(args as any).then(r => ({ success: r.success, data: r, error: r.error }))),
+  'browser_click': (args) => import('./browser').then(m => m.browser_click(args as any).then(r => ({ success: r.success, error: r.error }))),
+  'browser_type': (args) => import('./browser').then(m => m.browser_type(args as any).then(r => ({ success: r.success, error: r.error }))),
+  'browser_get_element': (args) => import('./browser').then(m => m.browser_get_element(args as any).then(r => ({ success: r.found, data: r, error: r.error }))),
+  'browser_get_elements': (args) => import('./browser').then(m => m.browser_get_elements(args as any).then(r => ({ success: true, data: r, error: r.error }))),
+  'browser_evaluate': (args) => import('./browser').then(m => m.browser_evaluate(args as any).then(r => ({ success: r.success, data: r, error: r.error }))),
+  'browser_scroll': (args) => import('./browser').then(m => m.browser_scroll(args as any).then(r => ({ success: r.success, error: r.error }))),
+  'browser_wait_for': (args) => import('./browser').then(m => m.browser_wait_for(args as any).then(r => ({ success: r.found, data: r, error: r.error }))),
+  'browser_screenshot': (args) => import('./browser').then(m => m.browser_screenshot(args as any).then(r => ({ success: r.success, data: r, error: r.error }))),
 };

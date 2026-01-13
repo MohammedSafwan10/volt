@@ -17,7 +17,8 @@ export type ToolCategory =
   | 'editor_context'
   | 'file_write'
   | 'terminal'
-  | 'diagnostics';
+  | 'diagnostics'
+  | 'browser';
 
 export interface VoltToolDefinition extends ToolDefinition {
   category: ToolCategory;
@@ -391,6 +392,219 @@ After starting, use "get_process_output" to check status.`,
     category: 'diagnostics',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
+  },
+
+  // ============================================
+  // BROWSER DEVTOOLS (AI can access browser data via CDP)
+  // ============================================
+  {
+    name: 'browser_get_console_logs',
+    description: 'Get console logs from the browser. Filter by level (log/warn/error/info/debug) or time.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max logs to return (default: 50)' },
+        level: { type: 'string', description: 'Filter by level: log, info, warn, error, debug' },
+        since_minutes: { type: 'number', description: 'Only logs from last N minutes' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_errors',
+    description: 'Get JavaScript errors from the browser including stack traces.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max errors to return (default: 20)' },
+        include_console_errors: { type: 'boolean', description: 'Include console.error logs (default: true)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_network_requests',
+    description: 'Get network requests from the browser. Filter by method, status, or URL.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max requests to return (default: 50)' },
+        method: { type: 'string', description: 'Filter by HTTP method (GET, POST, etc.)' },
+        status: { type: 'number', description: 'Filter by status code' },
+        failed_only: { type: 'boolean', description: 'Only show failed requests' },
+        url_contains: { type: 'string', description: 'Filter by URL substring' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_performance',
+    description: 'Get page performance metrics (load time, paint timing, resource count).',
+    parameters: {
+      type: 'object',
+      properties: {}
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_selected_element',
+    description: 'Get the currently selected element in the browser (if user selected one).',
+    parameters: {
+      type: 'object',
+      properties: {}
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_summary',
+    description: 'Get a summary of browser state: URL, console stats, network stats, recent errors.',
+    parameters: {
+      type: 'object',
+      properties: {}
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_navigate',
+    description: 'Navigate the browser to a URL.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to navigate to' }
+      },
+      required: ['url']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_click',
+    description: 'Click an element in the browser by CSS selector. Uses CDP for reliable automation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of element to click' }
+      },
+      required: ['selector']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_type',
+    description: 'Type text into an input element in the browser. Uses CDP for reliable automation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of input element (optional - types into focused element if omitted)' },
+        text: { type: 'string', description: 'Text to type' }
+      },
+      required: ['text']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_get_element',
+    description: 'Get detailed info about an element by CSS selector (tag, id, classes, text, dimensions).',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of element' }
+      },
+      required: ['selector']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_elements',
+    description: 'Get multiple elements matching a CSS selector.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector' },
+        limit: { type: 'number', description: 'Max elements to return (default: 10)' }
+      },
+      required: ['selector']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_evaluate',
+    description: 'Execute JavaScript in the browser and return the result. Powerful for custom queries.',
+    parameters: {
+      type: 'object',
+      properties: {
+        expression: { type: 'string', description: 'JavaScript expression to evaluate' }
+      },
+      required: ['expression']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_scroll',
+    description: 'Scroll the page - either to an element or by pixel amount.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector to scroll to (optional)' },
+        x: { type: 'number', description: 'Pixels to scroll horizontally (optional)' },
+        y: { type: 'number', description: 'Pixels to scroll vertically (optional)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_wait_for',
+    description: 'Wait for an element to appear on the page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector to wait for' },
+        timeout_ms: { type: 'number', description: 'Max wait time in ms (default: 5000)' }
+      },
+      required: ['selector']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'browser_screenshot',
+    description: 'Take a screenshot of the page or a specific element.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector to screenshot (optional - screenshots full page if omitted)' },
+        full_page: { type: 'boolean', description: 'Capture full scrollable page (default: false)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['agent']
   },
   
   // Plan mode tool

@@ -197,6 +197,34 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     case 'read_terminal':
       return null;
     
+    // Browser tools - read-only
+    case 'browser_get_console_logs':
+    case 'browser_get_errors':
+    case 'browser_get_network_requests':
+    case 'browser_get_performance':
+    case 'browser_get_selected_element':
+    case 'browser_get_summary':
+    case 'browser_screenshot':
+    case 'browser_scroll':
+      return null;
+    
+    case 'browser_navigate':
+      return requireString('url');
+    
+    case 'browser_click':
+    case 'browser_get_element':
+    case 'browser_wait_for':
+      return requireString('selector');
+    
+    case 'browser_get_elements':
+      return requireString('selector');
+    
+    case 'browser_type':
+      return requireString('text');
+    
+    case 'browser_evaluate':
+      return requireString('expression');
+    
     // No required params
     case 'get_file_tree':
     case 'get_active_file':
