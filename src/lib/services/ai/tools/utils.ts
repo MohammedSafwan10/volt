@@ -146,4 +146,6 @@ export interface ToolResult {
   error?: string;
   truncated?: boolean;
   meta?: Record<string, unknown>;
+  /** Additional data (e.g., image_base64 for screenshots) */
+  data?: Record<string, unknown>;
 }

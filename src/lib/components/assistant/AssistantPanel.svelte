@@ -25,7 +25,7 @@
     type ContentPart,
     type FunctionResponsePart,
   } from "$lib/services/ai";
-  import { getSystemPrompt } from "$lib/services/ai/prompts";
+  import { getSystemPrompt } from "$lib/services/ai/prompts-v4";
   import {
     getSmartContext,
     formatSmartContext,
@@ -510,6 +510,44 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             const toolCallId = chunk.toolCall.id;
             const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
 
+            // DEDUPLICATION: Check if we already have this exact tool call in this iteration
+            // This prevents the AI from running the same command twice in one response
+            const isDuplicate = allToolCalls.some(tc => 
+              tc.name === toolCallName && 
+              JSON.stringify(tc.arguments) === JSON.stringify(toolCallArgs)
+            );
+            
+            if (isDuplicate) {
+              console.log('[Agent] Skipping duplicate tool call:', toolCallName, toolCallArgs);
+              // Still need to add to allToolCalls for Gemini history, but mark as skipped
+              const skipResult = {
+                id: toolCallId,
+                name: toolCallName,
+                result: {
+                  success: true,
+                  output: "[Duplicate tool call skipped - already executed in this response]",
+                },
+              };
+              immediateResults.push(skipResult);
+              allToolCalls.push({
+                id: toolCallId,
+                name: toolCallName,
+                arguments: toolCallArgs,
+                thoughtSignature: toolCallThoughtSignature,
+              });
+              // Show in UI as completed (skipped)
+              const skippedToolCall: ToolCall = {
+                id: toolCallId,
+                name: toolCallName,
+                arguments: toolCallArgs,
+                status: "completed",
+                output: "[Duplicate - skipped]",
+                endTime: Date.now(),
+              };
+              assistantStore.addToolCallToMessage(msgId, skippedToolCall);
+              continue;
+            }
+
             const validation = validateTool(
               toolCallName,
               toolCallArgs,
@@ -648,6 +686,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                       output: result.output,
                       error: result.error,
                       meta: result.meta,
+                      data: result.data,
                       endTime: Date.now(),
                     });
                     return { id: toolCallId, name: toolCallName, result };
@@ -731,6 +770,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 output: result.output,
                 error: result.error,
                 meta: result.meta,
+                data: result.data,
                 endTime: Date.now(),
               });
               
@@ -978,6 +1018,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   output: result.output,
                   error: result.error,
                   meta: result.meta,
+                  data: result.data,
                   endTime: Date.now(),
                   streamingProgress: undefined,
                 });
@@ -1066,6 +1107,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 output: result.output,
                 error: result.error,
                 meta: result.meta,
+                data: result.data,
                 endTime: Date.now(),
               });
 
@@ -1609,6 +1651,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         output: result.output,
         error: result.error,
         meta: result.meta,
+        data: result.data,
         endTime: Date.now(),
       });
 

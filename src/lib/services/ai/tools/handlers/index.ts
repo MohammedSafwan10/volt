@@ -8,13 +8,15 @@ export {
   handleReadFiles, 
   handleListDir, 
   handleGetFileTree, 
-  handleGetFileInfo 
+  handleGetFileInfo,
+  handleReadCode
 } from './read';
 
 // Search tools
 export { 
   handleWorkspaceSearch, 
-  handleFindFiles 
+  handleFindFiles,
+  handleSearchSymbols
 } from './search';
 
 // Editor tools
@@ -83,12 +85,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'list_dir': (args) => import('./read').then(m => m.handleListDir(args)),
   'read_file': (args) => import('./read').then(m => m.handleReadFile(args)),
   'read_files': (args) => import('./read').then(m => m.handleReadFiles(args)),
+  'read_code': (args) => import('./read').then(m => m.handleReadCode(args)),
   'get_file_tree': (args) => import('./read').then(m => m.handleGetFileTree(args)),
   'get_file_info': (args) => import('./read').then(m => m.handleGetFileInfo(args)),
   
   // Search
   'workspace_search': (args) => import('./search').then(m => m.handleWorkspaceSearch(args)),
   'find_files': (args) => import('./search').then(m => m.handleFindFiles(args)),
+  'search_symbols': (args) => import('./search').then(m => m.handleSearchSymbols(args)),
   
   // Editor
   'get_active_file': () => import('./editor').then(m => m.handleGetActiveFile()),

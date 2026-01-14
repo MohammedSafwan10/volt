@@ -126,6 +126,7 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     // Search tools
     case 'workspace_search':
     case 'find_files':
+    case 'search_symbols':
       return requireString('query');
     
     // Write tools

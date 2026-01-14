@@ -30,6 +30,7 @@ import {
 import { mcpStore } from './mcp.svelte';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
+import { gitStore } from './git.svelte';
 import type { FileEntry } from '$lib/types/files';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -124,6 +125,10 @@ class ProjectStore {
 
     // Initialize MCP servers with workspace path
     void mcpStore.initialize(path);
+
+    // Initialize git store for auto-refresh and status badges
+    // This runs in background, doesn't block project open
+    void gitStore.init(path);
 
     // Start file watching for incremental index updates
     await this.startFileWatching(path);
@@ -430,6 +435,9 @@ class ProjectStore {
 
     // Stop all MCP servers
     await mcpStore.cleanup();
+
+    // Reset git store
+    gitStore.reset();
 
     // Cancel file indexing and clear the index
     await clearIndex(false);

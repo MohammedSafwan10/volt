@@ -25,12 +25,14 @@
 	let showRunSafeDirConfirm = $state(false);
 	let pendingSafeDirCmd = $state('');
 
-	// Initialize git store when project changes
+	// Initialize git store when project changes (only if not already initialized)
+	// Note: projectStore.openProject() already calls gitStore.init(), but this
+	// handles the case where GitPanel mounts after project is already open
 	$effect(() => {
 		const rootPath = projectStore.rootPath;
-		if (rootPath) {
+		if (rootPath && gitStore.rootPath !== rootPath) {
 			gitStore.init(rootPath);
-		} else {
+		} else if (!rootPath) {
 			gitStore.reset();
 		}
 	});

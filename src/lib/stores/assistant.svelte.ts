@@ -37,6 +37,8 @@ export interface ToolCall {
   output?: string;
   error?: string;
   meta?: Record<string, unknown>;
+  /** Additional data (e.g., image_base64 for screenshots) */
+  data?: Record<string, unknown>;
   startTime?: number;
   endTime?: number;
   requiresApproval?: boolean;

@@ -22,9 +22,27 @@
   let revertedIds = $state<Set<string>>(new Set());
 
   const FILE_EDIT_TOOLS = ['write_file', 'str_replace', 'apply_edit', 'append_file', 'create_file', 'replace_lines', 'multi_replace_file_content'];
+  const TERMINAL_TOOLS = ['run_command', 'start_process', 'terminal_write'];
 
   function isFileEditTool(toolCall: ToolCall): boolean {
     return FILE_EDIT_TOOLS.includes(toolCall.name);
+  }
+
+  function isTerminalTool(toolCall: ToolCall): boolean {
+    return TERMINAL_TOOLS.includes(toolCall.name);
+  }
+
+  // Get the first pending terminal tool ID (for Kiro-style sequential approval)
+  function getFirstPendingTerminalId(): string | null {
+    const parts = getContentParts(message);
+    for (const part of parts) {
+      if (part.type === 'tool' && isTerminalTool(part.toolCall)) {
+        if (part.toolCall.status === 'pending' && part.toolCall.requiresApproval) {
+          return part.toolCall.id;
+        }
+      }
+    }
+    return null;
   }
 
   function getToolCallPath(tc: ToolCall): string | null {
@@ -173,6 +191,7 @@
 
   const contentParts = $derived(getContentParts(message));
   const fileEditGroups = $derived(groupFileEdits(contentParts));
+  const firstPendingTerminalId = $derived(getFirstPendingTerminalId());
 </script>
 
 <article class="message-row assistant" class:streaming={message.isStreaming}>
@@ -211,6 +230,7 @@
                 streamingProgress={part.toolCall.streamingProgress}
                 onApprove={onToolApprove ? () => onToolApprove(message.id, part.toolCall) : undefined}
                 onDeny={onToolDeny ? () => onToolDeny(message.id, part.toolCall) : undefined}
+                isFirstPendingTerminal={!isTerminalTool(part.toolCall) || part.toolCall.id === firstPendingTerminalId}
               />
             {/if}
           </div>

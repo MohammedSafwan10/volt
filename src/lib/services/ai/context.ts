@@ -1065,137 +1065,337 @@ export async function getSmartContext(query: string = ''): Promise<SmartContext>
 }
 
 // ============================================================================
-// CONTEXT FORMATTING
+// CONTEXT FORMATTING - VOLT SPATIAL CONTEXT v4.0
 // ============================================================================
 
 /**
- * Format context into a structured prompt for the AI
+ * Convert absolute path to relative path from workspace root
+ */
+function toRelativePath(absolutePath: string, workspaceRoot: string): string {
+  if (!workspaceRoot) return absolutePath;
+  
+  // Normalize separators
+  const normalizedPath = absolutePath.replace(/\\/g, '/');
+  const normalizedRoot = workspaceRoot.replace(/\\/g, '/');
+  
+  if (normalizedPath.startsWith(normalizedRoot)) {
+    let relative = normalizedPath.slice(normalizedRoot.length);
+    if (relative.startsWith('/')) relative = relative.slice(1);
+    return relative || absolutePath;
+  }
+  return absolutePath;
+}
+
+/**
+ * Get the common path prefix for all files (the project subfolder)
+ */
+function getCommonPrefix(paths: string[]): string {
+  if (paths.length === 0) return '';
+  if (paths.length === 1) {
+    const parts = paths[0].split('/');
+    return parts.length > 1 ? parts[0] + '/' : '';
+  }
+  
+  const splitPaths = paths.map(p => p.split('/'));
+  const minLength = Math.min(...splitPaths.map(p => p.length));
+  
+  let prefix = '';
+  for (let i = 0; i < minLength - 1; i++) {
+    const part = splitPaths[0][i];
+    if (splitPaths.every(p => p[i] === part)) {
+      prefix += part + '/';
+    } else {
+      break;
+    }
+  }
+  return prefix;
+}
+
+/**
+ * Build simple import connections from active file
+ */
+function buildConnections(activeFile: ContextFile | undefined, relatedFiles: ContextFile[], workspaceRoot: string): string[] {
+  const connections: string[] = [];
+  if (!activeFile) return connections;
+  
+  const activeName = activeFile.path.split(/[/\\]/).pop()?.replace(/\.\w+$/, '') || '';
+  
+  for (const file of relatedFiles) {
+    const fileName = file.path.split(/[/\\]/).pop()?.replace(/\.\w+$/, '') || '';
+    const relPath = toRelativePath(file.path, workspaceRoot);
+    const activeRelPath = toRelativePath(activeFile.path, workspaceRoot);
+    
+    // Check if this file imports active file
+    if (file.reasons.some(r => r.toLowerCase().includes('import'))) {
+      const importedSymbols = activeFile.symbols
+        .filter(s => s.exported)
+        .slice(0, 3)
+        .map(s => s.name)
+        .join(', ');
+      if (importedSymbols) {
+        connections.push(`${relPath} ──imports──► ${activeRelPath} (uses: ${importedSymbols})`);
+      }
+    }
+    
+    // Check if active file imports this file
+    if (activeFile.reasons?.some(r => r.toLowerCase().includes(fileName))) {
+      const exportedSymbols = file.symbols
+        .filter(s => s.exported)
+        .slice(0, 3)
+        .map(s => s.name)
+        .join(', ');
+      if (exportedSymbols) {
+        connections.push(`${activeRelPath} ──imports──► ${relPath} (uses: ${exportedSymbols})`);
+      }
+    }
+  }
+  
+  return connections.slice(0, 5); // Max 5 connections
+}
+
+/**
+ * Get current function/symbol at cursor position
+ */
+function getSymbolAtCursor(symbols: CodeSymbol[], cursorLine: number): string {
+  // Find the closest symbol before or at cursor
+  let closest: CodeSymbol | null = null;
+  for (const sym of symbols) {
+    if (sym.line <= cursorLine) {
+      if (!closest || sym.line > closest.line) {
+        closest = sym;
+      }
+    }
+  }
+  return closest ? `in ${closest.kind} ${closest.name}` : '';
+}
+
+/**
+ * Format context into VOLT SPATIAL CONTEXT - breakthrough format
+ * 
+ * Features:
+ * - Visual "YOU ARE HERE" navigation
+ * - Project map with file status (FULL/TRUNCATED/VISIBLE)
+ * - Import connections with impact analysis
+ * - Path rules with examples
+ * - All in one scannable block
  */
 export function formatSmartContext(context: SmartContext): string {
   const parts: string[] = [];
+  const root = context.workspaceRoot || '';
+  
+  // Get cursor info
+  const cursor = editorStore.cursorPosition;
+  const cursorInfo = context.activeFile 
+    ? getSymbolAtCursor(context.activeFile.symbols, cursor.line)
+    : '';
+  
+  // Convert all paths to relative
+  const activeRelPath = context.activeFile 
+    ? toRelativePath(context.activeFile.path, root) 
+    : 'none';
+  
+  const allRelPaths = [
+    ...(context.activeFile ? [toRelativePath(context.activeFile.path, root)] : []),
+    ...context.relatedFiles.map(f => toRelativePath(f.path, root))
+  ];
+  
+  // Detect common prefix (project subfolder)
+  const commonPrefix = getCommonPrefix(allRelPaths);
+  
+  // Build connections
+  const connections = buildConnections(context.activeFile, context.relatedFiles, root);
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SPATIAL CONTEXT HEADER - The breakthrough visual block
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  let spatialBlock = `
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ⚡ VOLT SPATIAL CONTEXT                                                     ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  🏠 WORKSPACE: ${root.padEnd(60).slice(0, 60)} ║
+║  📍 YOU ARE HERE: ${(activeRelPath + (cursor.line > 0 ? `:${cursor.line}` : '') + (cursorInfo ? ` (${cursorInfo})` : '')).padEnd(56).slice(0, 56)} ║`;
 
-  // Header with metadata
-  parts.push(`<context version="3.0" files="${context.filesInContext.size}" budget="${(context.budgetUsed * 100).toFixed(1)}%">`);
-
-  // Query intent analysis (helps AI understand what we're looking for)
-  parts.push(`
-<query_analysis>
-  <intent>${context.intent.type}</intent>
-  <keywords>${context.intent.keywords.slice(0, 10).join(', ')}</keywords>
-  <target_symbols>${context.intent.targetSymbols.join(', ') || 'none'}</target_symbols>
-  <target_files>${context.intent.targetFiles.join(', ') || 'none'}</target_files>
-</query_analysis>`);
-
-  // Workspace
-  if (context.workspaceRoot) {
-    parts.push(`\n<workspace>${context.workspaceRoot}</workspace>`);
+  // Add project subfolder hint if detected
+  if (commonPrefix) {
+    spatialBlock += `
+║  📂 PROJECT FOLDER: ${commonPrefix.padEnd(54).slice(0, 54)} ║`;
   }
 
-  // Project memory
-  if (context.projectMemory) {
-    parts.push(`
-<project_memory>
-${context.projectMemory}
-</project_memory>`);
-  }
+  spatialBlock += `
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  📋 FILES IN CONTEXT:                                                        ║`;
 
-  // Active file (most important)
+  // Active file
   if (context.activeFile) {
-    const truncNote = context.activeFile.truncated ? ' truncated="true"' : '';
-    const symbolList = context.activeFile.symbols
+    const status = context.activeFile.truncated ? '[TRUNCATED]' : '[FULL]';
+    const exports = context.activeFile.symbols
       .filter(s => s.exported)
-      .slice(0, 20)
-      .map(s => `${s.kind}:${s.name}`)
+      .slice(0, 4)
+      .map(s => s.name)
       .join(', ');
-
-    parts.push(`
-<active_file path="${context.activeFile.path}"${truncNote} score="${context.activeFile.relevanceScore}">
-  <symbols>${symbolList || 'none'}</symbols>
-  <reasons>${context.activeFile.reasons.join(', ')}</reasons>
-  <content>
-\`\`\`
-${context.activeFile.content}
-\`\`\`
-  </content>
-</active_file>`);
+    const exportsStr = exports ? ` exports: ${exports}` : '';
+    const line = `║  ├── ${activeRelPath} ⭐ ACTIVE ${status}${exportsStr}`;
+    spatialBlock += `\n${line.padEnd(79).slice(0, 79)}║`;
   }
 
   // Related files
-  if (context.relatedFiles.length > 0) {
-    parts.push(`\n<related_files count="${context.relatedFiles.length}">`);
-
-    for (const file of context.relatedFiles) {
-      const truncNote = file.truncated ? ' truncated="true"' : '';
-      const symbolList = file.symbols
-        .filter(s => s.exported)
-        .slice(0, 10)
-        .map(s => `${s.kind}:${s.name}`)
-        .join(', ');
-
-      parts.push(`
-  <file path="${file.path}"${truncNote} score="${file.relevanceScore}">
-    <symbols>${symbolList || 'none'}</symbols>
-    <reasons>${file.reasons.slice(0, 3).join(', ')}</reasons>
-    <content>
-\`\`\`
-${file.content}
-\`\`\`
-    </content>
-  </file>`);
-    }
-
-    parts.push(`</related_files>`);
+  for (let i = 0; i < context.relatedFiles.length && i < 10; i++) {
+    const file = context.relatedFiles[i];
+    const relPath = toRelativePath(file.path, root);
+    const status = file.truncated ? '[TRUNCATED]' : '[FULL]';
+    const isLast = i === context.relatedFiles.length - 1 || i === 9;
+    const prefix = isLast ? '└──' : '├──';
+    const exports = file.symbols
+      .filter(s => s.exported)
+      .slice(0, 3)
+      .map(s => s.name)
+      .join(', ');
+    const exportsStr = exports ? ` exports: ${exports}` : '';
+    const line = `║  ${prefix} ${relPath} 📖 ${status}${exportsStr}`;
+    spatialBlock += `\n${line.padEnd(79).slice(0, 79)}║`;
   }
 
-  // Terminal output
+  if (context.relatedFiles.length > 10) {
+    spatialBlock += `\n║  └── ... and ${context.relatedFiles.length - 10} more files (use find_files to discover)`.padEnd(79).slice(0, 79) + '║';
+  }
+
+  // Connections (if any)
+  if (connections.length > 0) {
+    spatialBlock += `
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  🔗 CONNECTIONS (editing may affect these):                                  ║`;
+    for (const conn of connections) {
+      const line = `║  • ${conn}`;
+      spatialBlock += `\n${line.padEnd(79).slice(0, 79)}║`;
+    }
+  }
+
+  // Path rules - THE CRITICAL PART
+  const wrongPath1 = activeRelPath.split('/').slice(1).join('/') || 'file.js';
+  const wrongPath2 = activeRelPath.split('/').pop() || 'file.js';
+  
+  spatialBlock += `
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  ⚠️  PATH RULES (CRITICAL):                                                  ║
+║  ✅ CORRECT: ${activeRelPath.padEnd(62).slice(0, 62)}║
+║  ❌ WRONG:   ${wrongPath1}, ${wrongPath2}, absolute paths`.padEnd(79).slice(0, 79) + `║
+║  💡 If unsure about a path, use find_files first!                            ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  📊 CONTEXT STATUS:                                                          ║
+║  • Files loaded: ${String(context.filesInContext.size).padEnd(5)} • Symbols indexed: ${String(context.symbolIndex.size).padEnd(5)} • Budget: ${((context.budgetUsed * 100).toFixed(0) + '%').padEnd(4)}    ║
+╚══════════════════════════════════════════════════════════════════════════════╝`;
+
+  parts.push(spatialBlock);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PROJECT MEMORY (if exists)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  if (context.projectMemory) {
+    parts.push(`
+┌─ 📝 PROJECT MEMORY (VOLT.md) ─────────────────────────────────────────────────
+${context.projectMemory}
+└───────────────────────────────────────────────────────────────────────────────`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ACTIVE FILE CONTENT
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  if (context.activeFile) {
+    const truncNote = context.activeFile.truncated ? ' ⚠️ TRUNCATED - use read_file for full content' : '';
+    parts.push(`
+┌─ ⭐ ACTIVE FILE: ${activeRelPath}${truncNote}
+│  Line count: ${context.activeFile.content.split('\n').length} | Size: ${context.activeFile.size} chars
+│  Symbols: ${context.activeFile.symbols.filter(s => s.exported).map(s => s.name).slice(0, 10).join(', ') || 'none exported'}
+├───────────────────────────────────────────────────────────────────────────────
+${context.activeFile.content}
+└───────────────────────────────────────────────────────────────────────────────`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RELATED FILES
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  if (context.relatedFiles.length > 0) {
+    for (const file of context.relatedFiles) {
+      const relPath = toRelativePath(file.path, root);
+      const truncNote = file.truncated ? ' ⚠️ TRUNCATED' : '';
+      const reason = file.reasons[0] || 'Related';
+      
+      parts.push(`
+┌─ 📖 RELATED: ${relPath}${truncNote}
+│  Why included: ${reason}
+│  Symbols: ${file.symbols.filter(s => s.exported).map(s => s.name).slice(0, 8).join(', ') || 'none exported'}
+├───────────────────────────────────────────────────────────────────────────────
+${file.content}
+└───────────────────────────────────────────────────────────────────────────────`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TERMINAL OUTPUT (if relevant)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   if (context.terminalOutput) {
     parts.push(`
-<terminal_output>
+┌─ 💻 TERMINAL OUTPUT ──────────────────────────────────────────────────────────
 ${context.terminalOutput}
-</terminal_output>`);
+└───────────────────────────────────────────────────────────────────────────────`);
   }
 
-  // Git context
+  // ═══════════════════════════════════════════════════════════════════════════
+  // GIT CONTEXT (if relevant)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   if (context.gitContext) {
     parts.push(`
-<git_context>
+┌─ 📊 GIT STATUS ───────────────────────────────────────────────────────────────
 ${context.gitContext}
-</git_context>`);
+└───────────────────────────────────────────────────────────────────────────────`);
   }
 
-  // Symbol index (quick reference for AI)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SYMBOL QUICK REFERENCE
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   if (context.symbolIndex.size > 0) {
     const symbolEntries = [...context.symbolIndex.entries()]
-      .slice(0, 50)
-      .map(([name, { file, symbol }]) => `${name} (${symbol.kind}) → ${file}:${symbol.line}`)
-      .join('\n  ');
+      .slice(0, 30)
+      .map(([name, { file, symbol }]) => {
+        const relFile = toRelativePath(file, root);
+        return `  ${name} (${symbol.kind}) → ${relFile}:${symbol.line}`;
+      })
+      .join('\n');
 
     parts.push(`
-<symbol_index count="${context.symbolIndex.size}">
-  ${symbolEntries}
-</symbol_index>`);
+┌─ 🔍 SYMBOL INDEX (${context.symbolIndex.size} symbols) ──────────────────────────────────────────
+${symbolEntries}
+└───────────────────────────────────────────────────────────────────────────────`);
   }
 
-  // Files in context list
-  const fileList = [...context.filesInContext].join(', ');
+  // ═══════════════════════════════════════════════════════════════════════════
+  // QUICK REFERENCE FOOTER
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  const fileListRelative = [...context.filesInContext]
+    .map(f => toRelativePath(f, root))
+    .join(', ');
+
   parts.push(`
-<files_in_context>${fileList}</files_in_context>`);
-
-  parts.push(`\n</context>`);
-
-  // Instructions for AI
-  parts.push(`
-
-═══════════════════════════════════════════════════════════════════════════════
-CONTEXT USAGE RULES:
-═══════════════════════════════════════════════════════════════════════════════
-1. FILES IN CONTEXT: Do NOT call read_file for files listed in <files_in_context>
-2. EXACT CONTENT: When editing, use the EXACT content shown (whitespace matters!)
-3. TRUNCATED FILES: If marked truncated="true", use read_file for full content
-4. SYMBOL INDEX: Use <symbol_index> to quickly locate definitions
-5. QUERY INTENT: The <query_analysis> shows what the user is looking for
-6. FOCUS: Address the user's request directly, don't describe this context
-═══════════════════════════════════════════════════════════════════════════════`);
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  📋 QUICK REFERENCE                                                          ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  FILES ALREADY LOADED (don't read again):                                    ║
+║  ${fileListRelative.slice(0, 74).padEnd(74)}║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  RULES:                                                                      ║
+║  1. Use EXACT paths from this context for all tools                          ║
+║  2. Files marked TRUNCATED need read_file for full content                   ║
+║  3. Check CONNECTIONS before editing - may affect other files                ║
+║  4. If path not listed, use find_files to discover it first                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝`);
 
   return parts.join('\n');
 }

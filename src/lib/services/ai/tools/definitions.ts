@@ -46,13 +46,14 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read file contents. Use start_line/end_line for partial reads.',
+    description: 'Read file contents. Use start_line/end_line for partial reads. Provide explanation for smarter content pruning.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path, e.g. "src/app.ts"' },
         start_line: { type: 'number', description: 'Start line (1-based)' },
-        end_line: { type: 'number', description: 'End line (inclusive)' }
+        end_line: { type: 'number', description: 'End line (inclusive)' },
+        explanation: { type: 'string', description: 'Why you need this file - helps prune irrelevant content' }
       },
       required: ['path']
     },
@@ -88,6 +89,22 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
+  {
+    name: 'read_code',
+    description: 'Smart code file reader. Shows file structure (functions, classes, exports) and can read specific symbols by name. Better than read_file for code.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path, e.g. "src/utils.ts"' },
+        symbol: { type: 'string', description: 'Read specific symbol by name (function, class, etc.)' },
+        structure: { type: 'boolean', description: 'Show structure summary (default: true)' }
+      },
+      required: ['path']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
 
   // ============================================
   // SEARCH TOOLS
@@ -100,7 +117,8 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
       properties: {
         query: { type: 'string', description: 'Search text or regex' },
         includePattern: { type: 'string', description: 'Glob filter, e.g. "**/*.ts"' },
-        caseSensitive: { type: 'boolean', description: 'Case sensitive (default: false)' }
+        caseSensitive: { type: 'boolean', description: 'Case sensitive (default: false)' },
+        explanation: { type: 'string', description: 'Why you are searching - helps understand context' }
       },
       required: ['query']
     },
@@ -115,6 +133,21 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'File name pattern' }
+      },
+      required: ['query']
+    },
+    category: 'workspace_search',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'search_symbols',
+    description: 'Search for functions, classes, variables, types by name. Uses LSP for accurate results.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Symbol name to search (e.g. "handleSubmit", "UserService", "useState")' },
+        kind: { type: 'string', description: 'Filter by kind: "function", "class", "variable", "type", "interface" (optional)' }
       },
       required: ['query']
     },

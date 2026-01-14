@@ -154,7 +154,28 @@ class BrowserStore {
   async open(initialUrl?: string): Promise<void> {
     if (this.isOpen) return;
 
-    const url = initialUrl || this.url || 'https://www.google.com';
+    let url = initialUrl || this.url || 'https://www.google.com';
+    
+    // Safety: If URL is localhost and might not be running, use a safe default
+    // This prevents crashes when webview tries to load a dead server on startup
+    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
+        
+        await fetch(url, { 
+          method: 'HEAD', 
+          signal: controller.signal,
+          mode: 'no-cors'
+        });
+        
+        clearTimeout(timeoutId);
+      } catch {
+        // Server not responding - use safe default to prevent crash
+        console.warn('[Browser] localhost not responding, using safe default URL');
+        url = 'https://www.google.com';
+      }
+    }
 
     this.isOpen = true;
     this.isVisible = true;
@@ -253,6 +274,29 @@ class BrowserStore {
         finalUrl = `https://www.google.com/search?q=${encodeURIComponent(finalUrl)}`;
       } else {
         finalUrl = `https://${finalUrl}`;
+      }
+    }
+
+    // Safety check: Don't navigate to localhost if it might not be running
+    // This prevents crashes when the webview tries to load a dead server
+    if (finalUrl.includes('localhost') || finalUrl.includes('127.0.0.1')) {
+      try {
+        // Quick check if the server is responding (with short timeout)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        
+        const response = await fetch(finalUrl, { 
+          method: 'HEAD', 
+          signal: controller.signal,
+          mode: 'no-cors' // Allow checking even if CORS blocks
+        }).catch(() => null);
+        
+        clearTimeout(timeoutId);
+        
+        // If fetch was aborted or failed, warn user but still try
+        // (some servers don't respond to HEAD requests)
+      } catch {
+        // Ignore - we'll try anyway but at least we attempted a check
       }
     }
 

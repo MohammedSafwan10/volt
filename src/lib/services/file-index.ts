@@ -79,6 +79,7 @@ let indexedRoot: string | null = null;
 let indexing = false;
 let indexProgress = { current: 0, total: 0 };
 let currentRequestId = 0;
+let indexTimestamp = 0; // When index was last completed
 let unlistenChunk: UnlistenFn | null = null;
 let unlistenDone: UnlistenFn | null = null;
 let unlistenError: UnlistenFn | null = null;
@@ -218,6 +219,7 @@ export async function indexProject(rootPath: string, useCache = true): Promise<v
       if (event.payload.requestId !== requestId) return;
       
       indexing = false;
+      indexTimestamp = Date.now(); // Record when indexing completed
       indexUpdateTick.update((n) => n + 1);
       
       if (event.payload.cancelled) {
@@ -302,6 +304,15 @@ export async function clearIndex(clearBackendCache = false): Promise<void> {
  */
 export function isIndexReady(): boolean {
   return fileIndex.length > 0;
+}
+
+/**
+ * Get how old the index is in milliseconds
+ * Returns Infinity if never indexed
+ */
+export function getIndexAge(): number {
+  if (indexTimestamp === 0) return Infinity;
+  return Date.now() - indexTimestamp;
 }
 
 /**

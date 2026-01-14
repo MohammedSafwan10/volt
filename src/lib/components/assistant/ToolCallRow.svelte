@@ -11,6 +11,13 @@
   let { toolCall, onApprove, onDeny }: Props = $props();
 
   let expanded = $state(false);
+  
+  // Auto-expand when screenshot data arrives
+  $effect(() => {
+    if (toolCall.name === 'browser_screenshot' && toolCall.data?.image_base64 && !expanded) {
+      expanded = true;
+    }
+  });
 
   const statusIcons: Record<ToolCallStatus, 'spinner' | 'check' | 'error' | 'close' | 'clock'> = {
     pending: 'clock',
@@ -112,6 +119,19 @@
         <div class="detail-section">
           <span class="detail-label">Output:</span>
           <pre class="detail-output">{toolCall.output}</pre>
+        </div>
+      {/if}
+      
+      {#if toolCall.data?.image_base64}
+        <div class="detail-section">
+          <span class="detail-label">Screenshot:</span>
+          <div class="screenshot-container">
+            <img 
+              src="data:image/png;base64,{toolCall.data.image_base64}" 
+              alt="Browser screenshot"
+              class="screenshot-image"
+            />
+          </div>
         </div>
       {/if}
       
@@ -297,5 +317,21 @@
     margin: 0;
     max-height: 150px;
     overflow-y: auto;
+  }
+
+  .screenshot-container {
+    margin-top: 4px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+  }
+
+  .screenshot-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    max-height: 300px;
+    object-fit: contain;
+    background: var(--color-bg);
   }
 </style>

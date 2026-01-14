@@ -3,6 +3,8 @@
    * InlineToolCall - Displays tool activity inline within assistant messages
    * Shows tool name, status, and expandable output like Kiro's UI
    * Supports streaming progress for file write operations
+   * 
+   * Kiro-style: Only shows approval for the FIRST pending terminal command
    */
   import { UIIcon, type UIIconName } from '$lib/components/ui';
   import type { ToolCall, ToolCallStatus, StreamingProgress } from '$lib/stores/assistant.svelte';
@@ -13,9 +15,11 @@
     streamingProgress?: StreamingProgress | null;
     onApprove?: () => void;
     onDeny?: () => void;
+    /** For terminal commands: is this the first pending one? (Kiro-style sequential approval) */
+    isFirstPendingTerminal?: boolean;
   }
 
-  let { toolCall, streamingProgress, onApprove, onDeny }: Props = $props();
+  let { toolCall, streamingProgress, onApprove, onDeny, isFirstPendingTerminal = true }: Props = $props();
 
   let expanded = $state(false);
 
@@ -241,6 +245,13 @@
     toolCall.name === 'terminal_write'
   );
   
+  // For terminal commands, only show approval if this is the first pending one (Kiro-style)
+  const shouldShowApproval = $derived(
+    isPending && onApprove && onDeny && (
+      !isTerminalTool || isFirstPendingTerminal
+    )
+  );
+  
   // Get the command for terminal tools
   const terminalCommand = $derived(
     isTerminalTool ? String(toolCall.arguments.command || '') : ''
@@ -346,7 +357,7 @@
     </button>
   {/if}
 
-  {#if isPending && onApprove && onDeny}
+  {#if shouldShowApproval}
     <div class="approval-bar">
       {#if meta?.why}
         <span class="approval-reason">{meta.why}</span>
@@ -369,6 +380,12 @@
           Deny
         </button>
       </div>
+    </div>
+  {:else if isPending && isTerminalTool && !isFirstPendingTerminal}
+    <!-- Queued terminal command - waiting for previous to complete -->
+    <div class="queued-bar">
+      <UIIcon name="clock" size={12} />
+      <span>Queued - waiting for previous command</span>
     </div>
   {/if}
 
@@ -634,6 +651,17 @@
     padding: 8px 12px;
     background: color-mix(in srgb, var(--color-warning) 10%, var(--color-bg));
     border-top: 1px solid var(--color-border);
+  }
+
+  .queued-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--color-surface0);
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    font-size: 11px;
   }
 
   .approval-reason {

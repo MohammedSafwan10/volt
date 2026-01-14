@@ -217,6 +217,8 @@ This is slower but MUCH more reliable than batching edits.
 | append_file | Add to end of file |
 | get_diagnostics | Check for errors after edits |
 | workspace_search | Find text across files |
+| find_files | Find files by name (fuzzy) |
+| search_symbols | Find functions, classes, variables by name |
 | run_command | Shell commands (npm install, git, etc.) |
 | start_process | Dev servers, watchers (npm run dev) |
 | stop_process | Stop a background process |
@@ -293,17 +295,28 @@ Check tool descriptions to understand what each MCP tool does.
 
 **run_command** - For commands that complete quickly:
 - npm install, npm run build
-- git add, git commit, git push (ONE at a time!)
+- git add, git commit, git push
 - mkdir, cp, mv, rm
 
-**CRITICAL: SEQUENTIAL COMMANDS**
-- NEVER chain commands with && or || (doesn't work in PowerShell)
-- Call run_command ONCE per command
-- WAIT for each command to complete before the next
-- Example for git workflow:
-  1. run_command({ command: "git add ." })  ← wait for result
-  2. run_command({ command: "git commit -m \"message\"" })  ← wait for result
-  3. run_command({ command: "git push" })  ← wait for result
+**⚠️ CRITICAL: ONE COMMAND AT A TIME ⚠️**
+
+You MUST emit only ONE run_command tool call per response.
+After the command completes, you can emit the next one.
+
+**WRONG** (multiple commands in one response):
+- run_command("git add .")
+- run_command("git commit -m 'msg'")  ← NEVER DO THIS
+
+**CORRECT** (one command, wait for result):
+1. First response: run_command("git add .")
+2. Wait for result...
+3. Second response: run_command("git commit -m 'msg'")
+4. Wait for result...
+5. Third response: run_command("git push")
+
+**ALSO FORBIDDEN:**
+- NEVER use && or || to chain commands (PowerShell doesn't support it)
+- NEVER emit multiple run_command calls in the same response
 
 **start_process** - For long-running commands:
 - npm run dev, yarn start

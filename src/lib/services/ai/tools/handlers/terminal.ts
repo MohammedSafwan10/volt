@@ -20,32 +20,72 @@ import { truncateOutput, type ToolResult } from '../utils';
 // ============================================
 
 /**
- * Get the AI terminal session, creating if needed.
- * Always uses the same terminal for all AI operations.
+ * Get a terminal for quick commands.
+ * If a background process is running, create a NEW terminal.
+ * This prevents blocking when dev server is running.
  */
-async function getAiTerminal(cwd?: string): Promise<TerminalSession> {
+async function getCommandTerminal(cwd?: string): Promise<TerminalSession> {
   // Open terminal panel so user can see what's happening
   uiStore.openBottomPanelTab('terminal');
   
-  // Get or create AI terminal (store handles deduplication)
+  // Check if there's a running background process
+  const hasRunningProcess = [...processes.values()].some(p => p.status === 'running');
+  
+  if (hasRunningProcess) {
+    // Background process is running - create a new terminal for this command
+    console.log('[AI Terminal] Background process running, creating new terminal for command');
+    const session = await terminalStore.createTerminal(cwd);
+    if (!session) {
+      throw new Error('Failed to create terminal session');
+    }
+    
+    // Make it active
+    terminalStore.setActive(session.id);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const ready = await session.waitForReady(3000);
+    console.log('[AI Terminal] New command terminal ready:', ready);
+    
+    return session;
+  }
+  
+  // No background process - use the shared AI terminal
   const session = await terminalStore.getOrCreateAiTerminal(cwd);
   if (!session) {
     throw new Error('Failed to create terminal session');
   }
   
   console.log('[AI Terminal] Got session:', session.id);
-  console.log('[AI Terminal] Session output history length:', session.getRecentOutput().length);
   
-  // CRITICAL: Make sure this terminal is active/visible in the UI
-  // This ensures the user sees the AI terminal, not some other terminal
+  // Make sure this terminal is active/visible
   terminalStore.setActive(session.id);
-  
-  // Small delay to let the UI switch to the AI terminal
   await new Promise(resolve => setTimeout(resolve, 100));
   
-  // Wait for terminal to be ready (backend handshake)
   const ready = await session.waitForReady(3000);
   console.log('[AI Terminal] Ready:', ready);
+  
+  return session;
+}
+
+/**
+ * Get terminal for background processes (dev servers, watchers).
+ * Always uses the AI terminal.
+ */
+async function getProcessTerminal(cwd?: string): Promise<TerminalSession> {
+  uiStore.openBottomPanelTab('terminal');
+  
+  const session = await terminalStore.getOrCreateAiTerminal(cwd);
+  if (!session) {
+    throw new Error('Failed to create terminal session');
+  }
+  
+  console.log('[AI Terminal] Got process terminal:', session.id);
+  
+  terminalStore.setActive(session.id);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  
+  const ready = await session.waitForReady(3000);
+  console.log('[AI Terminal] Process terminal ready:', ready);
   
   return session;
 }
@@ -122,10 +162,10 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
     };
   }
 
-  // Get AI terminal
+  // Get terminal for quick command (will create new one if background process is running)
   let session: TerminalSession;
   try {
-    session = await getAiTerminal(cwd);
+    session = await getCommandTerminal(cwd);
   } catch (err) {
     return { success: false, error: `Failed to create terminal: ${err}` };
   }
@@ -139,7 +179,8 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
   // Send command
   console.log('[AI Terminal] Sending command:', command);
   try {
-    await session.write(command + '\r\n');
+    // Use just \r (carriage return) - PowerShell handles this better than \r\n
+    await session.write(command + '\r');
   } catch (err) {
     return { success: false, error: `Failed to send command: ${err}` };
   }
@@ -194,8 +235,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
   }
 
   try {
-    // Get AI terminal
-    const session = await getAiTerminal(cwd);
+    // Get terminal for background process
+    const session = await getProcessTerminal(cwd);
     
     // Clear previous output
     session.clearOutputHistory();
@@ -205,7 +246,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
 
     // Send command
     console.log('[AI Terminal] Starting process:', command);
-    await session.write(command + '\r\n');
+    // Use just \r (carriage return) - PowerShell handles this better than \r\n
+    await session.write(command + '\r');
 
     // Create process record
     const processId = nextProcessId++;
@@ -277,8 +319,8 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
   }
 
   try {
-    // Get AI terminal and send Ctrl+C
-    const session = await getAiTerminal();
+    // Get process terminal and send Ctrl+C
+    const session = await getProcessTerminal();
     await session.write('\x03'); // Ctrl+C
     
     proc.status = 'stopped';
@@ -325,8 +367,8 @@ export async function handleGetProcessOutput(args: Record<string, unknown>): Pro
   }
 
   try {
-    // Get output from AI terminal
-    const session = await getAiTerminal();
+    // Get output from process terminal
+    const session = await getProcessTerminal();
     const output = session.getRecentOutput();
     
     console.log('[AI Terminal] getRecentOutput for process', processId);
@@ -375,7 +417,8 @@ export async function handleReadTerminal(args: Record<string, unknown>): Promise
   const maxLines = Number(args.maxLines) || 100;
   
   try {
-    const session = await getAiTerminal();
+    // Read from process terminal (where background processes run)
+    const session = await getProcessTerminal();
     const output = session.getRecentOutput();
     
     console.log('[AI Terminal] readTerminal output length:', output.length);
@@ -484,6 +527,8 @@ function isPromptLine(line: string): boolean {
   
   // PowerShell: PS C:\path>
   if (/^PS\s+.*>\s*$/i.test(trimmed)) return true;
+  // PowerShell continuation prompt: >>
+  if (/^>+\s*$/.test(trimmed)) return true;
   // CMD: C:\path>
   if (/^[A-Z]:\\.*>\s*$/i.test(trimmed)) return true;
   // Unix: ends with $ or #
@@ -501,12 +546,30 @@ function extractOutput(capture: string, command: string): string {
   const lines = cleaned.split('\n');
   const cmdTrimmed = command.trim();
   
-  // Find where command was echoed
+  // Find where command was echoed (including continuation lines)
   let startIdx = 0;
+  let inCommandEcho = false;
+  
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(cmdTrimmed.slice(0, 30))) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+    
+    // Check if this line contains the start of the command
+    if (line.includes(cmdTrimmed.slice(0, 30))) {
+      inCommandEcho = true;
       startIdx = i + 1;
-      break;
+      continue;
+    }
+    
+    // Skip PowerShell continuation prompts (>> lines that are part of command echo)
+    if (inCommandEcho && /^>+\s/.test(trimmedLine)) {
+      startIdx = i + 1;
+      continue;
+    }
+    
+    // If we hit a non-continuation line after command, we're done with echo
+    if (inCommandEcho && trimmedLine && !/^>+\s/.test(trimmedLine)) {
+      inCommandEcho = false;
     }
   }
   

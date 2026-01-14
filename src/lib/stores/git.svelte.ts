@@ -4,7 +4,7 @@
  * Auto-refreshes on file changes like VSCode
  */
 
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { onFileChange, type FileChangeBatchEvent } from '$lib/services/file-watch';
 import {
 	getGitStatus,
 	cancelGitOperation,
@@ -64,7 +64,7 @@ class GitStore {
 	private diffOpId: string | null = null;
 	
 	// File watcher for auto-refresh
-	private fileWatchUnlisten: UnlistenFn | null = null;
+	private fileWatchUnsubscribe: (() => void) | null = null;
 	private fileWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Derived values using $derived for proper Svelte 5 reactivity
@@ -106,44 +106,54 @@ class GitStore {
 	/**
 	 * Start file watcher for auto-refresh (like VSCode)
 	 */
-	private async startFileWatcher(): Promise<void> {
+	private startFileWatcher(): void {
 		// Clean up existing watcher
-		if (this.fileWatchUnlisten) {
-			this.fileWatchUnlisten();
-			this.fileWatchUnlisten = null;
+		if (this.fileWatchUnsubscribe) {
+			this.fileWatchUnsubscribe();
+			this.fileWatchUnsubscribe = null;
 		}
 
-		try {
-			// Listen to file change events from Tauri
-			this.fileWatchUnlisten = await listen<{ path: string }>('file-watch://change', (event) => {
-				if (!this.isRepo || !this.rootPath) return;
-				
-				const changedPath = event.payload?.path || '';
-				
-				// Skip .git internal files (index, logs, etc.) - these change during git operations
-				// but we don't want to trigger refresh for them
-				if (changedPath.includes('.git/') || changedPath.includes('.git\\')) {
-					// Only refresh for HEAD changes (branch switch) or refs changes
-					if (!changedPath.includes('HEAD') && !changedPath.includes('refs/')) {
-						return;
+		// Register handler for file changes using the file-watch service
+		this.fileWatchUnsubscribe = onFileChange((batch: FileChangeBatchEvent) => {
+			if (!this.isRepo || !this.rootPath) return;
+			
+			// Check if any changed file is relevant for git status
+			let shouldRefresh = false;
+			
+			for (const change of batch.changes) {
+				for (const changedPath of change.paths) {
+					// Skip .git internal files (index, logs, etc.) - these change during git operations
+					// but we don't want to trigger refresh for them
+					if (changedPath.includes('.git/') || changedPath.includes('.git\\')) {
+						// Only refresh for HEAD changes (branch switch) or refs changes
+						if (changedPath.includes('HEAD') || changedPath.includes('refs/')) {
+							shouldRefresh = true;
+							break;
+						}
+						continue;
 					}
+					
+					// Any other file change should trigger git status refresh
+					shouldRefresh = true;
+					break;
 				}
-				
-				// Debounce rapid file changes
-				if (this.fileWatchDebounceTimer) {
-					clearTimeout(this.fileWatchDebounceTimer);
-				}
-				
-				this.fileWatchDebounceTimer = setTimeout(() => {
-					this.fileWatchDebounceTimer = null;
-					// Force refresh bypassing cache
-					this.lastRefreshTime = 0;
-					this.refresh(true);
-				}, FILE_WATCH_DEBOUNCE_MS);
-			});
-		} catch (err) {
-			console.warn('[GitStore] Failed to start file watcher:', err);
-		}
+				if (shouldRefresh) break;
+			}
+			
+			if (!shouldRefresh) return;
+			
+			// Debounce rapid file changes
+			if (this.fileWatchDebounceTimer) {
+				clearTimeout(this.fileWatchDebounceTimer);
+			}
+			
+			this.fileWatchDebounceTimer = setTimeout(() => {
+				this.fileWatchDebounceTimer = null;
+				// Force refresh bypassing cache
+				this.lastRefreshTime = 0;
+				this.refresh(true);
+			}, FILE_WATCH_DEBOUNCE_MS);
+		});
 	}
 
 	/**
@@ -153,9 +163,9 @@ class GitStore {
 		this.cancelPendingRefresh();
 		
 		// Clean up file watcher
-		if (this.fileWatchUnlisten) {
-			this.fileWatchUnlisten();
-			this.fileWatchUnlisten = null;
+		if (this.fileWatchUnsubscribe) {
+			this.fileWatchUnsubscribe();
+			this.fileWatchUnsubscribe = null;
 		}
 		if (this.fileWatchDebounceTimer) {
 			clearTimeout(this.fileWatchDebounceTimer);
