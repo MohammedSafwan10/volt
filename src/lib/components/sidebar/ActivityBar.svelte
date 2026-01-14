@@ -2,6 +2,7 @@
   import { uiStore, type SidebarPanel } from '$lib/stores/ui.svelte';
   import { editorStore, VOLT_SETTINGS_PATH } from '$lib/stores/editor.svelte';
   import { browserStore } from '$lib/stores/browser.svelte';
+  import { gitStore } from '$lib/stores/git.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import { UIIcon, type UIIconName } from '$lib/components/ui';
 
@@ -24,6 +25,9 @@
   const bottomItems: ActivityItem[] = [
     { id: 'settings', icon: 'settings', label: 'Settings', implemented: true }
   ];
+
+  // Git changes count for badge (like VSCode)
+  const gitChangesCount = $derived(gitStore.totalChanges);
 
   function handleClick(item: ActivityItem): void {
     if (item.id === 'settings') {
@@ -98,11 +102,16 @@
         onkeydown={(e) => handleKeydown(e, item)}
         aria-label={item.label}
         aria-pressed={isActive(item.id)}
-        title={item.label}
+        title={item.id === 'git' && gitChangesCount > 0 ? `${item.label} (${gitChangesCount} changes)` : item.label}
         type="button"
       >
         <span class="activity-icon" aria-hidden="true">
           <UIIcon name={item.icon} size={22} />
+          {#if item.id === 'git' && gitChangesCount > 0}
+            <span class="badge" aria-label="{gitChangesCount} pending changes">
+              {gitChangesCount > 99 ? '99+' : gitChangesCount}
+            </span>
+          {/if}
         </span>
       </button>
     {/each}
@@ -180,6 +189,26 @@
     height: 22px;
     display: grid;
     place-items: center;
+    line-height: 1;
+    position: relative;
+  }
+
+  /* Git changes badge (like VSCode) */
+  .badge {
+    position: absolute;
+    top: -6px;
+    right: -8px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    background: var(--color-accent);
+    color: var(--color-bg);
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
   }
 </style>
