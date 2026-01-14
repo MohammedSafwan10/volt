@@ -274,18 +274,24 @@ Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with ne
     name: 'run_command',
     description: `Run a shell command and wait for completion.
 
-IMPORTANT: Do NOT use for long-running commands like dev servers or watchers.
-For those, use "start_process" instead.
+CRITICAL RULES:
+1. Do NOT chain commands with && or || (doesn't work in PowerShell)
+2. Call run_command ONCE per command, wait for result before next
+3. Do NOT use for long-running commands (use start_process instead)
 
-Examples of commands to run here:
+For git workflow, call SEPARATELY and WAIT between each:
+1. run_command({ command: "git add ." })
+2. run_command({ command: "git commit -m \\"message\\"" })
+3. run_command({ command: "git push" })
+
+Examples of valid commands:
 - npm install, npm run build
-- git status, git commit
-- mkdir, cp, mv, rm
-- cargo build, go build`,
+- git add, git commit, git push (ONE at a time!)
+- mkdir, cp, mv, rm`,
     parameters: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Command to run' },
+        command: { type: 'string', description: 'Single command to run (no && or ||)' },
         cwd: { type: 'string', description: 'Working directory (optional)' },
         timeout: { type: 'number', description: 'Timeout ms (default: 60000)' }
       },

@@ -1,8 +1,10 @@
 /**
  * Git state store using Svelte 5 runes
  * Manages git status, staging, commits, and branches with debouncing and cancellation
+ * Auto-refreshes on file changes like VSCode
  */
 
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
 	getGitStatus,
 	cancelGitOperation,
@@ -28,6 +30,9 @@ const STATUS_DEBOUNCE_MS = 300;
 
 // Cache duration for status (ms)
 const STATUS_CACHE_MS = 1000;
+
+// File watcher debounce (ms) - longer to batch rapid changes
+const FILE_WATCH_DEBOUNCE_MS = 500;
 
 class GitStore {
 	// Repository state
@@ -57,6 +62,10 @@ class GitStore {
 	private isRefreshing = false;
 	private statusOpId: string | null = null;
 	private diffOpId: string | null = null;
+	
+	// File watcher for auto-refresh
+	private fileWatchUnlisten: UnlistenFn | null = null;
+	private fileWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Derived values using $derived for proper Svelte 5 reactivity
 	stagedCount = $derived(this.status?.staged.length ?? 0);
@@ -89,6 +98,51 @@ class GitStore {
 
 		if (this.isRepo) {
 			await this.refresh();
+			// Start watching for file changes
+			this.startFileWatcher();
+		}
+	}
+
+	/**
+	 * Start file watcher for auto-refresh (like VSCode)
+	 */
+	private async startFileWatcher(): Promise<void> {
+		// Clean up existing watcher
+		if (this.fileWatchUnlisten) {
+			this.fileWatchUnlisten();
+			this.fileWatchUnlisten = null;
+		}
+
+		try {
+			// Listen to file change events from Tauri
+			this.fileWatchUnlisten = await listen<{ path: string }>('file-watch://change', (event) => {
+				if (!this.isRepo || !this.rootPath) return;
+				
+				const changedPath = event.payload?.path || '';
+				
+				// Skip .git internal files (index, logs, etc.) - these change during git operations
+				// but we don't want to trigger refresh for them
+				if (changedPath.includes('.git/') || changedPath.includes('.git\\')) {
+					// Only refresh for HEAD changes (branch switch) or refs changes
+					if (!changedPath.includes('HEAD') && !changedPath.includes('refs/')) {
+						return;
+					}
+				}
+				
+				// Debounce rapid file changes
+				if (this.fileWatchDebounceTimer) {
+					clearTimeout(this.fileWatchDebounceTimer);
+				}
+				
+				this.fileWatchDebounceTimer = setTimeout(() => {
+					this.fileWatchDebounceTimer = null;
+					// Force refresh bypassing cache
+					this.lastRefreshTime = 0;
+					this.refresh(true);
+				}, FILE_WATCH_DEBOUNCE_MS);
+			});
+		} catch (err) {
+			console.warn('[GitStore] Failed to start file watcher:', err);
 		}
 	}
 
@@ -97,6 +151,17 @@ class GitStore {
 	 */
 	reset(): void {
 		this.cancelPendingRefresh();
+		
+		// Clean up file watcher
+		if (this.fileWatchUnlisten) {
+			this.fileWatchUnlisten();
+			this.fileWatchUnlisten = null;
+		}
+		if (this.fileWatchDebounceTimer) {
+			clearTimeout(this.fileWatchDebounceTimer);
+			this.fileWatchDebounceTimer = null;
+		}
+		
 		this.status = null;
 		this.branches = [];
 		this.selectedFile = null;

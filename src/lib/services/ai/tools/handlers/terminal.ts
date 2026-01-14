@@ -74,9 +74,26 @@ let nextProcessId = 1;
  * Run a shell command and wait for completion
  */
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
-  const command = String(args.command);
+  let command = String(args.command);
   const cwd = args.cwd ? String(args.cwd) : undefined;
   const timeout = Number(args.timeout) || 60000;
+
+  // CRITICAL: Detect and reject chained commands with && (doesn't work in PowerShell)
+  // AI should call run_command multiple times instead of chaining
+  if (command.includes('&&')) {
+    return {
+      success: false,
+      error: `Command contains "&&" which doesn't work in PowerShell. Run each command separately:\n${command.split('&&').map(c => `- ${c.trim()}`).join('\n')}\n\nCall run_command for each command individually.`
+    };
+  }
+
+  // Also reject || chaining
+  if (command.includes('||')) {
+    return {
+      success: false,
+      error: `Command contains "||" which doesn't work reliably in PowerShell. Run commands separately.`
+    };
+  }
 
   // Check for long-running command patterns
   const longRunningPatterns = [

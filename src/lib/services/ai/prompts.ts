@@ -293,8 +293,17 @@ Check tool descriptions to understand what each MCP tool does.
 
 **run_command** - For commands that complete quickly:
 - npm install, npm run build
-- git status, git commit
+- git add, git commit, git push (ONE at a time!)
 - mkdir, cp, mv, rm
+
+**CRITICAL: SEQUENTIAL COMMANDS**
+- NEVER chain commands with && or || (doesn't work in PowerShell)
+- Call run_command ONCE per command
+- WAIT for each command to complete before the next
+- Example for git workflow:
+  1. run_command({ command: "git add ." })  ← wait for result
+  2. run_command({ command: "git commit -m \"message\"" })  ← wait for result
+  3. run_command({ command: "git push" })  ← wait for result
 
 **start_process** - For long-running commands:
 - npm run dev, yarn start
@@ -302,6 +311,16 @@ Check tool descriptions to understand what each MCP tool does.
 - Any dev server or watcher
 
 After start_process, use get_process_output to check if it started successfully.
+
+## GIT WORKFLOW
+
+When user asks to commit/push changes:
+1. git status - Check what's changed
+2. git add . - Stage all changes (or specific files)
+3. git commit -m "message" - Commit with descriptive message
+4. git push - Push to remote
+
+**IMPORTANT**: Run each git command separately and wait for completion!
 
 ## ERROR RECOVERY
 
