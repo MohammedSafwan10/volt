@@ -1,5 +1,6 @@
 <script lang="ts">
   import { projectStore, type TreeNode } from '$lib/stores/project.svelte';
+  import { gitStore } from '$lib/stores/git.svelte';
   import { UIIcon } from '$lib/components/ui';
   import FileIcon from './FileIcon.svelte';
 
@@ -49,6 +50,65 @@
   const isSelected = $derived(projectStore.selectedPath === node.path);
   const indentPx = $derived(depth * 16);
   const isDraftNode = $derived(node.path.startsWith('__draft__:'));
+
+  // Git status for this file/folder (like VSCode M, U, A indicators)
+  type GitIndicator = { letter: string; color: string; title: string } | null;
+  
+  const gitIndicator = $derived.by((): GitIndicator => {
+    if (!gitStore.isRepo || !gitStore.status) return null;
+    
+    // Get relative path from workspace root
+    const rootPath = projectStore.rootPath;
+    if (!rootPath) return null;
+    
+    // Normalize paths for comparison
+    const nodePath = node.path.replace(/\\/g, '/');
+    const normalizedRoot = rootPath.replace(/\\/g, '/');
+    const relativePath = nodePath.startsWith(normalizedRoot) 
+      ? nodePath.slice(normalizedRoot.length + 1) 
+      : nodePath;
+    
+    // Check all git status categories
+    const { staged, unstaged, untracked, conflicted } = gitStore.status;
+    
+    // For folders, check if any child has changes
+    if (node.isDir) {
+      const folderPath = relativePath + '/';
+      const hasConflict = conflicted.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
+      const hasStaged = staged.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
+      const hasUnstaged = unstaged.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
+      const hasUntracked = untracked.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
+      
+      if (hasConflict) return { letter: '!', color: 'var(--color-error)', title: 'Conflict' };
+      if (hasStaged) return { letter: '●', color: 'var(--color-success)', title: 'Staged changes' };
+      if (hasUnstaged) return { letter: 'M', color: 'var(--color-warning)', title: 'Modified' };
+      if (hasUntracked) return { letter: 'U', color: 'var(--color-success)', title: 'Untracked' };
+      return null;
+    }
+    
+    // For files, check exact match
+    const conflict = conflicted.find(f => f.path === relativePath);
+    if (conflict) return { letter: '!', color: 'var(--color-error)', title: 'Conflict' };
+    
+    const stagedFile = staged.find(f => f.path === relativePath);
+    if (stagedFile) {
+      if (stagedFile.status === 'Added') return { letter: 'A', color: 'var(--color-success)', title: 'Added (staged)' };
+      if (stagedFile.status === 'Deleted') return { letter: 'D', color: 'var(--color-error)', title: 'Deleted (staged)' };
+      if (stagedFile.status === 'Renamed') return { letter: 'R', color: 'var(--color-accent)', title: 'Renamed (staged)' };
+      return { letter: 'M', color: 'var(--color-success)', title: 'Modified (staged)' };
+    }
+    
+    const unstagedFile = unstaged.find(f => f.path === relativePath);
+    if (unstagedFile) {
+      if (unstagedFile.status === 'Deleted') return { letter: 'D', color: 'var(--color-error)', title: 'Deleted' };
+      return { letter: 'M', color: 'var(--color-warning)', title: 'Modified' };
+    }
+    
+    const untrackedFile = untracked.find(f => f.path === relativePath);
+    if (untrackedFile) return { letter: 'U', color: 'var(--color-success)', title: 'Untracked' };
+    
+    return null;
+  });
 
   let inputEl = $state<HTMLInputElement | null>(null);
 
@@ -182,7 +242,16 @@
       onblur={() => onEditCommit?.()}
     />
   {:else}
-    <span class="name" title={node.path}>{node.name}</span>
+    <span class="name" class:git-modified={gitIndicator} title={node.path}>{node.name}</span>
+    {#if gitIndicator}
+      <span 
+        class="git-indicator" 
+        style="color: {gitIndicator.color}"
+        title={gitIndicator.title}
+      >
+        {gitIndicator.letter}
+      </span>
+    {/if}
   {/if}
 </div>
 
@@ -265,6 +334,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 1;
+  }
+
+  /* Git status coloring for file names (like VSCode) */
+  .name.git-modified {
+    opacity: 0.9;
+  }
+
+  /* Git status indicator (M, U, A, D, etc.) */
+  .git-indicator {
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: auto;
+    padding-left: 8px;
+    flex-shrink: 0;
+    font-family: var(--font-mono, monospace);
   }
 
   .inline-input {
