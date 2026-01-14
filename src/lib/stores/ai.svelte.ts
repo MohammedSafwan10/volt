@@ -9,7 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 // Supported AI providers
-export type AIProvider = 'gemini';
+export type AIProvider = 'gemini' | 'openrouter';
 
 // AI operation modes
 export type AIMode = 'ask' | 'plan' | 'agent';
@@ -49,6 +49,23 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       'gemini-2.5-flash'
     ],
     defaultModel: 'gemini-3-flash-preview|thinking'
+  },
+  openrouter: {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    capabilities: {
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: true,
+      maxContextHint: 128000
+    },
+    models: [
+      // Best free models with function calling support
+      'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
+      'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
+      'mistralai/devstral-2512:free'       // Devstral - coding focused
+    ],
+    defaultModel: 'qwen/qwen3-coder:free'
   }
 };
 
@@ -76,7 +93,8 @@ class AISettingsStore {
   });
   
   hasApiKey = $state<Record<AIProvider, boolean>>({
-    gemini: false
+    gemini: false,
+    openrouter: false
   });
   
   isValidating = $state(false);
@@ -151,8 +169,17 @@ class AISettingsStore {
         return { success: false, error: 'No API key configured' };
       }
       
-      const { validateGeminiKey } = await import('$lib/services/ai/gemini');
-      const result = await validateGeminiKey(key);
+      let result: ValidationResult;
+      
+      if (provider === 'gemini') {
+        const { validateGeminiKey } = await import('$lib/services/ai/gemini');
+        result = await validateGeminiKey(key);
+      } else if (provider === 'openrouter') {
+        const { validateOpenRouterKey } = await import('$lib/services/ai/openrouter');
+        result = await validateOpenRouterKey(key);
+      } else {
+        result = { success: false, error: 'Unknown provider' };
+      }
       
       if (!result.success) {
         this.validationError = result.error ?? 'Validation failed';

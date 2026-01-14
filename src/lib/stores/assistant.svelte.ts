@@ -10,6 +10,7 @@
 
 import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
+import { getModelConfig } from '$lib/services/ai/models';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool';
@@ -164,8 +165,6 @@ export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputT
   'gemini-2.5-flash': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-flash-lite': { inputTokens: 1_048_576, outputTokens: 65_536 },
   'gemini-2.5-pro': { inputTokens: 1_048_576, outputTokens: 65_536 },
-  'gemini-2.0-flash': { inputTokens: 1_048_576, outputTokens: 8_192 },
-  'gemini-2.0-flash-lite': { inputTokens: 1_048_576, outputTokens: 8_192 }
 };
 
 // Default context limit if model not found
@@ -1028,13 +1027,23 @@ class AssistantStore {
     isNearLimit: boolean;
     isOverLimit: boolean;
   } {
-    const normalizedModel = model
-      .replace(/\|thinking$/g, '')
-      .replace(/^models\//g, '');
-    const limits = MODEL_CONTEXT_LIMITS[normalizedModel] ?? DEFAULT_CONTEXT_LIMIT;
+    // Try model registry first, then fall back to old limits
+    const modelConfig = getModelConfig(model);
+    
+    let maxTokens: number;
+    if (modelConfig) {
+      maxTokens = modelConfig.contextWindow;
+    } else {
+      // Fallback to old method
+      const normalizedModel = model
+        .replace(/\|thinking$/g, '')
+        .replace(/^models\//g, '');
+      const limits = MODEL_CONTEXT_LIMITS[normalizedModel] ?? DEFAULT_CONTEXT_LIMIT;
+      maxTokens = limits.inputTokens;
+    }
+    
     const usedChars = this.getConversationContextChars();
     const usedTokens = this.estimateTokens(usedChars);
-    const maxTokens = limits.inputTokens;
     const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
 
     return {

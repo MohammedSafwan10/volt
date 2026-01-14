@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { aiSettingsStore, PROVIDERS, type AIMode } from '$lib/stores/ai.svelte';
+  import { aiSettingsStore, PROVIDERS, type AIMode, type AIProvider } from '$lib/stores/ai.svelte';
   import { showToast } from '$lib/stores/toast.svelte';
   import UIIcon from '$lib/components/ui/UIIcon.svelte';
   import { onMount } from 'svelte';
-  import { validateGeminiKey } from '$lib/services/ai/gemini';
+  import { getModelConfig, formatContextSize } from '$lib/services/ai/models';
 
   let apiKeyInput = $state('');
   let showKey = $state(false);
@@ -17,6 +17,21 @@
   });
 
   const currentProvider = $derived(PROVIDERS[aiSettingsStore.selectedProvider]);
+  
+  // Get current model config for displaying info
+  const currentAgentModel = $derived(aiSettingsStore.modelPerMode['agent']);
+  const currentModelConfig = $derived(getModelConfig(currentAgentModel));
+
+  function handleProviderChange(e: Event): void {
+    const newProvider = (e.target as HTMLSelectElement).value as AIProvider;
+    aiSettingsStore.setProvider(newProvider);
+    // Reset API key input when switching providers
+    if (aiSettingsStore.hasApiKey[newProvider]) {
+      apiKeyInput = '••••••••••••••••••••';
+    } else {
+      apiKeyInput = '';
+    }
+  }
 
   async function handleSaveKey(): Promise<void> {
     if (!apiKeyInput || apiKeyInput.startsWith('••')) {
@@ -38,13 +53,34 @@
 
   async function handleValidate(): Promise<void> {
     const canValidateTyped = !!apiKeyInput && !apiKeyInput.startsWith('••');
-    const result = canValidateTyped
-      ? await validateGeminiKey(apiKeyInput)
-      : await aiSettingsStore.validateApiKey(aiSettingsStore.selectedProvider);
-    if (result.success) {
-      showToast({ message: 'API key is valid!', type: 'success' });
+    
+    if (canValidateTyped) {
+      // Validate the typed key directly
+      if (aiSettingsStore.selectedProvider === 'gemini') {
+        const { validateGeminiKey } = await import('$lib/services/ai/gemini');
+        const result = await validateGeminiKey(apiKeyInput);
+        if (result.success) {
+          showToast({ message: 'API key is valid!', type: 'success' });
+        } else {
+          showToast({ message: result.error ?? 'Validation failed', type: 'error' });
+        }
+      } else if (aiSettingsStore.selectedProvider === 'openrouter') {
+        const { validateOpenRouterKey } = await import('$lib/services/ai/openrouter');
+        const result = await validateOpenRouterKey(apiKeyInput);
+        if (result.success) {
+          showToast({ message: 'API key is valid!', type: 'success' });
+        } else {
+          showToast({ message: result.error ?? 'Validation failed', type: 'error' });
+        }
+      }
     } else {
-      showToast({ message: result.error ?? 'Validation failed', type: 'error' });
+      // Validate stored key
+      const result = await aiSettingsStore.validateApiKey(aiSettingsStore.selectedProvider);
+      if (result.success) {
+        showToast({ message: 'API key is valid!', type: 'success' });
+      } else {
+        showToast({ message: result.error ?? 'Validation failed', type: 'error' });
+      }
     }
   }
 
@@ -73,6 +109,16 @@
   function formatModelLabel(model: string): string {
     const thinking = model.endsWith('|thinking');
     const base = thinking ? model.slice(0, -'|thinking'.length) : model;
+    
+    // For OpenRouter models (format: org/model:variant)
+    if (base.includes('/')) {
+      const parts = base.split('/');
+      const modelPart = parts[parts.length - 1];
+      // Remove :free suffix for display but keep it in value
+      const displayName = modelPart.replace(':free', ' (free)');
+      return thinking ? `${displayName} (thinking)` : displayName;
+    }
+    
     return thinking ? `${base} (thinking)` : base;
   }
 
@@ -92,7 +138,7 @@
       <div class="description">Select your AI provider</div>
     </div>
     <div class="setting-control">
-      <select class="select" value={aiSettingsStore.selectedProvider} disabled aria-label="AI Provider">
+      <select class="select" value={aiSettingsStore.selectedProvider} onchange={handleProviderChange} aria-label="AI Provider">
         {#each Object.values(PROVIDERS) as provider (provider.id)}
           <option value={provider.id}>{provider.name}</option>
         {/each}
@@ -103,7 +149,14 @@
   <div class="setting">
     <div class="setting-label">
       <div class="name">API Key</div>
-      <div class="description">Your {currentProvider.name} API key (stored securely)</div>
+      <div class="description">
+        Your {currentProvider.name} API key (stored securely)
+        {#if aiSettingsStore.selectedProvider === 'openrouter'}
+          <br/><a href="https://openrouter.ai/keys" target="_blank" class="key-link">Get free API key →</a>
+        {:else if aiSettingsStore.selectedProvider === 'gemini'}
+          <br/><a href="https://aistudio.google.com/apikey" target="_blank" class="key-link">Get API key →</a>
+        {/if}
+      </div>
     </div>
     <div class="setting-control key-control">
       <div class="key-input-row">
@@ -145,12 +198,20 @@
   <div class="section-title model-section">Model Selection</div>
 
   {#each (['ask', 'plan', 'agent'] as AIMode[]) as mode (mode)}
+    {@const selectedModel = aiSettingsStore.modelPerMode[mode]}
+    {@const modelConfig = getModelConfig(selectedModel)}
     <div class="setting">
       <div class="setting-label">
         <div class="name">{modeLabels[mode]}</div>
         <div class="description">
           {#if mode === 'agent' && !aiSettingsStore.agentModeAvailable}
             <span class="warning">⚠️ Requires tool support</span>
+          {:else if mode === 'agent' && modelConfig && !modelConfig.supportsTools}
+            <span class="warning">⚠️ Model doesn't support tools</span>
+          {:else if modelConfig}
+            Context: {formatContextSize(modelConfig.contextWindow)} · Output: {formatContextSize(modelConfig.maxOutput)}
+            {#if modelConfig.free}<span class="free-badge">FREE</span>{/if}
+            {#if !modelConfig.supportsTools}<span class="no-tools-badge">NO TOOLS</span>{/if}
           {:else}
             Model for {mode} operations
           {/if}
@@ -220,5 +281,9 @@
   .cap-list { display: flex; gap: 12px; flex-wrap: wrap; }
   .cap { font-size: 12px; color: var(--color-text-secondary); }
   .cap.supported { color: var(--color-success); }
+  .key-link { color: var(--color-accent); text-decoration: none; font-size: 11px; }
+  .key-link:hover { text-decoration: underline; }
+  .free-badge { display: inline-block; background: var(--color-success); color: var(--color-bg); font-size: 9px; font-weight: 600; padding: 1px 4px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+  .no-tools-badge { display: inline-block; background: var(--color-warning); color: var(--color-bg); font-size: 9px; font-weight: 600; padding: 1px 4px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
   .select:focus-visible, .text-input:focus-visible, .btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 </style>

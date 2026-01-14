@@ -5,14 +5,17 @@
 
 export * from './types';
 export { geminiProvider, validateGeminiKey } from './gemini';
+export { openRouterProvider, validateOpenRouterKey } from './openrouter';
 
 import type { AIProvider, ChatRequest, ChatResponse, StreamChunk } from './types';
 import { geminiProvider } from './gemini';
+import { openRouterProvider } from './openrouter';
 import { aiSettingsStore, type AIProvider as AIProviderType, type AIMode } from '$lib/stores/ai.svelte';
 
 // Provider registry
 const providers: Record<AIProviderType, AIProvider> = {
-  gemini: geminiProvider
+  gemini: geminiProvider,
+  openrouter: openRouterProvider
 };
 
 /**

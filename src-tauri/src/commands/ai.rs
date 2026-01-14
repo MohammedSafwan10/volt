@@ -5,6 +5,7 @@ const KEYRING_SERVICE: &str = "volt";
 fn provider_keyring_username(provider: &str) -> Result<String, String> {
     match provider {
         "gemini" => Ok("ai.gemini.api_key".to_string()),
+        "openrouter" => Ok("ai.openrouter.api_key".to_string()),
         _ => Err("Unsupported AI provider".to_string()),
     }
 }

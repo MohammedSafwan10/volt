@@ -67,10 +67,18 @@
   // Pre-process content to normalize whitespace before parsing
   function preProcessContent(raw: string): string {
     let out = raw;
-    // Remove excessive blank lines (3+ newlines -> 2)
-    out = out.replace(/\n{3,}/g, '\n\n');
+    // Normalize line endings
+    out = out.replace(/\r\n/g, '\n');
     // Remove trailing spaces on lines
     out = out.replace(/[ \t]+$/gm, '');
+    // Collapse any 2+ consecutive blank lines to single blank line
+    out = out.replace(/\n\s*\n\s*\n/g, '\n\n');
+    // Remove blank lines after headers
+    out = out.replace(/(^#{1,6}\s+.+)\n\n+/gm, '$1\n');
+    // Remove blank lines before list items
+    out = out.replace(/\n\n+([-*+]|\d+\.)\s/g, '\n$1 ');
+    // Remove leading/trailing whitespace
+    out = out.trim();
     return out;
   }
 
@@ -79,13 +87,18 @@
     // Remove empty paragraphs
     out = out.replace(/<p>\s*<br\s*\/?\s*>\s*<\/p>/gi, '');
     out = out.replace(/<p>\s*(?:&nbsp;|\s)*<\/p>/gi, '');
-    // Collapse 2+ consecutive <br> into at most 1
-    out = out.replace(/(?:<br\s*\/?\s*>\s*){2,}/gi, '<br>');
+    out = out.replace(/<p><\/p>/gi, '');
+    // Collapse 2+ consecutive <br> into nothing (remove them)
+    out = out.replace(/(?:<br\s*\/?\s*>\s*){2,}/gi, '');
+    // Remove standalone <br> tags between block elements
+    out = out.replace(/(<\/(?:p|div|ul|ol|h[1-6]|blockquote)>)\s*<br\s*\/?\s*>\s*(<(?:p|div|ul|ol|h[1-6]|blockquote))/gi, '$1$2');
     // Remove <br> immediately after opening <li> or before closing </li>
     out = out.replace(/<li>\s*<br\s*\/?\s*>/gi, '<li>');
     out = out.replace(/<br\s*\/?\s*>\s*<\/li>/gi, '</li>');
     // Remove <br> between </li> and <li>
     out = out.replace(/<\/li>\s*<br\s*\/?\s*>\s*<li>/gi, '</li><li>');
+    // Remove <br> after headers
+    out = out.replace(/(<\/h[1-6]>)\s*<br\s*\/?\s*>/gi, '$1');
     return out;
   }
 
@@ -124,7 +137,7 @@
   }
 
   .markdown :global(p) {
-    margin: 0 0 6px 0;
+    margin: 0 0 4px 0;
   }
 
   .markdown :global(p:last-child) {
@@ -141,7 +154,7 @@
   .markdown :global(h2),
   .markdown :global(h3),
   .markdown :global(h4) {
-    margin: 10px 0 4px 0;
+    margin: 8px 0 4px 0;
     font-weight: 600;
     color: var(--color-text);
     line-height: 1.3;
@@ -162,12 +175,12 @@
   /* Compact lists */
   .markdown :global(ul),
   .markdown :global(ol) {
-    margin: 4px 0;
+    margin: 2px 0;
     padding-left: 16px;
   }
 
   .markdown :global(li) {
-    margin: 1px 0;
+    margin: 0;
     padding: 0;
     line-height: 1.4;
   }
@@ -179,7 +192,7 @@
 
   .markdown :global(li > ul),
   .markdown :global(li > ol) {
-    margin: 2px 0 2px 0;
+    margin: 0;
   }
 
   /* Nested list items even more compact */

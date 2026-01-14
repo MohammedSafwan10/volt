@@ -76,6 +76,25 @@
     const thinking = model.endsWith("|thinking");
     const base = thinking ? model.slice(0, -"|thinking".length) : model;
 
+    // OpenRouter models (format: org/model:variant)
+    if (base.includes('/')) {
+      const parts = base.split('/');
+      const modelPart = parts[parts.length - 1];
+      // Clean up the name
+      let displayName = modelPart
+        .replace(':free', '')
+        .replace(/-/g, ' ')
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      
+      // Add (free) indicator
+      if (model.includes(':free')) {
+        displayName += ' (free)';
+      }
+      return thinking ? `${displayName} (thinking)` : displayName;
+    }
+
     // Gemini 3 Flash
     if (base === "gemini-3-flash-preview")
       return thinking ? "Gemini 3 Flash (thinking)" : "Gemini 3 Flash";

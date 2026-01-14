@@ -660,16 +660,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   args: toolCallArgs,
                 });
               } else if (isTerminalCommand) {
-                // Terminal commands go to a special queue for sequential execution
-                // This ensures git add → git commit → git push run in order
-                if (!fileEditQueues.has('__terminal__')) {
-                  fileEditQueues.set('__terminal__', []);
-                }
-                fileEditQueues.get('__terminal__')!.push({
-                  id: toolCallId,
-                  name: toolCallName,
-                  args: toolCallArgs,
-                });
+                // Terminal commands are handled by the approval flow (toolsNeedingApproval)
+                // Don't add them to fileEditQueues to avoid duplicate execution
+                // They will be processed sequentially in the approval section below
               } else {
                 // Non-file-edit, non-terminal tools run in parallel as before
                 assistantStore.updateToolCallInMessage(msgId, toolCallId, {
