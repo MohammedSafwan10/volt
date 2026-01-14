@@ -22,6 +22,13 @@
   let { toolCall, streamingProgress, onApprove, onDeny, isFirstPendingTerminal = true }: Props = $props();
 
   let expanded = $state(false);
+  
+  // Auto-expand when screenshot data arrives
+  $effect(() => {
+    if (toolCall.name === 'browser_screenshot' && toolCall.data?.image_base64 && !expanded) {
+      expanded = true;
+    }
+  });
 
   // Format output with clickable URLs (global handler in layout opens them in browser)
   function formatOutputWithLinks(text: string): string {
@@ -412,6 +419,19 @@
         </div>
       {/if}
       
+      {#if toolCall.data?.image_base64}
+        <div class="detail-section">
+          <span class="detail-label">Screenshot:</span>
+          <div class="screenshot-container">
+            <img 
+              src="data:image/png;base64,{toolCall.data.image_base64}" 
+              alt="Browser screenshot"
+              class="screenshot-image"
+            />
+          </div>
+        </div>
+      {/if}
+      
       {#if toolCall.error}
         <div class="detail-section error">
           <span class="detail-label">Error:</span>
@@ -783,5 +803,21 @@
     color: var(--color-accent);
     text-decoration: underline;
     opacity: 0.8;
+  }
+
+  .screenshot-container {
+    margin-top: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+  }
+
+  .screenshot-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    max-height: 300px;
+    object-fit: contain;
+    background: var(--color-bg);
   }
 </style>
