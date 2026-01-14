@@ -603,7 +603,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 "append_file",
                 "multi_replace_file_content",
               ];
+              const TERMINAL_TOOLS = [
+                "run_command",
+                "start_process",
+              ];
               const isFileEdit = FILE_EDIT_TOOLS.includes(toolCallName);
+              const isTerminalCommand = TERMINAL_TOOLS.includes(toolCallName);
               const filePath = isFileEdit ? String(toolCallArgs.path || '') : null;
 
               // Group file edits by path for sequential execution
@@ -616,8 +621,19 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   name: toolCallName,
                   args: toolCallArgs,
                 });
+              } else if (isTerminalCommand) {
+                // Terminal commands go to a special queue for sequential execution
+                // This ensures git add → git commit → git push run in order
+                if (!fileEditQueues.has('__terminal__')) {
+                  fileEditQueues.set('__terminal__', []);
+                }
+                fileEditQueues.get('__terminal__')!.push({
+                  id: toolCallId,
+                  name: toolCallName,
+                  args: toolCallArgs,
+                });
               } else {
-                // Non-file-edit tools run in parallel as before
+                // Non-file-edit, non-terminal tools run in parallel as before
                 assistantStore.updateToolCallInMessage(msgId, toolCallId, {
                   status: "running" as const,
                   startTime: Date.now(),
@@ -913,33 +929,128 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             msg.id === msgId ? { ...msg, isStreaming: false } : msg,
           );
 
-          await waitForToolApprovals(
-            msgId,
-            toolsNeedingApproval.map((tc) => tc.id),
-            controller.signal,
-          );
-          if (controller.signal.aborted) return;
+          // Separate terminal commands from other tools for sequential processing
+          const TERMINAL_TOOLS = ["run_command", "start_process"];
+          const terminalTools = toolsNeedingApproval.filter(tc => TERMINAL_TOOLS.includes(tc.name));
+          const otherTools = toolsNeedingApproval.filter(tc => !TERMINAL_TOOLS.includes(tc.name));
 
-          for (const tc of toolsNeedingApproval) {
-            const currentMsg = assistantStore.messages.find(
-              (m) => m.id === msgId,
+          // Process non-terminal tools in parallel (old behavior)
+          if (otherTools.length > 0) {
+            await waitForToolApprovals(
+              msgId,
+              otherTools.map((tc) => tc.id),
+              controller.signal,
             );
-            const currentToolCall = currentMsg?.inlineToolCalls?.find(
-              (t) => t.id === tc.id,
-            );
+            if (controller.signal.aborted) return;
+
+            for (const tc of otherTools) {
+              const currentMsg = assistantStore.messages.find(
+                (m) => m.id === msgId,
+              );
+              const currentToolCall = currentMsg?.inlineToolCalls?.find(
+                (t) => t.id === tc.id,
+              );
+
+              if (currentToolCall?.status === "cancelled") {
+                toolResults.push({
+                  id: tc.id,
+                  name: tc.name,
+                  result: {
+                    success: false,
+                    error: "Tool execution denied by user",
+                  },
+                });
+                continue;
+              }
+
+              assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                status: "running",
+                startTime: Date.now(),
+              });
+
+              try {
+                const result = await executeToolCall(tc.name, tc.arguments, {
+                  signal: controller.signal,
+                });
+                toolResults.push({ id: tc.id, name: tc.name, result });
+                assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                  status: result.success ? "completed" : "failed",
+                  output: result.output,
+                  error: result.error,
+                  meta: result.meta,
+                  endTime: Date.now(),
+                  streamingProgress: undefined,
+                });
+
+                if (result.success && result.meta) {
+                  const metaAny: any = result.meta;
+                  const hasFileEdit = metaAny?.fileEdit;
+                  const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
+                  
+                  if (hasFileEdit && hasLineInfo) {
+                    const highlightPath = applyReviewHighlight(metaAny);
+                    const mergedMeta = {
+                      ...metaAny,
+                      ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+                    };
+                    assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                      meta: mergedMeta,
+                    });
+                  }
+                }
+              } catch (err) {
+                const error = err instanceof Error ? err.message : String(err);
+                toolResults.push({
+                  id: tc.id,
+                  name: tc.name,
+                  result: { success: false, error },
+                });
+                assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                  status: "failed",
+                  error,
+                  endTime: Date.now(),
+                });
+              }
+            }
+          }
+
+          // Process terminal commands SEQUENTIALLY (Kiro-style)
+          // Wait for approval → execute → wait for next approval → execute...
+          let previousTerminalFailed = false;
+          for (const tc of terminalTools) {
+            // If previous terminal command failed, skip remaining
+            if (previousTerminalFailed) {
+              assistantStore.updateToolCallInMessage(msgId, tc.id, {
+                status: "failed",
+                error: "Skipped: A previous command failed.",
+                endTime: Date.now(),
+              });
+              toolResults.push({
+                id: tc.id,
+                name: tc.name,
+                result: { success: false, error: "Skipped: A previous command failed." },
+              });
+              continue;
+            }
+
+            // Wait for THIS specific tool's approval
+            await waitForToolApprovals(msgId, [tc.id], controller.signal);
+            if (controller.signal.aborted) return;
+
+            const currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+            const currentToolCall = currentMsg?.inlineToolCalls?.find((t) => t.id === tc.id);
 
             if (currentToolCall?.status === "cancelled") {
               toolResults.push({
                 id: tc.id,
                 name: tc.name,
-                result: {
-                  success: false,
-                  error: "Tool execution denied by user",
-                },
+                result: { success: false, error: "Tool execution denied by user" },
               });
+              previousTerminalFailed = true; // Stop subsequent commands if user denies
               continue;
             }
 
+            // Execute this terminal command
             assistantStore.updateToolCallInMessage(msgId, tc.id, {
               status: "running",
               startTime: Date.now(),
@@ -956,25 +1067,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 error: result.error,
                 meta: result.meta,
                 endTime: Date.now(),
-                streamingProgress: undefined,
               });
 
-              if (result.success && result.meta) {
-                const metaAny: any = result.meta;
-                const hasFileEdit = metaAny?.fileEdit;
-                const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
-                
-                if (hasFileEdit && hasLineInfo) {
-                  const highlightPath = applyReviewHighlight(metaAny);
-                  const beforeContent = metaAny?.fileEdit?.beforeContent;
-                  const mergedMeta = {
-                    ...metaAny,
-                    ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
-                  };
-                  assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                    meta: mergedMeta,
-                  });
-                }
+              if (!result.success) {
+                previousTerminalFailed = true;
               }
             } catch (err) {
               const error = err instanceof Error ? err.message : String(err);
@@ -988,6 +1084,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 error,
                 endTime: Date.now(),
               });
+              previousTerminalFailed = true;
             }
           }
         }

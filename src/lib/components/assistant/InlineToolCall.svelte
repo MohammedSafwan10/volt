@@ -53,9 +53,9 @@
     delete_file: 'Deleted file',
     delete_path: 'Deleted',
     rename_path: 'Renamed',
-    // Terminal
-    run_command: 'Ran command',
-    start_process: 'Started process',
+    // Terminal - cleaner names
+    run_command: 'Run command',
+    start_process: 'Start process',
     stop_process: 'Stopped process',
     list_processes: 'Listed processes',
     get_process_output: 'Got process output',
@@ -234,6 +234,18 @@
   const isComplete = $derived(toolCall.status === 'completed');
   const isFailed = $derived(toolCall.status === 'failed');
   
+  // Check if this is a terminal command tool
+  const isTerminalTool = $derived(
+    toolCall.name === 'run_command' ||
+    toolCall.name === 'start_process' ||
+    toolCall.name === 'terminal_write'
+  );
+  
+  // Get the command for terminal tools
+  const terminalCommand = $derived(
+    isTerminalTool ? String(toolCall.arguments.command || '') : ''
+  );
+  
   // Check if this is a file write tool that supports streaming
   const isFileWriteTool = $derived(
     toolCall.name === 'write_file' ||
@@ -251,56 +263,88 @@
 
 <div 
   class="inline-tool-call {toolCall.status}"
+  class:terminal-tool={isTerminalTool}
   role="article"
   aria-label="Tool: {getToolDisplayName()}"
 >
-  <button
-    class="tool-header"
-    onclick={() => expanded = !expanded}
-    aria-expanded={expanded}
-    type="button"
-  >
-    <span class="tool-icon" class:spinning={isRunning && !isStreaming}>
-      {#if isStreaming}
-        <UIIcon name="pencil" size={14} />
-      {:else if isRunning}
-        <UIIcon name="spinner" size={14} />
-      {:else}
-        <UIIcon name={getToolIcon()} size={14} />
-      {/if}
-    </span>
-    
-    <span class="tool-name">{getToolDisplayName()}</span>
-    
-    {#if isStreaming && streamingProgress}
-      <span class="tool-progress">
-        <span class="progress-text">{formatProgress(streamingProgress)}</span>
-        <span class="progress-bar">
-          <span class="progress-fill" style="width: {streamingProgress.percent}%"></span>
-        </span>
+  {#if isTerminalTool}
+    <!-- Special terminal-style display -->
+    <button
+      class="tool-header terminal-header"
+      onclick={() => expanded = !expanded}
+      aria-expanded={expanded}
+      type="button"
+    >
+      <span class="terminal-prompt">
+        <UIIcon name="terminal" size={14} />
+        <span class="prompt-symbol">$</span>
       </span>
-    {:else if summary}
-      <span class="tool-summary">{summary}</span>
-    {/if}
-    
-    <span class="tool-status-icon">
-      {#if isStreaming}
-        <span class="streaming-indicator"></span>
-      {:else if isRunning}
-        <!-- Already showing spinner in tool-icon -->
-      {:else if isComplete}
-        <UIIcon name="check" size={12} />
-      {:else if isFailed}
-        <UIIcon name="error" size={12} />
-      {:else if isPending}
-        <UIIcon name="clock" size={12} />
+      <span class="terminal-command">{terminalCommand || 'command'}</span>
+      <span class="tool-status-icon">
+        {#if isRunning}
+          <span class="terminal-running-indicator"></span>
+        {:else if isComplete}
+          <UIIcon name="check" size={12} />
+        {:else if isFailed}
+          <UIIcon name="error" size={12} />
+        {:else if isPending}
+          <UIIcon name="clock" size={12} />
+        {/if}
+      </span>
+      <span class="expand-icon" class:expanded>
+        <UIIcon name="chevron-down" size={12} />
+      </span>
+    </button>
+  {:else}
+    <!-- Standard tool display -->
+    <button
+      class="tool-header"
+      onclick={() => expanded = !expanded}
+      aria-expanded={expanded}
+      type="button"
+    >
+      <span class="tool-icon" class:spinning={isRunning && !isStreaming}>
+        {#if isStreaming}
+          <UIIcon name="pencil" size={14} />
+        {:else if isRunning}
+          <UIIcon name="spinner" size={14} />
+        {:else}
+          <UIIcon name={getToolIcon()} size={14} />
+        {/if}
+      </span>
+      
+      <span class="tool-name">{getToolDisplayName()}</span>
+      
+      {#if isStreaming && streamingProgress}
+        <span class="tool-progress">
+          <span class="progress-text">{formatProgress(streamingProgress)}</span>
+          <span class="progress-bar">
+            <span class="progress-fill" style="width: {streamingProgress.percent}%"></span>
+          </span>
+        </span>
+      {:else if summary}
+        <span class="tool-summary">{summary}</span>
       {/if}
-    </span>
-    
-    <span class="expand-icon" class:expanded>
-      <UIIcon name="chevron-down" size={12} />
-    </span>
-  </button>
+      
+      <span class="tool-status-icon">
+        {#if isStreaming}
+          <span class="streaming-indicator"></span>
+        {:else if isRunning}
+          <!-- Already showing spinner in tool-icon -->
+        {:else if isComplete}
+          <UIIcon name="check" size={12} />
+        {:else if isFailed}
+          <UIIcon name="error" size={12} />
+        {:else if isPending}
+          <UIIcon name="clock" size={12} />
+        {/if}
+      </span>
+      
+      <span class="expand-icon" class:expanded>
+        <UIIcon name="chevron-down" size={12} />
+      </span>
+    </button>
+  {/if}
 
   {#if isPending && onApprove && onDeny}
     <div class="approval-bar">
@@ -369,6 +413,79 @@
     border: 1px solid var(--color-border);
     overflow: hidden;
     font-size: 12px;
+  }
+
+  /* Terminal tool special styling */
+  .inline-tool-call.terminal-tool {
+    background: var(--color-bg);
+    border-color: var(--color-border);
+  }
+
+  .inline-tool-call.terminal-tool.running {
+    border-color: var(--color-accent);
+  }
+
+  .inline-tool-call.terminal-tool.completed {
+    border-color: var(--color-success);
+  }
+
+  .inline-tool-call.terminal-tool.failed {
+    border-color: var(--color-error);
+  }
+
+  .inline-tool-call.terminal-tool.pending {
+    border-color: var(--color-warning);
+  }
+
+  .terminal-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 10px 12px;
+    text-align: left;
+    color: var(--color-text);
+    background: var(--color-surface0);
+    font-family: var(--font-mono, 'Fira Code', 'Consolas', monospace);
+  }
+
+  .terminal-header:hover {
+    background: var(--color-hover);
+  }
+
+  .terminal-prompt {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-success);
+    flex-shrink: 0;
+  }
+
+  .prompt-symbol {
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .terminal-command {
+    flex: 1;
+    font-size: 12px;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .terminal-running-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    animation: terminal-pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes terminal-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .inline-tool-call.running {
