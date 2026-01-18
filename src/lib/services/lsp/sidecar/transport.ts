@@ -3,12 +3,14 @@
  * 
  * Handles communication between the frontend and LSP server sidecars
  * running in the Rust backend via Tauri commands and events.
+ * Also supports external LSP servers from user's PATH (e.g., Dart, Rust Analyzer).
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   LspServerConfig,
+  ExternalLspConfig,
   LspServerInfo,
   JsonRpcMessage,
   JsonRpcRequest,
@@ -77,6 +79,27 @@ export class LspTransport {
     });
 
     // Set up event listeners
+    await this.setupEventListeners();
+    this.isConnected = true;
+
+    return info;
+  }
+
+  /**
+   * Start an external LSP server (from user's PATH) and set up event listeners
+   */
+  async startExternal(config: Omit<ExternalLspConfig, 'serverId' | 'serverType'>): Promise<LspServerInfo> {
+    // Start the external server via Tauri command
+    const info = await invoke<LspServerInfo>('lsp_start_external_server', {
+      serverId: this.serverId,
+      serverType: this.serverType,
+      command: config.command,
+      args: config.args,
+      cwd: config.cwd,
+      env: config.env,
+    });
+
+    // Set up event listeners (same as sidecar)
     await this.setupEventListeners();
     this.isConnected = true;
 

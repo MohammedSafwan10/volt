@@ -4,13 +4,17 @@
  * Manages multiple LSP server connections and provides a unified interface
  * for starting, stopping, and communicating with language servers.
  * 
- * Uses Tauri's externalBin sidecar mechanism for bundled language servers.
+ * Uses Tauri's externalBin sidecar mechanism for bundled language servers,
+ * and external process spawning for user-installed servers (Dart, Rust Analyzer, etc.).
  */
 
 import { LspTransport, createTransport, stopAllServers } from './transport';
 import type { LspServerType } from './types';
+import { isExternalServerType } from './types';
+import { detectYamlLsp } from '../yaml-sdk';
+import { getLemminxCommand } from '../xml-sdk';
 
-/** Sidecar configuration for each LSP type */
+/** Sidecar configuration for each LSP type (bundled servers) */
 interface SidecarConfig {
   /** Relative path to the language server entrypoint script within resources (or dev workspace). */
   entrypoint: string;
@@ -18,11 +22,20 @@ interface SidecarConfig {
   args: string[];
 }
 
+/** External server configuration (from user's PATH) */
+interface ExternalConfig {
+  /** Command to execute (e.g., "dart", "rust-analyzer") */
+  command: string;
+  /** Arguments for the command */
+  args: string[];
+}
+
 /** We ship a real Node runtime as a single sidecar and execute JS-based language servers via entrypoint scripts. */
 const NODE_SIDECAR_NAME = 'node';
 
 /** Sidecar configurations for each server type */
-const SIDECAR_CONFIGS: Record<LspServerType, SidecarConfig> = {
+/** Sidecar configurations for bundled server types (not external) */
+const SIDECAR_CONFIGS: Partial<Record<LspServerType, SidecarConfig>> = {
   typescript: {
     entrypoint: 'node_modules/typescript-language-server/lib/cli.mjs',
     args: ['--stdio'],
@@ -53,6 +66,42 @@ const SIDECAR_CONFIGS: Record<LspServerType, SidecarConfig> = {
   },
 };
 
+/** External server configurations (from user's PATH) */
+const EXTERNAL_CONFIGS: Partial<Record<LspServerType, ExternalConfig>> = {
+  dart: {
+    command: 'dart',
+    args: ['language-server', '--client-id', 'volt-ide', '--client-version', '1.0.0'],
+  },
+  // yaml and xml use dynamic command resolution - see getDynamicExternalConfig()
+};
+
+/**
+ * Get dynamic external configuration for servers that need runtime detection
+ * Returns null if the server is not available
+ */
+async function getDynamicExternalConfig(serverType: LspServerType): Promise<ExternalConfig | null> {
+  switch (serverType) {
+    case 'yaml': {
+      const yamlInfo = await detectYamlLsp();
+      if (!yamlInfo) return null;
+      return {
+        command: yamlInfo.serverPath,
+        args: ['--stdio'],
+      };
+    }
+    case 'xml': {
+      const xmlCommand = await getLemminxCommand();
+      if (!xmlCommand) return null;
+      return {
+        command: xmlCommand.command,
+        args: xmlCommand.args,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
 /**
  * LSP Registry - manages all LSP server connections
  */
@@ -76,7 +125,8 @@ class LspRegistry {
 
 
   /**
-   * Start a language server sidecar of the given type
+   * Start a language server of the given type
+   * Automatically chooses between bundled sidecar or external server based on type
    */
   async startServer(
     serverType: LspServerType,
@@ -93,23 +143,46 @@ class LspRegistry {
       return this.transports.get(serverId)!;
     }
 
-    // Get sidecar config for this server type
-    const config = SIDECAR_CONFIGS[serverType];
-    if (!config) {
-      throw new Error(`Unknown server type: ${serverType}`);
-    }
-
     // Create transport
     const transport = createTransport(serverId, serverType);
 
-    // Start the language server using the Node sidecar
-    await transport.start({
-      sidecarName: NODE_SIDECAR_NAME,
-      entrypoint: config.entrypoint,
-      args: config.args,
-      cwd: options?.cwd ?? this.projectRoot ?? undefined,
-      env: options?.env,
-    });
+    // Check if this is an external server type
+    if (isExternalServerType(serverType)) {
+      // Try dynamic config first (for yaml, xml)
+      let externalConfig = await getDynamicExternalConfig(serverType);
+      
+      // Fall back to static config (for dart)
+      if (!externalConfig) {
+        externalConfig = EXTERNAL_CONFIGS[serverType] ?? null;
+      }
+      
+      if (!externalConfig) {
+        throw new Error(`No external config for server type: ${serverType}. The server may not be installed.`);
+      }
+
+      // Start external server
+      await transport.startExternal({
+        command: externalConfig.command,
+        args: externalConfig.args,
+        cwd: options?.cwd ?? this.projectRoot ?? undefined,
+        env: options?.env,
+      });
+    } else {
+      // Get bundled sidecar config
+      const config = SIDECAR_CONFIGS[serverType];
+      if (!config) {
+        throw new Error(`Unknown server type: ${serverType}`);
+      }
+
+      // Start the language server using the Node sidecar
+      await transport.start({
+        sidecarName: NODE_SIDECAR_NAME,
+        entrypoint: config.entrypoint,
+        args: config.args,
+        cwd: options?.cwd ?? this.projectRoot ?? undefined,
+        env: options?.env,
+      });
+    }
 
     // Store transport
     this.transports.set(serverId, transport);

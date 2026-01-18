@@ -21,7 +21,7 @@ use commands::git::{
 };
 use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
-    lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
+    lsp_start_server, lsp_start_external_server, lsp_stop_all, lsp_stop_server, LspManagerState,
 };
 use commands::mcp::{
     start_mcp_server, stop_mcp_server, stop_all_mcp_servers, call_mcp_tool,
@@ -107,6 +107,7 @@ pub fn run() {
             fs_allow_directory,
             // LSP
             lsp_start_server,
+            lsp_start_external_server,
             lsp_stop_server,
             lsp_stop_all,
             lsp_send_message,

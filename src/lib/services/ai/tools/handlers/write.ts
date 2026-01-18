@@ -17,7 +17,7 @@ import { resolvePath, extractErrorMessage, isSameOrSuffixPath, type ToolResult }
 /**
  * Get diagnostics for a file after edit
  * Returns error count for UI and detailed errors for AI
- * Includes TypeScript, ESLint, Svelte, and other LSP diagnostics
+ * Includes TypeScript, ESLint, Svelte, Dart, and other LSP diagnostics
  */
 async function getPostEditDiagnostics(absolutePath: string, relativePath: string): Promise<{
   errorCount: number;
@@ -25,8 +25,10 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
   errors: string[]; // Detailed errors for AI (not shown to user)
 }> {
   try {
-    // Notify ESLint of the file change (if it's a JS/TS file)
+    // Notify LSPs of the file change based on file type
     const ext = absolutePath.split('.').pop()?.toLowerCase() || '';
+    
+    // Notify ESLint for JS/TS files
     if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
       try {
         const content = await invoke<string>('read_file', { path: absolutePath });
@@ -37,7 +39,46 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
       }
     }
     
-    // Wait for LSPs to process (ESLint needs a bit more time)
+    // Notify Dart LSP for Dart files and pubspec.yaml
+    if (ext === 'dart' || absolutePath.toLowerCase().endsWith('pubspec.yaml') || absolutePath.toLowerCase().endsWith('analysis_options.yaml')) {
+      try {
+        const content = await invoke<string>('read_file', { path: absolutePath });
+        const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
+        if (isDartLspRunning()) {
+          await notifyDocumentChanged(absolutePath, content);
+        }
+      } catch {
+        // Dart notification failed, continue anyway
+      }
+    }
+    
+    // Notify YAML LSP for YAML files
+    if (['yaml', 'yml'].includes(ext)) {
+      try {
+        const content = await invoke<string>('read_file', { path: absolutePath });
+        const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
+        if (isYamlLspRunning()) {
+          await notifyDocumentChanged(absolutePath, content);
+        }
+      } catch {
+        // YAML notification failed, continue anyway
+      }
+    }
+    
+    // Notify XML LSP for XML and plist files
+    if (['xml', 'plist', 'xsd', 'xsl', 'xslt', 'svg'].includes(ext)) {
+      try {
+        const content = await invoke<string>('read_file', { path: absolutePath });
+        const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
+        if (isXmlLspRunning()) {
+          await notifyDocumentChanged(absolutePath, content);
+        }
+      } catch {
+        // XML notification failed, continue anyway
+      }
+    }
+    
+    // Wait for LSPs to process (ESLint/Dart need a bit more time)
     await new Promise(resolve => setTimeout(resolve, 300));
     
     // Import diagnostics handler dynamically to avoid circular deps

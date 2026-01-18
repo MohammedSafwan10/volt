@@ -89,6 +89,7 @@ MUCH better than text search for code navigation and refactoring.
 
 **Supported Languages:**
 - TypeScript/JavaScript: .ts, .tsx, .js, .jsx (full support including rename)
+- Dart/Flutter: .dart (full support including rename, code actions, formatting)
 - Svelte: .svelte (definition, references, hover)
 - HTML: .html, .htm (definition, references, hover)
 - CSS/SCSS/LESS: .css, .scss, .sass, .less (definition, references, hover)
@@ -100,7 +101,7 @@ MUCH better than text search for code navigation and refactoring.
 | lsp_go_to_definition | "Where is X defined?" → Jump to source definition |
 | lsp_find_references | "What uses X?" → Find ALL usages (even renamed imports!) |
 | lsp_get_hover | "What type is X?" → Get type info + docs |
-| lsp_rename_symbol | "Rename X to Y" → Safe rename across ALL files (TS/JS only) |
+| lsp_rename_symbol | "Rename X to Y" → Safe rename across ALL files (TS/JS + Dart) |
 | lsp_get_code_actions | "Fix ESLint errors" → Get available quick fixes |
 | lsp_apply_code_action | Apply a specific ESLint fix by index |
 

@@ -1038,6 +1038,7 @@ pub async fn browser_screenshot() -> Result<String, String> {
 // ============================================================================
 
 /// Inject devtools capture scripts into the browser
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_inject_devtools<R: Runtime>(
     app: AppHandle<R>,
@@ -1053,6 +1054,7 @@ pub async fn browser_inject_devtools<R: Runtime>(
 }
 
 /// Called from injected script when console.log/warn/error/info is called
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_devtools_console_log<R: Runtime>(
     app: AppHandle<R>,
@@ -1097,6 +1099,7 @@ pub async fn browser_devtools_console_log<R: Runtime>(
 }
 
 /// Called from injected script when a JS error occurs
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_devtools_js_error<R: Runtime>(
     app: AppHandle<R>,
@@ -1122,6 +1125,7 @@ pub async fn browser_devtools_js_error<R: Runtime>(
 }
 
 /// Called from injected script when a network request starts
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_devtools_network_request<R: Runtime>(
     app: AppHandle<R>,
@@ -1166,6 +1170,7 @@ pub async fn browser_devtools_network_request<R: Runtime>(
 }
 
 /// Called from injected script when a network response is received
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_devtools_network_response<R: Runtime>(
     app: AppHandle<R>,
@@ -1207,6 +1212,7 @@ pub async fn browser_devtools_network_response<R: Runtime>(
 }
 
 /// Called from injected script with performance metrics
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_devtools_performance<R: Runtime>(
     app: AppHandle<R>,
@@ -1236,6 +1242,7 @@ pub async fn browser_devtools_performance<R: Runtime>(
 }
 
 /// Get console messages from state
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_get_console_messages(
     state: tauri::State<'_, BrowserState>,
@@ -1248,6 +1255,7 @@ pub async fn browser_get_console_messages(
 }
 
 /// Get network requests from state
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_get_network_requests(
     state: tauri::State<'_, BrowserState>,
@@ -1260,6 +1268,7 @@ pub async fn browser_get_network_requests(
 }
 
 /// Clear console messages
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_clear_console(
     state: tauri::State<'_, BrowserState>,
@@ -1269,6 +1278,7 @@ pub async fn browser_clear_console(
 }
 
 /// Clear network requests
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_clear_network(
     state: tauri::State<'_, BrowserState>,

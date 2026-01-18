@@ -1,7 +1,8 @@
-//! LSP Manager - Spawn and manage language server sidecar processes
+//! LSP Manager - Spawn and manage language server processes
 //!
 //! This module handles:
-//! - Spawning language server processes using Tauri Shell plugin
+//! - Spawning language server processes using Tauri Shell plugin (sidecars)
+//! - Spawning external language servers from PATH (e.g., Dart, Rust Analyzer)
 //! - Managing server lifecycle (start, stop, restart)
 //! - Routing JSON-RPC messages between frontend and servers
 //! - Proper LSP message framing (Content-Length based)
@@ -17,7 +18,13 @@ use tauri::path::BaseDirectory;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use thiserror::Error;
-use tokio::sync::mpsc::Receiver;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command as TokioCommand};
+use tokio::sync::mpsc::{self, Receiver, Sender};
+
+#[cfg(windows)]
+#[allow(unused_imports)]
+use std::os::windows::process::CommandExt;
 
 /// LSP-related errors
 #[derive(Error, Debug, Serialize)]
@@ -42,7 +49,7 @@ pub enum LspError {
     InvalidConfig { message: String },
 }
 
-/// Configuration for an LSP server
+/// Configuration for an LSP server (sidecar mode - bundled with app)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerConfig {
     /// Unique identifier for this server instance
@@ -54,6 +61,23 @@ pub struct LspServerConfig {
     /// Language server entrypoint script (relative to bundle resources in production)
     pub entrypoint: String,
     /// Arguments for the sidecar
+    pub args: Vec<String>,
+    /// Working directory (usually project root)
+    pub cwd: Option<String>,
+    /// Environment variables
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// Configuration for an external LSP server (from user's PATH/SDK)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalLspConfig {
+    /// Unique identifier for this server instance
+    pub server_id: String,
+    /// Server type (e.g., "dart", "rust-analyzer", "gopls")
+    pub server_type: String,
+    /// Command to execute (e.g., "dart", "rust-analyzer")
+    pub command: String,
+    /// Arguments for the command (e.g., ["language-server", "--client-id", "volt"])
     pub args: Vec<String>,
     /// Working directory (usually project root)
     pub cwd: Option<String>,
@@ -81,15 +105,27 @@ pub enum LspServerStatus {
     Error,
 }
 
+/// Type of child process handle
+enum ServerChild {
+    /// Tauri sidecar (bundled with app)
+    Sidecar(CommandChild),
+    /// External process (from user's PATH)
+    External {
+        stdin_tx: Sender<String>,
+        // Child handle stored for kill on drop
+        _child: Child,
+    },
+}
+
 /// Internal state for a running server
 struct RunningServer {
-    config: LspServerConfig,
-    child: Option<CommandChild>,
+    server_type: String,
+    child: Option<ServerChild>,
     status: Arc<Mutex<LspServerStatus>>,
     pid: u32,
 }
 
-/// LSP Manager - manages all language server sidecar processes
+/// LSP Manager - manages all language server processes (sidecars and external)
 pub struct LspManager<R: Runtime> {
     servers: Arc<Mutex<HashMap<String, RunningServer>>>,
     app_handle: AppHandle<R>,
@@ -170,8 +206,8 @@ impl<R: Runtime> LspManager<R> {
         servers.insert(
             server_id.clone(),
             RunningServer {
-                config,
-                child: Some(child),
+                server_type: config.server_type.clone(),
+                child: Some(ServerChild::Sidecar(child)),
                 status,
                 pid,
             },
@@ -183,6 +219,205 @@ impl<R: Runtime> LspManager<R> {
             pid: Some(pid),
             status: LspServerStatus::Running,
         })
+    }
+
+    /// Start an external language server (from user's PATH, e.g., Dart, Rust Analyzer)
+    pub fn start_external_server(&self, config: ExternalLspConfig) -> Result<LspServerInfo, LspError> {
+        let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire lock: {}", e),
+        })?;
+
+        // Check if server is already running
+        if servers.contains_key(&config.server_id) {
+            return Err(LspError::ServerAlreadyRunning {
+                server_id: config.server_id.clone(),
+            });
+        }
+
+        // Resolve command for Windows (.exe, .cmd, .bat)
+        let cmd_name = if cfg!(windows) {
+            match config.command.as_str() {
+                "dart" => "dart.bat".to_string(),
+                "flutter" => "flutter.bat".to_string(),
+                "rust-analyzer" => "rust-analyzer.exe".to_string(),
+                "gopls" => "gopls.exe".to_string(),
+                other => other.to_string(),
+            }
+        } else {
+            config.command.clone()
+        };
+
+        // Build the command
+        let mut cmd = TokioCommand::new(&cmd_name);
+        cmd.args(&config.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        // Set working directory
+        if let Some(ref cwd) = config.cwd {
+            cmd.current_dir(cwd);
+        }
+
+        // Set environment variables
+        if let Some(ref env) = config.env {
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
+
+        // Windows: hide console window
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        // Spawn the process
+        let mut child = cmd.spawn().map_err(|e| LspError::SpawnFailed {
+            message: format!("Failed to spawn external server '{}': {}", cmd_name, e),
+        })?;
+
+        let pid = child.id().unwrap_or(0);
+        let server_id = config.server_id.clone();
+        let server_type = config.server_type.clone();
+        let status = Arc::new(Mutex::new(LspServerStatus::Running));
+
+        // Take stdin/stdout/stderr handles
+        let stdin = child.stdin.take().ok_or_else(|| LspError::SpawnFailed {
+            message: "Failed to get stdin handle".to_string(),
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| LspError::SpawnFailed {
+            message: "Failed to get stdout handle".to_string(),
+        })?;
+        let stderr = child.stderr.take();
+
+        // Create channel for sending messages to stdin
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(100);
+
+        // Spawn stdin writer task
+        tauri::async_runtime::spawn(async move {
+            let mut stdin: ChildStdin = stdin;
+            while let Some(msg) = stdin_rx.recv().await {
+                // Write LSP message with Content-Length header
+                let content_length = msg.len();
+                let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, msg);
+                if stdin.write_all(full_message.as_bytes()).await.is_err() {
+                    break;
+                }
+                let _ = stdin.flush().await;
+            }
+        });
+
+        // Spawn stdout reader task
+        let app_handle = self.app_handle.clone();
+        let server_id_clone = server_id.clone();
+        let status_clone = Arc::clone(&status);
+        let servers_clone = Arc::clone(&self.servers);
+
+        tauri::async_runtime::spawn(async move {
+            Self::handle_external_stdout(stdout, app_handle.clone(), server_id_clone.clone(), status_clone, servers_clone).await;
+        });
+
+        // Spawn stderr logger task
+        if let Some(stderr) = stderr {
+            let app_handle = self.app_handle.clone();
+            let server_id_clone = server_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.is_empty() {
+                        let _ = app_handle.emit(&format!("lsp://{}//stderr", server_id_clone), line);
+                    }
+                }
+            });
+        }
+
+        // Store the running server
+        servers.insert(
+            server_id.clone(),
+            RunningServer {
+                server_type: config.server_type.clone(),
+                child: Some(ServerChild::External {
+                    stdin_tx,
+                    _child: child,
+                }),
+                status,
+                pid,
+            },
+        );
+
+        Ok(LspServerInfo {
+            server_id,
+            server_type,
+            pid: Some(pid),
+            status: LspServerStatus::Running,
+        })
+    }
+
+    /// Handle stdout from external LSP server (parse LSP framing)
+    async fn handle_external_stdout(
+        stdout: tokio::process::ChildStdout,
+        app_handle: AppHandle<R>,
+        server_id: String,
+        status: Arc<Mutex<LspServerStatus>>,
+        servers: Arc<Mutex<HashMap<String, RunningServer>>>,
+    ) {
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = Vec::new();
+
+        loop {
+            // Read headers until we find Content-Length
+            let mut headers = String::new();
+            let mut content_length: Option<usize> = None;
+
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        // EOF - server exited
+                        if let Ok(mut s) = status.lock() {
+                            *s = LspServerStatus::Stopped;
+                        }
+                        if let Ok(mut servers_guard) = servers.lock() {
+                            servers_guard.remove(&server_id);
+                        }
+                        let _ = app_handle.emit(&format!("lsp://{}//exit", server_id), 0);
+                        return;
+                    }
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            break; // End of headers
+                        }
+                        if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
+                            content_length = len_str.trim().parse().ok();
+                        }
+                        headers.push_str(&line);
+                    }
+                    Err(_) => {
+                        return;
+                    }
+                }
+            }
+
+            // Read the body
+            if let Some(length) = content_length {
+                buffer.resize(length, 0);
+                match reader.read_exact(&mut buffer).await {
+                    Ok(_) => {
+                        if let Ok(json_str) = String::from_utf8(buffer.clone()) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                let _ = app_handle.emit(&format!("lsp://{}//message", server_id), json);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
 
@@ -308,18 +543,27 @@ impl<R: Runtime> LspManager<R> {
             }
         }
 
-        // Get child handle
+        // Get child handle and send message
         let child = server.child.as_mut().ok_or_else(|| LspError::SendFailed {
             message: "Server stdin not available".to_string(),
         })?;
 
-        // Write LSP message with Content-Length header
-        let content_length = message.len();
-        let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
-
-        child.write(full_message.as_bytes()).map_err(|e| LspError::SendFailed {
-            message: format!("Failed to write to stdin: {}", e),
-        })?;
+        match child {
+            ServerChild::Sidecar(sidecar) => {
+                // Write LSP message with Content-Length header
+                let content_length = message.len();
+                let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
+                sidecar.write(full_message.as_bytes()).map_err(|e| LspError::SendFailed {
+                    message: format!("Failed to write to stdin: {}", e),
+                })?;
+            }
+            ServerChild::External { stdin_tx, .. } => {
+                // Send via channel (stdin writer task handles framing)
+                stdin_tx.try_send(message.to_string()).map_err(|e| LspError::SendFailed {
+                    message: format!("Failed to send to stdin channel: {}", e),
+                })?;
+            }
+        }
 
         Ok(())
     }
@@ -340,9 +584,17 @@ impl<R: Runtime> LspManager<R> {
             *status = LspServerStatus::Stopping;
         }
 
-        // Kill the process - take ownership of child
+        // Kill the process based on type
         if let Some(child) = server.child {
-            let _ = child.kill();
+            match child {
+                ServerChild::Sidecar(sidecar) => {
+                    let _ = sidecar.kill();
+                }
+                ServerChild::External { _child, .. } => {
+                    // Child will be killed on drop due to kill_on_drop(true)
+                    drop(_child);
+                }
+            }
         }
 
         // Emit stop event
@@ -379,7 +631,7 @@ impl<R: Runtime> LspManager<R> {
                 let status = server.status.lock().map(|s| s.clone()).unwrap_or(LspServerStatus::Error);
                 LspServerInfo {
                     server_id: id.clone(),
-                    server_type: server.config.server_type.clone(),
+                    server_type: server.server_type.clone(),
                     pid: Some(server.pid),
                     status,
                 }
@@ -403,7 +655,7 @@ impl<R: Runtime> LspManager<R> {
 
         Ok(LspServerInfo {
             server_id: server_id.to_string(),
-            server_type: server.config.server_type.clone(),
+            server_type: server.server_type.clone(),
             pid: Some(server.pid),
             status,
         })

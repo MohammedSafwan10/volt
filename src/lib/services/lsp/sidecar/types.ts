@@ -22,6 +22,22 @@ export interface LspServerConfig {
   env?: Record<string, string>;
 }
 
+/** Configuration for starting an external LSP server (from user's PATH) */
+export interface ExternalLspConfig {
+  /** Unique identifier for this server instance */
+  serverId: string;
+  /** Server type (e.g., "dart", "rust-analyzer", "gopls") */
+  serverType: LspServerType;
+  /** Command to execute (e.g., "dart", "rust-analyzer") */
+  command: string;
+  /** Arguments for the command (e.g., ["language-server", "--client-id", "volt"]) */
+  args: string[];
+  /** Working directory (usually project root) */
+  cwd?: string;
+  /** Environment variables */
+  env?: Record<string, string>;
+}
+
 /** Supported LSP server types */
 export type LspServerType = 
   | 'typescript'
@@ -30,7 +46,15 @@ export type LspServerType =
   | 'svelte'
   | 'html'
   | 'css'
-  | 'json';
+  | 'json'
+  | 'dart'
+  | 'yaml'
+  | 'xml';
+
+/** Whether a server type is external (from PATH) or bundled (sidecar) */
+export function isExternalServerType(serverType: LspServerType): boolean {
+  return serverType === 'dart' || serverType === 'yaml' || serverType === 'xml';
+}
 
 /** Information about a running LSP server */
 export interface LspServerInfo {

@@ -433,13 +433,13 @@ After starting, use "get_process_output" to check status.`,
 
   // ============================================
   // LSP CODE INTELLIGENCE (Semantic, not text-based!)
-  // Supports: TypeScript, JavaScript, Svelte, HTML, CSS, JSON
+  // Supports: TypeScript, JavaScript, Svelte, HTML, CSS, JSON, Dart
   // ============================================
   {
     name: 'lsp_go_to_definition',
     description: `Jump to where a symbol is defined. BETTER than text search - understands imports/aliases.
 
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .dart
 
 Use when: "Where is X defined?", "Go to definition of Y"
 
@@ -466,7 +466,7 @@ Returns: File path, line, and surrounding code context.`,
     name: 'lsp_find_references',
     description: `Find ALL usages of a symbol across the project. BETTER than text search - finds renamed imports, aliases, etc.
 
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .dart
 
 Use when: "What uses X?", "Find all references to Y", "Who calls this function?"
 
@@ -492,9 +492,9 @@ Returns: List of all files and lines that reference the symbol.`,
   },
   {
     name: 'lsp_get_hover',
-    description: `Get type information and documentation for a symbol. Shows inferred types, function signatures, JSDoc.
+    description: `Get type information and documentation for a symbol. Shows inferred types, function signatures, JSDoc/DartDoc.
 
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .json
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .json, .dart
 
 Use when: "What type is X?", "What are the parameters?", "Show signature"
 
@@ -521,7 +521,7 @@ Returns: Type signature, documentation, and JSDoc comments.`,
     name: 'lsp_rename_symbol',
     description: `Rename a symbol across ALL files atomically. MUCH safer than str_replace - won't break strings/comments.
 
-Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs (TypeScript/JavaScript only)
+Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs, .dart (TypeScript/JavaScript and Dart)
 
 Use when: "Rename X to Y", "Refactor name of Z"
 

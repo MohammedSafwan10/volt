@@ -13,6 +13,9 @@
  * - HTML (.html, .htm) - Definition, references, hover
  * - CSS/SCSS/LESS (.css, .scss, .sass, .less) - Definition, references, hover
  * - JSON (.json, .jsonc) - Hover only (schema info)
+ * - Dart (.dart) - Full support (definition, references, hover, rename, code actions)
+ * - YAML (.yaml, .yml, pubspec.yaml) - Hover, completions, formatting
+ * - XML (.xml, .plist, AndroidManifest.xml, .xsd) - Hover, completions, formatting
  * - Tailwind CSS (hover for class utilities in any file)
  * 
  * ADVANTAGE over text search:
@@ -82,6 +85,20 @@ import {
   notifyJsonDocumentOpened
 } from '$lib/services/lsp/json-sidecar';
 
+// Dart LSP
+import {
+  isDartFile,
+  isDartLspRunning,
+  goToDefinition as getDartDefinition,
+  findReferences as getDartReferences,
+  getHover as getDartHover,
+  renameSymbol as renameDartSymbol,
+  getCodeActions as getDartCodeActions,
+  formatDocument as formatDartDocument,
+  notifyDocumentOpened as notifyDartDocumentOpened,
+  checkDartSdkAvailable
+} from '$lib/services/lsp/dart-sidecar';
+
 // ESLint LSP (code actions for linting fixes)
 import {
   isEslintFile,
@@ -100,6 +117,26 @@ import {
   getTailwindHover,
   notifyTailwindDocumentOpened
 } from '$lib/services/lsp/tailwind-sidecar';
+
+// YAML LSP
+import {
+  isYamlFile,
+  isYamlLspRunning,
+  getHover as getYamlHover,
+  getCompletions as getYamlCompletions,
+  formatDocument as formatYamlDocument,
+  notifyDocumentOpened as notifyYamlDocumentOpened
+} from '$lib/services/lsp/yaml-sidecar';
+
+// XML LSP (LemMinX)
+import {
+  isXmlFile,
+  isXmlLspRunning,
+  getHover as getXmlHover,
+  getCompletions as getXmlCompletions,
+  formatDocument as formatXmlDocument,
+  notifyDocumentOpened as notifyXmlDocumentOpened
+} from '$lib/services/lsp/xml-sidecar';
 
 // Re-export Location type for other modules
 export type { Location };
@@ -131,7 +168,7 @@ function uriToPath(uri: string): string {
  * Ensure LSP is started for the given file type
  * Returns which LSP type is active
  */
-type LspType = 'typescript' | 'svelte' | 'html' | 'css' | 'json' | 'tailwind' | null;
+type LspType = 'typescript' | 'svelte' | 'html' | 'css' | 'json' | 'dart' | 'tailwind' | 'yaml' | 'xml' | null;
 
 async function ensureLspForFile(filepath: string): Promise<LspType> {
   // Priority: Svelte files use Svelte LSP
@@ -148,6 +185,18 @@ async function ensureLspForFile(filepath: string): Promise<LspType> {
       await ensureTsLspStarted();
     }
     return isTsLspConnected() ? 'typescript' : null;
+  }
+  
+  // Dart files use Dart LSP
+  if (isDartFile(filepath)) {
+    // Check if Dart SDK is available
+    const dartAvailable = await checkDartSdkAvailable();
+    if (!dartAvailable) {
+      console.warn('[LSP] Dart SDK not found. Install Flutter or Dart SDK.');
+      return null;
+    }
+    // Dart LSP starts on-demand when document is opened
+    return 'dart';
   }
   
   // HTML files use HTML LSP
@@ -181,6 +230,16 @@ async function ensureLspForFile(filepath: string): Promise<LspType> {
     }
   }
   
+  // YAML files use YAML LSP
+  if (isYamlFile(filepath)) {
+    return isYamlLspRunning() ? 'yaml' : null;
+  }
+  
+  // XML/plist files use XML LSP (LemMinX)
+  if (isXmlFile(filepath)) {
+    return isXmlLspRunning() ? 'xml' : null;
+  }
+  
   return null;
 }
 
@@ -201,8 +260,14 @@ async function ensureDocumentOpen(filepath: string, lspType: LspType): Promise<s
       await notifyCssDocumentOpened(filepath, content);
     } else if (lspType === 'json') {
       await notifyJsonDocumentOpened(filepath, content);
+    } else if (lspType === 'dart') {
+      await notifyDartDocumentOpened(filepath, content);
     } else if (lspType === 'tailwind') {
       await notifyTailwindDocumentOpened(filepath, content);
+    } else if (lspType === 'yaml') {
+      await notifyYamlDocumentOpened(filepath, content);
+    } else if (lspType === 'xml') {
+      await notifyXmlDocumentOpened(filepath, content);
     }
     
     return content;
@@ -223,6 +288,9 @@ async function getDefinition(filepath: string, line: number, character: number, 
     return getHtmlDefinition(filepath, line, character);
   } else if (lspType === 'css') {
     return getCssDefinition(filepath, line, character);
+  } else if (lspType === 'dart') {
+    const result = await getDartDefinition(filepath, line, character);
+    return result as Location[] | null;
   }
   // JSON doesn't support definition
   return null;
@@ -240,6 +308,9 @@ async function getReferences(filepath: string, line: number, character: number, 
     return getHtmlReferences(filepath, line, character, includeDeclaration);
   } else if (lspType === 'css') {
     return getCssReferences(filepath, line, character, includeDeclaration);
+  } else if (lspType === 'dart') {
+    const result = await getDartReferences(filepath, line, character);
+    return result as Location[] | null;
   }
   // JSON doesn't support references
   return null;
@@ -259,8 +330,17 @@ async function getHover(filepath: string, line: number, character: number, lspTy
     return getCssHover(filepath, line, character) as Promise<HoverResult | null>;
   } else if (lspType === 'json') {
     return getJsonHover(filepath, line, character) as Promise<HoverResult | null>;
+  } else if (lspType === 'dart') {
+    const result = await getDartHover(filepath, line, character);
+    return result as HoverResult | null;
   } else if (lspType === 'tailwind') {
     return getTailwindHover(filepath, line, character);
+  } else if (lspType === 'yaml') {
+    const result = await getYamlHover(filepath, line, character);
+    return result as HoverResult | null;
+  } else if (lspType === 'xml') {
+    const result = await getXmlHover(filepath, line, character);
+    return result as HoverResult | null;
   }
   return null;
 }
@@ -655,19 +735,90 @@ export async function handleLspRenameSymbol(args: Record<string, unknown>): Prom
     return { success: false, error: 'Either (line + column) or old_name is required' };
   }
   
-  // Ensure LSP is running (rename only supported for TypeScript/JavaScript)
+  // Ensure LSP is running (rename only supported for TypeScript/JavaScript and Dart)
   const lspType = await ensureLspForFile(absolutePath);
   if (!lspType) {
-    return { success: false, error: `LSP not available for ${path}. Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs` };
+    return { success: false, error: `LSP not available for ${path}. Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs, .dart` };
   }
   
-  if (lspType !== 'typescript') {
-    return { success: false, error: `Rename is only supported for TypeScript/JavaScript files. Current file type uses ${lspType} LSP.` };
+  if (lspType !== 'typescript' && lspType !== 'dart') {
+    return { success: false, error: `Rename is only supported for TypeScript/JavaScript and Dart files. Current file type uses ${lspType} LSP.` };
   }
   
   // Ensure document is open in LSP
   await ensureDocumentOpen(absolutePath, lspType);
   
+  // For Dart, use Dart rename
+  if (lspType === 'dart') {
+    const workspaceEdit = await renameDartSymbol(absolutePath, line - 1, column - 1, newName);
+    
+    if (!workspaceEdit) {
+      return { success: false, error: `Rename failed for symbol at ${path}:${line}:${column} → "${newName}"` };
+    }
+    
+    // Apply the workspace edit (same format as TypeScript)
+    const appliedFiles: string[] = [];
+    const errors: string[] = [];
+    const changes = (workspaceEdit as WorkspaceEdit).changes || {};
+    
+    for (const [uri, edits] of Object.entries(changes)) {
+      const filePath = uriToPath(uri);
+      try {
+        const content = await invoke<string>('read_file', { path: filePath });
+        const lines = content.split('\n');
+        
+        // Sort edits in reverse order (bottom to top) to preserve line numbers
+        const sortedEdits = [...edits].sort((a, b) => {
+          if (a.range.start.line !== b.range.start.line) {
+            return b.range.start.line - a.range.start.line;
+          }
+          return b.range.start.character - a.range.start.character;
+        });
+        
+        // Apply each edit
+        for (const edit of sortedEdits) {
+          const startLine = edit.range.start.line;
+          const startChar = edit.range.start.character;
+          const endLine = edit.range.end.line;
+          const endChar = edit.range.end.character;
+          
+          if (startLine === endLine) {
+            const lineContent = lines[startLine] || '';
+            lines[startLine] = lineContent.slice(0, startChar) + edit.newText + lineContent.slice(endChar);
+          } else {
+            const startLineContent = lines[startLine] || '';
+            const endLineContent = lines[endLine] || '';
+            const newContent = startLineContent.slice(0, startChar) + edit.newText + endLineContent.slice(endChar);
+            lines.splice(startLine, endLine - startLine + 1, newContent);
+          }
+        }
+        
+        const newContent = lines.join('\n');
+        await invoke('write_file', { path: filePath, contents: newContent });
+        appliedFiles.push(getRelativePath(filePath));
+      } catch (e) {
+        errors.push(`Failed to update ${filePath}: ${extractErrorMessage(e)}`);
+      }
+    }
+    
+    if (errors.length > 0) {
+      return {
+        success: false,
+        error: `Partial rename completed with errors:\n${errors.join('\n')}`
+      };
+    }
+    
+    return {
+      success: true,
+      data: {
+        renamedTo: newName,
+        filesModified: appliedFiles.length,
+        files: appliedFiles
+      }
+    };
+  }
+  
+  // TypeScript rename flow
   // Check if rename is possible at this location
   const prepareResult = await prepareRename(absolutePath, line - 1, column - 1);
   if (!prepareResult) {
