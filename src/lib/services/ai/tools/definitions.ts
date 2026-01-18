@@ -299,6 +299,25 @@ Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with ne
     requiresApproval: true,
     allowedModes: ['agent']
   },
+  {
+    name: 'format_file',
+    description: `Format a file using Prettier. Respects workspace .prettierrc config.
+
+Supports: .ts, .tsx, .js, .jsx, .json, .css, .scss, .less, .html, .md, .svelte, .vue, .yaml
+
+Use after writing/editing files to ensure consistent code style.
+Requires Prettier installed in project (npm install -D prettier).`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to format' }
+      },
+      required: ['path']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
 
   // ============================================
   // TERMINAL TOOLS
@@ -409,6 +428,174 @@ After starting, use "get_process_output" to check status.`,
     },
     category: 'terminal',
     requiresApproval: false,
+    allowedModes: ['agent']
+  },
+
+  // ============================================
+  // LSP CODE INTELLIGENCE (Semantic, not text-based!)
+  // Supports: TypeScript, JavaScript, Svelte, HTML, CSS, JSON
+  // ============================================
+  {
+    name: 'lsp_go_to_definition',
+    description: `Jump to where a symbol is defined. BETTER than text search - understands imports/aliases.
+
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less
+
+Use when: "Where is X defined?", "Go to definition of Y"
+
+Can use EITHER:
+- symbol: Just pass the symbol name, tool finds it automatically
+- line + column: Exact position (1-based)
+
+Returns: File path, line, and surrounding code context.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File containing the symbol reference' },
+        symbol: { type: 'string', description: 'Symbol name to find (e.g. "handleSubmit")' },
+        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
+        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' }
+      },
+      required: ['path']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'lsp_find_references',
+    description: `Find ALL usages of a symbol across the project. BETTER than text search - finds renamed imports, aliases, etc.
+
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less
+
+Use when: "What uses X?", "Find all references to Y", "Who calls this function?"
+
+Can use EITHER:
+- symbol: Just pass the symbol name, tool finds it automatically
+- line + column: Exact position (1-based)
+
+Returns: List of all files and lines that reference the symbol.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File containing the symbol' },
+        symbol: { type: 'string', description: 'Symbol name to find (e.g. "UserService")' },
+        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
+        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' },
+        include_declaration: { type: 'boolean', description: 'Include the definition itself (default: true)' }
+      },
+      required: ['path']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'lsp_get_hover',
+    description: `Get type information and documentation for a symbol. Shows inferred types, function signatures, JSDoc.
+
+Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .json
+
+Use when: "What type is X?", "What are the parameters?", "Show signature"
+
+Can use EITHER:
+- symbol: Just pass the symbol name, tool finds it automatically
+- line + column: Exact position (1-based)
+
+Returns: Type signature, documentation, and JSDoc comments.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path' },
+        symbol: { type: 'string', description: 'Symbol name to find (e.g. "handleSubmit")' },
+        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
+        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' }
+      },
+      required: ['path']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'lsp_rename_symbol',
+    description: `Rename a symbol across ALL files atomically. MUCH safer than str_replace - won't break strings/comments.
+
+Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs (TypeScript/JavaScript only)
+
+Use when: "Rename X to Y", "Refactor name of Z"
+
+Can use EITHER:
+- old_name: Just pass the current name, tool finds it automatically  
+- line + column: Exact position (1-based)
+
+ALWAYS use this instead of str_replace for renaming! It:
+- Updates all import statements
+- Updates all usage sites
+- Preserves strings and comments
+- Handles re-exports correctly`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File containing the symbol to rename' },
+        old_name: { type: 'string', description: 'Current name of the symbol (e.g. "userId")' },
+        new_name: { type: 'string', description: 'New name for the symbol (e.g. "memberId")' },
+        line: { type: 'number', description: 'Line number (1-based) - optional if old_name provided' },
+        column: { type: 'number', description: 'Column on the symbol (1-based) - optional if old_name provided' }
+      },
+      required: ['path', 'new_name']
+    },
+    category: 'diagnostics',
+    requiresApproval: true,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'lsp_get_code_actions',
+    description: `Get ESLint quick fixes and code actions for a file or line range. Use to find and apply linting fixes.
+
+Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs (ESLint-lintable files)
+
+Use when: "Fix ESLint errors", "What fixes are available?", "Auto-fix linting issues"
+
+Options:
+- line: Get code actions for a specific line
+- end_line: Get code actions for a range (line to end_line)
+- fix_all: true to apply ALL ESLint fixes at once
+
+Returns: List of available fixes with indices. Use lsp_apply_code_action to apply a specific fix.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to get code actions for' },
+        line: { type: 'number', description: 'Line number (1-based) - optional, whole file if omitted' },
+        end_line: { type: 'number', description: 'End line for range (1-based) - optional' },
+        fix_all: { type: 'boolean', description: 'Apply all ESLint fixes at once (default: false)' }
+      },
+      required: ['path']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'lsp_apply_code_action',
+    description: `Apply a specific ESLint code action by index. First use lsp_get_code_actions to see available fixes.
+
+Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs
+
+Use when: User wants to apply a specific ESLint fix from the list.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path' },
+        action_index: { type: 'number', description: 'Index of the action to apply (1-based, from lsp_get_code_actions)' },
+        line: { type: 'number', description: 'Line number (1-based) - should match the lsp_get_code_actions call' },
+        end_line: { type: 'number', description: 'End line (1-based) - should match the lsp_get_code_actions call' }
+      },
+      required: ['path', 'action_index']
+    },
+    category: 'diagnostics',
+    requiresApproval: true,
     allowedModes: ['agent']
   },
 

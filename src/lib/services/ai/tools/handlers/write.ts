@@ -3,6 +3,7 @@
  * 
  * Kiro-style improvements:
  * - Auto-diagnostics after edits (shows error count to user, sends details to AI)
+ * - Includes ESLint issues alongside TypeScript/Svelte errors
  * - No pre-validation (trusts AI, lets LSP catch errors)
  * - Better fuzzy matching for str_replace
  * - Line-based edits with replace_lines
@@ -16,6 +17,7 @@ import { resolvePath, extractErrorMessage, isSameOrSuffixPath, type ToolResult }
 /**
  * Get diagnostics for a file after edit
  * Returns error count for UI and detailed errors for AI
+ * Includes TypeScript, ESLint, Svelte, and other LSP diagnostics
  */
 async function getPostEditDiagnostics(absolutePath: string, relativePath: string): Promise<{
   errorCount: number;
@@ -23,8 +25,20 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
   errors: string[]; // Detailed errors for AI (not shown to user)
 }> {
   try {
-    // Small delay to let LSP process the file change
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // Notify ESLint of the file change (if it's a JS/TS file)
+    const ext = absolutePath.split('.').pop()?.toLowerCase() || '';
+    if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
+      try {
+        const content = await invoke<string>('read_file', { path: absolutePath });
+        const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
+        await notifyEslintDocumentChanged(absolutePath, content);
+      } catch {
+        // ESLint notification failed, continue anyway
+      }
+    }
+    
+    // Wait for LSPs to process (ESLint needs a bit more time)
+    await new Promise(resolve => setTimeout(resolve, 300));
     
     // Import diagnostics handler dynamically to avoid circular deps
     const { handleGetDiagnostics } = await import('./diagnostics');
@@ -780,4 +794,78 @@ function calculateChangedLines(before: string, after: string): { firstChangedLin
   lastChangedLine = Math.min(afterLines.length, Math.max(lastChangedLine, firstChangedLine));
   
   return { firstChangedLine, lastChangedLine };
+}
+// ============================================================================
+// FORMAT FILE - Prettier formatting
+// ============================================================================
+
+/**
+ * Format a file using Prettier
+ */
+export async function handleFormatFile(args: Record<string, unknown>): Promise<ToolResult> {
+  const relativePath = String(args.path);
+  const absolutePath = resolvePath(relativePath);
+  
+  // Import Prettier service
+  const { formatWithPrettier, isPrettierFile } = await import('$lib/services/prettier');
+  
+  // Check if file type is supported
+  if (!isPrettierFile(absolutePath)) {
+    const ext = absolutePath.split('.').pop() || '';
+    return { 
+      success: false, 
+      error: `Unsupported file type: .${ext}. Prettier supports: ts, tsx, js, jsx, json, css, scss, less, html, md, svelte, vue, yaml` 
+    };
+  }
+  
+  // Read current content
+  let content: string;
+  try {
+    content = await invoke<string>('read_file', { path: absolutePath });
+  } catch (err) {
+    return { success: false, error: `File not found: ${relativePath}` };
+  }
+  
+  // Format with Prettier
+  const formatted = await formatWithPrettier(content, absolutePath);
+  
+  if (formatted === null) {
+    return { 
+      success: false, 
+      error: `Formatting failed. Make sure Prettier is installed: npm install -D prettier` 
+    };
+  }
+  
+  // Check if content changed
+  if (formatted === content) {
+    return { success: true, output: `✓ ${relativePath} already formatted` };
+  }
+  
+  // Write formatted content
+  try {
+    await invoke('write_file', { path: absolutePath, content: formatted });
+    
+    // Update editor if file is open
+    const openFiles = editorStore.openFiles.filter(f => 
+      f.path === absolutePath || 
+      f.path.endsWith('/' + relativePath) || 
+      f.path.endsWith('\\' + relativePath)
+    );
+    
+    if (openFiles.length > 0) {
+      editorStore.updateContent(openFiles[0].path, formatted);
+    }
+    
+    const linesBefore = content.split('\n').length;
+    const linesAfter = formatted.split('\n').length;
+    const lineDiff = linesAfter - linesBefore;
+    const lineDiffStr = lineDiff === 0 ? '' : lineDiff > 0 ? ` (+${lineDiff} lines)` : ` (${lineDiff} lines)`;
+    
+    return { 
+      success: true, 
+      output: `✓ Formatted ${relativePath}${lineDiffStr}` 
+    };
+  } catch (err) {
+    return { success: false, error: `Failed to write formatted file: ${extractErrorMessage(err)}` };
+  }
 }

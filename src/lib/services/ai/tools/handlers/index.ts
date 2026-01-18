@@ -35,7 +35,8 @@ export {
   handleDeleteFile, 
   handleRenamePath,
   handleWritePlanFile,
-  handleReplaceLines
+  handleReplaceLines,
+  handleFormatFile
 } from './write';
 
 // Terminal tools
@@ -52,6 +53,17 @@ export {
 export { 
   handleGetDiagnostics 
 } from './diagnostics';
+
+// LSP Code Intelligence tools
+export {
+  handleLspGoToDefinition,
+  handleLspFindReferences,
+  handleLspGetHover,
+  handleLspRenameSymbol,
+  handleLspPrepareRename,
+  handleLspGetCodeActions,
+  handleLspApplyCodeAction
+} from './lsp';
 
 // Browser tools
 export {
@@ -109,6 +121,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'delete_file': (args) => import('./write').then(m => m.handleDeleteFile(args)),
   'delete_path': (args) => import('./write').then(m => m.handleDeleteFile(args)), // alias
   'rename_path': (args) => import('./write').then(m => m.handleRenamePath(args)),
+  'format_file': (args) => import('./write').then(m => m.handleFormatFile(args)),
   
   // Plan mode
   'write_plan_file': (args) => import('./write').then(m => m.handleWritePlanFile(args)),
@@ -123,6 +136,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
   
   // Diagnostics
   'get_diagnostics': (args) => import('./diagnostics').then(m => m.handleGetDiagnostics(args)),
+  
+  // LSP Code Intelligence
+  'lsp_go_to_definition': (args) => import('./lsp').then(m => m.handleLspGoToDefinition(args)),
+  'lsp_find_references': (args) => import('./lsp').then(m => m.handleLspFindReferences(args)),
+  'lsp_get_hover': (args) => import('./lsp').then(m => m.handleLspGetHover(args)),
+  'lsp_rename_symbol': (args) => import('./lsp').then(m => m.handleLspRenameSymbol(args)),
+  'lsp_get_code_actions': (args) => import('./lsp').then(m => m.handleLspGetCodeActions(args)),
+  'lsp_apply_code_action': (args) => import('./lsp').then(m => m.handleLspApplyCodeAction(args)),
   
   // Browser DevTools
   'browser_get_console_logs': (args) => import('./browser').then(m => m.browser_get_console_logs(args as any).then(r => ({ success: true, data: r }))),

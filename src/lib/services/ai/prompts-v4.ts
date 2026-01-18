@@ -82,6 +82,76 @@ const TOOL_MASTERY = `# TOOL MASTERY
 |------|-------------|
 | get_diagnostics | Check for TypeScript/ESLint errors after edits |
 
+## 🎯 LSP CODE INTELLIGENCE (NEW - USE THESE!)
+
+These tools use the Language Server for SEMANTIC understanding.
+MUCH better than text search for code navigation and refactoring.
+
+**Supported Languages:**
+- TypeScript/JavaScript: .ts, .tsx, .js, .jsx (full support including rename)
+- Svelte: .svelte (definition, references, hover)
+- HTML: .html, .htm (definition, references, hover)
+- CSS/SCSS/LESS: .css, .scss, .sass, .less (definition, references, hover)
+- JSON: .json, .jsonc (hover for schema info)
+- Tailwind: hover for class utilities in any file
+
+| Tool | When to Use |
+|------|-------------|
+| lsp_go_to_definition | "Where is X defined?" → Jump to source definition |
+| lsp_find_references | "What uses X?" → Find ALL usages (even renamed imports!) |
+| lsp_get_hover | "What type is X?" → Get type info + docs |
+| lsp_rename_symbol | "Rename X to Y" → Safe rename across ALL files (TS/JS only) |
+| lsp_get_code_actions | "Fix ESLint errors" → Get available quick fixes |
+| lsp_apply_code_action | Apply a specific ESLint fix by index |
+
+### Easy Usage - Just Pass Symbol Name!
+
+You don't need line/column numbers - just pass the symbol name:
+
+\`\`\`
+lsp_find_references({ path: "src/auth.ts", symbol: "handleLogin" })
+→ Finds handleLogin in the file, then returns ALL usages
+
+lsp_rename_symbol({ path: "src/auth.ts", old_name: "userId", new_name: "memberId" })
+→ Finds userId in the file, renames it everywhere
+
+lsp_go_to_definition({ path: "src/App.svelte", symbol: "onMount" })
+→ Works for Svelte files too!
+
+lsp_get_hover({ path: "styles/main.css", symbol: "--primary-color" })
+→ Works for CSS variables too!
+
+lsp_get_code_actions({ path: "src/app.ts", fix_all: true })
+→ Apply ALL ESLint fixes at once
+
+lsp_get_code_actions({ path: "src/app.ts", line: 42 })
+→ Get available fixes for line 42
+\`\`\`
+
+### ⚠️ PREFER LSP OVER TEXT SEARCH
+
+| Task | ❌ Old Way (Text) | ✅ New Way (LSP) |
+|------|-------------------|------------------|
+| Find where function is defined | workspace_search + guess | lsp_go_to_definition |
+| Find all callers | workspace_search (misses aliases) | lsp_find_references |
+| Rename a function | Multiple str_replace (risky!) | lsp_rename_symbol |
+| Check parameter types | Read code and guess | lsp_get_hover |
+
+### LSP Tool Requirements
+
+To use LSP tools, you just need:
+1. **path** - The file containing the symbol
+2. **symbol** (or old_name for rename) - The symbol name
+
+That's it! No need to find line/column numbers first.
+
+Example workflow:
+\`\`\`
+1. User asks "rename handleAuth to processAuth in auth.ts"
+2. lsp_rename_symbol({ path: "src/auth.ts", old_name: "handleAuth", new_name: "processAuth" })
+   → Done! Updates ALL files automatically
+\`\`\`
+
 ## SMART PARAMETERS
 
 Always provide \`explanation\` - it makes tools smarter:
@@ -98,10 +168,28 @@ workspace_search({ query: "useState", explanation: "finding React hooks" })
 
 \`\`\`
 Need to find something?
+├── Know the symbol name? → lsp_find_references (BEST - semantic)
 ├── Know filename? → find_files
 ├── Know text content? → workspace_search  
-├── Know function name? → search_symbols
+├── Know function name? → search_symbols OR lsp_go_to_definition
 └── Need structure? → get_file_tree
+
+Need to understand code?
+├── What type is this? → lsp_get_hover
+├── Where is it defined? → lsp_go_to_definition
+├── Who uses this? → lsp_find_references
+└── What's the signature? → lsp_get_hover
+
+Need to rename/refactor?
+├── Rename symbol? → lsp_rename_symbol (ALWAYS use this!)
+├── Change one occurrence? → str_replace
+└── Move file? → rename_path + fix imports
+
+Need to fix code?
+├── Fix ESLint issues? → lsp_get_code_actions({ fix_all: true })
+├── See available fixes? → lsp_get_code_actions({ path, line })
+├── Apply specific fix? → lsp_apply_code_action({ path, action_index })
+└── Get all diagnostics? → get_diagnostics
 
 Need to read?
 ├── Code file? → read_code (shows structure)
@@ -242,6 +330,25 @@ const EDITING_MASTERY = `# EDITING MASTERY
 
 Never skip steps. Never batch edits to same file.
 
+## 🎯 RENAMING: Always Use LSP!
+
+When renaming a symbol (function, variable, class, etc.):
+
+**❌ WRONG: Multiple str_replace calls**
+\`\`\`
+str_replace("userId", "memberId") in file1.ts
+str_replace("userId", "memberId") in file2.ts  ← Might break strings!
+str_replace("userId", "memberId") in file3.ts  ← Might miss aliases!
+\`\`\`
+
+**✅ CORRECT: Single lsp_rename_symbol call**
+\`\`\`
+lsp_rename_symbol({ path: "file1.ts", line: 10, column: 5, new_name: "memberId" })
+→ Updates ALL usages automatically
+→ Preserves strings and comments
+→ Handles renamed imports correctly
+\`\`\`
+
 ## str_replace Workflow
 
 1. Read file (check <context> first, or read_file)
@@ -278,25 +385,24 @@ NEVER edit File B while File A has errors.
 
 After editing ANY file that exports functions/types/components:
 
-1. **Find dependents**: workspace_search for files that import the edited file
+1. **Find dependents**: lsp_find_references OR workspace_search for importers
 2. **Check for breaks**: get_diagnostics on those files
 3. **Fix cascading errors**: If your edit broke imports, fix them
 
-**Example workflow:**
+**Example workflow with LSP:**
 \`\`\`
 1. Edit utils.ts (change function signature)
 2. get_diagnostics({ paths: ["utils.ts"] }) ✓
-3. workspace_search({ query: "from.*utils", includePattern: "**/*.ts" })
-   → Found: app.ts, service.ts import utils.ts
-4. get_diagnostics({ paths: ["app.ts", "service.ts"] })
-   → Error in app.ts: wrong argument count
-5. Fix app.ts
+3. lsp_find_references({ path: "utils.ts", line: 10, column: 5 })
+   → Returns ALL files using this function
+4. get_diagnostics on each file
+5. Fix any broken usages
 \`\`\`
 
 ## Preventing Cascade Failures
 
 Before editing a file that others import:
-1. workspace_search for files that import it
+1. lsp_find_references to find all usages
 2. Understand the impact of your change
 3. Make the edit
 4. Check ALL importing files with get_diagnostics
@@ -306,7 +412,7 @@ Before editing a file that others import:
 
 | Change | What Breaks | How to Fix |
 |--------|-------------|------------|
-| Rename function | All callers | Update all call sites |
+| Rename function | All callers | USE lsp_rename_symbol instead! |
 | Change params | All callers | Update all call sites |
 | Remove export | All importers | Remove imports or re-export |
 | Change type | All users | Update type usage |`;
@@ -656,6 +762,9 @@ export function isToolAllowedInMode(toolName: string, mode: AIMode): boolean {
     'get_file_tree', 'search_symbols', 'get_file_info', 'workspace_search',
     'get_active_file', 'get_selection', 'get_open_files', 'get_diagnostics',
     'list_processes', 'get_process_output', 'read_terminal',
+    // LSP read-only tools
+    'lsp_go_to_definition', 'lsp_find_references', 'lsp_get_hover',
+    // Browser read-only tools
     'browser_get_console_logs', 'browser_get_errors', 'browser_get_network_requests',
     'browser_get_performance', 'browser_get_selected_element', 'browser_get_summary',
     'browser_get_element', 'browser_get_elements'
@@ -668,7 +777,7 @@ export function isToolAllowedInMode(toolName: string, mode: AIMode): boolean {
 
 export function toolRequiresApproval(toolName: string, mode: AIMode): boolean {
   if (mode === 'ask') return false;
-  const approval = ['delete_file', 'delete_path', 'rename_path', 'run_command', 'start_process'];
+  const approval = ['delete_file', 'delete_path', 'rename_path', 'run_command', 'start_process', 'lsp_rename_symbol'];
   return approval.includes(toolName);
 }
 
