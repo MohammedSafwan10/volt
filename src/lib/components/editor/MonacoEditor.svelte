@@ -2,38 +2,41 @@
   /**
    * MonacoEditor - Lazy-loaded Monaco Editor wrapper
    * Loads Monaco only when first file opens
-   * 
+   *
    * Integrates with TypeScript LSP sidecar for full-project intelligence
    */
-  import { onMount } from 'svelte';
-  import type * as Monaco from 'monaco-editor';
-  import { loadMonaco, detectLanguage } from '$lib/services/monaco-loader';
-  import { getOrCreateModel, setActiveEditor } from '$lib/services/monaco-models';
-  import { notifyFileOpened } from '$lib/services/lsp/client';
+  import { onMount } from "svelte";
+  import type * as Monaco from "monaco-editor";
+  import { loadMonaco, detectLanguage } from "$lib/services/monaco-loader";
+  import {
+    getOrCreateModel,
+    setActiveEditor,
+  } from "$lib/services/monaco-models";
+  import { notifyFileOpened } from "$lib/services/lsp/client";
   import {
     isTsJsFile,
     notifyDocumentOpened,
-    notifyDocumentChanged
-  } from '$lib/services/lsp/typescript-sidecar';
+    notifyDocumentChanged,
+  } from "$lib/services/lsp/typescript-sidecar";
   import {
     isTailwindFile,
     notifyTailwindDocumentOpened,
-    notifyTailwindDocumentChanged
-  } from '$lib/services/lsp/tailwind-sidecar';
+    notifyTailwindDocumentChanged,
+  } from "$lib/services/lsp/tailwind-sidecar";
   import {
     isEslintFile,
     notifyEslintDocumentOpened,
-    notifyEslintDocumentChanged
-  } from '$lib/services/lsp/eslint-sidecar';
+    notifyEslintDocumentChanged,
+  } from "$lib/services/lsp/eslint-sidecar";
   import {
     isSvelteFile,
     notifySvelteDocumentOpened,
-    notifySvelteDocumentChanged
-  } from '$lib/services/lsp/svelte-sidecar';
-  import { themeStore, getMonacoThemeName } from '$lib/stores/theme.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
-  import EditorPlaceholder from './EditorPlaceholder.svelte';
+    notifySvelteDocumentChanged,
+  } from "$lib/services/lsp/svelte-sidecar";
+  import { themeStore, getMonacoThemeName } from "$lib/stores/theme.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import EditorPlaceholder from "./EditorPlaceholder.svelte";
 
   interface Props {
     /** File path for language detection */
@@ -51,12 +54,12 @@
   }
 
   let {
-    filepath = '',
-    value = '',
+    filepath = "",
+    value = "",
     language,
     readonly = false,
     onchange,
-    onready
+    onready,
   }: Props = $props();
 
   // State
@@ -72,19 +75,24 @@
 
   // Derived language from filepath or explicit prop
   const detectedLanguage = $derived(language || detectLanguage(filepath));
-  const filename = $derived(filepath.split(/[/\\]/).pop() || '');
+  const filename = $derived(filepath.split(/[/\\]/).pop() || "");
 
-  type NavigateToPositionDetail = { file: string; line: number; column: number };
+  type NavigateToPositionDetail = {
+    file: string;
+    line: number;
+    column: number;
+  };
 
   let pendingNavigation = $state<NavigateToPositionDetail | null>(null);
 
   function normalizePath(path: string): string {
-    return path.replace(/\\/g, '/');
+    return path.replace(/\\/g, "/");
   }
 
   function applyPendingNavigation(): void {
     if (!editor || !monaco || !filepath || !pendingNavigation) return;
-    if (normalizePath(pendingNavigation.file) !== normalizePath(filepath)) return;
+    if (normalizePath(pendingNavigation.file) !== normalizePath(filepath))
+      return;
 
     const model = editor.getModel();
     if (!model) return;
@@ -102,8 +110,13 @@
   }
 
   // Handle navigation events from Problems panel (and other UI like Search)
-  function handleNavigateToPosition(event: CustomEvent<NavigateToPositionDetail>): void {
-    pendingNavigation = { ...event.detail, file: normalizePath(event.detail.file) };
+  function handleNavigateToPosition(
+    event: CustomEvent<NavigateToPositionDetail>,
+  ): void {
+    pendingNavigation = {
+      ...event.detail,
+      file: normalizePath(event.detail.file),
+    };
     applyPendingNavigation();
   }
 
@@ -117,37 +130,38 @@
       try {
         // Load Monaco lazily
         monaco = await loadMonaco();
-        
+
         if (disposed || !containerRef) return;
 
         // Create editor instance (model is set separately so we can swap models without recreating the editor)
         editor = monaco.editor.create(containerRef, {
-          value: '',
-          language: 'plaintext',
+          value: "",
+          language: "plaintext",
           theme: getMonacoThemeName(),
           readOnly: readonly,
           automaticLayout: true,
           fontSize: settingsStore.editorFontSize,
-          fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace",
+          fontFamily:
+            "'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace",
           fontLigatures: true,
-          lineNumbers: settingsStore.editorLineNumbersEnabled ? 'on' : 'off',
+          lineNumbers: settingsStore.editorLineNumbersEnabled ? "on" : "off",
           minimap: { enabled: settingsStore.editorMinimapEnabled },
           scrollBeyondLastLine: false,
-          renderWhitespace: 'selection',
+          renderWhitespace: "selection",
           smoothScrolling: true,
-          cursorBlinking: 'smooth',
-          cursorSmoothCaretAnimation: 'on',
+          cursorBlinking: "smooth",
+          cursorSmoothCaretAnimation: "on",
           bracketPairColorization: { enabled: true },
           padding: { top: 8, bottom: 8 },
           scrollbar: {
             verticalScrollbarSize: 10,
-            horizontalScrollbarSize: 10
+            horizontalScrollbarSize: 10,
           },
           // Enable LSP features
           quickSuggestions: true,
           suggestOnTriggerCharacters: true,
           parameterHints: { enabled: true },
-          wordBasedSuggestions: 'currentDocument'
+          wordBasedSuggestions: "currentDocument",
         });
 
         // Set active editor for go-to-line functionality
@@ -165,7 +179,11 @@
             if (selection && model && !selection.isEmpty()) {
               selected = model.getValueInRange(selection).length;
             }
-            editorStore.setCursorPosition(position.lineNumber, position.column, selected);
+            editorStore.setCursorPosition(
+              position.lineNumber,
+              position.column,
+              selected,
+            );
           }
 
           // Update indentation info from model options
@@ -177,7 +195,8 @@
 
         // Listen for cursor position changes
         cursorDisposable = editor.onDidChangeCursorPosition(updateCursorInfo);
-        selectionDisposable = editor.onDidChangeCursorSelection(updateCursorInfo);
+        selectionDisposable =
+          editor.onDidChangeCursorSelection(updateCursorInfo);
 
         // Listen for content changes (debounced to avoid reactivity overhead on every keystroke)
         changeDisposable = editor.onDidChangeModelContent(() => {
@@ -186,25 +205,25 @@
           changeTimer = setTimeout(() => {
             if (!editor) return;
             const newValue = editor.getValue();
-            
+
             // Notify parent component
             if (onchange) onchange(newValue);
-            
+
             // Notify TypeScript LSP sidecar about the change
             if (filepath && isTsJsFile(filepath)) {
               notifyDocumentChanged(filepath, newValue);
             }
-            
+
             // Notify Tailwind LSP sidecar about the change
             if (filepath && isTailwindFile(filepath)) {
               notifyTailwindDocumentChanged(filepath, newValue);
             }
-            
+
             // Notify ESLint LSP sidecar about the change
             if (filepath && isEslintFile(filepath)) {
               notifyEslintDocumentChanged(filepath, newValue);
             }
-            
+
             // Notify Svelte LSP sidecar about the change
             if (filepath && isSvelteFile(filepath)) {
               notifySvelteDocumentChanged(filepath, newValue);
@@ -219,7 +238,7 @@
           onready(editor);
         }
       } catch (err) {
-        console.error('Failed to load Monaco Editor:', err);
+        console.error("Failed to load Monaco Editor:", err);
         loading = false;
       }
     }
@@ -227,12 +246,18 @@
     initEditor();
 
     // Listen for navigation events from Problems panel
-    window.addEventListener('volt:navigate-to-position', handleNavigateToPosition as EventListener);
+    window.addEventListener(
+      "volt:navigate-to-position",
+      handleNavigateToPosition as EventListener,
+    );
 
     // Cleanup on unmount
     return () => {
       disposed = true;
-      window.removeEventListener('volt:navigate-to-position', handleNavigateToPosition as EventListener);
+      window.removeEventListener(
+        "volt:navigate-to-position",
+        handleNavigateToPosition as EventListener,
+      );
       if (changeTimer) {
         clearTimeout(changeTimer);
         changeTimer = null;
@@ -271,7 +296,7 @@
       const model = await getOrCreateModel({
         path,
         content: value,
-        language: lang
+        language: lang,
       });
 
       if (!editor) return;
@@ -281,7 +306,7 @@
       try {
         model.updateOptions({
           tabSize: settingsStore.editorTabSize,
-          insertSpaces: settingsStore.editorInsertSpaces
+          insertSpaces: settingsStore.editorInsertSpaces,
         });
       } catch {
         // ignore
@@ -294,17 +319,17 @@
       if (isTsJsFile(path)) {
         await notifyDocumentOpened(path, value);
       }
-      
+
       // Notify Tailwind LSP sidecar about the file being opened
       if (isTailwindFile(path)) {
         await notifyTailwindDocumentOpened(path, value);
       }
-      
+
       // Notify ESLint LSP sidecar about the file being opened
       if (isEslintFile(path)) {
         await notifyEslintDocumentOpened(path, value);
       }
-      
+
       // Notify Svelte LSP sidecar about the file being opened
       if (isSvelteFile(path)) {
         await notifySvelteDocumentOpened(path, value);
@@ -323,7 +348,7 @@
   $effect(() => {
     const theme = themeStore.resolvedTheme;
     if (editor && monaco) {
-      monaco.editor.setTheme(theme === 'dark' ? 'volt-dark' : 'volt-light');
+      monaco.editor.setTheme(theme === "dark" ? "volt-dark" : "volt-light");
     }
   });
 
@@ -340,8 +365,8 @@
     try {
       editor.updateOptions({
         fontSize,
-        lineNumbers: lineNumbersEnabled ? 'on' : 'off',
-        minimap: { enabled: minimapEnabled }
+        lineNumbers: lineNumbersEnabled ? "on" : "off",
+        minimap: { enabled: minimapEnabled },
       });
     } catch {
       // ignore

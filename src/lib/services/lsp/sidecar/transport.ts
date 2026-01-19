@@ -18,7 +18,11 @@ import type {
   MessageHandler,
   ErrorHandler,
   ExitHandler,
+  HealthHandler,
+  HealthConfig,
+  HealthStatus,
 } from './types';
+import { DEFAULT_HEALTH_CONFIG } from './types';
 
 /** Pending request tracking */
 interface PendingRequest {
@@ -37,14 +41,30 @@ export class LspTransport {
   private messageHandlers: Set<MessageHandler> = new Set();
   private errorHandlers: Set<ErrorHandler> = new Set();
   private exitHandlers: Set<ExitHandler> = new Set();
+  private healthHandlers: Set<HealthHandler> = new Set();
   private pendingRequests: Map<number | string, PendingRequest> = new Map();
   private nextRequestId = 1;
   private unlisteners: UnlistenFn[] = [];
   private isConnected = false;
 
-  constructor(serverId: string, serverType: string) {
+  // Health monitoring state
+  private healthConfig: Required<HealthConfig>;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private healthStatus: HealthStatus = {
+    healthy: true,
+    lastResponseAt: null,
+    consecutiveFailures: 0,
+    lastCheckAt: null,
+    avgResponseTimeMs: null,
+    message: 'Not started',
+  };
+  private responseTimes: number[] = []; // Rolling window for avg calculation
+  private static readonly RESPONSE_TIME_WINDOW = 10; // Keep last 10 response times
+
+  constructor(serverId: string, serverType: string, healthConfig?: HealthConfig) {
     this.serverId = serverId;
     this.serverType = serverType;
+    this.healthConfig = { ...DEFAULT_HEALTH_CONFIG, ...healthConfig };
   }
 
   /** Get the server ID */
@@ -60,6 +80,16 @@ export class LspTransport {
   /** Check if connected */
   get connected(): boolean {
     return this.isConnected;
+  }
+
+  /** Get current health status */
+  get health(): HealthStatus {
+    return { ...this.healthStatus };
+  }
+
+  /** Check if server is healthy */
+  get healthy(): boolean {
+    return this.healthStatus.healthy;
   }
 
 
@@ -82,6 +112,9 @@ export class LspTransport {
     await this.setupEventListeners();
     this.isConnected = true;
 
+    // Start health monitoring
+    this.startHealthMonitoring();
+
     return info;
   }
 
@@ -102,6 +135,9 @@ export class LspTransport {
     // Set up event listeners (same as sidecar)
     await this.setupEventListeners();
     this.isConnected = true;
+
+    // Start health monitoring
+    this.startHealthMonitoring();
 
     return info;
   }
@@ -165,7 +201,7 @@ export class LspTransport {
       const pending = this.pendingRequests.get(message.id);
       if (pending) {
         this.pendingRequests.delete(message.id);
-        
+
         if ('error' in message && message.error) {
           pending.reject(new Error(message.error.message));
         } else if ('result' in message) {
@@ -222,6 +258,232 @@ export class LspTransport {
     }
   }
 
+  // ============================================================
+  // Health Monitoring Methods
+  // ============================================================
+
+  /**
+   * Start periodic health monitoring
+   */
+  private startHealthMonitoring(): void {
+    if (!this.healthConfig.enabled) {
+      this.updateHealthStatus({
+        healthy: true,
+        message: 'Health monitoring disabled',
+      });
+      return;
+    }
+
+    // Clear any existing timer
+    this.stopHealthMonitoring();
+
+    // Update initial status
+    this.updateHealthStatus({
+      healthy: true,
+      lastResponseAt: Date.now(),
+      consecutiveFailures: 0,
+      message: 'Server started',
+    });
+
+    // Start periodic health checks
+    this.healthCheckTimer = setInterval(() => {
+      this.performHealthCheck();
+    }, this.healthConfig.intervalMs);
+
+    console.log(`[LSP Health] Started monitoring for ${this.serverId} (interval: ${this.healthConfig.intervalMs}ms)`);
+  }
+
+  /**
+   * Stop health monitoring
+   */
+  private stopHealthMonitoring(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+  }
+
+  /**
+   * Perform a single health check
+   */
+  private async performHealthCheck(): Promise<void> {
+    if (!this.isConnected) {
+      this.updateHealthStatus({
+        healthy: false,
+        consecutiveFailures: this.healthStatus.consecutiveFailures + 1,
+        lastCheckAt: Date.now(),
+        message: 'Server disconnected',
+      });
+      return;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      // Use a simple request that most LSP servers support
+      // We use $/cancelRequest with an invalid ID which should return quickly
+      // or textDocument/hover with null params (will error but confirms server is alive)
+      await this.sendHealthPing();
+
+      // Success - record response time
+      const responseTime = Date.now() - startTime;
+      this.recordResponseTime(responseTime);
+
+      this.updateHealthStatus({
+        healthy: true,
+        lastResponseAt: Date.now(),
+        consecutiveFailures: 0,
+        lastCheckAt: Date.now(),
+        avgResponseTimeMs: this.calculateAvgResponseTime(),
+        message: `Healthy (${responseTime}ms)`,
+      });
+
+    } catch (error) {
+      const failures = this.healthStatus.consecutiveFailures + 1;
+      const isUnhealthy = failures >= this.healthConfig.failureThreshold;
+
+      this.updateHealthStatus({
+        healthy: !isUnhealthy,
+        consecutiveFailures: failures,
+        lastCheckAt: Date.now(),
+        message: isUnhealthy
+          ? `Unhealthy: ${failures} consecutive failures`
+          : `Warning: ${failures}/${this.healthConfig.failureThreshold} failures`,
+      });
+
+      console.warn(`[LSP Health] ${this.serverId} health check failed (${failures}/${this.healthConfig.failureThreshold}):`, error);
+
+      // Auto-restart if configured and unhealthy
+      if (isUnhealthy && this.healthConfig.autoRestart) {
+        console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
+        this.notifyError(`Server unhealthy, attempting restart...`);
+        // Note: Actual restart logic would need to be implemented by the registry
+        // We just notify handlers here, let them decide what to do
+      }
+    }
+  }
+
+  /**
+   * Send a health ping to the server
+   * Uses shutdown request with immediate cancel - this is a lightweight way to check if server responds
+   */
+  private async sendHealthPing(): Promise<void> {
+    // Create a simple request that should return quickly
+    // We'll use a custom timeout shorter than the normal request timeout
+    const timeoutMs = this.healthConfig.timeoutMs;
+
+    return new Promise<void>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error('Health check timeout'));
+      }, timeoutMs);
+
+      // Send a $/cancelRequest which most servers handle quickly
+      // Even if they return an error, it proves the server is responsive
+      const id = this.nextRequestId++;
+      const request: JsonRpcRequest = {
+        jsonrpc: '2.0',
+        id,
+        method: '$/cancelRequest',
+        params: { id: -1 }, // Cancel a non-existent request
+      };
+
+      // Set up one-time response handler
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        this.pendingRequests.delete(id);
+      };
+
+      this.pendingRequests.set(id, {
+        resolve: () => {
+          cleanup();
+          resolve();
+        },
+        reject: (error) => {
+          cleanup();
+          // For health checks, even an error response means server is alive
+          // Only timeout means server is unresponsive
+          resolve();
+        },
+        method: '$/cancelRequest',
+        timestamp: Date.now(),
+      });
+
+      // Send the request
+      const message = JSON.stringify(request);
+      invoke('lsp_send_message', {
+        serverId: this.serverId,
+        message,
+      }).catch((e) => {
+        cleanup();
+        reject(e);
+      });
+    });
+  }
+
+  /**
+   * Record a response time for average calculation
+   */
+  private recordResponseTime(timeMs: number): void {
+    this.responseTimes.push(timeMs);
+    // Keep only the last N response times
+    if (this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
+      this.responseTimes.shift();
+    }
+  }
+
+  /**
+   * Calculate average response time from recorded times
+   */
+  private calculateAvgResponseTime(): number | null {
+    if (this.responseTimes.length === 0) return null;
+    const sum = this.responseTimes.reduce((a, b) => a + b, 0);
+    return Math.round(sum / this.responseTimes.length);
+  }
+
+  /**
+   * Update health status and notify handlers
+   */
+  private updateHealthStatus(partial: Partial<HealthStatus>): void {
+    const previousHealthy = this.healthStatus.healthy;
+    this.healthStatus = { ...this.healthStatus, ...partial };
+
+    // Only notify handlers if health state changed or it's the first check
+    const healthChanged = previousHealthy !== this.healthStatus.healthy;
+    const isFirstCheck = this.healthStatus.lastCheckAt === partial.lastCheckAt && partial.lastCheckAt !== null;
+
+    if (healthChanged || isFirstCheck) {
+      for (const handler of this.healthHandlers) {
+        try {
+          handler(this.health);
+        } catch (e) {
+          console.error('[LSP Transport] Health handler error:', e);
+        }
+      }
+    }
+  }
+
+  /**
+   * Manually trigger a health check (useful for testing or on-demand verification)
+   */
+  async checkHealth(): Promise<HealthStatus> {
+    await this.performHealthCheck();
+    return this.health;
+  }
+
+  /**
+   * Update health configuration at runtime
+   */
+  configureHealth(config: HealthConfig): void {
+    this.healthConfig = { ...this.healthConfig, ...config };
+
+    // Restart monitoring if enabled state changed
+    if (this.isConnected) {
+      this.stopHealthMonitoring();
+      if (this.healthConfig.enabled) {
+        this.startHealthMonitoring();
+      }
+    }
+  }
 
   /**
    * Send a JSON-RPC request and wait for response
@@ -305,9 +567,20 @@ export class LspTransport {
   }
 
   /**
+   * Register a health status change handler
+   */
+  onHealth(handler: HealthHandler): () => void {
+    this.healthHandlers.add(handler);
+    return () => this.healthHandlers.delete(handler);
+  }
+
+  /**
    * Stop the server and clean up
    */
   async stop(): Promise<void> {
+    // Stop health monitoring first
+    this.stopHealthMonitoring();
+
     // Remove all event listeners
     for (const unlisten of this.unlisteners) {
       unlisten();
@@ -327,7 +600,9 @@ export class LspTransport {
     this.messageHandlers.clear();
     this.errorHandlers.clear();
     this.exitHandlers.clear();
+    this.healthHandlers.clear();
     this.pendingRequests.clear();
+    this.responseTimes = [];
   }
 
   /**
@@ -340,9 +615,16 @@ export class LspTransport {
 
 /**
  * Create a new LSP transport for a server
+ * @param serverId - Unique identifier for the server
+ * @param serverType - Type of server (e.g., 'typescript', 'dart')
+ * @param healthConfig - Optional health monitoring configuration
  */
-export function createTransport(serverId: string, serverType: string): LspTransport {
-  return new LspTransport(serverId, serverType);
+export function createTransport(
+  serverId: string,
+  serverType: string,
+  healthConfig?: HealthConfig
+): LspTransport {
+  return new LspTransport(serverId, serverType, healthConfig);
 }
 
 /**

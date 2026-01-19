@@ -9,7 +9,7 @@
  */
 
 import { LspTransport, createTransport, stopAllServers } from './transport';
-import type { LspServerType } from './types';
+import type { LspServerType, HealthConfig, HealthStatus } from './types';
 import { isExternalServerType } from './types';
 import { detectYamlLsp } from '../yaml-sdk';
 import { getLemminxCommand } from '../xml-sdk';
@@ -134,28 +134,29 @@ class LspRegistry {
       serverId?: string;
       cwd?: string;
       env?: Record<string, string>;
+      health?: HealthConfig;
     }
   ): Promise<LspTransport> {
     const serverId = options?.serverId ?? `${serverType}-${Date.now()}`;
-    
+
     // Check if already running
     if (this.transports.has(serverId)) {
       return this.transports.get(serverId)!;
     }
 
-    // Create transport
-    const transport = createTransport(serverId, serverType);
+    // Create transport with optional health config
+    const transport = createTransport(serverId, serverType, options?.health);
 
     // Check if this is an external server type
     if (isExternalServerType(serverType)) {
       // Try dynamic config first (for yaml, xml)
       let externalConfig = await getDynamicExternalConfig(serverType);
-      
+
       // Fall back to static config (for dart)
       if (!externalConfig) {
         externalConfig = EXTERNAL_CONFIGS[serverType] ?? null;
       }
-      
+
       if (!externalConfig) {
         throw new Error(`No external config for server type: ${serverType}. The server may not be installed.`);
       }
@@ -268,14 +269,46 @@ class LspRegistry {
   }
 
   /**
-   * Get info about all running servers
+   * Get info about all running servers including health status
    */
-  getRunningServers(): Array<{ id: string; type: string; connected: boolean }> {
+  getRunningServers(): Array<{ id: string; type: string; connected: boolean; healthy: boolean }> {
     return Array.from(this.transports.entries()).map(([id, transport]) => ({
       id,
       type: transport.type,
       connected: transport.connected,
+      healthy: transport.healthy,
     }));
+  }
+
+  /**
+   * Get health status for a specific server
+   */
+  getServerHealth(serverId: string) {
+    const transport = this.transports.get(serverId);
+    return transport?.health ?? null;
+  }
+
+  /**
+   * Get health status for all running servers
+   */
+  getAllServerHealth(): Array<{ id: string; type: string; health: HealthStatus }> {
+    return Array.from(this.transports.entries()).map(([id, transport]) => ({
+      id,
+      type: transport.type,
+      health: transport.health,
+    }));
+  }
+
+  /**
+   * Check if all servers are healthy
+   */
+  areAllServersHealthy(): boolean {
+    for (const transport of this.transports.values()) {
+      if (!transport.healthy) {
+        return false;
+      }
+    }
+    return true;
   }
 }
 

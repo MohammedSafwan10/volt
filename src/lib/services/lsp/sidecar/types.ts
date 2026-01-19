@@ -39,7 +39,7 @@ export interface ExternalLspConfig {
 }
 
 /** Supported LSP server types */
-export type LspServerType = 
+export type LspServerType =
   | 'typescript'
   | 'tailwind'
   | 'eslint'
@@ -65,7 +65,7 @@ export interface LspServerInfo {
 }
 
 /** Status of an LSP server */
-export type LspServerStatus = 
+export type LspServerStatus =
   | 'Starting'
   | 'Running'
   | 'Stopping'
@@ -120,3 +120,45 @@ export type ErrorHandler = (error: string) => void;
 
 /** Callback for handling server exit */
 export type ExitHandler = () => void;
+
+/** Callback for handling health status changes */
+export type HealthHandler = (status: HealthStatus) => void;
+
+/** Health check configuration */
+export interface HealthConfig {
+  /** Enable health monitoring (default: true) */
+  enabled?: boolean;
+  /** Interval between health checks in ms (default: 30000 = 30s) */
+  intervalMs?: number;
+  /** Timeout for health check response in ms (default: 5000 = 5s) */
+  timeoutMs?: number;
+  /** Number of consecutive failures before marking unhealthy (default: 3) */
+  failureThreshold?: number;
+  /** Auto-restart on unhealthy (default: false) */
+  autoRestart?: boolean;
+}
+
+/** Default health configuration */
+export const DEFAULT_HEALTH_CONFIG: Required<HealthConfig> = {
+  enabled: true,
+  intervalMs: 30000, // 30 seconds
+  timeoutMs: 5000,   // 5 seconds
+  failureThreshold: 3,
+  autoRestart: false,
+};
+
+/** Health status of an LSP server */
+export interface HealthStatus {
+  /** Whether the server is considered healthy */
+  healthy: boolean;
+  /** Last successful response timestamp */
+  lastResponseAt: number | null;
+  /** Consecutive failure count */
+  consecutiveFailures: number;
+  /** Last health check timestamp */
+  lastCheckAt: number | null;
+  /** Average response time in ms (rolling average of last 10) */
+  avgResponseTimeMs: number | null;
+  /** Detailed status message */
+  message: string;
+}

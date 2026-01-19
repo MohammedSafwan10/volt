@@ -50,7 +50,13 @@ export type {
   MessageHandler,
   ErrorHandler,
   ExitHandler,
+  HealthHandler,
+  HealthConfig,
+  HealthStatus,
 } from './types';
+
+// Constants
+export { DEFAULT_HEALTH_CONFIG } from './types';
 
 // Transport
 export {

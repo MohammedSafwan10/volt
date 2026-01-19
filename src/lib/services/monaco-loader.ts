@@ -6,6 +6,7 @@
 import type * as Monaco from 'monaco-editor';
 import { voltDarkMonacoTheme } from '$lib/themes/dark';
 import { voltLightMonacoTheme } from '$lib/themes/light';
+import { registerDartLanguage } from './monaco-dart-language';
 
 // Singleton instance - null until first load
 let monacoInstance: typeof Monaco | null = null;
@@ -87,6 +88,17 @@ export async function loadMonaco(): Promise<typeof Monaco> {
     // Dynamic import - this is where the actual loading happens
     const monaco = await import('monaco-editor');
 
+    // Try to load built-in common languages if they aren't loaded
+    try {
+      // @ts-ignore
+      await import('monaco-editor/esm/vs/basic-languages/dart/dart.contribution');
+      console.log('[Monaco] Built-in Dart language loaded');
+    } catch (e) {
+      console.warn('[Monaco] Built-in Dart language not found, using custom registration');
+      // Register custom languages
+      registerDartLanguage(monaco);
+    }
+
     // Define custom themes
     monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
     monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
@@ -118,9 +130,18 @@ export function getMonaco(): typeof Monaco | null {
  * Detect language from file extension
  */
 export function detectLanguage(filename: string): string {
+  if (!filename) return 'plaintext';
+
   const ext = filename.split('.').pop()?.toLowerCase() || '';
-  
+
   const languageMap: Record<string, string> = {
+    // Mobile Development
+    'dart': 'dart',
+    'kt': 'kotlin',
+    'kts': 'kotlin',
+    'swift': 'swift',
+    'gradle': 'groovy',
+
     // JavaScript/TypeScript
     'js': 'javascript',
     'mjs': 'javascript',
@@ -130,7 +151,11 @@ export function detectLanguage(filename: string): string {
     'tsx': 'typescript',
     'mts': 'typescript',
     'cts': 'typescript',
-    
+
+    // Svelte/Vue
+    'svelte': 'svelte',
+    'vue': 'html',
+
     // Web
     'html': 'html',
     'htm': 'html',
@@ -138,7 +163,7 @@ export function detectLanguage(filename: string): string {
     'scss': 'scss',
     'sass': 'scss',
     'less': 'less',
-    
+
     // Data formats
     'json': 'json',
     'jsonc': 'json',
@@ -146,16 +171,14 @@ export function detectLanguage(filename: string): string {
     'yml': 'yaml',
     'xml': 'xml',
     'svg': 'xml',
-    
-    // Markdown
-    'md': 'markdown',
-    'mdx': 'markdown',
-    
-    // Config files
     'toml': 'ini',
     'ini': 'ini',
     'env': 'ini',
-    
+
+    // Markdown
+    'md': 'markdown',
+    'mdx': 'markdown',
+
     // Shell
     'sh': 'shell',
     'bash': 'shell',
@@ -163,7 +186,7 @@ export function detectLanguage(filename: string): string {
     'ps1': 'powershell',
     'bat': 'bat',
     'cmd': 'bat',
-    
+
     // Other languages
     'py': 'python',
     'rs': 'rust',
@@ -176,13 +199,7 @@ export function detectLanguage(filename: string): string {
     'cs': 'csharp',
     'php': 'php',
     'rb': 'ruby',
-    'sql': 'sql',
-    'graphql': 'graphql',
-    'gql': 'graphql',
-    
-    // Svelte/Vue
-    'svelte': 'svelte',
-    'vue': 'html'
+    'sql': 'sql'
   };
 
   return languageMap[ext] || 'plaintext';

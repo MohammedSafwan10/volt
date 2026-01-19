@@ -12,6 +12,7 @@ import {
   notifyDocumentClosed as notifyTsDocumentClosed,
   notifyDocumentSaved as notifyTsDocumentSaved
 } from '$lib/services/lsp/typescript-sidecar';
+import { detectLanguage } from '$lib/services/monaco-loader';
 import {
   isTailwindFile,
   notifyTailwindDocumentClosed,
@@ -128,7 +129,7 @@ class EditorStore {
   async openFile(path: string): Promise<boolean> {
     // Normalize path to prevent duplicate tabs with different slash styles
     const normalizedPath = normalizePath(path);
-    
+
     // Check if already open
     const existing = this.openFiles.find(f => f.path === normalizedPath);
     if (existing) {
@@ -147,7 +148,7 @@ class EditorStore {
     const name = normalizedPath.split('/').pop() || normalizedPath;
 
     // Detect language from extension
-    const language = this.detectLanguage(name);
+    const language = detectLanguage(name);
 
     // Detect line ending from content
     const lineEnding = content.includes('\r\n') ? 'CRLF' : 'LF';
@@ -257,22 +258,22 @@ class EditorStore {
     this.openFiles = this.openFiles.filter(f => f.path !== normalizedPath);
     disposeModel(normalizedPath);
     notifyFileClosed(file.language);
-    
+
     // Notify TypeScript LSP sidecar about the file being closed
     if (isTsJsFile(normalizedPath)) {
       notifyTsDocumentClosed(normalizedPath);
     }
-    
+
     // Notify Tailwind LSP sidecar about the file being closed
     if (isTailwindFile(normalizedPath)) {
       notifyTailwindDocumentClosed(normalizedPath);
     }
-    
+
     // Notify ESLint LSP sidecar about the file being closed
     if (isEslintFile(normalizedPath)) {
       notifyEslintDocumentClosed(normalizedPath);
     }
-    
+
     // Notify Svelte LSP sidecar about the file being closed
     if (isSvelteFile(normalizedPath)) {
       notifySvelteDocumentClosed(normalizedPath);
@@ -298,22 +299,22 @@ class EditorStore {
 
     for (const file of this.openFiles) {
       notifyFileClosed(file.language);
-      
+
       // Notify TypeScript LSP sidecar about the file being closed
       if (isTsJsFile(file.path)) {
         notifyTsDocumentClosed(file.path);
       }
-      
+
       // Notify Tailwind LSP sidecar about the file being closed
       if (isTailwindFile(file.path)) {
         notifyTailwindDocumentClosed(file.path);
       }
-      
+
       // Notify ESLint LSP sidecar about the file being closed
       if (isEslintFile(file.path)) {
         notifyEslintDocumentClosed(file.path);
       }
-      
+
       // Notify Svelte LSP sidecar about the file being closed
       if (isSvelteFile(file.path)) {
         notifySvelteDocumentClosed(file.path);
@@ -341,7 +342,7 @@ class EditorStore {
    */
   nextTab(): void {
     if (this.openFiles.length <= 1) return;
-    
+
     const currentIndex = this.openFiles.findIndex(f => f.path === this.activeFilePath);
     const nextIndex = (currentIndex + 1) % this.openFiles.length;
     this.activeFilePath = this.openFiles[nextIndex].path;
@@ -353,7 +354,7 @@ class EditorStore {
    */
   previousTab(): void {
     if (this.openFiles.length <= 1) return;
-    
+
     const currentIndex = this.openFiles.findIndex(f => f.path === this.activeFilePath);
     const prevIndex = currentIndex <= 0 ? this.openFiles.length - 1 : currentIndex - 1;
     this.activeFilePath = this.openFiles[prevIndex].path;
@@ -367,9 +368,9 @@ class EditorStore {
     const normalizedPath = normalizePath(path);
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (!file) return;
-    
+
     file.pinned = !file.pinned;
-    
+
     // Reorder: pinned tabs go to the left
     this.sortTabs();
   }
@@ -435,22 +436,22 @@ class EditorStore {
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.originalContent = file.content;
-      
+
       // Notify TypeScript LSP sidecar about the file being saved
       if (isTsJsFile(normalizedPath)) {
         notifyTsDocumentSaved(normalizedPath, file.content);
       }
-      
+
       // Notify Tailwind LSP sidecar about the file being saved
       if (isTailwindFile(normalizedPath)) {
         notifyTailwindDocumentSaved(normalizedPath, file.content);
       }
-      
+
       // Notify ESLint LSP sidecar about the file being saved
       if (isEslintFile(normalizedPath)) {
         notifyEslintDocumentSaved(normalizedPath, file.content);
       }
-      
+
       // Notify Svelte LSP sidecar about the file being saved
       if (isSvelteFile(normalizedPath)) {
         notifySvelteDocumentSaved(normalizedPath, file.content);
@@ -472,7 +473,7 @@ class EditorStore {
 
     file.content = content;
     file.originalContent = content;
-    
+
     // Also update the Monaco model so the editor shows the new content
     try {
       const { setModelValue } = await import('$lib/services/monaco-models');
@@ -480,82 +481,8 @@ class EditorStore {
     } catch {
       // Monaco model might not exist yet, that's ok
     }
-    
+
     return true;
-  }
-
-  /**
-   * Detect language from filename
-   */
-  private detectLanguage(filename: string): string {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    
-    const languageMap: Record<string, string> = {
-      // JavaScript/TypeScript
-      'js': 'javascript',
-      'mjs': 'javascript',
-      'cjs': 'javascript',
-      'jsx': 'javascript',
-      'ts': 'typescript',
-      'tsx': 'typescript',
-      'mts': 'typescript',
-      'cts': 'typescript',
-      
-      // Web
-      'html': 'html',
-      'htm': 'html',
-      'css': 'css',
-      'scss': 'scss',
-      'sass': 'scss',
-      'less': 'less',
-      
-      // Data formats
-      'json': 'json',
-      'jsonc': 'json',
-      'yaml': 'yaml',
-      'yml': 'yaml',
-      'xml': 'xml',
-      'svg': 'xml',
-      
-      // Markdown
-      'md': 'markdown',
-      'mdx': 'markdown',
-      
-      // Config files
-      'toml': 'ini',
-      'ini': 'ini',
-      'env': 'ini',
-      
-      // Shell
-      'sh': 'shell',
-      'bash': 'shell',
-      'zsh': 'shell',
-      'ps1': 'powershell',
-      'bat': 'bat',
-      'cmd': 'bat',
-      
-      // Other languages
-      'py': 'python',
-      'rs': 'rust',
-      'go': 'go',
-      'java': 'java',
-      'c': 'c',
-      'cpp': 'cpp',
-      'h': 'c',
-      'hpp': 'cpp',
-      'cs': 'csharp',
-      'php': 'php',
-      'rb': 'ruby',
-      'sql': 'sql',
-      'graphql': 'graphql',
-      'gql': 'graphql',
-      
-      // Svelte/Vue
-      'svelte': 'svelte',
-      'vue': 'html'
-    };
-
-    return languageMap[ext] || 'plaintext';
   }
 }
 
