@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { UIIcon } from '$lib/components/ui';
-  import type { ToolCall, ToolCallStatus } from '$lib/stores/assistant.svelte';
+  import { UIIcon } from "$lib/components/ui";
+  import type { ToolCall, ToolCallStatus } from "$lib/stores/assistant.svelte";
 
   interface Props {
     toolCall: ToolCall;
@@ -11,32 +11,39 @@
   let { toolCall, onApprove, onDeny }: Props = $props();
 
   let expanded = $state(false);
-  
+
   // Auto-expand when screenshot data arrives
   $effect(() => {
-    if (toolCall.name === 'browser_screenshot' && toolCall.data?.image_base64 && !expanded) {
+    if (
+      toolCall.name === "browser_screenshot" &&
+      toolCall.data?.image_base64 &&
+      !expanded
+    ) {
       expanded = true;
     }
   });
 
-  const statusIcons: Record<ToolCallStatus, 'spinner' | 'check' | 'error' | 'close' | 'clock'> = {
-    pending: 'clock',
-    running: 'spinner',
-    completed: 'check',
-    failed: 'error',
-    cancelled: 'close'
+  const statusIcons: Record<
+    ToolCallStatus,
+    "spinner" | "error" | "close" | "clock" | undefined
+  > = {
+    pending: "clock",
+    running: "spinner",
+    completed: undefined,
+    failed: "error",
+    cancelled: "close",
   };
 
   const statusLabels: Record<ToolCallStatus, string> = {
-    pending: 'Pending approval',
-    running: 'Running',
-    completed: 'Completed',
-    failed: 'Failed',
-    cancelled: 'Cancelled'
+    pending: "Pending approval",
+    running: "Running",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
   };
 
   function formatDuration(start?: number, end?: number): string {
-    if (!start) return '';
+    if (!start) return "";
     const endTime = end ?? Date.now();
     const ms = endTime - start;
     if (ms < 1000) return `${ms}ms`;
@@ -45,14 +52,14 @@
 
   function formatArguments(args: Record<string, unknown>): string {
     const entries = Object.entries(args);
-    if (entries.length === 0) return '(no arguments)';
+    if (entries.length === 0) return "(no arguments)";
     return entries
       .map(([k, v]) => `${k}: ${JSON.stringify(v).slice(0, 30)}`)
-      .join(', ');
+      .join(", ");
   }
 </script>
 
-<div 
+<div
   class="tool-call-row {toolCall.status}"
   role="article"
   aria-label="Tool call: {toolCall.name}"
@@ -60,29 +67,34 @@
   <div class="tool-header">
     <button
       class="expand-btn"
-      onclick={() => expanded = !expanded}
+      onclick={() => (expanded = !expanded)}
       aria-expanded={expanded}
-      aria-label={expanded ? 'Collapse' : 'Expand'}
+      aria-label={expanded ? "Collapse" : "Expand"}
       type="button"
     >
-      <UIIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={12} />
+      <UIIcon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
     </button>
-    
-    <span class="tool-icon">
-      <UIIcon name={statusIcons[toolCall.status]} size={14} />
-    </span>
-    
+
+    {#if statusIcons[toolCall.status]}
+      {@const iconName = statusIcons[toolCall.status]}
+      <span class="tool-icon">
+        {#if iconName}
+          <UIIcon name={iconName} size={14} />
+        {/if}
+      </span>
+    {/if}
+
     <span class="tool-name">{toolCall.name}</span>
-    
+
     <span class="tool-status">{statusLabels[toolCall.status]}</span>
-    
+
     {#if toolCall.startTime}
       <span class="tool-duration">
         {formatDuration(toolCall.startTime, toolCall.endTime)}
       </span>
     {/if}
 
-    {#if toolCall.requiresApproval && toolCall.status === 'pending'}
+    {#if toolCall.requiresApproval && toolCall.status === "pending"}
       <div class="approval-actions">
         <button
           class="approve-btn"
@@ -91,7 +103,6 @@
           aria-label="Approve tool execution"
           type="button"
         >
-          <UIIcon name="check" size={12} />
           <span>Approve</span>
         </button>
         <button
@@ -114,27 +125,27 @@
         <span class="detail-label">Arguments:</span>
         <code class="detail-value">{formatArguments(toolCall.arguments)}</code>
       </div>
-      
+
       {#if toolCall.output}
         <div class="detail-section">
           <span class="detail-label">Output:</span>
           <pre class="detail-output">{toolCall.output}</pre>
         </div>
       {/if}
-      
+
       {#if toolCall.data?.image_base64}
         <div class="detail-section">
           <span class="detail-label">Screenshot:</span>
           <div class="screenshot-container">
-            <img 
-              src="data:image/png;base64,{toolCall.data.image_base64}" 
+            <img
+              src="data:image/png;base64,{toolCall.data.image_base64}"
               alt="Browser screenshot"
               class="screenshot-image"
             />
           </div>
         </div>
       {/if}
-      
+
       {#if toolCall.error}
         <div class="detail-section error">
           <span class="detail-label">Error:</span>
@@ -217,8 +228,12 @@
   }
 
   @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .tool-name {

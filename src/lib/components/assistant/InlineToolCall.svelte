@@ -3,11 +3,17 @@
    * InlineToolCall - Displays tool activity inline within assistant messages
    * Shows tool name, status, and expandable output like Kiro's UI
    * Supports streaming progress for file write operations
-   * 
+   *
    * Kiro-style: Only shows approval for the FIRST pending terminal command
    */
-  import { UIIcon, type UIIconName } from '$lib/components/ui';
-  import type { ToolCall, ToolCallStatus, StreamingProgress } from '$lib/stores/assistant.svelte';
+  import { UIIcon, type UIIconName } from "$lib/components/ui";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { projectStore } from "$lib/stores/project.svelte";
+  import type {
+    ToolCall,
+    ToolCallStatus,
+    StreamingProgress,
+  } from "$lib/stores/assistant.svelte";
 
   interface Props {
     toolCall: ToolCall;
@@ -19,13 +25,23 @@
     isFirstPendingTerminal?: boolean;
   }
 
-  let { toolCall, streamingProgress, onApprove, onDeny, isFirstPendingTerminal = true }: Props = $props();
+  let {
+    toolCall,
+    streamingProgress,
+    onApprove,
+    onDeny,
+    isFirstPendingTerminal = true,
+  }: Props = $props();
 
   let expanded = $state(false);
-  
+
   // Auto-expand when screenshot data arrives
   $effect(() => {
-    if (toolCall.name === 'browser_screenshot' && toolCall.data?.image_base64 && !expanded) {
+    if (
+      toolCall.name === "browser_screenshot" &&
+      toolCall.data?.image_base64 &&
+      !expanded
+    ) {
       expanded = true;
     }
   });
@@ -34,101 +50,166 @@
   function formatOutputWithLinks(text: string): string {
     return text.replace(
       /(https?:\/\/[^\s<>"']+)/gi,
-      '<a href="$1" class="output-link">$1</a>'
+      '<a href="$1" class="output-link">$1</a>',
     );
+  }
+
+  async function handleFileClick(path: string) {
+    if (!path) return;
+
+    let fullPath = path;
+    if (projectStore.rootPath && !path.startsWith("/") && !path.includes(":")) {
+      const sep = projectStore.rootPath.includes("\\") ? "\\" : "/";
+      fullPath = `${projectStore.rootPath}${sep}${path}`;
+    }
+
+    await editorStore.openFile(fullPath);
   }
 
   // Tool display names (more user-friendly)
   const toolDisplayNames: Record<string, string> = {
     // Context & Search
-    gather_context: 'Gathering context',
-    workspace_search: 'Searched workspace',
-    list_dir: 'Listed directory',
-    read_file: 'Read file',
-    read_files: 'Read files',
-    get_file_info: 'Got file info',
-    get_file_tree: 'Got file tree',
-    find_files: 'Found files',
-    search_symbols: 'Searched symbols',
+    gather_context: "Gathering context",
+    workspace_search: "Searched workspace",
+    list_dir: "Listed directory",
+    read_file: "Read file",
+    read_files: "Read files",
+    get_file_info: "Got file info",
+    get_file_tree: "Got file tree",
+    find_files: "Found files",
+    search_symbols: "Searched symbols",
     // Editor
-    get_active_file: 'Got active file',
-    get_selection: 'Got selection',
-    get_open_files: 'Got open files',
+    get_active_file: "Got active file",
+    get_selection: "Got selection",
+    get_open_files: "Got open files",
     // File operations
-    write_file: 'Wrote file',
-    append_file: 'Appended to file',
-    str_replace: 'Edited file',
-    apply_edit: 'Edited file',
-    create_file: 'Created file',
-    create_dir: 'Created directory',
-    delete_file: 'Deleted file',
-    delete_path: 'Deleted',
-    rename_path: 'Renamed',
+    write_file: "Wrote file",
+    append_file: "Appended to file",
+    str_replace: "Edited file",
+    apply_edit: "Edited file",
+    create_file: "Created file",
+    create_dir: "Created directory",
+    delete_file: "Deleted file",
+    delete_path: "Deleted",
+    rename_path: "Renamed",
     // Terminal - cleaner names
-    run_command: 'Run command',
-    start_process: 'Start process',
-    stop_process: 'Stopped process',
-    list_processes: 'Listed processes',
-    get_process_output: 'Got process output',
-    terminal_create: 'Created terminal',
-    terminal_write: 'Executed command',
-    terminal_kill: 'Killed terminal',
-    terminal_get_output: 'Got terminal output',
-    read_terminal: 'Read terminal',
+    run_command: "Run command",
+    start_process: "Start process",
+    stop_process: "Stopped process",
+    list_processes: "Listed processes",
+    get_process_output: "Got process output",
+    terminal_create: "Created terminal",
+    terminal_write: "Executed command",
+    terminal_kill: "Killed terminal",
+    terminal_get_output: "Got terminal output",
+    read_terminal: "Read terminal",
     // Diagnostics
-    run_check: 'Ran check',
-    get_diagnostics: 'Got diagnostics'
+    run_check: "Ran check",
+    get_diagnostics: "Got diagnostics",
   };
 
   // Tool icons - using valid UIIconName values
   const toolIcons: Record<string, UIIconName> = {
     // Context & Search
-    gather_context: 'search',
-    workspace_search: 'search',
-    list_dir: 'folder',
-    read_file: 'file',
-    read_files: 'files',
-    get_file_info: 'info',
-    get_file_tree: 'files',
-    find_files: 'search',
-    search_symbols: 'symbol-class',
+    gather_context: "search",
+    workspace_search: "search",
+    list_dir: "folder",
+    read_file: "file",
+    read_files: "files",
+    get_file_info: "info",
+    get_file_tree: "files",
+    find_files: "search",
+    search_symbols: "symbol-class",
     // Editor
-    get_active_file: 'file',
-    get_selection: 'code',
-    get_open_files: 'files',
+    get_active_file: "file",
+    get_selection: "code",
+    get_open_files: "files",
     // File operations
-    write_file: 'pencil',
-    append_file: 'file-plus',
-    str_replace: 'pencil',
-    apply_edit: 'pencil',
-    create_file: 'file-plus',
-    create_dir: 'folder-plus',
-    delete_file: 'trash',
-    delete_path: 'trash',
-    rename_path: 'pencil',
+    write_file: "pencil",
+    append_file: "file-plus",
+    str_replace: "pencil",
+    apply_edit: "pencil",
+    create_file: "file-plus",
+    create_dir: "folder-plus",
+    delete_file: "trash",
+    delete_path: "trash",
+    rename_path: "pencil",
     // Terminal
-    run_command: 'terminal',
-    start_process: 'play',
-    stop_process: 'stop',
-    list_processes: 'files',
-    get_process_output: 'terminal',
-    terminal_create: 'terminal',
-    terminal_write: 'terminal',
-    terminal_kill: 'close',
-    terminal_get_output: 'terminal',
-    read_terminal: 'terminal',
+    run_command: "terminal",
+    start_process: "play",
+    stop_process: "stop",
+    list_processes: "files",
+    get_process_output: "terminal",
+    terminal_create: "terminal",
+    terminal_write: "terminal",
+    terminal_kill: "close",
+    terminal_get_output: "terminal",
+    read_terminal: "terminal",
     // Diagnostics
-    run_check: 'check',
-    get_diagnostics: 'warning'
+    run_check: "search",
+    get_diagnostics: "warning",
   };
 
   const statusIcons: Record<ToolCallStatus, UIIconName> = {
-    pending: 'clock',
-    running: 'spinner',
-    completed: 'check',
-    failed: 'error',
-    cancelled: 'close'
+    pending: "clock",
+    running: "spinner",
+    completed: "check",
+    failed: "error",
+    cancelled: "close",
   };
+
+  // Tool category for color coding
+  type ToolCategory =
+    | "search"
+    | "file"
+    | "edit"
+    | "terminal"
+    | "diagnostic"
+    | "other";
+
+  const toolCategories: Record<string, ToolCategory> = {
+    // Search/Read
+    gather_context: "search",
+    workspace_search: "search",
+    list_dir: "search",
+    read_file: "file",
+    read_files: "file",
+    get_file_info: "file",
+    get_file_tree: "search",
+    find_files: "search",
+    search_symbols: "search",
+    get_active_file: "file",
+    get_selection: "file",
+    get_open_files: "file",
+    // Write/Edit
+    write_file: "edit",
+    append_file: "edit",
+    str_replace: "edit",
+    apply_edit: "edit",
+    create_file: "edit",
+    create_dir: "edit",
+    delete_file: "edit",
+    delete_path: "edit",
+    rename_path: "edit",
+    // Terminal
+    run_command: "terminal",
+    start_process: "terminal",
+    stop_process: "terminal",
+    list_processes: "terminal",
+    get_process_output: "terminal",
+    terminal_create: "terminal",
+    terminal_write: "terminal",
+    terminal_kill: "terminal",
+    terminal_get_output: "terminal",
+    read_terminal: "terminal",
+    // Diagnostics
+    run_check: "diagnostic",
+    get_diagnostics: "diagnostic",
+  };
+
+  function getToolCategory(): ToolCategory {
+    return toolCategories[toolCall.name] ?? "other";
+  }
 
   // Get display name for tool
   function getToolDisplayName(): string {
@@ -137,93 +218,80 @@
 
   // Get icon for tool
   function getToolIcon(): UIIconName {
-    return toolIcons[toolCall.name] ?? 'code';
+    return toolIcons[toolCall.name] ?? "code";
   }
 
   // Get summary of what the tool is doing
   function getToolSummary(): string {
     const args = toolCall.arguments;
     const resultMeta = toolCall.meta as Record<string, unknown> | undefined;
-    
+
     switch (toolCall.name) {
-      case 'list_dir':
-        return args.path ? String(args.path) : '.';
-      case 'read_file': {
-        const filename = args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
-        // Use result meta for actual lines read (more accurate than args)
-        if (resultMeta?.startLine && resultMeta?.endLine) {
-          const start = Number(resultMeta.startLine);
-          const end = Number(resultMeta.endLine);
-          const total = resultMeta.totalLines ? Number(resultMeta.totalLines) : null;
-          if (start === 1 && end === total) {
-            // Full file read
-            return `${filename} (${total} lines)`;
-          }
-          return `${filename} ${start} - ${end}`;
-        }
-        // Fallback to args if result meta not available yet
+      case "list_dir":
+        return args.path ? String(args.path) : ".";
+      case "read_file": {
+        // No filename here - it will be in the pill
         const startLine = args.startLine ? Number(args.startLine) : null;
         const endLine = args.endLine ? Number(args.endLine) : null;
-        if (startLine && endLine) {
-          return `${filename} ${startLine} - ${endLine}`;
-        } else if (startLine) {
-          return `${filename} ${startLine}+`;
-        } else if (endLine) {
-          return `${filename} 1 - ${endLine}`;
+        if (resultMeta?.startLine && resultMeta?.endLine) {
+          return `#L${Number(resultMeta.startLine)}-${Number(resultMeta.endLine)}`;
         }
-        return filename;
+        if (startLine && endLine) {
+          return `#L${startLine}-${endLine}`;
+        } else if (startLine) {
+          return `#L${startLine}+`;
+        } else if (endLine) {
+          return `#L1-${endLine}`;
+        }
+        return "";
       }
-      case 'read_files': {
+      case "read_files": {
         const paths = args.paths as string[] | undefined;
-        if (!paths || paths.length === 0) return '';
-        const names = paths.map(p => String(p).split('/').pop() ?? p);
-        // Add total lines from result meta if available
-        const totalLines = resultMeta?.totalLines ? Number(resultMeta.totalLines) : null;
-        const suffix = totalLines ? ` (${totalLines} lines)` : '';
-        if (names.length === 1) return names[0] + suffix;
-        if (names.length === 2) return `${names[0]}, ${names[1]}${suffix}`;
-        return `${names[0]} +${names.length - 1} more${suffix}`;
+        if (!paths || paths.length === 0) return "";
+        return `${paths.length} files`;
       }
-      case 'workspace_search': {
-        const query = args.query ? String(args.query) : '';
-        const pattern = args.includePattern ? ` in ${String(args.includePattern)}` : '';
-        return query ? `"${query}"${pattern}` : '';
+      case "workspace_search": {
+        const query = args.query ? String(args.query) : "";
+        const pattern = args.includePattern
+          ? ` in ${String(args.includePattern)}`
+          : "";
+        return query ? `"${query}"${pattern}` : "";
       }
-      case 'write_file':
-      case 'append_file':
-      case 'create_file':
-        return args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
-      case 'create_dir':
-        return args.path ? String(args.path) : '';
-      case 'delete_path':
-        return args.path ? String(args.path).split('/').pop() ?? String(args.path) : '';
-      case 'rename_path':
-        return args.oldPath ? `${String(args.oldPath).split('/').pop()} → ${String(args.newPath).split('/').pop()}` : '';
-      case 'run_command':
-        return args.command ? String(args.command).slice(0, 50) : '';
-      case 'start_process':
-        return args.command ? String(args.command).slice(0, 50) : '';
-      case 'stop_process':
-        return args.processId ? `Process ${args.processId}` : '';
-      case 'get_process_output':
-        return args.processId ? `Process ${args.processId}` : '';
-      case 'list_processes':
-        return '';
-      case 'terminal_write':
-        return args.command ? String(args.command).slice(0, 40) : '';
-      case 'get_diagnostics': {
-        // Show which files were checked (Kiro-style)
+      case "write_file":
+      case "append_file":
+      case "create_file":
+      case "delete_path":
+      case "create_dir":
+        return "";
+      case "rename_path":
+        const oldP = String(args.oldPath || "")
+          .split(/[/\\]/)
+          .pop();
+        const newP = String(args.newPath || "")
+          .split(/[/\\]/)
+          .pop();
+        return oldP && newP ? `${oldP} → ${newP}` : "";
+      case "run_command":
+        return args.command ? String(args.command).slice(0, 50) : "";
+      case "start_process":
+        return args.command ? String(args.command).slice(0, 50) : "";
+      case "stop_process":
+        return args.processId ? `Process ${args.processId}` : "";
+      case "get_process_output":
+        return args.processId ? `Process ${args.processId}` : "";
+      case "list_processes":
+        return "";
+      case "terminal_write":
+        return args.command ? String(args.command).slice(0, 40) : "";
+      case "get_diagnostics": {
         const paths = args.paths as string[] | undefined;
-        if (!paths || paths.length === 0) return 'all files';
-        const names = paths.map(p => String(p).split('/').pop() ?? p);
-        if (names.length === 1) return names[0];
-        if (names.length === 2) return `${names[0]}, ${names[1]}`;
-        return `${names[0]} +${names.length - 1} more`;
+        if (!paths || paths.length === 0) return "all files";
+        return `${paths.length} files`;
       }
-      case 'run_check':
-        return args.checkType ? String(args.checkType) : '';
+      case "run_check":
+        return args.checkType ? String(args.checkType) : "";
       default:
-        return '';
+        return "";
     }
   }
 
@@ -234,53 +302,131 @@
     return {
       why: meta.why ? String(meta.why) : undefined,
       risk: meta.risk ? String(meta.risk) : undefined,
-      undo: meta.undo ? String(meta.undo) : undefined
+      undo: meta.undo ? String(meta.undo) : undefined,
     };
   }
 
   const meta = $derived(getMeta());
   const summary = $derived(getToolSummary());
-  const isRunning = $derived(toolCall.status === 'running');
-  const isPending = $derived(toolCall.status === 'pending' && toolCall.requiresApproval);
-  const isComplete = $derived(toolCall.status === 'completed');
-  const isFailed = $derived(toolCall.status === 'failed');
-  
+  const isRunning = $derived(toolCall.status === "running");
+  const isPending = $derived(
+    toolCall.status === "pending" && toolCall.requiresApproval,
+  );
+  const isComplete = $derived(toolCall.status === "completed");
+  const isFailed = $derived(toolCall.status === "failed");
+
   // Check if this is a terminal command tool
   const isTerminalTool = $derived(
-    toolCall.name === 'run_command' ||
-    toolCall.name === 'start_process' ||
-    toolCall.name === 'terminal_write'
+    toolCall.name === "run_command" ||
+      toolCall.name === "start_process" ||
+      toolCall.name === "terminal_write",
   );
-  
+
   // For terminal commands, only show approval if this is the first pending one (Kiro-style)
   const shouldShowApproval = $derived(
-    isPending && onApprove && onDeny && (
-      !isTerminalTool || isFirstPendingTerminal
-    )
+    isPending &&
+      onApprove &&
+      onDeny &&
+      (!isTerminalTool || isFirstPendingTerminal),
   );
-  
+
   // Get the command for terminal tools
   const terminalCommand = $derived(
-    isTerminalTool ? String(toolCall.arguments.command || '') : ''
+    isTerminalTool ? String(toolCall.arguments.command || "") : "",
   );
-  
+
   // Check if this is a file write tool that supports streaming
   const isFileWriteTool = $derived(
-    toolCall.name === 'write_file' ||
-    toolCall.name === 'create_file' ||
-    toolCall.name === 'apply_edit' ||
-    toolCall.name === 'multi_replace_file_content'
+    toolCall.name === "write_file" ||
+      toolCall.name === "create_file" ||
+      toolCall.name === "apply_edit" ||
+      toolCall.name === "multi_replace_file_content",
   );
-  const isStreaming = $derived(isFileWriteTool && isRunning && streamingProgress != null);
-  
+  const isStreaming = $derived(
+    isFileWriteTool && isRunning && streamingProgress != null,
+  );
+
   // Format streaming progress
   function formatProgress(progress: StreamingProgress): string {
     return `${progress.linesWritten}/${progress.totalLines} lines`;
   }
+
+  function getFileExt(path: string): string {
+    return path.split(".").pop()?.toLowerCase() || "";
+  }
+
+  function getFileIcon(ext: string, filename?: string): UIIconName {
+    switch (ext) {
+      case "svelte":
+        return "svelte";
+      case "ts":
+      case "tsx":
+        return "typescript";
+      case "js":
+      case "jsx":
+        return "javascript";
+      case "rs":
+        return "rust";
+      case "py":
+        return "python";
+      case "json":
+        return "json";
+      case "dart":
+        return "dart";
+      case "xml":
+        if (filename?.toLowerCase().includes("androidmanifest"))
+          return "android";
+        return "xml";
+      case "yaml":
+      case "yml":
+        return "yaml";
+      case "md":
+        return "markdown";
+      case "css":
+        return "css";
+      case "html":
+        return "html";
+      default:
+        return "file";
+    }
+  }
+
+  const files = $derived.by(() => {
+    const args = toolCall.arguments;
+    const path = (args.path || args.filePath || args.oldPath) as
+      | string
+      | undefined;
+    const paths = (args.paths || args.uris) as string[] | undefined;
+
+    const allPaths = paths || (path ? [path] : []);
+    if (allPaths.length === 0) return [];
+
+    return allPaths.map((p) => {
+      // robust splitting for Windows
+      const parts = p.split(/[/\\]/);
+      const filename = parts[parts.length - 1] || p;
+      const ext = getFileExt(filename);
+      return {
+        filename,
+        icon: getFileIcon(ext, filename),
+        path: p,
+      };
+    });
+  });
+
+  const diffStats = $derived.by(() => {
+    const meta = toolCall.meta as Record<string, any> | undefined;
+    const stats = meta?.fileEdit as Record<string, any> | undefined;
+    if (!stats) return null;
+    return {
+      added: typeof stats.added === "number" ? stats.added : 0,
+      removed: typeof stats.removed === "number" ? stats.removed : 0,
+    };
+  });
 </script>
 
-<div 
-  class="inline-tool-call {toolCall.status}"
+<div
+  class="inline-tool-call {toolCall.status} category-{getToolCategory()}"
   class:terminal-tool={isTerminalTool}
   role="article"
   aria-label="Tool: {getToolDisplayName()}"
@@ -289,7 +435,7 @@
     <!-- Special terminal-style display -->
     <button
       class="tool-header terminal-header"
-      onclick={() => expanded = !expanded}
+      onclick={() => (expanded = !expanded)}
       aria-expanded={expanded}
       type="button"
     >
@@ -297,12 +443,12 @@
         <UIIcon name="terminal" size={14} />
         <span class="prompt-symbol">$</span>
       </span>
-      <span class="terminal-command">{terminalCommand || 'command'}</span>
+      <span class="terminal-command">{terminalCommand || "command"}</span>
       <span class="tool-status-icon">
         {#if isRunning}
           <span class="terminal-running-indicator"></span>
         {:else if isComplete}
-          <UIIcon name="check" size={12} />
+          <!-- No check mark -->
         {:else if isFailed}
           <UIIcon name="error" size={12} />
         {:else if isPending}
@@ -317,49 +463,106 @@
     <!-- Standard tool display -->
     <button
       class="tool-header"
-      onclick={() => expanded = !expanded}
+      onclick={() => (expanded = !expanded)}
       aria-expanded={expanded}
       type="button"
     >
-      <span class="tool-icon" class:spinning={isRunning && !isStreaming}>
+      <span
+        class="tool-icon category-{getToolCategory()}"
+        class:spinning={isRunning && !isStreaming}
+      >
         {#if isStreaming}
-          <UIIcon name="pencil" size={14} />
+          <UIIcon name="pencil" size={12} />
         {:else if isRunning}
-          <UIIcon name="spinner" size={14} />
+          <UIIcon name="spinner" size={12} />
         {:else}
-          <UIIcon name={getToolIcon()} size={14} />
+          <UIIcon name={getToolIcon()} size={12} />
         {/if}
       </span>
-      
+
       <span class="tool-name">{getToolDisplayName()}</span>
-      
-      {#if isStreaming && streamingProgress}
-        <span class="tool-progress">
-          <span class="progress-text">{formatProgress(streamingProgress)}</span>
-          <span class="progress-bar">
-            <span class="progress-fill" style="width: {streamingProgress.percent}%"></span>
-          </span>
-        </span>
-      {:else if summary}
-        <span class="tool-summary">{summary}</span>
+
+      {#if files.length > 0}
+        <div class="files-container" class:multi={files.length > 1}>
+          {#each files as file}
+            <div
+              class="file-pill"
+              class:is-loading={isRunning}
+              role="button"
+              tabindex="0"
+              onclick={(e) => {
+                e.stopPropagation();
+                handleFileClick(file.path);
+              }}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  handleFileClick(file.path);
+                }
+              }}
+              aria-label="Open {file.filename}"
+            >
+              {#if isRunning && !isStreaming}
+                <UIIcon name="spinner" size={14} class="spinner-icon" />
+              {:else if isStreaming}
+                <UIIcon name="spinner" size={14} class="spinner-icon" />
+              {:else}
+                <UIIcon name={file.icon} size={14} />
+              {/if}
+              <span class="filename">{file.filename}</span>
+
+              {#if isStreaming && streamingProgress}
+                <div class="pill-progress-bar">
+                  <div
+                    class="pill-progress-fill"
+                    style="width: {streamingProgress.percent}%"
+                  ></div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
       {/if}
-      
+
+      {#if diffStats && (isComplete || isStreaming)}
+        <div class="diff-stats">
+          {#if diffStats.added > 0}
+            <span class="stat-added">+{diffStats.added}</span>
+          {/if}
+          {#if diffStats.removed > 0}
+            <span class="stat-removed">-{diffStats.removed}</span>
+          {/if}
+        </div>
+      {/if}
+
+      {#if summary && !isStreaming}
+        {@const isRedundantPath = files.length > 0 && !summary.includes("#L")}
+        {#if !isRedundantPath}
+          <span
+            class="tool-summary"
+            class:is-line-range={summary.includes("#L")}
+          >
+            {summary.includes("#L") ? "#" + summary.split("#")[1] : summary}
+          </span>
+        {/if}
+      {/if}
+
       <span class="tool-status-icon">
         {#if isStreaming}
           <span class="streaming-indicator"></span>
         {:else if isRunning}
           <!-- Already showing spinner in tool-icon -->
         {:else if isComplete}
-          <UIIcon name="check" size={12} />
+          <!-- No check mark -->
         {:else if isFailed}
           <UIIcon name="error" size={12} />
         {:else if isPending}
           <UIIcon name="clock" size={12} />
         {/if}
       </span>
-      
+
       <span class="expand-icon" class:expanded>
-        <UIIcon name="chevron-down" size={12} />
+        <UIIcon name="chevron-down" size={14} />
       </span>
     </button>
   {/if}
@@ -370,19 +573,10 @@
         <span class="approval-reason">{meta.why}</span>
       {/if}
       <div class="approval-actions">
-        <button
-          class="approve-btn"
-          onclick={onApprove}
-          type="button"
-        >
-          <UIIcon name="check" size={12} />
+        <button class="approve-btn" onclick={onApprove} type="button">
           Approve
         </button>
-        <button
-          class="deny-btn"
-          onclick={onDeny}
-          type="button"
-        >
+        <button class="deny-btn" onclick={onDeny} type="button">
           <UIIcon name="close" size={12} />
           Deny
         </button>
@@ -404,34 +598,36 @@
           <span class="detail-value">{meta.why}</span>
         </div>
       {/if}
-      
+
       {#if meta?.risk}
         <div class="detail-row">
           <span class="detail-label">Risk:</span>
           <span class="detail-value risk-{meta.risk}">{meta.risk}</span>
         </div>
       {/if}
-      
+
       {#if toolCall.output}
         <div class="detail-section">
           <span class="detail-label">Output:</span>
-          <pre class="detail-output">{@html formatOutputWithLinks(toolCall.output)}</pre>
+          <pre class="detail-output">{@html formatOutputWithLinks(
+              toolCall.output,
+            )}</pre>
         </div>
       {/if}
-      
+
       {#if toolCall.data?.image_base64}
         <div class="detail-section">
           <span class="detail-label">Screenshot:</span>
           <div class="screenshot-container">
-            <img 
-              src="data:image/png;base64,{toolCall.data.image_base64}" 
+            <img
+              src="data:image/png;base64,{toolCall.data.image_base64}"
               alt="Browser screenshot"
               class="screenshot-image"
             />
           </div>
         </div>
       {/if}
-      
+
       {#if toolCall.error}
         <div class="detail-section error">
           <span class="detail-label">Error:</span>
@@ -443,19 +639,18 @@
 </div>
 
 <style>
+  /* Inline tool call - transparent/minimal like Cursor */
   .inline-tool-call {
-    margin: 8px 0;
-    border-radius: 8px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-border);
-    overflow: hidden;
+    margin: 4px 0;
     font-size: 12px;
   }
 
-  /* Terminal tool special styling */
+  /* Terminal tool special styling - keep distinct */
   .inline-tool-call.terminal-tool {
-    background: var(--color-bg);
-    border-color: var(--color-border);
+    background: var(--color-surface0);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    overflow: hidden;
   }
 
   .inline-tool-call.terminal-tool.running {
@@ -479,11 +674,11 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 10px 12px;
+    padding: 8px 10px;
     text-align: left;
     color: var(--color-text);
     background: var(--color-surface0);
-    font-family: var(--font-mono, 'Fira Code', 'Consolas', monospace);
+    font-family: var(--font-mono, "Fira Code", "Consolas", monospace);
   }
 
   .terminal-header:hover {
@@ -521,47 +716,56 @@
   }
 
   @keyframes terminal-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
-  .inline-tool-call.running {
-    border-color: var(--color-accent);
-    background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface0));
-  }
-
-  .inline-tool-call.completed {
-    border-color: var(--color-success);
-  }
-
-  .inline-tool-call.failed {
-    border-color: var(--color-error);
-  }
-
-  .inline-tool-call.pending {
-    border-color: var(--color-warning);
-  }
-
+  /* Standard tool - transparent header */
   .tool-header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     width: 100%;
-    padding: 8px 12px;
+    padding: 8px 0;
     text-align: left;
-    color: var(--color-text);
-    transition: background 0.15s ease;
+    color: var(--color-text-secondary);
+    font-size: 13.5px;
+    transition: color 0.15s ease;
   }
 
   .tool-header:hover {
-    background: var(--color-hover);
+    color: var(--color-text);
   }
 
   .tool-icon {
     display: flex;
     align-items: center;
-    color: var(--color-accent);
     flex-shrink: 0;
+  }
+
+  /* Category-based icon colors */
+  .tool-icon.category-search {
+    color: #60a5fa;
+  } /* Blue for search */
+  .tool-icon.category-file {
+    color: #4ade80;
+  } /* Green for file read */
+  .tool-icon.category-edit {
+    color: #fbbf24;
+  } /* Amber for edits */
+  .tool-icon.category-terminal {
+    color: #a78bfa;
+  } /* Purple for terminal */
+  .tool-icon.category-diagnostic {
+    color: #f97316;
+  } /* Orange for diagnostics */
+  .tool-icon.category-other {
+    color: var(--color-text-secondary);
   }
 
   .tool-icon.spinning :global(svg) {
@@ -569,23 +773,148 @@
   }
 
   @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .tool-name {
+    font-weight: 400;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+
+  .files-container {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .files-container.multi {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    width: 100%;
+    margin-top: 2px;
+  }
+
+  .file-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    padding: 2px 0;
+    max-width: fit-content;
+    min-width: 0;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    border: none;
+    text-align: left;
+    font-family: inherit;
+    transition: opacity 0.2s ease;
+  }
+
+  .file-pill:hover {
+    opacity: 0.7;
+  }
+
+  .file-pill:hover .filename {
+    text-decoration: underline;
+  }
+
+  .file-pill.is-loading {
+    opacity: 0.8;
+  }
+
+  :global(.spinner-icon) {
+    animation: spin 1s linear infinite;
+    color: var(--color-accent);
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .pill-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1.5px;
+    background: transparent;
+  }
+
+  .pill-progress-fill {
+    height: 100%;
+    background: var(--color-accent);
+    transition: width 0.1s ease-out;
+    box-shadow: 0 0 4px var(--color-accent);
+  }
+
+  .filename {
+    font-size: 13px;
     font-weight: 500;
     color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 180px; /* Prevent long names from pushing everything off */
+  }
+
+  .file-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-accent);
+    background: var(--color-accent-alpha);
+    padding: 0 4px;
+    border-radius: 4px;
+    margin-left: -2px;
+  }
+
+  .diff-stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .stat-added {
+    color: #4ade80;
+    text-shadow: 0 0 10px rgba(74, 222, 128, 0.2);
+  }
+
+  .stat-removed {
+    color: #f87171;
+    text-shadow: 0 0 10px rgba(248, 113, 113, 0.2);
   }
 
   .tool-summary {
     color: var(--color-text-secondary);
+    opacity: 0.8;
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: monospace;
+    font-size: 13px;
+  }
+
+  .tool-summary.is-line-range {
+    font-family: var(--font-mono, monospace);
+    color: #60a5fa; /* Blue-ish for line numbers as requested */
     font-size: 11px;
+    opacity: 0.7;
   }
 
   .tool-progress {
@@ -629,8 +958,15 @@
   }
 
   @keyframes pulse-stream {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.8); }
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.5;
+      transform: scale(0.8);
+    }
   }
 
   .tool-status-icon {

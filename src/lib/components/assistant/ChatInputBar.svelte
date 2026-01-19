@@ -77,20 +77,20 @@
     const base = thinking ? model.slice(0, -"|thinking".length) : model;
 
     // OpenRouter models (format: org/model:variant)
-    if (base.includes('/')) {
-      const parts = base.split('/');
+    if (base.includes("/")) {
+      const parts = base.split("/");
       const modelPart = parts[parts.length - 1];
       // Clean up the name
       let displayName = modelPart
-        .replace(':free', '')
-        .replace(/-/g, ' ')
-        .split(' ')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-      
+        .replace(":free", "")
+        .replace(/-/g, " ")
+        .split(" ")
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
+
       // Add (free) indicator
-      if (model.includes(':free')) {
-        displayName += ' (free)';
+      if (model.includes(":free")) {
+        displayName += " (free)";
       }
       return thinking ? `${displayName} (thinking)` : displayName;
     }
@@ -98,11 +98,11 @@
     // Gemini 3 Flash
     if (base === "gemini-3-flash-preview")
       return thinking ? "Gemini 3 Flash (thinking)" : "Gemini 3 Flash";
-    
+
     // Gemini 2.5 Flash
     if (base === "gemini-2.5-flash")
       return thinking ? "Gemini 2.5 Flash (thinking)" : "Gemini 2.5 Flash";
-    
+
     // Fallback: capitalize and clean up
     return (
       (thinking ? base : model)
@@ -136,6 +136,39 @@
       e.preventDefault();
       if (value.trim()) {
         onSend();
+      }
+    }
+
+    if (e.key === "ArrowUp") {
+      // Only navigate history if at the beginning of the textarea or if single line
+      const isAtStart = inputRef ? inputRef.selectionStart === 0 : true;
+      if (isAtStart) {
+        const historyValue = assistantStore.navigateHistory("up");
+        if (historyValue !== null) {
+          e.preventDefault();
+          onInput(historyValue);
+          // Wait for DOM to update then move cursor to end
+          setTimeout(() => {
+            if (inputRef) {
+              const len = inputRef.value.length;
+              inputRef.setSelectionRange(len, len);
+            }
+          }, 0);
+        }
+      }
+    }
+
+    if (e.key === "ArrowDown") {
+      // Only navigate history if at the end of the textarea
+      const isAtEnd = inputRef
+        ? inputRef.selectionEnd === inputRef.value.length
+        : true;
+      if (isAtEnd) {
+        const historyValue = assistantStore.navigateHistory("down");
+        if (historyValue !== null) {
+          e.preventDefault();
+          onInput(historyValue);
+        }
       }
     }
 

@@ -3,229 +3,257 @@
    * UIIcon - Modern UI icons using Iconify
    * Uses codicon (VS Code icons) and other high-quality icon sets
    */
-  import Icon from '@iconify/svelte';
+  import Icon from "@iconify/svelte";
 
   /** Available UI icon names */
   export type UIIconName =
     // Sidebar / Activity Bar
-    | 'files'
-    | 'search'
-    | 'git-branch'
-    | 'settings'
-    | 'extensions'
-    | 'debug'
-    | 'account'
+    | "files"
+    | "search"
+    | "git-branch"
+    | "settings"
+    | "extensions"
+    | "debug"
+    | "account"
     // File operations
-    | 'folder'
-    | 'folder-open'
-    | 'folder-plus'
-    | 'file'
-    | 'file-plus'
-    | 'new-file'
-    | 'new-folder'
+    | "folder"
+    | "folder-open"
+    | "folder-plus"
+    | "file"
+    | "file-plus"
+    | "new-file"
+    | "new-folder"
     // Actions
-    | 'refresh'
-    | 'plus'
-    | 'minus'
-    | 'close'
-    | 'trash'
-    | 'pencil'
-    | 'save'
-    | 'save-all'
-    | 'copy'
-    | 'paste'
-    | 'cut'
-    | 'undo'
-    | 'redo'
-    | 'replace'
-    | 'replace-all'
+    | "refresh"
+    | "plus"
+    | "minus"
+    | "close"
+    | "trash"
+    | "pencil"
+    | "save"
+    | "save-all"
+    | "copy"
+    | "paste"
+    | "cut"
+    | "undo"
+    | "redo"
+    | "replace"
+    | "replace-all"
     // Navigation
-    | 'chevron-right'
-    | 'chevron-down'
-    | 'chevron-up'
-    | 'chevron-left'
-    | 'arrow-left'
-    | 'arrow-right'
-    | 'collapse-all'
-    | 'expand-all'
+    | "chevron-right"
+    | "chevron-down"
+    | "chevron-up"
+    | "chevron-left"
+    | "arrow-left"
+    | "arrow-right"
+    | "collapse-all"
+    | "expand-all"
     // Status
-    | 'warning'
-    | 'error'
-    | 'info'
-    | 'check'
-    | 'spinner'
-    | 'loading'
+    | "warning"
+    | "error"
+    | "info"
+    | "check"
+    | "spinner"
+    | "loading"
     // Terminal / Output
-    | 'terminal'
-    | 'output'
-    | 'console'
-    | 'clear'
-    | 'split'
-    | 'kill'
+    | "terminal"
+    | "output"
+    | "console"
+    | "clear"
+    | "split"
+    | "kill"
     // Editor
-    | 'code'
-    | 'symbol-class'
-    | 'symbol-method'
-    | 'symbol-property'
-    | 'symbol-variable'
-    | 'symbol-function'
+    | "code"
+    | "symbol-class"
+    | "symbol-method"
+    | "symbol-property"
+    | "symbol-variable"
+    | "symbol-function"
     // Misc
-    | 'bolt'
-    | 'menu'
-    | 'more'
-    | 'filter'
-    | 'pin'
-    | 'unpin'
-    | 'lock'
-    | 'unlock'
-    | 'eye'
-    | 'eye-off'
-    | 'link'
-    | 'external-link'
-    | 'download'
-    | 'upload'
-    | 'sync'
-    | 'clock'
-    | 'history'
-    | 'calendar'
-    | 'star'
-    | 'star-filled'
-    | 'heart'
-    | 'bookmark'
-    | 'tag'
-    | 'home'
-    | 'play'
-    | 'pause'
-    | 'stop'
-    | 'record'
-    | 'cloud'
-    | 'comment'
-    | 'sparkle'
-    | 'robot'
-    | 'send'
-    | 'image'
+    | "bolt"
+    | "menu"
+    | "more"
+    | "filter"
+    | "pin"
+    | "unpin"
+    | "lock"
+    | "unlock"
+    | "eye"
+    | "eye-off"
+    | "link"
+    | "external-link"
+    | "download"
+    | "upload"
+    | "sync"
+    | "clock"
+    | "history"
+    | "calendar"
+    | "star"
+    | "star-filled"
+    | "heart"
+    | "bookmark"
+    | "tag"
+    | "home"
+    | "play"
+    | "pause"
+    | "stop"
+    | "record"
+    | "cloud"
+    | "comment"
+    | "sparkle"
+    | "robot"
+    | "send"
+    | "image"
     // MCP / Connections
-    | 'plug'
-    | 'check-circle'
-    | 'circle'
-    | 'wrench'
+    | "plug"
+    | "check-circle"
+    | "circle"
+    | "wrench"
     // Browser
-    | 'globe'
-    | 'target'
-    | 'screenshot'
-    | 'device-mobile'
-    | 'device-desktop';
+    | "globe"
+    | "target"
+    | "screenshot"
+    | "device-mobile"
+    | "device-desktop"
+    // File Types
+    | "svelte"
+    | "typescript"
+    | "javascript"
+    | "rust"
+    | "python"
+    | "json"
+    | "dart"
+    | "xml"
+    | "yaml"
+    | "markdown"
+    | "css"
+    | "html"
+    | "android";
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
     // Sidebar / Activity Bar - using codicon (VS Code icons)
-    files: 'codicon:files',
-    search: 'codicon:search',
-    'git-branch': 'codicon:source-control',
-    settings: 'codicon:settings-gear',
-    extensions: 'codicon:extensions',
-    debug: 'codicon:debug-alt',
-    account: 'codicon:account',
+    files: "codicon:files",
+    search: "codicon:search",
+    "git-branch": "codicon:source-control",
+    settings: "codicon:settings-gear",
+    extensions: "codicon:extensions",
+    debug: "codicon:debug-alt",
+    account: "codicon:account",
     // File operations
-    folder: 'codicon:folder',
-    'folder-open': 'codicon:folder-opened',
-    'folder-plus': 'codicon:new-folder',
-    file: 'codicon:file',
-    'file-plus': 'codicon:new-file',
-    'new-file': 'codicon:new-file',
-    'new-folder': 'codicon:new-folder',
+    folder: "codicon:folder",
+    "folder-open": "codicon:folder-opened",
+    "folder-plus": "codicon:new-folder",
+    file: "codicon:file",
+    "file-plus": "codicon:new-file",
+    "new-file": "codicon:new-file",
+    "new-folder": "codicon:new-folder",
     // Actions
-    refresh: 'codicon:refresh',
-    plus: 'codicon:add',
-    minus: 'codicon:remove',
-    close: 'codicon:close',
-    trash: 'codicon:trash',
-    pencil: 'codicon:edit',
-    save: 'codicon:save',
-    'save-all': 'codicon:save-all',
-    copy: 'codicon:copy',
-    paste: 'codicon:paste',
-    cut: 'codicon:clippy',
-    undo: 'codicon:discard',
-    redo: 'codicon:redo',
-    replace: 'codicon:replace',
-    'replace-all': 'codicon:replace-all',
+    refresh: "codicon:refresh",
+    plus: "codicon:add",
+    minus: "codicon:remove",
+    close: "codicon:close",
+    trash: "codicon:trash",
+    pencil: "codicon:edit",
+    save: "codicon:save",
+    "save-all": "codicon:save-all",
+    copy: "codicon:copy",
+    paste: "codicon:paste",
+    cut: "codicon:clippy",
+    undo: "codicon:discard",
+    redo: "codicon:redo",
+    replace: "codicon:replace",
+    "replace-all": "codicon:replace-all",
     // Navigation
-    'chevron-right': 'codicon:chevron-right',
-    'chevron-down': 'codicon:chevron-down',
-    'chevron-up': 'codicon:chevron-up',
-    'chevron-left': 'codicon:chevron-left',
-    'arrow-left': 'codicon:arrow-left',
-    'arrow-right': 'codicon:arrow-right',
-    'collapse-all': 'codicon:collapse-all',
-    'expand-all': 'codicon:expand-all',
+    "chevron-right": "codicon:chevron-right",
+    "chevron-down": "codicon:chevron-down",
+    "chevron-up": "codicon:chevron-up",
+    "chevron-left": "codicon:chevron-left",
+    "arrow-left": "codicon:arrow-left",
+    "arrow-right": "codicon:arrow-right",
+    "collapse-all": "codicon:collapse-all",
+    "expand-all": "codicon:expand-all",
     // Status
-    warning: 'codicon:warning',
-    error: 'codicon:error',
-    info: 'codicon:info',
-    check: 'codicon:check',
-    spinner: 'codicon:loading',
-    loading: 'codicon:loading',
+    warning: "codicon:warning",
+    error: "codicon:error",
+    info: "codicon:info",
+    check: "codicon:check",
+    spinner: "codicon:loading",
+    loading: "codicon:loading",
     // Terminal / Output
-    terminal: 'codicon:terminal',
-    output: 'codicon:output',
-    console: 'codicon:debug-console',
-    clear: 'codicon:clear-all',
-    split: 'codicon:split-horizontal',
-    kill: 'codicon:debug-stop',
+    terminal: "codicon:terminal",
+    output: "codicon:output",
+    console: "codicon:debug-console",
+    clear: "codicon:clear-all",
+    split: "codicon:split-horizontal",
+    kill: "codicon:debug-stop",
     // Editor
-    code: 'codicon:code',
-    'symbol-class': 'codicon:symbol-class',
-    'symbol-method': 'codicon:symbol-method',
-    'symbol-property': 'codicon:symbol-property',
-    'symbol-variable': 'codicon:symbol-variable',
-    'symbol-function': 'codicon:symbol-method',
+    code: "codicon:code",
+    "symbol-class": "codicon:symbol-class",
+    "symbol-method": "codicon:symbol-method",
+    "symbol-property": "codicon:symbol-property",
+    "symbol-variable": "codicon:symbol-variable",
+    "symbol-function": "codicon:symbol-method",
     // Misc
-    bolt: 'codicon:zap',
-    menu: 'codicon:menu',
-    more: 'codicon:ellipsis',
-    filter: 'codicon:filter',
-    pin: 'codicon:pin',
-    unpin: 'codicon:pinned',
-    lock: 'codicon:lock',
-    unlock: 'codicon:unlock',
-    eye: 'codicon:eye',
-    'eye-off': 'codicon:eye-closed',
-    link: 'codicon:link',
-    'external-link': 'codicon:link-external',
-    download: 'codicon:cloud-download',
-    upload: 'codicon:cloud-upload',
-    sync: 'codicon:sync',
-    clock: 'codicon:clock',
-    history: 'codicon:history',
-    calendar: 'codicon:calendar',
-    star: 'codicon:star-empty',
-    'star-filled': 'codicon:star-full',
-    heart: 'codicon:heart',
-    bookmark: 'codicon:bookmark',
-    tag: 'codicon:tag',
-    home: 'codicon:home',
-    play: 'codicon:play',
-    pause: 'codicon:debug-pause',
-    stop: 'codicon:debug-stop',
-    record: 'codicon:record',
-    cloud: 'codicon:cloud',
-    comment: 'codicon:comment',
-    sparkle: 'codicon:sparkle',
-    robot: 'codicon:robot',
-    send: 'codicon:send',
-    image: 'codicon:file-media',
+    bolt: "codicon:zap",
+    menu: "codicon:menu",
+    more: "codicon:ellipsis",
+    filter: "codicon:filter",
+    pin: "codicon:pin",
+    unpin: "codicon:pinned",
+    lock: "codicon:lock",
+    unlock: "codicon:unlock",
+    eye: "codicon:eye",
+    "eye-off": "codicon:eye-closed",
+    link: "codicon:link",
+    "external-link": "codicon:link-external",
+    download: "codicon:cloud-download",
+    upload: "codicon:cloud-upload",
+    sync: "codicon:sync",
+    clock: "codicon:clock",
+    history: "codicon:history",
+    calendar: "codicon:calendar",
+    star: "codicon:star-empty",
+    "star-filled": "codicon:star-full",
+    heart: "codicon:heart",
+    bookmark: "codicon:bookmark",
+    tag: "codicon:tag",
+    home: "codicon:home",
+    play: "codicon:play",
+    pause: "codicon:debug-pause",
+    stop: "codicon:debug-stop",
+    record: "codicon:record",
+    cloud: "codicon:cloud",
+    comment: "codicon:comment",
+    sparkle: "codicon:sparkle",
+    robot: "codicon:robot",
+    send: "codicon:send",
+    image: "codicon:file-media",
     // MCP / Connections
-    plug: 'codicon:plug',
-    'check-circle': 'codicon:pass-filled',
-    circle: 'codicon:circle-outline',
-    wrench: 'codicon:wrench',
+    plug: "codicon:plug",
+    "check-circle": "codicon:pass-filled",
+    circle: "codicon:circle-outline",
+    wrench: "codicon:wrench",
     // Browser
-    globe: 'codicon:globe',
-    target: 'codicon:target',
-    screenshot: 'codicon:device-camera',
-    'device-mobile': 'codicon:device-mobile',
-    'device-desktop': 'codicon:device-desktop',
+    globe: "codicon:globe",
+    target: "codicon:target",
+    screenshot: "codicon:device-camera",
+    "device-mobile": "codicon:device-mobile",
+    "device-desktop": "codicon:device-desktop",
+    // File Types
+    svelte: "vscode-icons:file-type-svelte",
+    typescript: "vscode-icons:file-type-typescript-official",
+    javascript: "vscode-icons:file-type-js-official",
+    rust: "vscode-icons:file-type-rust",
+    python: "vscode-icons:file-type-python",
+    json: "vscode-icons:file-type-json",
+    dart: "vscode-icons:file-type-dartlang",
+    xml: "vscode-icons:file-type-xml",
+    yaml: "vscode-icons:file-type-yaml",
+    markdown: "vscode-icons:file-type-markdown",
+    css: "vscode-icons:file-type-css",
+    html: "vscode-icons:file-type-html",
+    android: "vscode-icons:file-type-android",
   };
 
   interface Props {
@@ -237,7 +265,7 @@
 
   let { name, size = 16, title, class: className }: Props = $props();
 
-  const iconName = $derived(ICON_MAP[name] || 'codicon:question');
+  const iconName = $derived(ICON_MAP[name] || "codicon:question");
   const ariaHidden = $derived(!title);
 </script>
 
@@ -245,7 +273,7 @@
   class="ui-icon {className || ''}"
   aria-hidden={ariaHidden}
   aria-label={title}
-  role={title ? 'img' : undefined}
+  role={title ? "img" : undefined}
 >
   {#if title}
     <span class="sr-only">{title}</span>

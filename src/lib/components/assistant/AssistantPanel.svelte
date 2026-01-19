@@ -39,7 +39,10 @@
   import ChatInputBar from "./ChatInputBar.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
-  import { setReviewHighlight, clearReviewHighlight } from "$lib/services/monaco-models";
+  import {
+    setReviewHighlight,
+    clearReviewHighlight,
+  } from "$lib/services/monaco-models";
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
@@ -56,13 +59,17 @@
 
     if (absolutePath) {
       const openFile = editorStore.openFiles.find(
-        (f) => f.path === absolutePath || (typeof relativePath === "string" && f.path.endsWith(relativePath)),
+        (f) =>
+          f.path === absolutePath ||
+          (typeof relativePath === "string" && f.path.endsWith(relativePath)),
       );
       if (openFile) return openFile.path;
     }
 
     if (typeof relativePath === "string") {
-      const openFile = editorStore.openFiles.find((f) => f.path.endsWith(relativePath));
+      const openFile = editorStore.openFiles.find((f) =>
+        f.path.endsWith(relativePath),
+      );
       if (openFile) return openFile.path;
     }
 
@@ -72,29 +79,45 @@
   function applyReviewHighlight(meta: any): string | null {
     const path = getReviewableFilePath(meta);
     if (!path) {
-      console.warn('[applyReviewHighlight] No reviewable file path found for meta:', meta);
+      console.warn(
+        "[applyReviewHighlight] No reviewable file path found for meta:",
+        meta,
+      );
       return null;
     }
 
     const first = meta?.fileEdit?.firstChangedLine;
     const last = meta?.fileEdit?.lastChangedLine;
-    console.log('[applyReviewHighlight] Applying highlight to', path, 'lines', first, '-', last);
-    
+    console.log(
+      "[applyReviewHighlight] Applying highlight to",
+      path,
+      "lines",
+      first,
+      "-",
+      last,
+    );
+
     if (typeof first === "number" && typeof last === "number") {
       const success = setReviewHighlight(path, first, last);
       if (!success) {
-        console.warn('[applyReviewHighlight] setReviewHighlight returned false for', path);
+        console.warn(
+          "[applyReviewHighlight] setReviewHighlight returned false for",
+          path,
+        );
       }
       return path;
     }
     if (typeof first === "number") {
       const success = setReviewHighlight(path, first, first);
       if (!success) {
-        console.warn('[applyReviewHighlight] setReviewHighlight returned false for', path);
+        console.warn(
+          "[applyReviewHighlight] setReviewHighlight returned false for",
+          path,
+        );
       }
       return path;
     }
-    console.warn('[applyReviewHighlight] No line info in meta:', meta);
+    console.warn("[applyReviewHighlight] No line info in meta:", meta);
     return null;
   }
 
@@ -190,13 +213,15 @@
       // 1.5. Add Element Context (hidden from UI, shown as chip)
       for (const el of elementAttachments) {
         const elementContext = `<selected_element>
-Element: <${el.tagName}${el.selector ? ` selector="${el.selector}"` : ''}>
+Element: <${el.tagName}${el.selector ? ` selector="${el.selector}"` : ""}>
 HTML:
 \`\`\`html
 ${el.html}
 \`\`\`
 CSS Properties:
-${Object.entries(el.css).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
+${Object.entries(el.css)
+  .map(([k, v]) => `- ${k}: ${v}`)
+  .join("\n")}
 Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Math.round(el.rect.x)}, ${Math.round(el.rect.y)})
 </selected_element>`;
         parts.push({ type: "text", text: elementContext });
@@ -230,8 +255,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
   async function handleSend(): Promise<void> {
     // Use inputRef value as fallback in case store value is out of sync
-    const content = (assistantStore.inputValue || inputRef?.value || '').trim();
+    const content = (assistantStore.inputValue || inputRef?.value || "").trim();
     if (!content && assistantStore.pendingAttachments.length === 0) return;
+
+    // Add to input history for Up/Down arrow navigation
+    assistantStore.addToHistory(content);
 
     // Cancel any existing stream (cancel-by-default policy)
     if (assistantStore.isStreaming) {
@@ -253,15 +281,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     // Get the selected model for the current mode from AI settings
     const selectedModel =
       aiSettingsStore.modelPerMode[assistantStore.currentMode];
-    
+
     // Get MCP tools info for system prompt
-    const { mcpStore } = await import('$lib/stores/mcp.svelte');
+    const { mcpStore } = await import("$lib/stores/mcp.svelte");
     const mcpToolsInfo = mcpStore.tools.map(({ serverId, tool }) => ({
       serverId,
       toolName: tool.name,
       description: tool.description,
     }));
-    
+
     let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
       provider: "gemini",
@@ -305,7 +333,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     const msgId = assistantStore.addAssistantMessage("", true);
     let fullContent = "";
     let iteration = 0;
-    
+
     // Kiro-style: Track consecutive empty responses to detect stuck model
     let consecutiveEmptyResponses = 0;
     const MAX_EMPTY_RESPONSES = 3;
@@ -341,7 +369,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     let lastLine = "";
     let repeatedLineCount = 0;
     const isDegenerateLineRepeat = (text: string): boolean => {
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const lines = text
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
       const current = lines.length > 0 ? lines[lines.length - 1] : "";
       if (!current) return false;
 
@@ -359,7 +390,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
       const lower = current.toLowerCase();
       if (lower.startsWith("i'll also") || lower.startsWith("i will also")) {
-        const count = (text.toLowerCase().match(/\bi\s*'?ll\s+also\b/g) ?? []).length;
+        const count = (text.toLowerCase().match(/\bi\s*'?ll\s+also\b/g) ?? [])
+          .length;
         if (count >= 10) return true;
       }
 
@@ -409,11 +441,14 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         result: { success: boolean; output?: string; error?: string };
       }>[] = [];
       // Queue for sequential file edits - edits to the same file run one after another
-      const fileEditQueues = new Map<string, Array<{
-        id: string;
-        name: string;
-        args: Record<string, unknown>;
-      }>>();
+      const fileEditQueues = new Map<
+        string,
+        Array<{
+          id: string;
+          name: string;
+          args: Record<string, unknown>;
+        }>
+      >();
       // If the model emits an invalid tool call (e.g. missing required args/meta),
       // we must NOT leave it in a pending state (can deadlock approvals).
       const immediateResults: Array<{
@@ -457,7 +492,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             if (shouldAbortForLeak(chunk.content)) {
               controller.abort();
               showToast({
-                message: "Assistant output contained internal context markers; generation stopped.",
+                message:
+                  "Assistant output contained internal context markers; generation stopped.",
                 type: "warning",
               });
               assistantStore.updateAssistantMessage(
@@ -472,7 +508,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               if (!warnedAboutLooping) {
                 warnedAboutLooping = true;
                 showToast({
-                  message: "Assistant output started repeating, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                  message:
+                    "Assistant output started repeating, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
                   type: "warning",
                 });
               }
@@ -484,7 +521,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               if (!warnedAboutLooping) {
                 warnedAboutLooping = true;
                 showToast({
-                  message: "Assistant output started looping, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                  message:
+                    "Assistant output started looping, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
                   type: "warning",
                 });
               }
@@ -493,17 +531,22 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             }
 
             iterationContent += chunk.content;
+            // End any active thinking part before adding text
+            assistantStore.endThinkingPart(msgId);
             // Stream ALL content to UI immediately (no truncation)
             assistantStore.appendTextToMessage(msgId, chunk.content, true);
           }
 
-          // Handle thinking chunks - display in collapsible UI
+          // Handle thinking chunks - display INLINE (Cursor-style)
           if (chunk.type === "thinking" && chunk.thinking) {
             iterationThinking += chunk.thinking;
-            assistantStore.updateAssistantThinking(msgId, iterationThinking, true);
+            // Append thinking inline to contentParts (creates new thinking block if needed)
+            assistantStore.appendThinkingToMessage(msgId, chunk.thinking);
           }
 
           if (chunk.type === "tool_call" && chunk.toolCall) {
+            // End any active thinking part before adding tool call
+            assistantStore.endThinkingPart(msgId);
             // REMOVED: sawToolCallInThisTurn = true - don't suppress text after tool calls
             const toolCallArgs = chunk.toolCall.arguments;
             const toolCallName = chunk.toolCall.name;
@@ -512,20 +555,26 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
             // DEDUPLICATION: Check if we already have this exact tool call in this iteration
             // This prevents the AI from running the same command twice in one response
-            const isDuplicate = allToolCalls.some(tc => 
-              tc.name === toolCallName && 
-              JSON.stringify(tc.arguments) === JSON.stringify(toolCallArgs)
+            const isDuplicate = allToolCalls.some(
+              (tc) =>
+                tc.name === toolCallName &&
+                JSON.stringify(tc.arguments) === JSON.stringify(toolCallArgs),
             );
-            
+
             if (isDuplicate) {
-              console.log('[Agent] Skipping duplicate tool call:', toolCallName, toolCallArgs);
+              console.log(
+                "[Agent] Skipping duplicate tool call:",
+                toolCallName,
+                toolCallArgs,
+              );
               // Still need to add to allToolCalls for Gemini history, but mark as skipped
               const skipResult = {
                 id: toolCallId,
                 name: toolCallName,
                 result: {
                   success: true,
-                  output: "[Duplicate tool call skipped - already executed in this response]",
+                  output:
+                    "[Duplicate tool call skipped - already executed in this response]",
                 },
               };
               immediateResults.push(skipResult);
@@ -590,7 +639,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   error: validation.error ?? "Invalid tool call",
                 },
               });
-              
+
               // CRITICAL: If a file-modifying tool fails validation, mark it so we can skip
               // running subsequent tools that might depend on it (like eslint after write_file)
               const isFileModifyingTool = [
@@ -601,13 +650,13 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 "delete_path",
                 "delete_paths",
               ].includes(toolCallName);
-              
+
               if (isFileModifyingTool) {
                 // Set a flag to skip running other tools in this batch
                 // This prevents running eslint when write_file failed
                 (immediateResults as any).__fileModifyFailed = true;
               }
-              
+
               continue;
             }
 
@@ -626,7 +675,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 name: toolCallName,
                 result: {
                   success: false,
-                  error: "Skipped: A previous file operation failed. Fix that first before running this tool.",
+                  error:
+                    "Skipped: A previous file operation failed. Fix that first before running this tool.",
                 },
               });
               continue;
@@ -635,19 +685,18 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             if (!validation.requiresApproval && validation.valid) {
               const FILE_EDIT_TOOLS = [
                 "write_file",
-                "create_file", 
+                "create_file",
                 "apply_edit",
                 "str_replace",
                 "append_file",
                 "multi_replace_file_content",
               ];
-              const TERMINAL_TOOLS = [
-                "run_command",
-                "start_process",
-              ];
+              const TERMINAL_TOOLS = ["run_command", "start_process"];
               const isFileEdit = FILE_EDIT_TOOLS.includes(toolCallName);
               const isTerminalCommand = TERMINAL_TOOLS.includes(toolCallName);
-              const filePath = isFileEdit ? String(toolCallArgs.path || '') : null;
+              const filePath = isFileEdit
+                ? String(toolCallArgs.path || "")
+                : null;
 
               // Group file edits by path for sequential execution
               if (isFileEdit && filePath) {
@@ -685,13 +734,18 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                     return { id: toolCallId, name: toolCallName, result };
                   })
                   .catch((err) => {
-                    const error = err instanceof Error ? err.message : String(err);
+                    const error =
+                      err instanceof Error ? err.message : String(err);
                     assistantStore.updateToolCallInMessage(msgId, toolCallId, {
                       status: "failed",
                       error,
                       endTime: Date.now(),
                     });
-                    return { id: toolCallId, name: toolCallName, result: { success: false, error } };
+                    return {
+                      id: toolCallId,
+                      name: toolCallName,
+                      result: { success: false, error },
+                    };
                   });
                 eagerPromises.push(p);
               }
@@ -704,8 +758,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         }
 
         // Finalize thinking state when streaming ends
+        // End any active inline thinking part
+        assistantStore.finalizeThinking(msgId);
         if (iterationThinking) {
-          assistantStore.updateAssistantThinking(msgId, iterationThinking, false);
+          // Also update legacy thinking field for backward compatibility
+          assistantStore.updateAssistantThinking(
+            msgId,
+            iterationThinking,
+            false,
+          );
         }
 
         // All content already streamed to UI, just update fullContent for history
@@ -725,12 +786,17 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         const fileEditResults: Array<{
           id: string;
           name: string;
-          result: { success: boolean; output?: string; error?: string; meta?: any };
+          result: {
+            success: boolean;
+            output?: string;
+            error?: string;
+            meta?: any;
+          };
         }> = [];
-        
+
         for (const [filePath, edits] of fileEditQueues) {
           let previousFailed = false;
-          
+
           for (const edit of edits) {
             // If a previous edit to this file failed, skip remaining edits
             if (previousFailed) {
@@ -742,22 +808,25 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               fileEditResults.push({
                 id: edit.id,
                 name: edit.name,
-                result: { success: false, error: "Skipped: A previous edit to this file failed." },
+                result: {
+                  success: false,
+                  error: "Skipped: A previous edit to this file failed.",
+                },
               });
               continue;
             }
-            
+
             // Update UI to show running
             assistantStore.updateToolCallInMessage(msgId, edit.id, {
               status: "running" as const,
               startTime: Date.now(),
             });
-            
+
             try {
               const result = await executeToolCall(edit.name, edit.args, {
                 signal: controller.signal,
               });
-              
+
               assistantStore.updateToolCallInMessage(msgId, edit.id, {
                 status: result.success ? "completed" : "failed",
                 output: result.output,
@@ -766,11 +835,14 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 data: result.data,
                 endTime: Date.now(),
               });
-              
+
               // Apply review highlight if we have line info
               if (result.success && result.meta) {
                 const metaAny: any = result.meta;
-                if (metaAny?.fileEdit && typeof metaAny?.fileEdit?.firstChangedLine === "number") {
+                if (
+                  metaAny?.fileEdit &&
+                  typeof metaAny?.fileEdit?.firstChangedLine === "number"
+                ) {
                   const highlightPath = applyReviewHighlight(metaAny);
                   if (highlightPath) {
                     assistantStore.updateToolCallInMessage(msgId, edit.id, {
@@ -779,9 +851,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   }
                 }
               }
-              
+
               fileEditResults.push({ id: edit.id, name: edit.name, result });
-              
+
               if (!result.success) {
                 previousFailed = true;
               }
@@ -801,7 +873,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             }
           }
         }
-        
+
         // Combine all results
         const allEagerResults = [...eagerResults, ...fileEditResults];
 
@@ -814,39 +886,44 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           // This can happen with Gemini thinking mode - model thinks but doesn't act
           if (iterationThinking && !iterationContent.trim()) {
             consecutiveEmptyResponses++;
-            
+
             import("$lib/stores/output.svelte").then((m) =>
               m.logOutput(
                 "Volt",
                 `Agent: Model produced thinking but no response (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
               ),
             );
-            
+
             // Check if we've hit max empty responses
             if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
               import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput("Volt", `Agent: Too many empty responses, stopping.`),
+                m.logOutput(
+                  "Volt",
+                  `Agent: Too many empty responses, stopping.`,
+                ),
               );
               assistantStore.updateAssistantMessage(
                 msgId,
-                fullContent || "I apologize, but I'm having trouble generating a response. Please try rephrasing your request.",
+                fullContent ||
+                  "I apologize, but I'm having trouble generating a response. Please try rephrasing your request.",
                 false,
               );
               return;
             }
-            
+
             // Add a continuation prompt to encourage the model to respond
             assistantStore.addToolMessage({
               id: `thinking_continue_${Date.now()}`,
               name: "_system_continuation",
               arguments: {},
               status: "completed",
-              output: "You completed your reasoning but didn't provide a response or take action. Based on your thinking, please now either: (1) call the appropriate tool to execute your plan, or (2) provide a text response to the user. Do NOT remain silent after thinking.",
+              output:
+                "You completed your reasoning but didn't provide a response or take action. Based on your thinking, please now either: (1) call the appropriate tool to execute your plan, or (2) provide a text response to the user. Do NOT remain silent after thinking.",
             });
-            
+
             continue; // Continue to next iteration
           }
-          
+
           // Check if model said it would do something but stopped without calling tools
           // This happens when Gemini stream ends prematurely before emitting tool call
           // Detect phrases like "I'll", "I will", "First,", "Let me" followed by action words
@@ -855,68 +932,79 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             /\bfirst,?\s*(i'll|i will|let me)\b/i,
             /\b(updating|editing|modifying|searching|reading)\s+the\s+/i,
           ];
-          const looksIncomplete = incompleteActionPatterns.some(p => p.test(iterationContent));
-          
+          const looksIncomplete = incompleteActionPatterns.some((p) =>
+            p.test(iterationContent),
+          );
+
           if (looksIncomplete && iterationContent.trim()) {
             consecutiveEmptyResponses++;
-            
+
             import("$lib/stores/output.svelte").then((m) =>
               m.logOutput(
                 "Volt",
                 `Agent: Model said it would act but stopped without tool call (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
               ),
             );
-            
+
             // Check if we've hit max empty responses
             if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
               import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput("Volt", `Agent: Too many incomplete actions, stopping.`),
+                m.logOutput(
+                  "Volt",
+                  `Agent: Too many incomplete actions, stopping.`,
+                ),
               );
               assistantStore.updateAssistantMessage(
                 msgId,
-                fullContent + "\n\n(Stream ended unexpectedly. Please try again.)",
+                fullContent +
+                  "\n\n(Stream ended unexpectedly. Please try again.)",
                 false,
               );
               return;
             }
-            
+
             // Add a continuation prompt to nudge the model to actually call the tool
             assistantStore.addToolMessage({
               id: `incomplete_action_${Date.now()}`,
               name: "_system_continuation",
               arguments: {},
               status: "completed",
-              output: "You said you would take an action but the stream ended before you called any tools. Please NOW call the tool you mentioned. Do not describe what you will do - actually call the tool using function calling.",
+              output:
+                "You said you would take an action but the stream ended before you called any tools. Please NOW call the tool you mentioned. Do not describe what you will do - actually call the tool using function calling.",
             });
-            
+
             continue; // Continue to next iteration
           }
-          
+
           // Check if we just processed tool results but model didn't respond
           // This happens when Gemini decides to stop after seeing tool results
           if (justProcessedToolResults && !iterationContent.trim()) {
             consecutiveEmptyResponses++;
-            
+
             import("$lib/stores/output.svelte").then((m) =>
               m.logOutput(
                 "Volt",
                 `Agent: Model didn't respond after tool results (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
               ),
             );
-            
+
             // Check if we've hit max empty responses
             if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
               import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput("Volt", `Agent: Too many empty responses after tools, stopping.`),
+                m.logOutput(
+                  "Volt",
+                  `Agent: Too many empty responses after tools, stopping.`,
+                ),
               );
               assistantStore.updateAssistantMessage(
                 msgId,
-                fullContent || "The tools completed but I couldn't generate a summary. Please check the tool results above.",
+                fullContent ||
+                  "The tools completed but I couldn't generate a summary. Please check the tool results above.",
                 false,
               );
               return;
             }
-            
+
             // Add a continuation prompt to encourage the model to respond
             // This mimics how other AI IDEs handle silent completions
             assistantStore.addToolMessage({
@@ -924,13 +1012,14 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               name: "_system_continuation",
               arguments: {},
               status: "completed",
-              output: "The tool execution has completed. You MUST now provide a response to the user explaining what happened. If the task succeeded, summarize the result. If it failed, explain why and suggest next steps. Do NOT remain silent.",
+              output:
+                "The tool execution has completed. You MUST now provide a response to the user explaining what happened. If the task succeeded, summarize the result. If it failed, explain why and suggest next steps. Do NOT remain silent.",
             });
-            
+
             justProcessedToolResults = false;
             continue; // Continue to next iteration
           }
-          
+
           // Successful completion with content
           import("$lib/stores/output.svelte").then((m) =>
             m.logOutput(
@@ -941,7 +1030,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           assistantStore.updateAssistantMessage(msgId, fullContent, false);
           return;
         }
-        
+
         // Reset counters since we have tool calls to process
         justProcessedToolResults = false;
         consecutiveEmptyResponses = 0; // Reset on successful tool calls
@@ -964,8 +1053,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
           // Separate terminal commands from other tools for sequential processing
           const TERMINAL_TOOLS = ["run_command", "start_process"];
-          const terminalTools = toolsNeedingApproval.filter(tc => TERMINAL_TOOLS.includes(tc.name));
-          const otherTools = toolsNeedingApproval.filter(tc => !TERMINAL_TOOLS.includes(tc.name));
+          const terminalTools = toolsNeedingApproval.filter((tc) =>
+            TERMINAL_TOOLS.includes(tc.name),
+          );
+          const otherTools = toolsNeedingApproval.filter(
+            (tc) => !TERMINAL_TOOLS.includes(tc.name),
+          );
 
           // Process non-terminal tools in parallel (old behavior)
           if (otherTools.length > 0) {
@@ -1019,13 +1112,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 if (result.success && result.meta) {
                   const metaAny: any = result.meta;
                   const hasFileEdit = metaAny?.fileEdit;
-                  const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
-                  
+                  const hasLineInfo =
+                    typeof metaAny?.fileEdit?.firstChangedLine === "number";
+
                   if (hasFileEdit && hasLineInfo) {
                     const highlightPath = applyReviewHighlight(metaAny);
                     const mergedMeta = {
                       ...metaAny,
-                      ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+                      ...(highlightPath
+                        ? { reviewHighlightPath: highlightPath }
+                        : {}),
                     };
                     assistantStore.updateToolCallInMessage(msgId, tc.id, {
                       meta: mergedMeta,
@@ -1062,7 +1158,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               toolResults.push({
                 id: tc.id,
                 name: tc.name,
-                result: { success: false, error: "Skipped: A previous command failed." },
+                result: {
+                  success: false,
+                  error: "Skipped: A previous command failed.",
+                },
               });
               continue;
             }
@@ -1071,14 +1170,21 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             await waitForToolApprovals(msgId, [tc.id], controller.signal);
             if (controller.signal.aborted) return;
 
-            const currentMsg = assistantStore.messages.find((m) => m.id === msgId);
-            const currentToolCall = currentMsg?.inlineToolCalls?.find((t) => t.id === tc.id);
+            const currentMsg = assistantStore.messages.find(
+              (m) => m.id === msgId,
+            );
+            const currentToolCall = currentMsg?.inlineToolCalls?.find(
+              (t) => t.id === tc.id,
+            );
 
             if (currentToolCall?.status === "cancelled") {
               toolResults.push({
                 id: tc.id,
                 name: tc.name,
-                result: { success: false, error: "Tool execution denied by user" },
+                result: {
+                  success: false,
+                  error: "Tool execution denied by user",
+                },
               });
               previousTerminalFailed = true; // Stop subsequent commands if user denies
               continue;
@@ -1126,27 +1232,34 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
         // Add ALL results to conversation as special tool messages
         addToolResultsToConversation(allToolCalls, toolResults);
-        
+
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
         justProcessedToolResults = true;
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
-        
+
         // Kiro-style: Check if this is a retryable error
-        const isRetryable = /network|timeout|connection|interrupted|503|502|504|429/i.test(msg);
-        
+        const isRetryable =
+          /network|timeout|connection|interrupted|503|502|504|429/i.test(msg);
+
         import("$lib/stores/output.svelte").then((m) =>
-          m.logOutput("Volt", `Agent Loop Error (iteration ${iteration}): ${msg}`),
+          m.logOutput(
+            "Volt",
+            `Agent Loop Error (iteration ${iteration}): ${msg}`,
+          ),
         );
-        
+
         // If retryable and we have content, try to continue
         if (isRetryable && iteration < maxIterations - 1) {
           import("$lib/stores/output.svelte").then((m) =>
-            m.logOutput("Volt", `Retryable error detected, attempting to continue...`),
+            m.logOutput(
+              "Volt",
+              `Retryable error detected, attempting to continue...`,
+            ),
           );
-          
+
           // Add a system message to help model recover
           assistantStore.addToolMessage({
             id: `error_recovery_${Date.now()}`,
@@ -1155,16 +1268,18 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             status: "completed",
             output: `A temporary error occurred: ${msg}. Please continue with your task. If you were in the middle of something, resume from where you left off.`,
           });
-          
+
           // Small delay before retry
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           continue; // Continue to next iteration
         }
-        
+
         // Non-retryable or exhausted retries
         assistantStore.updateAssistantMessage(
           msgId,
-          fullContent ? `${fullContent}\n\n⚠️ Error: ${msg}` : `⚠️ Error: ${msg}`,
+          fullContent
+            ? `${fullContent}\n\n⚠️ Error: ${msg}`
+            : `⚠️ Error: ${msg}`,
           false,
         );
         showToast({ message: msg, type: "error" });
@@ -1292,15 +1407,18 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         if (result.meta) {
           const metaAny: any = result.meta;
           const hasFileEdit = metaAny?.fileEdit;
-          const hasLineInfo = typeof metaAny?.fileEdit?.firstChangedLine === "number";
-          
+          const hasLineInfo =
+            typeof metaAny?.fileEdit?.firstChangedLine === "number";
+
           if (hasFileEdit && hasLineInfo) {
             const highlightPath = applyReviewHighlight(metaAny);
             const beforeContent = metaAny?.fileEdit?.beforeContent;
             assistantStore.updateToolCall(toolCall.id, {
               meta: {
                 ...metaAny,
-                ...(highlightPath ? { reviewHighlightPath: highlightPath } : {}),
+                ...(highlightPath
+                  ? { reviewHighlightPath: highlightPath }
+                  : {}),
               },
             });
           }
@@ -1638,7 +1756,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
         signal: assistantStore.abortController?.signal,
       });
-      
+
       assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
         status: result.success ? "completed" : "failed",
         output: result.output,
@@ -1651,7 +1769,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       // Apply review highlight if applicable
       if (result.success && result.meta) {
         const metaAny: any = result.meta;
-        if (metaAny?.fileEdit && typeof metaAny?.fileEdit?.firstChangedLine === "number") {
+        if (
+          metaAny?.fileEdit &&
+          typeof metaAny?.fileEdit?.firstChangedLine === "number"
+        ) {
           const highlightPath = applyReviewHighlight(metaAny);
           if (highlightPath) {
             assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
@@ -1690,7 +1811,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
   function handleStartImplementation(planContent: string): void {
     // Switch to Agent mode
     assistantStore.setMode("agent");
-    
+
     // Create a prompt that instructs the agent to execute the plan
     const implementationPrompt = `Execute the following implementation plan step by step. Read files as needed, make the changes described, and verify each step works before moving to the next.
 
@@ -1699,13 +1820,13 @@ ${planContent}
 ---
 
 Start implementing now. Work through each step carefully.`;
-    
+
     // Set the input and trigger send
     assistantStore.setInputValue(implementationPrompt);
     if (inputRef) {
       inputRef.value = implementationPrompt;
     }
-    
+
     // Trigger send after a brief delay to ensure UI updates
     setTimeout(() => {
       handleSend();

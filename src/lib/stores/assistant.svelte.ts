@@ -51,10 +51,11 @@ export interface ToolCall {
   reviewStatus?: ToolCallReviewStatus;
 }
 
-// Content part types for interleaved rendering (like Kiro)
+// Content part types for interleaved rendering (like Kiro/Cursor)
 export type ContentPart =
   | { type: 'text'; text: string }
-  | { type: 'tool'; toolCall: ToolCall };
+  | { type: 'tool'; toolCall: ToolCall }
+  | { type: 'thinking'; thinking: string; startTime: number; endTime?: number; title?: string; isActive?: boolean };
 
 // Chat message with attachments
 export interface AssistantMessage {
@@ -332,8 +333,11 @@ class AssistantStore {
   messages = $state<AssistantMessage[]>([]);
 
   // Input state
-  inputValue = $state('');
+  inputValue = $state("");
   attachedContext = $state<AttachedContext[]>([]);
+  inputHistory = $state<string[]>([]);
+  historyIndex = $state(-1); // -1 means current draft
+  draftValue = $state(""); // Stores what the user was typing before navigating history
 
   // New attachment model
   pendingAttachments = $state<MessageAttachment[]>([]);
@@ -447,6 +451,43 @@ class AssistantStore {
   // Mode controls
   setMode(mode: AIMode): void {
     this.currentMode = mode;
+  }
+
+  // History management
+  addToHistory(value: string): void {
+    if (!value.trim()) return;
+    // Don't add duplicate consecutive entries
+    if (this.inputHistory[this.inputHistory.length - 1] === value) return;
+    this.inputHistory = [...this.inputHistory, value];
+    this.historyIndex = -1;
+    this.draftValue = "";
+  }
+
+  navigateHistory(direction: "up" | "down"): string | null {
+    if (this.inputHistory.length === 0) return null;
+
+    if (direction === "up") {
+      // First time pressing up, save the current draft
+      if (this.historyIndex === -1) {
+        this.draftValue = this.inputValue;
+        this.historyIndex = this.inputHistory.length - 1;
+      } else if (this.historyIndex > 0) {
+        this.historyIndex--;
+      }
+      return this.inputHistory[this.historyIndex];
+    } else {
+      // Down
+      if (this.historyIndex === -1) return null;
+
+      if (this.historyIndex < this.inputHistory.length - 1) {
+        this.historyIndex++;
+        return this.inputHistory[this.historyIndex];
+      } else {
+        // Returned to draft
+        this.historyIndex = -1;
+        return this.draftValue;
+      }
+    }
   }
 
   cycleMode(): void {
@@ -629,6 +670,96 @@ class AssistantStore {
       }
       return msg;
     });
+  }
+
+  /**
+   * Add or update thinking content in a message (for inline thinking like Cursor)
+   * Creates a new thinking part if the last part isn't thinking, or appends to it
+   */
+  appendThinkingToMessage(messageId: string, thinking: string): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        const parts = msg.contentParts ?? [];
+        const lastPart = parts[parts.length - 1];
+
+        let newParts: ContentPart[];
+        if (lastPart && lastPart.type === 'thinking' && lastPart.isActive) {
+          // Append to existing active thinking part
+          newParts = [
+            ...parts.slice(0, -1),
+            {
+              type: 'thinking' as const,
+              thinking: lastPart.thinking + thinking,
+              startTime: lastPart.startTime,
+              isActive: true
+            }
+          ];
+        } else {
+          // Create new thinking part
+          newParts = [...parts, {
+            type: 'thinking' as const,
+            thinking,
+            startTime: Date.now(),
+            isActive: true
+          }];
+        }
+
+        // Also update the legacy thinking field (for compatibility)
+        const fullThinking = newParts
+          .filter(p => p.type === 'thinking')
+          .map(p => (p as { type: 'thinking'; thinking: string }).thinking)
+          .join('\n\n');
+
+        return { ...msg, contentParts: newParts, thinking: fullThinking, isThinking: true };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * End the current thinking part (set endTime and title)
+   * Called when thinking ends or when a tool/text part is about to be added
+   */
+  endThinkingPart(messageId: string): void {
+    this.messages = this.messages.map(msg => {
+      if (msg.id === messageId) {
+        const parts = msg.contentParts ?? [];
+
+        const newParts = parts.map(part => {
+          if (part.type === 'thinking' && part.isActive) {
+            // Extract title from first line or first sentence of thinking
+            const thinking = part.thinking;
+            let title = '';
+
+            // Try to extract a meaningful title from the thinking content
+            const lines = thinking.split('\n').filter(l => l.trim());
+            if (lines.length > 0) {
+              // Take first line, limit to 60 chars
+              title = lines[0].slice(0, 60);
+              if (lines[0].length > 60) title += '...';
+            }
+
+            return {
+              ...part,
+              endTime: Date.now(),
+              title: title || 'Reasoning',
+              isActive: false
+            };
+          }
+          return part;
+        });
+
+        return { ...msg, contentParts: newParts, isThinking: false };
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Finalize all thinking in a message (called when streaming ends)
+   */
+  finalizeThinking(messageId: string): void {
+    this.endThinkingPart(messageId);
   }
 
   /**
@@ -859,10 +990,10 @@ class AssistantStore {
     // Remove any existing element attachment (only one at a time)
     this.pendingAttachments = this.pendingAttachments.filter(a => a.type !== 'element');
 
-    const label = element.id 
-      ? `<${element.tagName}#${element.id}>` 
-      : element.classes.length > 0 
-        ? `<${element.tagName}.${element.classes[0]}>` 
+    const label = element.id
+      ? `<${element.tagName}#${element.id}>`
+      : element.classes.length > 0
+        ? `<${element.tagName}.${element.classes[0]}>`
         : `<${element.tagName}>`;
 
     const attachment: ElementAttachment = {
@@ -1029,7 +1160,7 @@ class AssistantStore {
   } {
     // Try model registry first, then fall back to old limits
     const modelConfig = getModelConfig(model);
-    
+
     let maxTokens: number;
     if (modelConfig) {
       maxTokens = modelConfig.contextWindow;
@@ -1041,7 +1172,7 @@ class AssistantStore {
       const limits = MODEL_CONTEXT_LIMITS[normalizedModel] ?? DEFAULT_CONTEXT_LIMIT;
       maxTokens = limits.inputTokens;
     }
-    
+
     const usedChars = this.getConversationContextChars();
     const usedTokens = this.estimateTokens(usedChars);
     const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
