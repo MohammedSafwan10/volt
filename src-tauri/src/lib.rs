@@ -1,7 +1,29 @@
+mod cdp;
 mod commands;
 mod lsp;
-mod cdp;
 
+use cdp::commands::{
+    cdp_attach_to_page, cdp_clear_console, cdp_clear_errors, cdp_clear_network, cdp_click,
+    cdp_connect, cdp_disable_element_picker, cdp_disconnect, cdp_discover_url, cdp_emulate_device,
+    cdp_enable_console, cdp_enable_element_picker, cdp_enable_network, cdp_evaluate,
+    cdp_get_console_logs, cdp_get_content, cdp_get_element, cdp_get_elements, cdp_get_js_errors,
+    cdp_get_network_requests, cdp_get_performance, cdp_get_status, cdp_get_title, cdp_get_url,
+    cdp_is_available, cdp_navigate, cdp_press_key, cdp_screenshot, cdp_screenshot_element,
+    cdp_scroll_by, cdp_scroll_to_element, cdp_set_viewport, cdp_type, cdp_wait_for_selector,
+    CdpState,
+};
+use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
+use commands::browser::{
+    browser_add_bookmark, browser_back, browser_clear_history, browser_close,
+    browser_content_extracted, browser_create, browser_element_selected, browser_execute_js,
+    browser_extract_content, browser_find, browser_find_clear, browser_find_next,
+    browser_find_prev, browser_find_result, browser_forward, browser_generate_code,
+    browser_get_bookmarks, browser_get_history, browser_get_state, browser_hard_reload,
+    browser_hide, browser_navigate, browser_open_devtools, browser_reload, browser_remove_bookmark,
+    browser_screenshot, browser_set_bounds, browser_set_responsive_mode, browser_set_select_mode,
+    browser_set_zoom, browser_show, browser_stop, browser_zoom_in, browser_zoom_out,
+    browser_zoom_reset, BrowserState,
+};
 use commands::file_index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
     FileIndexState,
@@ -21,46 +43,18 @@ use commands::git::{
 };
 use commands::lsp::{
     lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
-    lsp_start_server, lsp_start_external_server, lsp_stop_all, lsp_stop_server, LspManagerState,
+    lsp_start_external_server, lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
 };
 use commands::mcp::{
-    start_mcp_server, stop_mcp_server, stop_all_mcp_servers, call_mcp_tool,
-    get_mcp_servers, get_mcp_tools, get_mcp_config_path, ensure_mcp_config, 
-    read_mcp_config, write_mcp_config, McpState,
-};
-use commands::browser::{
-    browser_create, browser_close, browser_navigate, browser_back, browser_forward,
-    browser_reload, browser_hard_reload, browser_stop, browser_set_select_mode,
-    browser_execute_js, browser_set_bounds, browser_hide, browser_show,
-    browser_zoom_in, browser_zoom_out, browser_zoom_reset, browser_set_zoom,
-    browser_find, browser_find_next, browser_find_prev, browser_find_clear, browser_find_result,
-    browser_extract_content, browser_content_extracted, browser_generate_code,
-    browser_element_selected, browser_get_state,
-    browser_add_bookmark, browser_remove_bookmark, browser_get_bookmarks,
-    browser_get_history, browser_clear_history,
-    browser_set_responsive_mode, browser_open_devtools, browser_screenshot,
-    BrowserState,
-};
-use cdp::commands::{
-    cdp_is_available, cdp_get_status, cdp_discover_url, cdp_connect, cdp_disconnect, cdp_attach_to_page,
-    cdp_enable_console, cdp_enable_network,
-    cdp_get_console_logs, cdp_get_js_errors, cdp_get_network_requests,
-    cdp_clear_console, cdp_clear_errors, cdp_clear_network,
-    cdp_navigate, cdp_get_url, cdp_get_title, cdp_get_content,
-    cdp_click, cdp_type, cdp_press_key, cdp_evaluate,
-    cdp_screenshot, cdp_screenshot_element,
-    cdp_get_element, cdp_get_elements, cdp_wait_for_selector,
-    cdp_scroll_to_element, cdp_scroll_by,
-    cdp_get_performance, cdp_set_viewport, cdp_emulate_device,
-    cdp_enable_element_picker, cdp_disable_element_picker,
-    CdpState,
+    call_mcp_tool, ensure_mcp_config, get_mcp_config_path, get_mcp_servers, get_mcp_tools,
+    read_mcp_config, start_mcp_server, stop_all_mcp_servers, stop_mcp_server, write_mcp_config,
+    McpState,
 };
 use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
 };
-use commands::system::get_system_info;
-use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
+use commands::system::{get_env_var, get_system_info, run_command};
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_list, terminal_resize, terminal_write,
 };
@@ -198,6 +192,8 @@ pub fn run() {
             cdp_disable_element_picker,
             // System
             get_system_info,
+            run_command,
+            get_env_var,
             // Git
             get_git_branch,
             is_git_repo,

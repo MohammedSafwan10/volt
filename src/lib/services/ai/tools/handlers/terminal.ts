@@ -27,10 +27,10 @@ import { truncateOutput, type ToolResult } from '../utils';
 async function getCommandTerminal(cwd?: string): Promise<TerminalSession> {
   // Open terminal panel so user can see what's happening
   uiStore.openBottomPanelTab('terminal');
-  
+
   // Check if there's a running background process
   const hasRunningProcess = [...processes.values()].some(p => p.status === 'running');
-  
+
   if (hasRunningProcess) {
     // Background process is running - create a new terminal for this command
     console.log('[AI Terminal] Background process running, creating new terminal for command');
@@ -38,32 +38,32 @@ async function getCommandTerminal(cwd?: string): Promise<TerminalSession> {
     if (!session) {
       throw new Error('Failed to create terminal session');
     }
-    
+
     // Make it active
     terminalStore.setActive(session.id);
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
     const ready = await session.waitForReady(3000);
     console.log('[AI Terminal] New command terminal ready:', ready);
-    
+
     return session;
   }
-  
+
   // No background process - use the shared AI terminal
   const session = await terminalStore.getOrCreateAiTerminal(cwd);
   if (!session) {
     throw new Error('Failed to create terminal session');
   }
-  
+
   console.log('[AI Terminal] Got session:', session.id);
-  
+
   // Make sure this terminal is active/visible
   terminalStore.setActive(session.id);
   await new Promise(resolve => setTimeout(resolve, 100));
-  
+
   const ready = await session.waitForReady(3000);
   console.log('[AI Terminal] Ready:', ready);
-  
+
   return session;
 }
 
@@ -73,20 +73,20 @@ async function getCommandTerminal(cwd?: string): Promise<TerminalSession> {
  */
 async function getProcessTerminal(cwd?: string): Promise<TerminalSession> {
   uiStore.openBottomPanelTab('terminal');
-  
+
   const session = await terminalStore.getOrCreateAiTerminal(cwd);
   if (!session) {
     throw new Error('Failed to create terminal session');
   }
-  
+
   console.log('[AI Terminal] Got process terminal:', session.id);
-  
+
   terminalStore.setActive(session.id);
   await new Promise(resolve => setTimeout(resolve, 100));
-  
+
   const ready = await session.waitForReady(3000);
   console.log('[AI Terminal] Process terminal ready:', ready);
-  
+
   return session;
 }
 
@@ -151,7 +151,37 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
     /python.*manage\.py\s+runserver/i,
     /python\s+-m\s+http\.server/i,
     /php\s+-S/i,
-    /ruby.*-run/i
+    /ruby.*-run/i,
+    /flutter\s+run/i,
+    /flutter\s+analyze.*--watch/i,
+    // Python servers
+    /uvicorn/i,
+    /gunicorn/i,
+    /streamlit\s+run/i,
+    /celery/i,
+    // Go
+    /go\s+run/i,
+    // Java/Spring
+    /java\s+-jar.*server/i,
+    /gradlew\s+bootRun/i,
+    /mvn\s+spring-boot:run/i,
+    // Rust
+    /cargo\s+run/i,
+    // Rails
+    /rails\s+s/i,
+    /rails\s+server/i,
+    /bundle\s+exec\s+rails\s+s/i,
+    // Databases (interactive)
+    /psql/i,
+    /mysql/i,
+    /mongo/i,
+    /redis-cli/i,
+    // Docker
+    /docker-compose\s+(up|watch)/i,
+    /docker\s+run/i,
+    // General
+    /--watch/i,
+    /serve/i
   ];
 
   const isLongRunning = longRunningPatterns.some(p => p.test(command));
@@ -172,7 +202,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
 
   // Clear previous output for clean capture
   session.clearOutputHistory();
-  
+
   // Small delay to ensure terminal is fully ready
   await new Promise(resolve => setTimeout(resolve, 100));
 
@@ -188,29 +218,29 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
   // Wait for completion
   const output = await waitForCompletion(session, command, timeout);
   console.log('[AI Terminal] Raw output after wait:', output.length, 'chars');
-  
+
   const cleaned = extractOutput(output, command);
   console.log('[AI Terminal] Cleaned output:', cleaned.length, 'chars');
-  
+
   // Don't show "[No output]" as actual output - just leave it empty
   const finalOutput = cleaned === '[No output]' ? '' : cleaned;
-  
+
   const { text, truncated } = truncateOutput(finalOutput);
-  
+
   // Check for common error patterns
   const hasError = /\b(error|failed|exception|not found|ENOENT|EACCES)\b/i.test(cleaned);
-  
+
   // Only include output in result if there's meaningful content
-  const result: ToolResult = { 
+  const result: ToolResult = {
     success: true,
     truncated,
     meta: { hasError }
   };
-  
+
   if (text.trim()) {
     result.output = text;
   }
-  
+
   return result;
 }
 
@@ -237,10 +267,10 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
   try {
     // Get terminal for background process
     const session = await getProcessTerminal(cwd);
-    
+
     // Clear previous output
     session.clearOutputHistory();
-    
+
     // Small delay to ensure terminal is ready
     await new Promise(resolve => setTimeout(resolve, 100));
 
@@ -261,19 +291,19 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
 
     // Wait for initial output (longer for npm/npx commands that may need to install)
     await new Promise(resolve => setTimeout(resolve, 3000));
-    
+
     // Get initial output
     const output = session.getRecentOutput();
     console.log('[AI Terminal] Initial output length:', output.length);
-    
+
     const cleanedOutput = extractCommandOutput(output, command);
     console.log('[AI Terminal] Cleaned output length:', cleanedOutput.length);
-    
+
     // Check if server started successfully
     const hasUrl = /https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(cleanedOutput);
     const hasError = /\b(error|failed|ENOENT|EACCES|cannot find|not found)\b/i.test(cleanedOutput);
     const needsInput = /\(y\/n\)|proceed\?|confirm|install.*\?/i.test(cleanedOutput);
-    
+
     let statusMsg = '';
     if (needsInput) {
       statusMsg = '⚠ Process is waiting for user input - check terminal';
@@ -284,11 +314,11 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     } else {
       statusMsg = 'Process started - check terminal for output';
     }
-    
+
     // Only show output if there's meaningful content (not just prompt/command echo)
     const meaningfulOutput = cleanedOutput.length > 10 ? cleanedOutput : '';
     const outputSection = meaningfulOutput ? `\n\nOutput:\n${meaningfulOutput}` : '';
-    
+
     return {
       success: true,
       output: `Started background process (ID: ${processId})\n${statusMsg}${outputSection}`,
@@ -304,7 +334,7 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
  */
 export async function handleStopProcess(args: Record<string, unknown>): Promise<ToolResult> {
   const processId = Number(args.processId);
-  
+
   if (!processId || isNaN(processId)) {
     return { success: false, error: 'Missing or invalid processId' };
   }
@@ -322,7 +352,7 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
     // Get process terminal and send Ctrl+C
     const session = await getProcessTerminal();
     await session.write('\x03'); // Ctrl+C
-    
+
     proc.status = 'stopped';
     return { success: true, output: `Process ${processId} stopped (sent Ctrl+C)` };
   } catch (err) {
@@ -356,7 +386,7 @@ export async function handleListProcesses(): Promise<ToolResult> {
 export async function handleGetProcessOutput(args: Record<string, unknown>): Promise<ToolResult> {
   const processId = Number(args.processId);
   const maxLines = Number(args.maxLines) || 100;
-  
+
   if (!processId || isNaN(processId)) {
     return { success: false, error: 'Missing or invalid processId' };
   }
@@ -370,32 +400,32 @@ export async function handleGetProcessOutput(args: Record<string, unknown>): Pro
     // Get output from process terminal
     const session = await getProcessTerminal();
     const output = session.getRecentOutput();
-    
+
     console.log('[AI Terminal] getRecentOutput for process', processId);
     console.log('[AI Terminal] Raw output length:', output.length);
-    
+
     if (!output || output.length === 0) {
       // No output yet - give a helpful message
       const elapsed = Date.now() - proc.startTime;
       const elapsedSec = Math.floor(elapsed / 1000);
-      
+
       return {
         success: true,
         output: `Process ${processId} is running (${elapsedSec}s elapsed) but no output captured yet.\n\nThe process may still be starting. You can:\n1. Wait a few seconds and check again\n2. Look at the terminal panel in the UI\n3. Continue with other tasks - the process is running in the background`,
         meta: { processId, status: proc.status, noOutput: true }
       };
     }
-    
+
     const lines = output.split('\n');
     const recent = lines.slice(-maxLines).join('\n');
-    
+
     const cleaned = stripAnsi(recent);
     const { text, truncated } = truncateOutput(cleaned);
 
     // Check for common patterns
     const hasUrl = /https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(text);
     const hasError = /\b(error|failed|ENOENT|EACCES|cannot find|not found)\b/i.test(text);
-    
+
     // Return meaningful output
     const finalOutput = text.trim() || `Process ${processId} is running but output is empty.`;
 
@@ -415,32 +445,32 @@ export async function handleGetProcessOutput(args: Record<string, unknown>): Pro
  */
 export async function handleReadTerminal(args: Record<string, unknown>): Promise<ToolResult> {
   const maxLines = Number(args.maxLines) || 100;
-  
+
   try {
     // Read from process terminal (where background processes run)
     const session = await getProcessTerminal();
     const output = session.getRecentOutput();
-    
+
     console.log('[AI Terminal] readTerminal output length:', output.length);
-    
+
     if (!output || output.length === 0) {
-      return { 
-        success: true, 
+      return {
+        success: true,
         output: 'Terminal is active but no output captured yet. Run a command first or check the terminal panel.',
         meta: { empty: true }
       };
     }
-    
+
     const lines = output.split('\n');
     const recent = lines.slice(-maxLines).join('\n');
-    
+
     const cleaned = stripAnsi(recent);
     const { text, truncated } = truncateOutput(cleaned);
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       output: text || 'Terminal output is empty.',
-      truncated 
+      truncated
     };
   } catch (err) {
     return { success: true, output: 'No terminal session active. Use run_command or start_process to create one.' };
@@ -524,7 +554,7 @@ async function waitForCompletion(
 function isPromptLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  
+
   // PowerShell: PS C:\path>
   if (/^PS\s+.*>\s*$/i.test(trimmed)) return true;
   // PowerShell continuation prompt: >>
@@ -533,7 +563,7 @@ function isPromptLine(line: string): boolean {
   if (/^[A-Z]:\\.*>\s*$/i.test(trimmed)) return true;
   // Unix: ends with $ or #
   if (/[>#$%]\s*$/.test(trimmed) && trimmed.length < 200) return true;
-  
+
   return false;
 }
 
@@ -542,37 +572,37 @@ function isPromptLine(line: string): boolean {
  */
 function extractOutput(capture: string, command: string): string {
   let cleaned = stripAnsi(capture).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  
+
   const lines = cleaned.split('\n');
   const cmdTrimmed = command.trim();
-  
+
   // Find where command was echoed (including continuation lines)
   let startIdx = 0;
   let inCommandEcho = false;
-  
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmedLine = line.trim();
-    
+
     // Check if this line contains the start of the command
     if (line.includes(cmdTrimmed.slice(0, 30))) {
       inCommandEcho = true;
       startIdx = i + 1;
       continue;
     }
-    
+
     // Skip PowerShell continuation prompts (>> lines that are part of command echo)
     if (inCommandEcho && /^>+\s/.test(trimmedLine)) {
       startIdx = i + 1;
       continue;
     }
-    
+
     // If we hit a non-continuation line after command, we're done with echo
     if (inCommandEcho && trimmedLine && !/^>+\s/.test(trimmedLine)) {
       inCommandEcho = false;
     }
   }
-  
+
   // Find where prompt starts (end of output)
   let endIdx = lines.length;
   for (let i = lines.length - 1; i >= startIdx; i--) {
@@ -581,7 +611,7 @@ function extractOutput(capture: string, command: string): string {
       break;
     }
   }
-  
+
   const output = lines.slice(startIdx, endIdx).join('\n').trim();
   return output || '[No output]';
 }
@@ -592,10 +622,10 @@ function extractOutput(capture: string, command: string): string {
  */
 function extractCommandOutput(capture: string, command: string): string {
   let cleaned = stripAnsi(capture).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  
+
   const lines = cleaned.split('\n');
   const cmdTrimmed = command.trim();
-  
+
   // Find where command was echoed
   let startIdx = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -605,7 +635,7 @@ function extractCommandOutput(capture: string, command: string): string {
       startIdx = i + 1;
     }
   }
-  
+
   // Filter out empty lines and prompts from the end
   let endIdx = lines.length;
   for (let i = lines.length - 1; i >= startIdx; i--) {
@@ -616,12 +646,12 @@ function extractCommandOutput(capture: string, command: string): string {
     }
     endIdx = i;
   }
-  
+
   // Get output lines and filter empty ones
   const outputLines = lines.slice(startIdx, endIdx)
     .map(l => l.trimEnd())
     .filter(l => l.length > 0);
-  
+
   return outputLines.join('\n').trim();
 }
 

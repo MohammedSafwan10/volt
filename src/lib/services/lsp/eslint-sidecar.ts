@@ -86,11 +86,16 @@ function getLanguageId(filepath: string): string {
  */
 function pathToUri(filepath: string): string {
   // Handle Windows paths
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${normalizedPath}`;
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
   }
-  return `file://${normalizedPath}`;
+  const encodedPath = encodeURI(normalizedPath);
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    return `file:///${encodedPath}`;
+  }
+  return `file://${encodedPath}`;
 }
 
 /**
@@ -101,6 +106,10 @@ function uriToPath(uri: string): string {
   // Handle Windows paths (file:///C:/...)
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
+  }
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
   }
   // Normalize to forward slashes for consistency with editorStore
   return path.replace(/\\/g, '/');
@@ -123,6 +132,19 @@ function mapSeverity(lspSeverity: number): ProblemSeverity {
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      eslintServerTransport?.sendResponse(id, result);
+    } else {
+      eslintServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
   // Handle notifications
   if ('method' in message && !('id' in message)) {
     if (message.method === 'textDocument/publishDiagnostics') {
@@ -197,7 +219,7 @@ async function initializeServer(): Promise<void> {
   initializationPromise = (async () => {
     try {
       const registry = getLspRegistry();
-      
+
       // Start the ESLint server
       eslintServerTransport = await registry.startServer('eslint', {
         serverId: 'eslint-main',
@@ -223,7 +245,7 @@ async function initializeServer(): Promise<void> {
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
-      
+
       const initResult = await eslintServerTransport.sendRequest('initialize', {
         processId: null,
         rootUri,
@@ -371,13 +393,29 @@ export async function notifyEslintDocumentOpened(filepath: string, content: stri
   // Initialize server if needed
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(normalizedPath);
+  if (existing && existing.content === content) return;
+
   if (!eslintServerTransport || !eslintServerInitialized) return;
 
   const uri = pathToUri(normalizedPath);
   const languageId = getLanguageId(normalizedPath);
 
   // Track document
-  openDocuments.set(normalizedPath, { version: 1, content });
+  openDocuments.set(normalizedPath, { version: existing ? existing.version + 1 : 1, content });
+
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await eslintServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
 
   // Send didOpen notification
   await eslintServerTransport.sendNotification('textDocument/didOpen', {
@@ -419,7 +457,7 @@ export async function notifyEslintDocumentChanged(filepath: string, content: str
 
   diagnosticDebounceTimers.set(normalizedPath, setTimeout(async () => {
     diagnosticDebounceTimers.delete(normalizedPath);
-    
+
     if (!eslintServerTransport || !eslintServerInitialized) return;
 
     // Send didChange notification with full content
@@ -610,15 +648,15 @@ export async function stopEslintLsp(): Promise<void> {
     } catch {
       // Ignore errors during shutdown
     }
-    
+
     await eslintServerTransport.stop();
     eslintServerTransport = null;
   }
-  
+
   eslintServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
-  
+
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
     clearTimeout(timer);
@@ -631,7 +669,7 @@ export async function stopEslintLsp(): Promise<void> {
  */
 export async function restartEslintLsp(): Promise<void> {
   await stopEslintLsp();
-  
+
   // Re-initialize if there's a project open
   if (projectStore.rootPath) {
     await initializeServer();

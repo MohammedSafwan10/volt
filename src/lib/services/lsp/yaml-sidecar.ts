@@ -49,7 +49,12 @@ function getLanguageId(): string {
  * Convert file path to URI
  */
 function pathToUri(filepath: string): string {
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  // Handle Windows paths
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
+  }
   const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
     return `file:///${encodedPath}`;
@@ -61,13 +66,17 @@ function pathToUri(filepath: string): string {
  * Convert URI to file path
  */
 function uriToPath(uri: string): string {
-  let path = uri.replace('file:///', '').replace('file://', '');
-  path = decodeURI(path);
-  // Windows path fix
-  if (path.match(/^[a-zA-Z]:/)) {
-    return path;
+  let path = uri.replace('file://', '');
+  // Handle Windows paths (file:///C:/...)
+  if (path.match(/^\/[a-zA-Z]:/)) {
+    path = path.slice(1);
   }
-  return '/' + path;
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
+  }
+  // Normalize to forward slashes for consistency with editorStore
+  return path.replace(/\\/g, '/');
 }
 
 /**
@@ -107,20 +116,18 @@ export async function initializeServer(): Promise<boolean> {
 
   try {
     console.log('[YAML LSP] Starting server with:', lspInfo.serverPath);
-    
+
     // Start the server via registry
     const registry = getLspRegistry();
     yamlServerTransport = await registry.startServer('yaml', { cwd: rootPath });
-    
+
     if (!yamlServerTransport) {
       console.error('[YAML LSP] Failed to start server');
       return false;
     }
 
-    // Set up message handler for diagnostics
-    yamlServerTransport.onMessage((message) => {
-      handleServerMessage(message);
-    });
+    // Set up message handler
+    yamlServerTransport.onMessage(handleServerMessage);
 
     // Send initialize request
     const initResult = await yamlServerTransport.sendRequest('initialize', {
@@ -213,11 +220,25 @@ export async function initializeServer(): Promise<boolean> {
 /**
  * Handle messages from the server
  */
-function handleServerMessage(message: unknown): void {
-  const msg = message as { method?: string; params?: unknown };
-  
-  if (msg.method === 'textDocument/publishDiagnostics') {
-    handleDiagnostics(msg.params as { uri: string; diagnostics: unknown[] });
+function handleServerMessage(message: any): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      yamlServerTransport?.sendResponse(id, result);
+    } else {
+      yamlServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
+  // Handle notifications
+  if ('method' in message && !('id' in message)) {
+    if (message.method === 'textDocument/publishDiagnostics') {
+      handleDiagnostics(message.params as { uri: string; diagnostics: unknown[] });
+    }
   }
 }
 
@@ -227,7 +248,7 @@ function handleServerMessage(message: unknown): void {
 function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): void {
   const filepath = uriToPath(params.uri);
   const fileName = filepath.split(/[\\/]/).pop() || filepath;
-  
+
   // Map LSP diagnostics to our Problem format
   const problems: Problem[] = params.diagnostics.map((diag: unknown, index: number) => {
     const d = diag as {
@@ -237,14 +258,14 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
       code?: string | number;
       source?: string;
     };
-    
+
     const severityMap: Record<number, ProblemSeverity> = {
       1: 'error',
       2: 'warning',
       3: 'info',
       4: 'hint',
     };
-    
+
     return {
       id: `yaml-${filepath}-${d.range.start.line}-${d.range.start.character}-${index}`,
       file: filepath,
@@ -259,7 +280,7 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
       code: d.code?.toString(),
     };
   });
-  
+
   // Update problems store
   problemsStore.setProblemsForFile(filepath, problems, 'yaml');
 }
@@ -274,13 +295,29 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
   // Initialize server if needed
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!yamlServerTransport || !yamlServerInitialized) return;
 
   const uri = pathToUri(filepath);
   const languageId = getLanguageId();
 
   // Track document
-  openDocuments.set(filepath, { version: 1, content });
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
+
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await yamlServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
 
   // Send didOpen notification
   await yamlServerTransport.sendNotification('textDocument/didOpen', {
@@ -322,9 +359,9 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
     filepath,
     setTimeout(async () => {
       diagnosticDebounceTimers.delete(filepath);
-      
+
       if (!yamlServerTransport || !yamlServerInitialized) return;
-      
+
       await yamlServerTransport.sendNotification('textDocument/didChange', {
         textDocument: {
           uri,
@@ -344,7 +381,7 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!yamlServerTransport || !yamlServerInitialized) return;
 
   openDocuments.delete(filepath);
-  
+
   const timer = diagnosticDebounceTimers.get(filepath);
   if (timer) {
     clearTimeout(timer);

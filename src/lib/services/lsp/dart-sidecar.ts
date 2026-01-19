@@ -30,6 +30,7 @@ let dartServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
 let dartSdkInfo: DartSdkInfo | null = null;
+let isAnalyzing = false;
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -74,7 +75,11 @@ function getLanguageId(filepath: string): string {
  * Convert file path to URI
  */
 function pathToUri(filepath: string): string {
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
+  }
   const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
     return `file:///${encodedPath}`;
@@ -86,11 +91,18 @@ function pathToUri(filepath: string): string {
  * Convert URI to file path
  */
 function uriToPath(uri: string): string {
+  if (!uri.startsWith('file://')) {
+    return uri; // Return as is for package:, dart:, etc.
+  }
   let path = uri.replace('file://', '');
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
   }
-  return path.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
+  }
+  return decodeURIComponent(path).replace(/\\/g, '/');
 }
 
 /**
@@ -110,6 +122,22 @@ function mapSeverity(lspSeverity: number): ProblemSeverity {
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration') {
+      // Respond with default configurations to unblock the server
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      dartServerTransport?.sendResponse(id, result);
+    } else {
+      // Respond with null for other requests to avoid blocking the server's state machine
+      dartServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
+  // Handle server notifications (no id)
   if ('method' in message && !('id' in message)) {
     if (message.method === 'textDocument/publishDiagnostics') {
       handleDiagnostics(message.params as PublishDiagnosticsParams);
@@ -118,10 +146,16 @@ function handleLspMessage(message: JsonRpcMessage): void {
       console.log(`[Dart LSP] ${params.message}`);
     } else if (message.method === 'dart/textDocument/publishClosingLabels') {
       // Dart-specific: closing labels for widgets
-      // Could be used for editor decorations in the future
     } else if (message.method === 'dart/textDocument/publishFlutterOutline') {
       // Dart-specific: Flutter widget outline
-      // Could be used for widget tree view in the future
+    } else if (message.method === '$/analyzerStatus') {
+      isAnalyzing = (message.params as any)?.isAnalyzing || false;
+      console.log(`[Dart LSP] Analysis status: ${isAnalyzing ? 'Analyzing...' : 'Ready'}`);
+    } else if (message.method === '$/progress') {
+      // Progress support
+      const params = message.params as any;
+      if (params.value?.kind === 'begin') isAnalyzing = true;
+      if (params.value?.kind === 'end') isAnalyzing = false;
     }
   }
 }
@@ -184,6 +218,13 @@ export async function getDartSdkInfo(): Promise<DartSdkInfo | null> {
 }
 
 /**
+ * Check if the Dart LSP is ready (initialized and finished initial analysis)
+ */
+export function isDartLspReady(): boolean {
+  return dartServerInitialized && !isAnalyzing;
+}
+
+/**
  * Initialize the Dart language server
  */
 async function initializeServer(): Promise<void> {
@@ -210,7 +251,7 @@ async function initializeServer(): Promise<void> {
   initializationPromise = (async () => {
     try {
       const registry = getLspRegistry();
-      
+
       // Start the Dart server (uses external server mechanism)
       dartServerTransport = await registry.startServer('dart', {
         serverId: 'dart-main',
@@ -237,11 +278,11 @@ async function initializeServer(): Promise<void> {
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
-      
+
       const initResult = await dartServerTransport.sendRequest('initialize', {
         processId: null,
         rootUri,
-        rootPath: projectStore.rootPath,
+        rootPath: projectStore.rootPath?.replace(/\\/g, '/') || null,
         capabilities: {
           textDocument: {
             synchronization: {
@@ -352,7 +393,7 @@ async function initializeServer(): Promise<void> {
         workspaceFolders: [
           {
             uri: rootUri,
-            name: projectStore.projectName
+            name: projectStore.projectName || 'root'
           }
         ],
         initializationOptions: {
@@ -361,6 +402,7 @@ async function initializeServer(): Promise<void> {
           flutterOutline: true, // Enable Flutter widget outline
           outline: true,
           suggestFromUnimportedLibraries: true,
+          onlyAnalyzeProjectsWithOpenFiles: false,
         }
       });
 
@@ -371,7 +413,7 @@ async function initializeServer(): Promise<void> {
 
       dartServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      
+
       console.log('[Dart LSP] Using Dart SDK:', dartSdkInfo);
     } catch (error) {
       console.error('[Dart LSP] Failed to initialize server:', error);
@@ -395,13 +437,29 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
   // Initialize server if needed
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!dartServerTransport || !dartServerInitialized) return;
 
   const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
 
   // Track document
-  openDocuments.set(filepath, { version: 1, content });
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
+
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await dartServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
 
   // Send didOpen notification
   await dartServerTransport.sendNotification('textDocument/didOpen', {
@@ -443,7 +501,7 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
     filepath,
     setTimeout(async () => {
       diagnosticDebounceTimers.delete(filepath);
-      
+
       if (!dartServerTransport || !dartServerInitialized) return;
 
       await dartServerTransport.sendNotification('textDocument/didChange', {
@@ -465,7 +523,7 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!dartServerTransport || !dartServerInitialized) return;
 
   openDocuments.delete(filepath);
-  
+
   const timer = diagnosticDebounceTimers.get(filepath);
   if (timer) {
     clearTimeout(timer);
@@ -479,6 +537,21 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
 
   // Clear diagnostics for this file
   problemsStore.clearProblemsForFile(filepath, 'dart');
+}
+
+/**
+ * Notify the server that a document was saved
+ */
+export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
+  if (!isDartLspFile(filepath)) return;
+  if (!dartServerTransport || !dartServerInitialized) return;
+
+  const uri = pathToUri(filepath);
+
+  await dartServerTransport.sendNotification('textDocument/didSave', {
+    textDocument: { uri },
+    text: content
+  });
 }
 
 /**
@@ -569,6 +642,17 @@ export async function getCodeActions(filepath: string, startLine: number, startC
 }
 
 /**
+ * Get workspace symbols
+ */
+export async function getWorkspaceSymbols(query: string): Promise<any> {
+  if (!dartServerTransport || !dartServerInitialized) return null;
+
+  return dartServerTransport.sendRequest('workspace/symbol', {
+    query
+  });
+}
+
+/**
  * Format document
  */
 export async function formatDocument(filepath: string): Promise<unknown> {
@@ -611,10 +695,46 @@ export async function stopDartLsp(): Promise<void> {
 }
 
 /**
+ * Restart the Dart LSP server
+ */
+export async function restartDartLsp(): Promise<void> {
+  await stopDartLsp();
+  if (projectStore.rootPath) {
+    await initializeServer();
+  }
+}
+
+/**
  * Check if the Dart LSP is running
  */
 export function isDartLspRunning(): boolean {
   return dartServerInitialized && dartServerTransport !== null;
+}
+
+/**
+ * Notify the server about file changes on disk (created, changed, deleted)
+ * Used by the file watcher to keep the LSP in sync with external changes (e.g. AI edits, git)
+ */
+export async function notifyFileChanges(events: Array<{ kind: 'create' | 'change' | 'delete', path: string }>): Promise<void> {
+  if (!dartServerTransport || !dartServerInitialized) return;
+
+  const changes = events.map(event => {
+    let type: 1 | 2 | 3;
+    switch (event.kind) {
+      case 'create': type = 1; break;
+      case 'change': type = 2; break;
+      case 'delete': type = 3; break;
+      default: type = 2;
+    }
+    return {
+      uri: pathToUri(event.path),
+      type
+    };
+  });
+
+  await dartServerTransport.sendNotification('workspace/didChangeWatchedFiles', {
+    changes
+  });
 }
 
 /**

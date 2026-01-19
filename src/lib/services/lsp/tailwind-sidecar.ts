@@ -88,11 +88,16 @@ function getLanguageId(filepath: string): string {
  */
 function pathToUri(filepath: string): string {
   // Handle Windows paths
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${normalizedPath}`;
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
   }
-  return `file://${normalizedPath}`;
+  const encodedPath = encodeURI(normalizedPath);
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    return `file:///${encodedPath}`;
+  }
+  return `file://${encodedPath}`;
 }
 
 /**
@@ -103,6 +108,10 @@ function uriToPath(uri: string): string {
   // Handle Windows paths (file:///C:/...)
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
+  }
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
   }
   // Normalize to forward slashes for consistency with editorStore
   return path.replace(/\\/g, '/');
@@ -125,6 +134,19 @@ function mapSeverity(lspSeverity: number): ProblemSeverity {
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      tailwindServerTransport?.sendResponse(id, result);
+    } else {
+      tailwindServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
   // Handle notifications
   if ('method' in message && !('id' in message)) {
     if (message.method === 'textDocument/publishDiagnostics') {
@@ -193,7 +215,7 @@ async function initializeServer(): Promise<void> {
   initializationPromise = (async () => {
     try {
       const registry = getLspRegistry();
-      
+
       // Start the Tailwind server
       tailwindServerTransport = await registry.startServer('tailwind', {
         serverId: 'tailwind-main',
@@ -219,7 +241,7 @@ async function initializeServer(): Promise<void> {
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
-      
+
       const initResult = await tailwindServerTransport.sendRequest('initialize', {
         processId: null,
         rootUri,
@@ -312,7 +334,7 @@ async function initializeServer(): Promise<void> {
       await tailwindServerTransport.sendNotification('initialized', {});
 
       tailwindServerInitialized = true;
-      
+
       // Register Monaco providers
       registerTailwindMonacoProviders();
     } catch (error) {
@@ -337,13 +359,29 @@ export async function notifyTailwindDocumentOpened(filepath: string, content: st
   // Initialize server if needed
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
   const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
 
   // Track document
-  openDocuments.set(filepath, { version: 1, content });
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
+
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await tailwindServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
 
   // Send didOpen notification
   await tailwindServerTransport.sendNotification('textDocument/didOpen', {
@@ -384,7 +422,7 @@ export async function notifyTailwindDocumentChanged(filepath: string, content: s
 
   diagnosticDebounceTimers.set(filepath, setTimeout(async () => {
     diagnosticDebounceTimers.delete(filepath);
-    
+
     if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
     // Send didChange notification with full content
@@ -456,7 +494,7 @@ export async function getTailwindCompletions(
     );
 
     if (!result) return null;
-    
+
     // Handle both CompletionList and CompletionItem[] responses
     if (Array.isArray(result)) {
       return result;
@@ -628,7 +666,7 @@ export function isTailwindLspConnected(): boolean {
 export async function stopTailwindLsp(): Promise<void> {
   // Dispose Monaco providers first
   disposeTailwindMonacoProviders();
-  
+
   if (tailwindServerTransport) {
     try {
       // Send shutdown request
@@ -638,15 +676,15 @@ export async function stopTailwindLsp(): Promise<void> {
     } catch {
       // Ignore errors during shutdown
     }
-    
+
     await tailwindServerTransport.stop();
     tailwindServerTransport = null;
   }
-  
+
   tailwindServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
-  
+
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
     clearTimeout(timer);
@@ -659,7 +697,7 @@ export async function stopTailwindLsp(): Promise<void> {
  */
 export async function restartTailwindLsp(): Promise<void> {
   await stopTailwindLsp();
-  
+
   // Re-initialize if there's a project open
   if (projectStore.rootPath) {
     await initializeServer();

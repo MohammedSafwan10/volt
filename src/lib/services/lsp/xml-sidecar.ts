@@ -36,22 +36,22 @@ const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>(
 export function isXmlFile(filepath: string): boolean {
   const ext = filepath.split('.').pop()?.toLowerCase() || '';
   const filename = filepath.split(/[\\/]/).pop()?.toLowerCase() || '';
-  
+
   // Standard XML extensions
   if (ext === 'xml' || ext === 'xsd' || ext === 'xsl' || ext === 'xslt' || ext === 'svg') {
     return true;
   }
-  
+
   // iOS plist files
   if (ext === 'plist') {
     return true;
   }
-  
+
   // Android specific files
   if (filename === 'androidmanifest.xml' || filename.endsWith('.xml')) {
     return ext === 'xml';
   }
-  
+
   return false;
 }
 
@@ -71,7 +71,12 @@ function getLanguageId(filepath: string): string {
  * Convert file path to URI
  */
 function pathToUri(filepath: string): string {
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  // Handle Windows paths
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
+  }
   const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
     return `file:///${encodedPath}`;
@@ -83,12 +88,17 @@ function pathToUri(filepath: string): string {
  * Convert URI to file path
  */
 function uriToPath(uri: string): string {
-  let path = uri.replace('file:///', '').replace('file://', '');
-  path = decodeURI(path);
-  if (path.match(/^[a-zA-Z]:/)) {
-    return path;
+  let path = uri.replace('file://', '');
+  // Handle Windows paths (file:///C:/...)
+  if (path.match(/^\/[a-zA-Z]:/)) {
+    path = path.slice(1);
   }
-  return '/' + path;
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
+  }
+  // Normalize to forward slashes for consistency with editorStore
+  return path.replace(/\\/g, '/');
 }
 
 /**
@@ -128,20 +138,18 @@ export async function initializeServer(): Promise<boolean> {
 
   try {
     console.log('[XML LSP] Starting server:', lspInfo);
-    
+
     // Start the server via registry
     const registry = getLspRegistry();
     xmlServerTransport = await registry.startServer('xml', { cwd: rootPath });
-    
+
     if (!xmlServerTransport) {
       console.error('[XML LSP] Failed to start server');
       return false;
     }
 
-    // Set up message handler for diagnostics
-    xmlServerTransport.onMessage((message) => {
-      handleServerMessage(message);
-    });
+    // Set up message handler
+    xmlServerTransport.onMessage(handleServerMessage);
 
     // Send initialize request
     const initResult = await xmlServerTransport.sendRequest('initialize', {
@@ -250,11 +258,25 @@ export async function initializeServer(): Promise<boolean> {
 /**
  * Handle messages from the server
  */
-function handleServerMessage(message: unknown): void {
-  const msg = message as { method?: string; params?: unknown };
-  
-  if (msg.method === 'textDocument/publishDiagnostics') {
-    handleDiagnostics(msg.params as { uri: string; diagnostics: unknown[] });
+function handleServerMessage(message: any): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration' || message.method === 'client/registerCapability') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      xmlServerTransport?.sendResponse(id, result);
+    } else {
+      xmlServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
+  // Handle notifications
+  if ('method' in message && !('id' in message)) {
+    if (message.method === 'textDocument/publishDiagnostics') {
+      handleDiagnostics(message.params as { uri: string; diagnostics: unknown[] });
+    }
   }
 }
 
@@ -264,7 +286,7 @@ function handleServerMessage(message: unknown): void {
 function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): void {
   const filepath = uriToPath(params.uri);
   const fileName = filepath.split(/[\\/]/).pop() || filepath;
-  
+
   const problems: Problem[] = params.diagnostics.map((diag: unknown, index: number) => {
     const d = diag as {
       range: { start: { line: number; character: number }; end: { line: number; character: number } };
@@ -273,14 +295,14 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
       code?: string | number;
       source?: string;
     };
-    
+
     const severityMap: Record<number, ProblemSeverity> = {
       1: 'error',
       2: 'warning',
       3: 'info',
       4: 'hint',
     };
-    
+
     return {
       id: `xml-${filepath}-${d.range.start.line}-${d.range.start.character}-${index}`,
       file: filepath,
@@ -295,7 +317,7 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
       code: d.code?.toString(),
     };
   });
-  
+
   problemsStore.setProblemsForFile(filepath, problems, 'xml');
 }
 
@@ -308,13 +330,31 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
 
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!xmlServerTransport || !xmlServerInitialized) return;
 
   const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
 
-  openDocuments.set(filepath, { version: 1, content });
+  // Track document
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
 
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await xmlServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
+
+  // Send didOpen notification
   await xmlServerTransport.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,
@@ -352,9 +392,9 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
     filepath,
     setTimeout(async () => {
       diagnosticDebounceTimers.delete(filepath);
-      
+
       if (!xmlServerTransport || !xmlServerInitialized) return;
-      
+
       await xmlServerTransport.sendNotification('textDocument/didChange', {
         textDocument: {
           uri,
@@ -374,7 +414,7 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!xmlServerTransport || !xmlServerInitialized) return;
 
   openDocuments.delete(filepath);
-  
+
   const timer = diagnosticDebounceTimers.get(filepath);
   if (timer) {
     clearTimeout(timer);

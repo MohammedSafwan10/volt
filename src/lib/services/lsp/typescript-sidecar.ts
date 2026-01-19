@@ -73,7 +73,11 @@ function getLanguageId(filepath: string): string {
  */
 function pathToUri(filepath: string): string {
   // Handle Windows paths
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
+  }
   const encodedPath = encodeURI(normalizedPath);
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
     return `file:///${encodedPath}`;
@@ -89,6 +93,10 @@ function uriToPath(uri: string): string {
   // Handle Windows paths (file:///C:/...)
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
+  }
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
   }
   // Normalize to forward slashes for consistency with editorStore
   return path.replace(/\\/g, '/');
@@ -111,6 +119,25 @@ function mapSeverity(lspSeverity: number): ProblemSeverity {
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration' || message.method === 'client/registerCapability') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map((item: any) => {
+        // Return default configurations for common TS/JS settings
+        if (item.section === 'typescript' || item.section === 'javascript') {
+          return { format: { enable: true }, suggest: { enabled: true } };
+        }
+        return {};
+      });
+      tsServerTransport?.sendResponse(id, result || [{}]);
+    } else {
+      tsServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
   // Handle notifications
   if ('method' in message && !('id' in message)) {
     if (message.method === 'textDocument/publishDiagnostics') {
@@ -183,7 +210,7 @@ async function initializeServer(): Promise<void> {
   initializationPromise = (async () => {
     try {
       const registry = getLspRegistry();
-      
+
       // Start the TypeScript server
       tsServerTransport = await registry.startServer('typescript', {
         serverId: 'typescript-main',
@@ -210,7 +237,7 @@ async function initializeServer(): Promise<void> {
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
-      
+
       const initResult = await tsServerTransport.sendRequest('initialize', {
         processId: null,
         rootUri,
@@ -344,7 +371,7 @@ async function initializeServer(): Promise<void> {
 
       tsServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      
+
       // Register Monaco providers to use the sidecar for completions/hover/definition
       registerTsMonacoProviders();
     } catch (error) {
@@ -369,13 +396,29 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
   // Initialize server if needed
   await initializeServer();
 
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!tsServerTransport || !tsServerInitialized) return;
 
   const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
 
   // Track document
-  openDocuments.set(filepath, { version: 1, content });
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
+
+  if (existing) {
+    // If it's already open but content changed, send didChange instead
+    await tsServerTransport.sendNotification('textDocument/didChange', {
+      textDocument: {
+        uri,
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
+    });
+    return;
+  }
 
   // Send didOpen notification
   await tsServerTransport.sendNotification('textDocument/didOpen', {
@@ -416,7 +459,7 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
 
   diagnosticDebounceTimers.set(filepath, setTimeout(async () => {
     diagnosticDebounceTimers.delete(filepath);
-    
+
     if (!tsServerTransport || !tsServerInitialized) return;
 
     // Send didChange notification with full content
@@ -487,7 +530,7 @@ export async function getCompletions(
     );
 
     if (!result) return null;
-    
+
     // Handle both CompletionList and CompletionItem[] responses
     if (Array.isArray(result)) {
       return result;
@@ -830,6 +873,25 @@ export async function executeRename(
 }
 
 /**
+ * Request workspace symbols
+ */
+export async function getWorkspaceSymbols(query: string): Promise<any[] | null> {
+  if (!tsServerTransport || !tsServerInitialized) return null;
+
+  try {
+    const result = await tsServerTransport.sendRequest<any[] | null>(
+      'workspace/symbol',
+      { query }
+    );
+
+    return result;
+  } catch (error) {
+    console.error('[TS LSP] Workspace symbol error:', error);
+    return null;
+  }
+}
+
+/**
  * Check if the TypeScript LSP is initialized
  */
 export function isTsLspInitialized(): boolean {
@@ -858,7 +920,7 @@ export async function ensureTsLspStarted(): Promise<void> {
 export async function stopTsLsp(): Promise<void> {
   // Dispose Monaco providers first
   disposeTsMonacoProviders();
-  
+
   if (tsServerTransport) {
     try {
       // Send shutdown request
@@ -868,16 +930,16 @@ export async function stopTsLsp(): Promise<void> {
     } catch {
       // Ignore errors during shutdown
     }
-    
+
     await tsServerTransport.stop();
     tsServerTransport = null;
   }
-  
+
   tsServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
   openDocuments.clear();
-  
+
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
     clearTimeout(timer);
@@ -890,7 +952,7 @@ export async function stopTsLsp(): Promise<void> {
  */
 export async function restartTsLsp(): Promise<void> {
   await stopTsLsp();
-  
+
   // Re-initialize if there's a project open
   if (projectStore.rootPath) {
     await initializeServer();

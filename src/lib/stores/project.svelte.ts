@@ -21,12 +21,14 @@ import {
   indexProject,
   getIndexedRoot,
 } from '$lib/services/file-index';
+import { notifyFileChanges as notifyDartFileChanges } from '$lib/services/lsp/dart-sidecar';
 import {
   startWatching as startFileWatching,
   stopWatching as stopFileWatching,
   onFileChange,
   type FileChangeBatchEvent,
 } from '$lib/services/file-watch';
+import { projectDiagnostics } from '$lib/services/project-diagnostics';
 import { mcpStore } from './mcp.svelte';
 import { editorStore } from './editor.svelte';
 import { terminalStore } from './terminal.svelte';
@@ -133,6 +135,9 @@ class ProjectStore {
     // Start file watching for incremental index updates
     await this.startFileWatching(path);
 
+    // Run project-wide diagnostics (tsc, eslint) in background
+    void projectDiagnostics.runDiagnostics(path);
+
     return true;
   }
 
@@ -206,8 +211,47 @@ class ProjectStore {
             // If we only got the new path, best-effort refresh.
             this.handleFileCreated(absPath, relPath);
             break;
+          case 'modify':
+            // If the file is open in the editor, reload it to show new content
+            // This handles AI edits appearing in real-time
+            const normalizedPath = absPath.replace(/\\/g, '/');
+            // Check if open (using internal array to avoid reactive dependency if possible, but state is fine)
+            if (editorStore.openFiles.some(f => f.path === normalizedPath)) {
+              void editorStore.reloadFile(absPath);
+            }
+            break;
         }
       }
+    }
+
+    // Notify LSPs about file changes (for closed files)
+    // Map internal event types to LSP types: create/modify/delete -> create/change/delete
+    const lspEvents = [];
+    for (const change of batch.changes) {
+      // "modify" in backend -> "change" in our LSP helper
+      const kind = change.kind === 'modify' ? 'change' : (change.kind as 'create' | 'change' | 'delete');
+
+      // Skip renames for simply notifying changed content, handled as delete+create or custom logic usually
+      // For now, treat rename as create of new file for analysis purposes
+      if (change.kind === 'rename') {
+        // handle as create of new path
+        if (change.absolutePaths.length > 1) {
+          lspEvents.push({ kind: 'create' as const, path: change.absolutePaths[1] });
+          lspEvents.push({ kind: 'delete' as const, path: change.absolutePaths[0] });
+        }
+        continue;
+      }
+
+      for (const absPath of change.absolutePaths) {
+        if (kind === 'create' || kind === 'change' || kind === 'delete') {
+          lspEvents.push({ kind, path: absPath });
+        }
+      }
+    }
+
+    if (lspEvents.length > 0) {
+      // Notify Dart LSP
+      void notifyDartFileChanges(lspEvents);
     }
   }
 

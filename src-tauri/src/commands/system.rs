@@ -41,3 +41,55 @@ pub fn get_system_info() -> SystemInfo {
         cpu_brand,
     }
 }
+
+/// Result of running a command
+#[derive(Debug, Serialize)]
+pub struct CommandResult {
+    /// Exit code of the command
+    pub exit_code: i32,
+    /// Standard output
+    pub stdout: String,
+    /// Standard error
+    pub stderr: String,
+}
+
+/// Run a command and capture its output
+#[tauri::command]
+pub async fn run_command(
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<CommandResult, String> {
+    use std::process::Command;
+
+    // On Windows, hide the console window
+    let mut cmd = if cfg!(windows) {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(command);
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        c
+    } else {
+        Command::new(command)
+    };
+
+    if let Some(path) = cwd {
+        cmd.current_dir(path);
+    }
+
+    let output = cmd
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    Ok(CommandResult {
+        exit_code: output.status.code().unwrap_or(0),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+/// Get an environment variable
+#[tauri::command]
+pub fn get_env_var(name: String) -> Option<String> {
+    std::env::var(name).ok()
+}

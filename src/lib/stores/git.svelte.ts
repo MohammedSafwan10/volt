@@ -32,7 +32,7 @@ const STATUS_DEBOUNCE_MS = 300;
 const STATUS_CACHE_MS = 1000;
 
 // File watcher debounce (ms) - longer to batch rapid changes
-const FILE_WATCH_DEBOUNCE_MS = 500;
+const FILE_WATCH_DEBOUNCE_MS = 200;
 
 class GitStore {
 	// Repository state
@@ -62,7 +62,7 @@ class GitStore {
 	private isRefreshing = false;
 	private statusOpId: string | null = null;
 	private diffOpId: string | null = null;
-	
+
 	// File watcher for auto-refresh
 	private fileWatchUnsubscribe: (() => void) | null = null;
 	private fileWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,16 +74,16 @@ class GitStore {
 	conflictedCount = $derived(this.status?.conflicted.length ?? 0);
 	totalChanges = $derived(
 		(this.status?.staged.length ?? 0) +
-			(this.status?.unstaged.length ?? 0) +
-			(this.status?.untracked.length ?? 0) +
-			(this.status?.conflicted.length ?? 0)
+		(this.status?.unstaged.length ?? 0) +
+		(this.status?.untracked.length ?? 0) +
+		(this.status?.conflicted.length ?? 0)
 	);
 	currentBranch = $derived(this.status?.branch ?? null);
 	hasConflicts = $derived(this.status?.hasConflicts ?? false);
 	canCommit = $derived(
 		(this.status?.staged.length ?? 0) > 0 &&
-			this.commitMessage.trim().length > 0 &&
-			!(this.status?.hasConflicts ?? false)
+		this.commitMessage.trim().length > 0 &&
+		!(this.status?.hasConflicts ?? false)
 	);
 
 	/**
@@ -116,37 +116,45 @@ class GitStore {
 		// Register handler for file changes using the file-watch service
 		this.fileWatchUnsubscribe = onFileChange((batch: FileChangeBatchEvent) => {
 			if (!this.isRepo || !this.rootPath) return;
-			
+
 			// Check if any changed file is relevant for git status
 			let shouldRefresh = false;
-			
+
 			for (const change of batch.changes) {
 				for (const changedPath of change.paths) {
-					// Skip .git internal files (index, logs, etc.) - these change during git operations
-					// but we don't want to trigger refresh for them
+					// Handle .git internal files
 					if (changedPath.includes('.git/') || changedPath.includes('.git\\')) {
-						// Only refresh for HEAD changes (branch switch) or refs changes
-						if (changedPath.includes('HEAD') || changedPath.includes('refs/')) {
+						// Refresh for:
+						// - index (staging changes)
+						// - HEAD (branch switch)
+						// - refs/ (branch/tag updates)
+						// - packed-refs (git gc / remote updates)
+						if (
+							changedPath.includes('index') ||
+							changedPath.includes('HEAD') ||
+							changedPath.includes('refs/') ||
+							changedPath.includes('packed-refs')
+						) {
 							shouldRefresh = true;
 							break;
 						}
 						continue;
 					}
-					
+
 					// Any other file change should trigger git status refresh
 					shouldRefresh = true;
 					break;
 				}
 				if (shouldRefresh) break;
 			}
-			
+
 			if (!shouldRefresh) return;
-			
+
 			// Debounce rapid file changes
 			if (this.fileWatchDebounceTimer) {
 				clearTimeout(this.fileWatchDebounceTimer);
 			}
-			
+
 			this.fileWatchDebounceTimer = setTimeout(() => {
 				this.fileWatchDebounceTimer = null;
 				// Force refresh bypassing cache
@@ -161,7 +169,7 @@ class GitStore {
 	 */
 	reset(): void {
 		this.cancelPendingRefresh();
-		
+
 		// Clean up file watcher
 		if (this.fileWatchUnsubscribe) {
 			this.fileWatchUnsubscribe();
@@ -171,7 +179,7 @@ class GitStore {
 			clearTimeout(this.fileWatchDebounceTimer);
 			this.fileWatchDebounceTimer = null;
 		}
-		
+
 		this.status = null;
 		this.branches = [];
 		this.selectedFile = null;
@@ -235,7 +243,7 @@ class GitStore {
 	 */
 	private async doRefresh(): Promise<void> {
 		if (!this.rootPath) return;
-		
+
 		// If already refreshing, wait for it to complete instead of skipping
 		if (this.isRefreshing) {
 			// Wait a bit and check again

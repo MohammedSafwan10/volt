@@ -7,8 +7,8 @@ use notify::{event::ModifyKind, recommended_watcher, RecommendedWatcher, Recursi
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -82,10 +82,9 @@ impl From<notify::Error> for WatchError {
     }
 }
 
-/// Patterns to ignore when watching (common generated/cache directories)
+/// Patterns to ignore completely when watching
 const IGNORE_PATTERNS: &[&str] = &[
     "node_modules",
-    ".git",
     "target",
     "dist",
     "build",
@@ -102,15 +101,39 @@ const IGNORE_PATTERNS: &[&str] = &[
     ".netlify",
 ];
 
+/// Git subdirectories to ignore (internal/noisy)
+const GIT_IGNORE_SUBDIRS: &[&str] = &["objects", "hooks", "logs", "info"];
+
 /// Check if a path should be ignored
 fn should_ignore_path(path: &std::path::Path) -> bool {
+    let mut in_git = false;
     for component in path.components() {
         if let std::path::Component::Normal(name) = component {
             let name_str = name.to_string_lossy();
+
+            // Check global ignore patterns
             for pattern in IGNORE_PATTERNS {
                 if name_str == *pattern {
                     return true;
                 }
+            }
+
+            // Nuanced Git handling
+            if name_str == ".git" {
+                in_git = true;
+                continue;
+            }
+
+            if in_git {
+                // If we are inside .git, ignore large/noisy subdirs
+                for pattern in GIT_IGNORE_SUBDIRS {
+                    if name_str == *pattern {
+                        return true;
+                    }
+                }
+                // Allow anything else inside .git (index, HEAD, refs, etc.)
+                // This is shallow - we want to watch files directly in .git or in refs/
+                return false;
             }
         }
     }
@@ -166,7 +189,7 @@ pub async fn start_file_watch(
     workspace_root: String,
 ) -> Result<(), WatchError> {
     let root_path = PathBuf::from(&workspace_root);
-    
+
     if !root_path.exists() || !root_path.is_dir() {
         return Err(WatchError::InvalidPath {
             path: workspace_root,
@@ -194,7 +217,7 @@ pub async fn start_file_watch(
 
     // Debounce events in a background thread; this avoids flooding the frontend
     // during bursts (git checkout, npm install, etc.).
-    let debounce_window = Duration::from_millis(500);
+    let debounce_window = Duration::from_millis(200);
     let (tx, rx) = mpsc::channel::<Result<notify::Event, notify::Error>>();
 
     let mut watcher = recommended_watcher(move |res| {
@@ -317,12 +340,7 @@ pub async fn start_file_watch(
             .map_err(|_| WatchError::WatcherError {
                 message: "Watcher state lock poisoned".to_string(),
             })?;
-        watchers.insert(
-            workspace_root.clone(),
-            WatcherHandle {
-                _watcher: watcher,
-            },
-        );
+        watchers.insert(workspace_root.clone(), WatcherHandle { _watcher: watcher });
     }
 
     Ok(())
@@ -340,7 +358,7 @@ pub async fn stop_file_watch(
         .map_err(|_| WatchError::WatcherError {
             message: "Watcher state lock poisoned".to_string(),
         })?;
-    
+
     if watchers.remove(&workspace_root).is_some() {
         Ok(())
     } else {

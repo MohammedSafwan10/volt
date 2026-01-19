@@ -15,6 +15,7 @@ import type {
   JsonRpcMessage,
   JsonRpcRequest,
   JsonRpcNotification,
+  JsonRpcResponse,
   MessageHandler,
   ErrorHandler,
   ExitHandler,
@@ -536,6 +537,27 @@ export class LspTransport {
     };
 
     const message = JSON.stringify(notification);
+    await invoke('lsp_send_message', {
+      serverId: this.serverId,
+      message,
+    });
+  }
+
+  /**
+   * Send a JSON-RPC response to a server request
+   */
+  async sendResponse(id: number | string, result: unknown): Promise<void> {
+    if (!this.isConnected) {
+      throw new Error('Transport not connected');
+    }
+
+    const response: JsonRpcResponse = {
+      jsonrpc: '2.0',
+      id,
+      result,
+    };
+
+    const message = JSON.stringify(response);
     await invoke('lsp_send_message', {
       serverId: this.serverId,
       message,

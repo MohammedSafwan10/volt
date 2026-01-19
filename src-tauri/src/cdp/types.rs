@@ -93,6 +93,7 @@ pub struct CdpNetworkResponse {
 
 /// Network error from CDP Network.loadingFailed
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct CdpNetworkError {
     /// Request ID that failed
     pub id: String,

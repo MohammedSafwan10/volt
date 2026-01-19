@@ -50,11 +50,17 @@ function getLanguageId(filepath: string): string {
  * Convert file path to URI
  */
 function pathToUri(filepath: string): string {
-  const normalizedPath = filepath.replace(/\\/g, '/');
+  // Handle Windows paths
+  let normalizedPath = filepath.replace(/\\/g, '/');
+  // Normalize drive letter to lowercase for consistency
   if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${normalizedPath}`;
+    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
   }
-  return `file://${normalizedPath}`;
+  const encodedPath = encodeURI(normalizedPath);
+  if (normalizedPath.match(/^[a-zA-Z]:/)) {
+    return `file:///${encodedPath}`;
+  }
+  return `file://${encodedPath}`;
 }
 
 /**
@@ -62,9 +68,15 @@ function pathToUri(filepath: string): string {
  */
 function uriToPath(uri: string): string {
   let path = uri.replace('file://', '');
+  // Handle Windows paths (file:///C:/...)
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
   }
+  // Normalize drive letter to lowercase for consistency
+  if (path.match(/^[a-zA-Z]:/)) {
+    path = path[0].toLowerCase() + path.slice(1);
+  }
+  // Normalize to forward slashes for consistency with editorStore
   return path.replace(/\\/g, '/');
 }
 
@@ -101,6 +113,20 @@ interface PublishDiagnosticsParams {
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
+  // Handle server requests that require a response
+  if ('id' in message && 'method' in message && message.id !== null) {
+    const id = message.id;
+    if (message.method === 'workspace/configuration') {
+      const items = (message.params as any)?.items || [];
+      const result = items.map(() => ({}));
+      cssServerTransport?.sendResponse(id, result);
+    } else {
+      cssServerTransport?.sendResponse(id, null);
+    }
+    return;
+  }
+
+  // Handle notifications
   if ('method' in message && !('id' in message)) {
     if (message.method === 'textDocument/publishDiagnostics') {
       handleDiagnostics(message.params as PublishDiagnosticsParams);
@@ -143,7 +169,7 @@ async function initializeServer(): Promise<void> {
   initializationPromise = (async () => {
     try {
       const registry = getLspRegistry();
-      
+
       cssServerTransport = await registry.startServer('css', {
         serverId: 'css-main',
         cwd: projectStore.rootPath ?? undefined
@@ -162,7 +188,7 @@ async function initializeServer(): Promise<void> {
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
-      
+
       await cssServerTransport.sendRequest('initialize', {
         processId: null,
         rootUri,
@@ -235,32 +261,42 @@ export async function notifyCssDocumentOpened(filepath: string, content: string)
   if (!isCssFile(filepath)) return;
   if (!projectStore.rootPath) return;
 
+  // Initialize server if needed
   await initializeServer();
+
+  // Don't reopen if already open and content is the same
+  const existing = openDocuments.get(filepath);
+  if (existing && existing.content === content) return;
+
   if (!cssServerTransport || !cssServerInitialized) return;
 
   const uri = pathToUri(filepath);
-  const existing = openDocuments.get(filepath);
+  const languageId = getLanguageId(filepath);
+
+  // Track document
+  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
 
   if (existing) {
-    if (existing.content !== content) {
-      existing.version++;
-      existing.content = content;
-      await cssServerTransport.sendNotification('textDocument/didChange', {
-        textDocument: { uri, version: existing.version },
-        contentChanges: [{ text: content }]
-      });
-    }
-  } else {
-    openDocuments.set(filepath, { version: 1, content });
-    await cssServerTransport.sendNotification('textDocument/didOpen', {
+    // If it's already open but content changed, send didChange instead
+    await cssServerTransport.sendNotification('textDocument/didChange', {
       textDocument: {
         uri,
-        languageId: getLanguageId(filepath),
-        version: 1,
-        text: content
-      }
+        version: existing.version + 1
+      },
+      contentChanges: [{ text: content }]
     });
+    return;
   }
+
+  // Send didOpen notification
+  await cssServerTransport.sendNotification('textDocument/didOpen', {
+    textDocument: {
+      uri,
+      languageId,
+      version: 1,
+      text: content
+    }
+  });
 }
 
 /**

@@ -208,3 +208,24 @@ export {
   registerSvelteMonacoProviders,
   disposeSvelteMonacoProviders
 } from './svelte-monaco-providers';
+
+// Dart LSP Sidecar (real language server for Dart/Flutter)
+export {
+  isDartFile,
+  isDartLspRunning,
+  notifyDocumentOpened as notifyDartDocumentOpened,
+  notifyDocumentChanged as notifyDartDocumentChanged,
+  notifyDocumentSaved as notifyDartDocumentSaved,
+  notifyDocumentClosed as notifyDartDocumentClosed,
+  getCompletions as getDartCompletions,
+  getHover as getDartHover,
+  goToDefinition as getDartDefinition,
+  findReferences as getDartReferences,
+  renameSymbol as renameDartSymbol,
+  getCodeActions as getDartCodeActions,
+  formatDocument as formatDartDocument,
+  getWorkspaceSymbols as getDartWorkspaceSymbols,
+  checkDartSdkAvailable,
+  stopDartLsp,
+  restartDartLsp,
+} from './dart-sidecar';
