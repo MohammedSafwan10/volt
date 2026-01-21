@@ -21,7 +21,8 @@ import {
   indexProject,
   getIndexedRoot,
 } from '$lib/services/file-index';
-import { notifyFileChanges as notifyDartFileChanges } from '$lib/services/lsp/dart-sidecar';
+import { notifyFileChanges as notifyDartFileChanges, startDartLsp } from '$lib/services/lsp/dart-sidecar';
+import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
 import {
   startWatching as startFileWatching,
   stopWatching as stopFileWatching,
@@ -29,9 +30,9 @@ import {
   type FileChangeBatchEvent,
 } from '$lib/services/file-watch';
 import { projectDiagnostics } from '$lib/services/project-diagnostics';
+import { problemsStore } from './problems.svelte';
 import { mcpStore } from './mcp.svelte';
 import { editorStore } from './editor.svelte';
-import { terminalStore } from './terminal.svelte';
 import { gitStore } from './git.svelte';
 import type { FileEntry } from '$lib/types/files';
 import { invoke } from '@tauri-apps/api/core';
@@ -75,8 +76,10 @@ class ProjectStore {
   // Detected package manager for the project
   packageManager = $state<PackageManager>('npm');
 
-  // File watcher cleanup function
+  // File watcher unlisten function
+  private unwatch: UnwatchFn | null = null;
   private unwatchLockFiles: UnwatchFn | null = null;
+  private diagTimer: any = null;
 
   // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
   private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -135,8 +138,20 @@ class ProjectStore {
     // Start file watching for incremental index updates
     await this.startFileWatching(path);
 
+    // Initial project index for Quick Open and project-wide analysis
+    void indexProject(path);
+
     // Run project-wide diagnostics (tsc, eslint) in background
     void projectDiagnostics.runDiagnostics(path);
+
+    // Auto-start Dart LSP for Flutter/Dart projects to enable project-wide diagnostics immediately
+    void (async () => {
+      const pubspecInfo = await getFileInfoQuiet(`${path}/pubspec.yaml`);
+      if (pubspecInfo) {
+        console.log('[ProjectStore] Dart project detected, starting LSP...');
+        await startDartLsp(path);
+      }
+    })();
 
     return true;
   }
@@ -252,6 +267,17 @@ class ProjectStore {
     if (lspEvents.length > 0) {
       // Notify Dart LSP
       void notifyDartFileChanges(lspEvents);
+    }
+
+    // Debounce project-wide diagnostics
+    if (this.rootPath) {
+      if (this.diagTimer) clearTimeout(this.diagTimer);
+      this.diagTimer = setTimeout(() => {
+        if (this.rootPath) {
+          void projectDiagnostics.runDiagnostics(this.rootPath);
+        }
+        this.diagTimer = null;
+      }, 2000); // 2 second debounce
     }
   }
 
@@ -486,10 +512,15 @@ class ProjectStore {
     // Cancel file indexing and clear the index
     await clearIndex(false);
 
+    // Clear all problems
+    problemsStore.clearAll();
+    terminalProblemMatcher.clear();
+
     // Close all open editor tabs (VS Code behavior)
     editorStore.closeAllFiles(true);
 
     // Kill all terminals (VS Code behavior - terminals are project-specific)
+    const { terminalStore } = await import('./terminal.svelte');
     await terminalStore.killAll();
 
     this.rootPath = null;

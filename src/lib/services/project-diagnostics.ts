@@ -39,109 +39,72 @@ export class ProjectDiagnostics {
      * Run diagnostics for a project
      */
     async runDiagnostics(rootPath: string): Promise<void> {
+        // Ensure platform detection is finished
+        await this.checkPlatform();
+
         console.log('[ProjectDiagnostics] Starting project-wide analysis...');
 
         // Run detections in parallel
         await Promise.allSettled([
             this.runTscDiagnostics(rootPath),
             this.runEslintDiagnostics(rootPath),
-            this.runFlutterDiagnostics(rootPath)
+            this.runLspDiagnostics(rootPath)
         ]);
 
         console.log('[ProjectDiagnostics] Analysis complete.');
     }
 
     /**
-     * Run Flutter/Dart analysis
+     * Trigger background analysis in LSP sidecars for non-build project types
+     * (HTML, CSS, standalone JS) - and now Dart/Flutter (LSP only)
      */
-    private async runFlutterDiagnostics(rootPath: string): Promise<void> {
+    private async runLspDiagnostics(rootPath: string): Promise<void> {
         try {
-            if (!await this.fileExists(rootPath, 'pubspec.yaml')) {
-                return;
+            const { indexProject, isIndexReady, isIndexing, getIndexedRoot, getAllFiles } = await import('$lib/services/file-index');
+
+            // Ensure index is ready for THIS root path
+            const currentIndexedRoot = getIndexedRoot();
+            if (rootPath && (currentIndexedRoot !== rootPath || !isIndexReady() || isIndexing())) {
+                console.log('[ProjectDiagnostics] Waiting for file index to be ready for', rootPath);
+                await indexProject(rootPath);
             }
 
-            console.log('[ProjectDiagnostics] Running flutter analyze...');
+            const allFiles = getAllFiles();
+            console.log(`[ProjectDiagnostics] Index ready. Found ${allFiles.length} files in ${rootPath}`);
 
-            const cmd = this.isWindows ? 'flutter.bat' : 'flutter';
-            // --machine outputs format: SEVERITY|TYPE|CODE|FILE|LINE|COL|LENGTH|MESSAGE
-            const args = ['analyze', '--machine'];
+            // Use dynamic imports to avoid circular dependencies
+            const { startProjectWideAnalysis: startCssAnalysis } = await import('./lsp/css-sidecar');
+            const { startProjectWideAnalysis: startHtmlAnalysis } = await import('./lsp/html-sidecar');
+            const { startProjectWideAnalysis: startTsAnalysis } = await import('./lsp/typescript-sidecar');
+            const { startProjectWideAnalysis: startSvelteAnalysis } = await import('./lsp/svelte-sidecar');
+            const { startDartLsp } = await import('./lsp/dart-sidecar');
 
-            const result = await invoke<CommandResult>('run_command', {
-                command: cmd,
-                args,
-                cwd: rootPath
-            });
+            console.log('[ProjectDiagnostics] Starting background LSP analysis discovery...');
 
-            this.parseFlutterOutput(result.stdout, rootPath);
+            const analysisPromises: Promise<any>[] = [
+                startCssAnalysis(),
+                startHtmlAnalysis(),
+                startTsAnalysis(),
+                startSvelteAnalysis()
+            ];
 
+            // Specific check for Dart projects to start LSP (replaces old CLI runFlutterDiagnostics)
+            if (await this.fileExists(rootPath, 'pubspec.yaml')) {
+                console.log('[ProjectDiagnostics] Detected Dart/Flutter project. Starting Dart LSP...');
+                analysisPromises.push(startDartLsp(rootPath));
+            }
+
+            // Start discovery loops
+            await Promise.all(analysisPromises);
+
+            console.log('[ProjectDiagnostics] Background LSP analysis discovery complete.');
         } catch (e) {
-            console.warn('[ProjectDiagnostics] Failed to run flutter analyze:', e);
-        }
-    }
-
-    /**
-     * Parse flutter analyze --machine output
-     */
-    private parseFlutterOutput(output: string, rootPath: string): void {
-        const lines = output.split('\n');
-        const problemsByFile: Record<string, Problem[]> = {};
-
-        for (const line of lines) {
-            if (!line.trim() || !line.includes('|')) continue;
-
-            // Format: SEVERITY|TYPE|CODE|FILE|LINE|COL|LENGTH|MESSAGE
-            const parts = line.split('|');
-            if (parts.length < 8) continue;
-
-            const [severityStr, type, code, filePath, lineStr, colStr, lengthStr, message] = parts;
-
-            // Resolve absolute path. Flutter sometimes returns absolute, sometimes relative.
-            const fullPath = this.resolveAbsolutePath(rootPath, filePath);
-
-            const lineNum = parseInt(lineStr, 10);
-            const colNum = parseInt(colStr, 10);
-
-            const problem: Problem = {
-                id: `flutter-${fullPath}-${lineNum}-${colNum}-${code}`,
-                file: fullPath,
-                fileName: fullPath.split(/[/\\]/).pop() || fullPath,
-                line: lineNum,
-                column: colNum,
-                endLine: lineNum,
-                endColumn: colNum + 1, // approximate
-                severity: severityStr === 'ERROR' ? 'error' : (severityStr === 'WARNING' ? 'warning' : 'info'),
-                message: message.trim(),
-                code: code,
-                source: 'flutter analyze'
-            };
-
-            if (!problemsByFile[fullPath]) {
-                problemsByFile[fullPath] = [];
-            }
-            problemsByFile[fullPath].push(problem);
-        }
-
-        // Update store
-        for (const [path, problems] of Object.entries(problemsByFile)) {
-            problemsStore.setProblemsForFile(path, problems, 'flutter analyze');
+            console.warn('[ProjectDiagnostics] Failed to trigger LSP analysis:', e);
         }
     }
 
     private resolveAbsolutePath(root: string, filePath: string): string {
-        // parsing incoming path
-        let normalizedPath = filePath;
-        if (this.isWindows) {
-            // Handle drive letters if present, e.g. C:\...
-            if (/^[a-zA-Z]:/.test(filePath)) {
-                return filePath.replace(/\//g, '\\');
-            }
-        } else {
-            if (filePath.startsWith('/')) {
-                return filePath;
-            }
-        }
-
-        return this.resolvePath(root, filePath);
+        return this.resolvePath(root, filePath).replace(/\\/g, '/');
     }
 
     /**
@@ -314,9 +277,14 @@ export class ProjectDiagnostics {
         }
     }
 
-    private resolvePath(root: string, relative: string): string {
+    private resolvePath(root: string, path: string): string {
+        // If already absolute, just normalize separators
+        if (path.startsWith('/') || /^[a-zA-Z]:/.test(path)) {
+            return path.replace(/\\/g, '/');
+        }
         const sep = this.isWindows ? '\\' : '/';
-        return `${root}${sep}${relative.replace(/\//g, sep)}`;
+        const abs = `${root}${sep}${path.replace(/\//g, sep)}`;
+        return abs.replace(/\\/g, '/');
     }
 }
 

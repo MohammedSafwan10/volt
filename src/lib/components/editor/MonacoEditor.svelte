@@ -36,6 +36,7 @@
   import { themeStore, getMonacoThemeName } from "$lib/stores/theme.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
+  import { problemsStore, type Problem } from "$lib/stores/problems.svelte";
   import EditorPlaceholder from "./EditorPlaceholder.svelte";
 
   interface Props {
@@ -378,6 +379,45 @@
     } catch {
       // ignore
     }
+  });
+  // Sync problems from store to Monaco markers (squiggles)
+  $effect(() => {
+    if (!editor || !monaco || !filepath) return;
+
+    // Ensure we use the same path normalization as the problemsStore (forward slashes + lowercase drive letter)
+    let normalizedPath = filepath.replace(/\\/g, "/");
+    if (normalizedPath.match(/^[a-zA-Z]:/)) {
+      normalizedPath =
+        normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
+    }
+
+    // React to change in problems for this file
+    const problems = problemsStore.problemsByFile[normalizedPath] || [];
+    const model = editor.getModel();
+    if (!model) return;
+
+    // Convert our Problem type to Monaco IMarkerData
+    const markers: Monaco.editor.IMarkerData[] = problems.map((p: Problem) => ({
+      message: p.message,
+      severity:
+        p.severity === "error"
+          ? monaco!.MarkerSeverity.Error
+          : p.severity === "warning"
+            ? monaco!.MarkerSeverity.Warning
+            : p.severity === "hint"
+              ? monaco!.MarkerSeverity.Hint
+              : monaco!.MarkerSeverity.Info,
+      startLineNumber: p.line,
+      startColumn: p.column,
+      endLineNumber: p.endLine || p.line,
+      endColumn: p.endColumn || p.column + 1,
+      source: p.source,
+      code: p.code,
+    }));
+
+    // Set markers on the model
+    // We use a specific owner name to avoid conflicts with Monaco's built-in markers
+    monaco.editor.setModelMarkers(model, "volt-problems", markers);
   });
 </script>
 

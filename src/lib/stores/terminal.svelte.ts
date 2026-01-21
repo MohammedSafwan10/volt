@@ -4,7 +4,7 @@ import {
 	type TerminalInfo,
 	TerminalSession
 } from '$lib/services/terminal-client';
-import { projectStore } from './project.svelte';
+import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
 
 /**
  * Terminal store for managing terminal sessions
@@ -16,6 +16,12 @@ class TerminalStore {
 	private aiCreatePromise: Promise<TerminalSession | null> | null = null;
 	private sessionLabels = $state<Record<string, string>>({});
 	private aiTerminalId = $state<string | null>(null);
+
+	constructor() {
+		this.syncWithBackend();
+		// Start terminal problem matcher (background service)
+		void terminalProblemMatcher.start();
+	}
 
 	/**
 	 * Get the active terminal session
@@ -37,6 +43,7 @@ class TerminalStore {
 
 		this.createPromise = (async () => {
 			// Use project root as default cwd
+			const { projectStore } = await import('./project.svelte');
 			const workingDir = cwd ?? projectStore.rootPath ?? undefined;
 			console.log('[TerminalStore] Creating terminal in:', workingDir || '(default)');
 

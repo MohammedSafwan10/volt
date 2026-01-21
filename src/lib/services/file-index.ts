@@ -91,11 +91,11 @@ let unlistenError: UnlistenFn | null = null;
 function normalizeFile(file: IndexedFile): NormalizedIndexedFile {
   const nameLower = file.name.toLowerCase();
   const pathLower = file.relativePath.toLowerCase();
-  
+
   // Split path into segments for segment-based matching
   const pathSegments = file.relativePath.split(/[/\\]/).filter(Boolean);
   const pathSegmentsLower = pathSegments.map((s) => s.toLowerCase());
-  
+
   // Find camelCase boundaries (indices where a new "word" starts)
   // Examples:
   // - "MyFile" => [0, 2]
@@ -122,7 +122,7 @@ function normalizeFile(file: IndexedFile): NormalizedIndexedFile {
 
   // Always include index 0 as a boundary
   camelBoundaries.unshift(0);
-  
+
   return {
     ...file,
     nameLower,
@@ -171,15 +171,21 @@ async function cleanupListeners(): Promise<void> {
   }
 }
 
+// Track active indexing promise to allow awaiting completion
+let indexCompletePromise: Promise<void> | null = null;
+let indexCompleteResolver: (() => void) | null = null;
+
 /**
  * Index all files in a project directory using streaming Rust backend
  */
 export async function indexProject(rootPath: string, useCache = true): Promise<void> {
-  // Don't re-index if already indexing the same path
-  if (indexing && indexedRoot === rootPath) return;
-  
   // If already indexed this path and not forcing refresh, skip
-  if (indexedRoot === rootPath && fileIndex.length > 0 && useCache) return;
+  if (indexedRoot === rootPath && fileIndex.length > 0 && useCache && !indexing) return;
+
+  // If already indexing the same path, return the existing promise
+  if (indexing && indexedRoot === rootPath && indexCompletePromise) {
+    return indexCompletePromise;
+  }
 
   // Cancel any previous indexing
   if (indexing && currentRequestId > 0) {
@@ -187,6 +193,9 @@ export async function indexProject(rootPath: string, useCache = true): Promise<v
   }
 
   indexing = true;
+  indexCompletePromise = new Promise((resolve) => {
+    indexCompleteResolver = resolve;
+  });
   indexedRoot = rootPath;
   fileIndex = [];
   fileByPath = new Map();
@@ -201,27 +210,27 @@ export async function indexProject(rootPath: string, useCache = true): Promise<v
     // Set up event listeners
     unlistenChunk = await listen<IndexChunkEvent>('file-index://chunk', (event) => {
       if (event.payload.requestId !== requestId) return;
-      
+
       // Normalize and append new files to index
       const normalizedFiles = event.payload.files.map(normalizeFile);
       for (const file of normalizedFiles) {
         fileByPath.set(file.path, file);
       }
       fileIndex.push(...normalizedFiles);
-      
+
       // Update progress
       indexProgress = { current: fileIndex.length, total: event.payload.totalCount };
-      
+
       indexUpdateTick.update((n) => n + 1);
     });
 
     unlistenDone = await listen<IndexDoneEvent>('file-index://done', (event) => {
       if (event.payload.requestId !== requestId) return;
-      
+
       indexing = false;
       indexTimestamp = Date.now(); // Record when indexing completed
       indexUpdateTick.update((n) => n + 1);
-      
+
       if (event.payload.cancelled) {
         logOutput('Volt', `File indexing cancelled after ${event.payload.durationMs}ms`);
       } else {
@@ -230,33 +239,54 @@ export async function indexProject(rootPath: string, useCache = true): Promise<v
           `Indexed ${event.payload.totalCount} files in ${event.payload.durationMs}ms`
         );
       }
-      
+
+      // Signal completion
+      if (indexCompleteResolver) {
+        indexCompleteResolver();
+        indexCompleteResolver = null;
+      }
+      indexCompletePromise = null;
+
       // Clean up listeners after completion
       void cleanupListeners();
     });
 
     unlistenError = await listen<IndexErrorEvent>('file-index://error', (event) => {
       if (event.payload.requestId !== requestId) return;
-      
+
       indexing = false;
       logOutput('Volt', `File indexing error: ${event.payload.message}`);
 
       indexUpdateTick.update((n) => n + 1);
-      
+
+      if (indexCompleteResolver) {
+        indexCompleteResolver();
+        indexCompleteResolver = null;
+      }
+      indexCompletePromise = null;
+
       void cleanupListeners();
     });
 
-    // Start indexing
-    logOutput('Volt', `Starting file indexing for ${rootPath}...`);
-    
+    // Start indexing backend
     await invoke('index_workspace_stream', {
       rootPath,
       requestId,
       useCache,
     });
+
+    // Wait for the completion signal if caller is awaiting indexProject
+    return indexCompletePromise || Promise.resolve();
   } catch (error) {
     indexing = false;
     logOutput('Volt', `File indexing failed: ${error}`);
+
+    if (indexCompleteResolver) {
+      indexCompleteResolver();
+      indexCompleteResolver = null;
+    }
+    indexCompletePromise = null;
+
     indexUpdateTick.update((n) => n + 1);
     await cleanupListeners();
   }
@@ -267,13 +297,13 @@ export async function indexProject(rootPath: string, useCache = true): Promise<v
  */
 export async function cancelIndexing(): Promise<void> {
   if (!indexing || currentRequestId === 0) return;
-  
+
   try {
     await invoke('cancel_index_workspace', { requestId: currentRequestId });
   } catch {
     // Best-effort cancellation
   }
-  
+
   indexing = false;
   indexUpdateTick.update((n) => n + 1);
   await cleanupListeners();
@@ -284,12 +314,12 @@ export async function cancelIndexing(): Promise<void> {
  */
 export async function clearIndex(clearBackendCache = false): Promise<void> {
   await cancelIndexing();
-  
+
   fileIndex = [];
   fileByPath = new Map();
   indexedRoot = null;
   indexUpdateTick.update((n) => n + 1);
-  
+
   if (clearBackendCache) {
     try {
       await invoke('clear_index_cache', { rootPath: null });
@@ -325,15 +355,15 @@ export function isIndexing(): boolean {
 /**
  * Get index status including progress information
  */
-export function getIndexStatus(): { 
-  count: number; 
-  indexing: boolean; 
+export function getIndexStatus(): {
+  count: number;
+  indexing: boolean;
   rootPath: string | null;
   progress: { current: number; total: number };
 } {
-  return { 
-    count: fileIndex.length, 
-    indexing, 
+  return {
+    count: fileIndex.length,
+    indexing,
     rootPath: indexedRoot,
     progress: indexProgress,
   };
@@ -357,7 +387,7 @@ export async function getBackendIndexStatus(rootPath: string): Promise<IndexStat
  */
 function matchesCamelCase(queryLower: string, nameLower: string, boundaries: number[]): boolean {
   if (boundaries.length < queryLower.length) return false;
-  
+
   let queryIdx = 0;
   for (const boundaryIdx of boundaries) {
     if (queryIdx >= queryLower.length) break;
@@ -376,10 +406,10 @@ function matchesPathSegments(queryLower: string, segments: string[]): number {
   // Split query by / or space to get query segments
   const queryParts = queryLower.split(/[/\\ ]+/).filter(Boolean);
   if (queryParts.length === 0) return 0;
-  
+
   let score = 0;
   let segmentIdx = 0;
-  
+
   for (const queryPart of queryParts) {
     // Find a segment that starts with or contains this query part
     let found = false;
@@ -399,7 +429,7 @@ function matchesPathSegments(queryLower: string, segments: string[]): number {
     }
     if (!found) return 0; // Query part not found in remaining segments
   }
-  
+
   return score;
 }
 
@@ -467,17 +497,17 @@ function fuzzyScore(queryLower: string, file: NormalizedIndexedFile): number {
       // Bonus for consecutive matches
       score += 10 + consecutiveBonus;
       consecutiveBonus += 5;
-      
+
       // Bonus for match at word boundary (after _, -, or camelCase)
       if (i === 0 || camelBoundaries.includes(i) || nameLower[i - 1] === '_' || nameLower[i - 1] === '-') {
         score += 15;
       }
-      
+
       // Penalty for large gaps between matches
       if (lastMatchIdx >= 0 && i - lastMatchIdx > 3) {
         score -= (i - lastMatchIdx - 3) * 2;
       }
-      
+
       lastMatchIdx = i;
       queryIndex++;
     } else {
@@ -514,7 +544,7 @@ function yieldToMain(): Promise<void> {
  */
 export function searchFiles(query: string, recentPaths: string[] = [], limit = 50): IndexedFile[] {
   const trimmedQuery = query.trim();
-  
+
   if (!trimmedQuery) {
     // No query - show recent files first, then some other files
     const recent: IndexedFile[] = [];
@@ -538,7 +568,7 @@ export function searchFiles(query: string, recentPaths: string[] = [], limit = 5
 
   // Precompute lowercase query once (not per-file)
   const queryLower = trimmedQuery.toLowerCase();
-  
+
   const results: Array<{ file: NormalizedIndexedFile; score: number }> = [];
   const recentSet = new Set(recentPaths);
 
@@ -578,7 +608,7 @@ export async function searchFilesAsync(
 ): Promise<IndexedFile[] | null> {
   const searchId = ++currentSearchId;
   const trimmedQuery = query.trim();
-  
+
   // For small indexes or empty query, use sync version
   if (!trimmedQuery || fileIndex.length < ASYNC_SEARCH_THRESHOLD) {
     return searchFiles(query, recentPaths, limit);
@@ -596,7 +626,7 @@ export async function searchFilesAsync(
     }
 
     const end = Math.min(i + SEARCH_BATCH_SIZE, fileIndex.length);
-    
+
     for (let j = i; j < end; j++) {
       const file = fileIndex[j];
       const score = fuzzyScore(queryLower, file);
@@ -675,7 +705,7 @@ export function removeFileFromIndex(absolutePath: string): void {
 
   const initialLength = fileIndex.length;
   fileIndex = fileIndex.filter((f) => f.path !== absolutePath);
-  
+
   if (fileIndex.length !== initialLength) {
     indexUpdateTick.update((n) => n + 1);
   }
@@ -690,7 +720,7 @@ export function updateFileInIndex(
   newRelativePath: string
 ): void {
   const index = fileIndex.findIndex((f) => f.path === oldAbsolutePath);
-  
+
   if (index !== -1) {
     const name = getBasename(newRelativePath);
     const parentDir = getParentDir(newRelativePath);
@@ -701,13 +731,13 @@ export function updateFileInIndex(
       relativePath: newRelativePath,
       parentDir,
     };
-    
+
     // Normalize and update
     const normalized = normalizeFile(updatedFile);
     fileIndex[index] = normalized;
     fileByPath.delete(oldAbsolutePath);
     fileByPath.set(newAbsolutePath, normalized);
-    
+
     // Trigger reactivity by reassigning
     fileIndex = [...fileIndex];
     indexUpdateTick.update((n) => n + 1);
@@ -764,6 +794,18 @@ export function handleFileChangeBatch(
   }
 
   return true;
+}
+
+/**
+ * Get all files in the current index (read-only)
+ */
+export function getAllFiles(): IndexedFile[] {
+  return fileIndex.map((f) => ({
+    name: f.name,
+    path: f.path,
+    relativePath: f.relativePath,
+    parentDir: f.parentDir,
+  }));
 }
 
 /**

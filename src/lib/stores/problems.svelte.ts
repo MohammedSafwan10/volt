@@ -69,12 +69,13 @@ class ProblemsStore {
    * Otherwise replaces all existing problems for that file
    */
   setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
+    console.log(`[ProblemsStore] Setting ${problems.length} problems for ${filePath} from source: ${source || 'unknown'}`);
     if (source) {
       // Merge with existing problems from other sources
       const existingProblems = this.problemsByFile[filePath] || [];
       const otherSourceProblems = existingProblems.filter(p => p.source !== source);
       const mergedProblems = [...otherSourceProblems, ...problems];
-      
+
       if (mergedProblems.length === 0) {
         const { [filePath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;
@@ -106,7 +107,7 @@ class ProblemsStore {
     if (source) {
       const existingProblems = this.problemsByFile[filePath] || [];
       const remainingProblems = existingProblems.filter(p => p.source !== source);
-      
+
       if (remainingProblems.length === 0) {
         const { [filePath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;

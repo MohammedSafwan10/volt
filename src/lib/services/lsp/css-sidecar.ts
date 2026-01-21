@@ -461,3 +461,43 @@ export async function stopCssLsp(): Promise<void> {
   initializationPromise = null;
   openDocuments.clear();
 }
+
+/**
+ * Perform background analysis of all CSS files in the project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps if any
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const cssFiles = allFiles.filter(f => isCssFile(f.path));
+
+  if (cssFiles.length === 0) {
+    console.log('[CSS LSP] No CSS/SCSS files found for background analysis.');
+    return;
+  }
+
+  console.log(`[CSS LSP] Starting project-wide analysis of ${cssFiles.length} files...`);
+
+  // Process in small batches to avoid blocking
+  for (const file of cssFiles) {
+    console.log(`[CSS LSP] Background analyzing: ${file.path}`);
+    // Only open if not already open (prevent double-counting)
+    if (openDocuments.has(file.path)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      // This will automatically initialize server if needed
+      await notifyCssDocumentOpened(file.path, content);
+      console.log(`[CSS LSP] Sent ${file.path} to server`);
+
+      // If we've opened many files, yield to event loop
+      if (cssFiles.indexOf(file) % 5 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+}

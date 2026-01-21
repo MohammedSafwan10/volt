@@ -135,6 +135,8 @@ class LspRegistry {
       cwd?: string;
       env?: Record<string, string>;
       health?: HealthConfig;
+      command?: string;
+      args?: string[];
     }
   ): Promise<LspTransport> {
     const serverId = options?.serverId ?? `${serverType}-${Date.now()}`;
@@ -149,8 +151,10 @@ class LspRegistry {
 
     // Check if this is an external server type
     if (isExternalServerType(serverType)) {
-      // Try dynamic config first (for yaml, xml)
-      let externalConfig = await getDynamicExternalConfig(serverType);
+      // Use provided command/args if available, otherwise try dynamic then static config
+      let externalConfig: ExternalConfig | null = (options?.command)
+        ? { command: options.command, args: options.args ?? [] }
+        : await getDynamicExternalConfig(serverType);
 
       // Fall back to static config (for dart)
       if (!externalConfig) {

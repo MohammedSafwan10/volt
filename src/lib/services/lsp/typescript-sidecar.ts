@@ -959,6 +959,46 @@ export async function restartTsLsp(): Promise<void> {
   }
 }
 
+/**
+ * Perform background analysis of all TS/JS files in the project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps if any
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const tsJsFiles = allFiles.filter(f => isTsJsFile(f.path));
+
+  if (tsJsFiles.length === 0) {
+    console.log('[TS LSP] No JS/TS files found for background analysis.');
+    return;
+  }
+
+  console.log(`[TS LSP] Starting project-wide analysis of ${tsJsFiles.length} files...`);
+
+  // Process in small batches to avoid blocking
+  for (const file of tsJsFiles) {
+    console.log(`[TS LSP] Background analyzing: ${file.path}`);
+    // Only open if not already open (prevent double-counting)
+    if (openDocuments.has(file.path)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      // This will automatically initialize server if needed
+      await notifyDocumentOpened(file.path, content);
+      console.log(`[TS LSP] Sent ${file.path} to server`);
+
+      // If we've opened many files, yield to event loop
+      if (tsJsFiles.indexOf(file) % 5 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+}
+
 // Export types for external use
 export type {
   CompletionItem,

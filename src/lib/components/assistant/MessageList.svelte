@@ -4,7 +4,11 @@
    * Renders user/assistant messages with auto-scroll
    */
   import { UIIcon } from "$lib/components/ui";
-  import type { AssistantMessage, ToolCall, ImageAttachment } from "$lib/stores/assistant.svelte";
+  import type {
+    AssistantMessage,
+    ToolCall,
+    ImageAttachment,
+  } from "$lib/stores/assistant.svelte";
   import type { AIMode } from "$lib/stores/ai.svelte";
   import EmptyState from "./EmptyState.svelte";
   import UserMessage from "./UserMessage.svelte";
@@ -31,10 +35,10 @@
 
   // Image preview state
   let previewImage = $state<{ src: string; alt: string } | null>(null);
-  
+
   // Expanded messages state
   let expandedMessages = $state<Record<string, boolean>>({});
-  
+
   // Scroll state
   let containerRef: HTMLDivElement | undefined = $state();
   let userNearBottom = $state(true);
@@ -64,7 +68,10 @@
   }
 
   function jumpToBottom(): void {
-    containerRef?.scrollTo({ top: containerRef.scrollHeight, behavior: "smooth" });
+    containerRef?.scrollTo({
+      top: containerRef.scrollHeight,
+      behavior: "smooth",
+    });
     showJumpButton = false;
     userNearBottom = true;
   }
@@ -97,10 +104,14 @@
     return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${seconds}s`;
   }
 
-  function getMessageElapsedTime(message: AssistantMessage, index: number): string | null {
-    if (message.role !== 'assistant' || message.isStreaming || !message.endTime) return null;
+  function getMessageElapsedTime(
+    message: AssistantMessage,
+    index: number,
+  ): string | null {
+    if (message.role !== "assistant" || message.isStreaming || !message.endTime)
+      return null;
     for (let i = index - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
+      if (messages[i].role === "user") {
         return formatElapsedTime(messages[i].timestamp, message.endTime);
       }
     }
@@ -110,11 +121,11 @@
   // Plan mode: check for plan file
   function findPlanFileCreated(): { filename: string; content: string } | null {
     for (const msg of messages) {
-      if (msg.role !== 'assistant') continue;
+      if (msg.role !== "assistant") continue;
       for (const part of msg.contentParts ?? []) {
-        if (part.type !== 'tool') continue;
+        if (part.type !== "tool") continue;
         const tc = part.toolCall;
-        if (tc.name === 'write_plan_file' && tc.status === 'completed') {
+        if (tc.name === "write_plan_file" && tc.status === "completed") {
           const content = tc.arguments.content as string;
           const filename = tc.arguments.filename as string;
           if (content && filename) return { filename, content };
@@ -125,7 +136,7 @@
   }
 
   const showStartImplementation = $derived.by(() => {
-    if (currentMode !== 'plan') return false;
+    if (currentMode !== "plan") return false;
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.isStreaming) return false;
     return findPlanFileCreated() !== null;
@@ -138,7 +149,13 @@
 </script>
 
 <div class="message-list-wrapper">
-  <div class="message-list" bind:this={containerRef} onscroll={handleScroll} role="log" aria-live="polite">
+  <div
+    class="message-list"
+    bind:this={containerRef}
+    onscroll={handleScroll}
+    role="log"
+    aria-live="polite"
+  >
     {#if messages.length === 0}
       <EmptyState {currentMode} />
     {:else}
@@ -161,27 +178,43 @@
         {/if}
       {/each}
     {/if}
-    
+
     {#if showStartImplementation}
       <div class="start-implementation-wrapper">
-        <button class="start-implementation-btn" onclick={handleStartImplementation} type="button">
+        <button
+          class="start-implementation-btn"
+          onclick={handleStartImplementation}
+          type="button"
+        >
           <UIIcon name="robot" size={16} />
           <span>Start Implementation</span>
           <UIIcon name="arrow-right" size={14} />
         </button>
-        <p class="implementation-hint">Switch to Agent mode and execute the plan</p>
+        <p class="implementation-hint">
+          Switch to Agent mode and execute the plan
+        </p>
       </div>
     {/if}
   </div>
 
   {#if showJumpButton && messages.length > 0}
-    <button class="jump-to-bottom" onclick={jumpToBottom} title="Jump to bottom" aria-label="Jump to latest message" type="button">
+    <button
+      class="jump-to-bottom"
+      onclick={jumpToBottom}
+      title="Jump to bottom"
+      aria-label="Jump to latest message"
+      type="button"
+    >
       <UIIcon name="chevron-down" size={14} />
     </button>
   {/if}
 
   {#if previewImage}
-    <ImagePreviewModal src={previewImage.src} alt={previewImage.alt} onClose={closeImagePreview} />
+    <ImagePreviewModal
+      src={previewImage.src}
+      alt={previewImage.alt}
+      onClose={closeImagePreview}
+    />
   {/if}
 </div>
 
@@ -199,6 +232,8 @@
     overflow-y: auto;
     height: 100%;
     gap: 12px;
+    /* Prevent browser from anchoring scroll to top elements during streaming updates */
+    overflow-anchor: none;
   }
 
   .jump-to-bottom {
@@ -225,8 +260,12 @@
   }
 
   @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 
   .start-implementation-wrapper {

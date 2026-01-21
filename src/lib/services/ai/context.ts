@@ -25,6 +25,7 @@
 import { editorStore } from '$lib/stores/editor.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
 import { terminalStore } from '$lib/stores/terminal.svelte';
+import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
 import { activityStore } from '$lib/stores/activity.svelte';
 import { readFileQuiet } from '$lib/services/file-system';
 import { contextEventsStore } from '$lib/stores/context-events.svelte';
@@ -79,6 +80,8 @@ export interface SmartContext {
   terminalOutput?: string;
   /** Git status if relevant */
   gitContext?: string;
+  /** Diagnostic problems (errors, warnings) */
+  problems?: string;
   /** Workspace root */
   workspaceRoot?: string;
   /** Files already in context (prevents re-reading) */
@@ -111,6 +114,7 @@ const CONFIG = {
     relatedFiles: 0.50,
     terminal: 0.10,
     git: 0.07,
+    problems: 0.15,
   },
   /** Per-file size limits */
   FILE_LIMITS: {
@@ -465,7 +469,7 @@ function scoreFileRelevance(
 
   // 2. SYMBOL MATCH (very high priority)
   for (const targetSymbol of ctx.intent.targetSymbols) {
-    const matchingSymbol = symbols.find(s => 
+    const matchingSymbol = symbols.find(s =>
       s.name.toLowerCase() === targetSymbol.toLowerCase() ||
       s.name.includes(targetSymbol) ||
       targetSymbol.includes(s.name)
@@ -777,7 +781,7 @@ async function findFilesWithSymbols(
     if (exclude.has(path)) continue;
 
     for (const symbol of symbols) {
-      const match = entry.symbols.find(s => 
+      const match = entry.symbols.find(s =>
         s.name.toLowerCase().includes(symbol.toLowerCase()) ||
         symbol.toLowerCase().includes(s.name.toLowerCase())
       );
@@ -846,6 +850,41 @@ function getTerminalContext(maxChars: number): string | undefined {
       output += sessionOutput.trim();
       output += '\n\n';
     }
+  }
+
+  return output.trim() || undefined;
+}
+
+/** Get diagnostic problems from the store */
+function getProblemsContext(maxChars: number): string | undefined {
+  const problemsByFile = problemsStore.problemsByFile;
+  const files = Object.keys(problemsByFile);
+  if (files.length === 0) return undefined;
+
+  let output = '';
+  // Prioritize errors
+  const sortedFiles = files.sort((a, b) => {
+    const aErrors = problemsByFile[a].filter(p => p.severity === 'error').length;
+    const bErrors = problemsByFile[b].filter(p => p.severity === 'error').length;
+    return bErrors - aErrors;
+  });
+
+  for (const file of sortedFiles) {
+    const problems = problemsByFile[file];
+    const relPath = file.split(/[/\\]/).pop() || file;
+    let fileOutput = `\nFile: ${relPath}\n`;
+
+    for (const prob of problems) {
+      const line = `  [${prob.severity.toUpperCase()}] line ${prob.line}, col ${prob.column}: ${prob.message} (${prob.source})\n`;
+      if (output.length + fileOutput.length + line.length > maxChars) break;
+      fileOutput += line;
+    }
+
+    if (fileOutput.length > `\nFile: ${relPath}\n`.length) {
+      output += fileOutput;
+    }
+
+    if (output.length >= maxChars) break;
   }
 
   return output.trim() || undefined;
@@ -1050,6 +1089,14 @@ export async function getSmartContext(query: string = ''): Promise<SmartContext>
     }
   }
 
+  // 7. DIAGNOSTIC PROBLEMS
+  const problemsBudget = Math.floor(availableBudget * CONFIG.BUDGET.problems);
+  const problemsOutput = getProblemsContext(problemsBudget);
+  if (problemsOutput) {
+    context.problems = problemsOutput;
+    totalSize += problemsOutput.length;
+  }
+
   // Update totals
   context.totalSize = totalSize;
   context.budgetUsed = totalSize / CONFIG.MAX_CONTEXT_CHARS;
@@ -1073,11 +1120,11 @@ export async function getSmartContext(query: string = ''): Promise<SmartContext>
  */
 function toRelativePath(absolutePath: string, workspaceRoot: string): string {
   if (!workspaceRoot) return absolutePath;
-  
+
   // Normalize separators
   const normalizedPath = absolutePath.replace(/\\/g, '/');
   const normalizedRoot = workspaceRoot.replace(/\\/g, '/');
-  
+
   if (normalizedPath.startsWith(normalizedRoot)) {
     let relative = normalizedPath.slice(normalizedRoot.length);
     if (relative.startsWith('/')) relative = relative.slice(1);
@@ -1095,10 +1142,10 @@ function getCommonPrefix(paths: string[]): string {
     const parts = paths[0].split('/');
     return parts.length > 1 ? parts[0] + '/' : '';
   }
-  
+
   const splitPaths = paths.map(p => p.split('/'));
   const minLength = Math.min(...splitPaths.map(p => p.length));
-  
+
   let prefix = '';
   for (let i = 0; i < minLength - 1; i++) {
     const part = splitPaths[0][i];
@@ -1117,14 +1164,14 @@ function getCommonPrefix(paths: string[]): string {
 function buildConnections(activeFile: ContextFile | undefined, relatedFiles: ContextFile[], workspaceRoot: string): string[] {
   const connections: string[] = [];
   if (!activeFile) return connections;
-  
+
   const activeName = activeFile.path.split(/[/\\]/).pop()?.replace(/\.\w+$/, '') || '';
-  
+
   for (const file of relatedFiles) {
     const fileName = file.path.split(/[/\\]/).pop()?.replace(/\.\w+$/, '') || '';
     const relPath = toRelativePath(file.path, workspaceRoot);
     const activeRelPath = toRelativePath(activeFile.path, workspaceRoot);
-    
+
     // Check if this file imports active file
     if (file.reasons.some(r => r.toLowerCase().includes('import'))) {
       const importedSymbols = activeFile.symbols
@@ -1136,7 +1183,7 @@ function buildConnections(activeFile: ContextFile | undefined, relatedFiles: Con
         connections.push(`${relPath} ──imports──► ${activeRelPath} (uses: ${importedSymbols})`);
       }
     }
-    
+
     // Check if active file imports this file
     if (activeFile.reasons?.some(r => r.toLowerCase().includes(fileName))) {
       const exportedSymbols = file.symbols
@@ -1149,7 +1196,7 @@ function buildConnections(activeFile: ContextFile | undefined, relatedFiles: Con
       }
     }
   }
-  
+
   return connections.slice(0, 5); // Max 5 connections
 }
 
@@ -1182,33 +1229,33 @@ function getSymbolAtCursor(symbols: CodeSymbol[], cursorLine: number): string {
 export function formatSmartContext(context: SmartContext): string {
   const parts: string[] = [];
   const root = context.workspaceRoot || '';
-  
+
   // Get cursor info
   const cursor = editorStore.cursorPosition;
-  const cursorInfo = context.activeFile 
+  const cursorInfo = context.activeFile
     ? getSymbolAtCursor(context.activeFile.symbols, cursor.line)
     : '';
-  
+
   // Convert all paths to relative
-  const activeRelPath = context.activeFile 
-    ? toRelativePath(context.activeFile.path, root) 
+  const activeRelPath = context.activeFile
+    ? toRelativePath(context.activeFile.path, root)
     : 'none';
-  
+
   const allRelPaths = [
     ...(context.activeFile ? [toRelativePath(context.activeFile.path, root)] : []),
     ...context.relatedFiles.map(f => toRelativePath(f.path, root))
   ];
-  
+
   // Detect common prefix (project subfolder)
   const commonPrefix = getCommonPrefix(allRelPaths);
-  
+
   // Build connections
   const connections = buildConnections(context.activeFile, context.relatedFiles, root);
-  
+
   // ═══════════════════════════════════════════════════════════════════════════
   // SPATIAL CONTEXT HEADER - The breakthrough visual block
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   let spatialBlock = `
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ⚡ VOLT SPATIAL CONTEXT                                                     ║
@@ -1274,7 +1321,7 @@ export function formatSmartContext(context: SmartContext): string {
   // Path rules - THE CRITICAL PART
   const wrongPath1 = activeRelPath.split('/').slice(1).join('/') || 'file.js';
   const wrongPath2 = activeRelPath.split('/').pop() || 'file.js';
-  
+
   spatialBlock += `
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  ⚠️  PATH RULES (CRITICAL):                                                  ║
@@ -1291,7 +1338,7 @@ export function formatSmartContext(context: SmartContext): string {
   // ═══════════════════════════════════════════════════════════════════════════
   // PROJECT MEMORY (if exists)
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   if (context.projectMemory) {
     parts.push(`
 ┌─ 📝 PROJECT MEMORY (VOLT.md) ─────────────────────────────────────────────────
@@ -1302,7 +1349,7 @@ ${context.projectMemory}
   // ═══════════════════════════════════════════════════════════════════════════
   // ACTIVE FILE CONTENT
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   if (context.activeFile) {
     const truncNote = context.activeFile.truncated ? ' ⚠️ TRUNCATED - use read_file for full content' : '';
     parts.push(`
@@ -1317,13 +1364,13 @@ ${context.activeFile.content}
   // ═══════════════════════════════════════════════════════════════════════════
   // RELATED FILES
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   if (context.relatedFiles.length > 0) {
     for (const file of context.relatedFiles) {
       const relPath = toRelativePath(file.path, root);
       const truncNote = file.truncated ? ' ⚠️ TRUNCATED' : '';
       const reason = file.reasons[0] || 'Related';
-      
+
       parts.push(`
 ┌─ 📖 RELATED: ${relPath}${truncNote}
 │  Why included: ${reason}
@@ -1337,7 +1384,14 @@ ${file.content}
   // ═══════════════════════════════════════════════════════════════════════════
   // TERMINAL OUTPUT (if relevant)
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
+  if (context.problems) {
+    parts.push(`
+┌─ ⚠️ DIAGNOSTIC PROBLEMS ──────────────────────────────────────────────────────
+${context.problems}
+└───────────────────────────────────────────────────────────────────────────────`);
+  }
+
   if (context.terminalOutput) {
     parts.push(`
 ┌─ 💻 TERMINAL OUTPUT ──────────────────────────────────────────────────────────
@@ -1348,7 +1402,7 @@ ${context.terminalOutput}
   // ═══════════════════════════════════════════════════════════════════════════
   // GIT CONTEXT (if relevant)
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   if (context.gitContext) {
     parts.push(`
 ┌─ 📊 GIT STATUS ───────────────────────────────────────────────────────────────
@@ -1359,7 +1413,7 @@ ${context.gitContext}
   // ═══════════════════════════════════════════════════════════════════════════
   // SYMBOL QUICK REFERENCE
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   if (context.symbolIndex.size > 0) {
     const symbolEntries = [...context.symbolIndex.entries()]
       .slice(0, 30)
@@ -1378,7 +1432,7 @@ ${symbolEntries}
   // ═══════════════════════════════════════════════════════════════════════════
   // QUICK REFERENCE FOOTER
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   const fileListRelative = [...context.filesInContext]
     .map(f => toRelativePath(f, root))
     .join(', ');

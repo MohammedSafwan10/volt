@@ -169,6 +169,10 @@ async function initializeServer(): Promise<void> {
         cwd: projectStore.rootPath ?? undefined
       });
 
+      // Disable health monitoring for HTML server to prevent false positive timeouts
+      // HTML server can be slow to respond during initial project load
+      htmlServerTransport.configureHealth({ enabled: false });
+
       htmlServerTransport.onMessage(handleLspMessage);
       htmlServerTransport.onError((error) => {
         console.error('[HTML LSP] Server error:', error);
@@ -451,4 +455,44 @@ export async function stopHtmlLsp(): Promise<void> {
   htmlServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
+}
+
+/**
+ * Perform background analysis of all HTML files in the project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps if any
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const htmlFiles = allFiles.filter(f => isHtmlFile(f.path));
+
+  if (htmlFiles.length === 0) {
+    console.log('[HTML LSP] No HTML files found for background analysis.');
+    return;
+  }
+
+  console.log(`[HTML LSP] Starting project-wide analysis of ${htmlFiles.length} files...`);
+
+  // Process in small batches to avoid blocking
+  for (const file of htmlFiles) {
+    console.log(`[HTML LSP] Background analyzing: ${file.path}`);
+    // Only open if not already open (prevent double-counting)
+    if (openDocuments.has(file.path)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      // This will automatically initialize server if needed
+      await notifyHtmlDocumentOpened(file.path, content);
+      console.log(`[HTML LSP] Sent ${file.path} to server`);
+
+      // If we've opened many files, yield to event loop
+      if (htmlFiles.indexOf(file) % 5 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
 }

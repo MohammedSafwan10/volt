@@ -146,28 +146,29 @@ function getFileName(filePath: string): string {
 function processMarkers(monaco: typeof Monaco): void {
   // Get all markers from Monaco
   const allMarkers = monaco.editor.getModelMarkers({});
-  
+
   // Group markers by file (excluding TS/JS files which are handled by sidecar)
   const markersByFile = new Map<string, Monaco.editor.IMarker[]>();
-  
+
   for (const marker of allMarkers) {
     const filePath = getFilePathFromUri(marker.resource);
-    
+
     // Skip TS/JS files - they're handled by the TypeScript sidecar
-    if (isTsJsFile(filePath)) {
+    // Also skip markers we've set ourselves to avoid loops
+    if (isTsJsFile(filePath) || marker.owner === 'volt-problems') {
       continue;
     }
-    
+
     const existing = markersByFile.get(filePath) || [];
     existing.push(marker);
     markersByFile.set(filePath, existing);
   }
-  
+
   // Get all files that currently have problems (excluding TS/JS files)
   const currentFiles = new Set(
     problemsStore.filesWithProblems.filter(f => !isTsJsFile(f))
   );
-  
+
   // Update problems for each file with markers
   for (const [filePath, markers] of markersByFile) {
     const problems: Problem[] = markers.map((marker, index) => ({
@@ -183,11 +184,11 @@ function processMarkers(monaco: typeof Monaco): void {
       source: marker.source || 'monaco',
       code: marker.code?.toString()
     }));
-    
+
     problemsStore.setProblemsForFile(filePath, problems);
     currentFiles.delete(filePath);
   }
-  
+
   // Clear problems for non-TS/JS files that no longer have markers
   for (const filePath of currentFiles) {
     problemsStore.clearProblemsForFile(filePath);
@@ -201,7 +202,7 @@ function scheduleMarkerUpdate(monaco: typeof Monaco): void {
   if (markerUpdateTimer) {
     clearTimeout(markerUpdateTimer);
   }
-  
+
   markerUpdateTimer = setTimeout(() => {
     processMarkers(monaco);
     markerUpdateTimer = null;
@@ -215,7 +216,7 @@ function resetIdleTimer(): void {
   if (idleTimer) {
     clearTimeout(idleTimer);
   }
-  
+
   idleTimer = setTimeout(() => {
     // Could implement cleanup here if needed
     // For now, we keep the LSP active as long as Monaco is loaded
@@ -288,7 +289,7 @@ function configureTypeScript(monaco: typeof Monaco): void {
 
   typescript.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
   typescript.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
-  
+
   activeLanguageServices.add('typescript');
 }
 
@@ -298,15 +299,15 @@ function configureTypeScript(monaco: typeof Monaco): void {
 function configureAllLanguages(monaco: typeof Monaco): void {
   // Configure TypeScript/JavaScript
   configureTypeScript(monaco);
-  
+
   // Configure HTML
   configureHtmlDefaults(monaco);
   activeLanguageServices.add('html');
-  
+
   // Configure CSS/SCSS/LESS
   configureCssDefaults(monaco);
   activeLanguageServices.add('css');
-  
+
   // Register Svelte language
   registerSvelteLanguage(monaco);
   activeLanguageServices.add('svelte');
@@ -318,23 +319,23 @@ function configureAllLanguages(monaco: typeof Monaco): void {
  */
 export function initializeLspClient(): void {
   if (initialized) return;
-  
+
   const monaco = getMonaco();
   if (!monaco) return;
-  
+
   // Configure all language services
   configureAllLanguages(monaco);
-  
+
   // Listen for marker changes
   const markerDisposable = monaco.editor.onDidChangeMarkers(() => {
     scheduleMarkerUpdate(monaco);
     resetIdleTimer();
   });
   disposables.push(markerDisposable);
-  
+
   // Initial marker processing
   processMarkers(monaco);
-  
+
   initialized = true;
   resetIdleTimer();
 }
@@ -376,14 +377,14 @@ export function isInLowRamMode(): boolean {
  */
 export function notifyFileOpened(language: string): void {
   if (!isLspLanguage(language)) return;
-  
+
   activeLanguages.add(language);
-  
+
   // Initialize LSP if Monaco is loaded
   if (isMonacoLoaded() && !initialized) {
     initializeLspClient();
   }
-  
+
   resetIdleTimer();
 }
 
@@ -402,17 +403,17 @@ export function disposeLspClient(): void {
     clearTimeout(markerUpdateTimer);
     markerUpdateTimer = null;
   }
-  
+
   if (idleTimer) {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
-  
+
   for (const disposable of disposables) {
     disposable.dispose();
   }
   disposables.length = 0;
-  
+
   activeLanguages.clear();
   problemsStore.clearAll();
   initialized = false;

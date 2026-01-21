@@ -856,3 +856,39 @@ export async function ensureSvelteLspStarted(): Promise<void> {
   if (!projectStore.rootPath) return;
   await initializeServer();
 }
+
+/**
+ * Perform background analysis of all Svelte files in the project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps if any
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const svelteFiles = allFiles.filter(f => isSvelteFile(f.path));
+
+  if (svelteFiles.length === 0) return;
+
+  console.log(`[Svelte LSP] Starting project-wide analysis of ${svelteFiles.length} files...`);
+
+  // Process in small batches to avoid blocking
+  for (const file of svelteFiles) {
+    // Only open if not already open (prevent double-counting)
+    if (openDocuments.has(file.path)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      // This will automatically initialize server if needed
+      await notifySvelteDocumentOpened(file.path, content);
+
+      // If we've opened many files, yield to event loop
+      if (svelteFiles.indexOf(file) % 5 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+}
+

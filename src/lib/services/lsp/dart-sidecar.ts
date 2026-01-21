@@ -255,7 +255,9 @@ async function initializeServer(): Promise<void> {
       // Start the Dart server (uses external server mechanism)
       dartServerTransport = await registry.startServer('dart', {
         serverId: 'dart-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        command: dartSdkInfo.dartPath,
+        args: ['language-server', '--client-id', 'volt-ide', '--client-version', '1.0.0']
       });
 
       // Set up message handler
@@ -709,6 +711,16 @@ export async function restartDartLsp(): Promise<void> {
  */
 export function isDartLspRunning(): boolean {
   return dartServerInitialized && dartServerTransport !== null;
+}
+
+/**
+ * Start the Dart LSP server for a project
+ * Called when opening a project to enable project-wide diagnostics
+ */
+export async function startDartLsp(rootPath: string): Promise<void> {
+  if (!rootPath) return;
+  // initializeServer already checks for rootPath and SDK availability
+  await initializeServer();
 }
 
 /**
