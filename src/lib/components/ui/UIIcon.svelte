@@ -4,131 +4,10 @@
    * Uses codicon (VS Code icons) and other high-quality icon sets
    */
   import Icon from "@iconify/svelte";
+  import type { UIIconName } from "./ui-icon-types";
 
-  /** Available UI icon names */
-  export type UIIconName =
-    // Sidebar / Activity Bar
-    | "files"
-    | "search"
-    | "git-branch"
-    | "settings"
-    | "extensions"
-    | "debug"
-    | "account"
-    // File operations
-    | "folder"
-    | "folder-open"
-    | "folder-plus"
-    | "file"
-    | "file-plus"
-    | "new-file"
-    | "new-folder"
-    // Actions
-    | "refresh"
-    | "plus"
-    | "minus"
-    | "close"
-    | "trash"
-    | "pencil"
-    | "save"
-    | "save-all"
-    | "copy"
-    | "paste"
-    | "cut"
-    | "undo"
-    | "redo"
-    | "replace"
-    | "replace-all"
-    // Navigation
-    | "chevron-right"
-    | "chevron-down"
-    | "chevron-up"
-    | "chevron-left"
-    | "arrow-left"
-    | "arrow-right"
-    | "collapse-all"
-    | "expand-all"
-    // Status
-    | "warning"
-    | "error"
-    | "info"
-    | "check"
-    | "spinner"
-    | "loading"
-    // Terminal / Output
-    | "terminal"
-    | "output"
-    | "console"
-    | "clear"
-    | "split"
-    | "kill"
-    // Editor
-    | "code"
-    | "symbol-class"
-    | "symbol-method"
-    | "symbol-property"
-    | "symbol-variable"
-    | "symbol-function"
-    // Misc
-    | "bolt"
-    | "menu"
-    | "more"
-    | "filter"
-    | "pin"
-    | "unpin"
-    | "lock"
-    | "unlock"
-    | "eye"
-    | "eye-off"
-    | "link"
-    | "external-link"
-    | "download"
-    | "upload"
-    | "sync"
-    | "clock"
-    | "history"
-    | "calendar"
-    | "star"
-    | "star-filled"
-    | "heart"
-    | "bookmark"
-    | "tag"
-    | "home"
-    | "play"
-    | "pause"
-    | "stop"
-    | "record"
-    | "cloud"
-    | "comment"
-    | "sparkle"
-    | "robot"
-    | "send"
-    | "image"
-    // MCP / Connections
-    | "plug"
-    | "check-circle"
-    | "circle"
-    | "wrench"
-    // Browser
-    | "globe"
-    | "target"
-    | "screenshot"
-    | "device-mobile"
-    | "device-desktop"
-    // File Types
-    | "svelte"
-    | "typescript"
-    | "javascript"
-    | "rust"
-    | "python"
-    | "json"
-    | "dart"
-    | "xml"
-    | "yaml"
-    | "markdown"
-    | "css"
-    | "html"
-    | "android";
+  // Re-export the type for convenience (for consumers importing from .svelte)
+  export type { UIIconName };
 
   /** Map icon names to Iconify icon identifiers */
   const ICON_MAP: Record<UIIconName, string> = {
@@ -229,6 +108,7 @@
     robot: "codicon:robot",
     send: "codicon:send",
     image: "codicon:file-media",
+    "at-sign": "codicon:mention",
     // MCP / Connections
     plug: "codicon:plug",
     "check-circle": "codicon:pass-filled",
