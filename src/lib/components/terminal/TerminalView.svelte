@@ -7,6 +7,7 @@
 	import type { TerminalSession } from '$lib/services/terminal-client';
 	import { themeStore } from '$lib/stores/theme.svelte';
 	import { open } from '@tauri-apps/plugin-shell';
+	import TerminalActions from './TerminalActions.svelte';
 
 	interface Props {
 		session: TerminalSession;
@@ -243,6 +244,7 @@
 		class="terminal-container"
 		bind:this={containerRef}
 	></div>
+	<TerminalActions terminalId={session.id} />
 </div>
 
 <style>

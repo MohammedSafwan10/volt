@@ -12,6 +12,7 @@ import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
 class TerminalStore {
 	sessions = $state<TerminalSession[]>([]);
 	activeTerminalId = $state<string | null>(null);
+	lastError = $state<{ terminalId: string; command: string; output: string } | null>(null);
 	private createPromise: Promise<TerminalSession | null> | null = null;
 	private aiCreatePromise: Promise<TerminalSession | null> | null = null;
 	private sessionLabels = $state<Record<string, string>>({});
@@ -58,7 +59,7 @@ class TerminalStore {
 			// Set up exit handler to remove session when terminal exits
 			session.onExit(() => {
 				console.log('[TerminalStore] Terminal exited:', session.id);
-				void session.dispose();
+				session.dispose();
 				this.removeSession(session.id);
 			});
 
@@ -122,9 +123,16 @@ class TerminalStore {
 				console.error('[TerminalStore] Failed to create AI terminal');
 				return null;
 			}
+
+			// Wait for terminal to be ready before enabling shell integration
+			await session.waitForReady(3000);
+			// Extra safety delay for slow shell initialization
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			await session.enableShellIntegration();
+
 			this.aiTerminalId = session.id;
 			this.setSessionLabel(session.id, 'Volt AI');
-			console.log('[TerminalStore] AI terminal created:', session.id);
+			console.log('[TerminalStore] AI terminal created and initialized:', session.id);
 			return session;
 		})();
 
@@ -153,7 +161,6 @@ class TerminalStore {
 		if (!session) return;
 
 		await session.kill();
-		await session.dispose();
 		this.removeSession(terminalId);
 	}
 
@@ -184,7 +191,6 @@ class TerminalStore {
 	async killAll(): Promise<void> {
 		const promises = this.sessions.map(async (session) => {
 			await session.kill();
-			await session.dispose();
 		});
 		await Promise.all(promises);
 		this.sessions = [];
@@ -201,7 +207,7 @@ class TerminalStore {
 		// Remove sessions that no longer exist in backend
 		for (const session of [...this.sessions]) {
 			if (!backendIds.has(session.id)) {
-				await session.dispose();
+				session.dispose();
 				this.removeSession(session.id);
 			}
 		}
