@@ -1,7 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { showToast } from '$lib/stores/toast.svelte';
-import { logOutput } from '$lib/stores/output.svelte';
 
 /**
  * Terminal session info returned from Rust backend
@@ -38,23 +36,7 @@ export interface TerminalReadyEvent {
 }
 
 /**
- * Terminal error types from Rust backend
- */
-interface TerminalError {
-	type:
-	| 'NotFound'
-	| 'CreateFailed'
-	| 'WriteFailed'
-	| 'ResizeFailed'
-	| 'KillFailed'
-	| 'AlreadyKilled'
-	| 'IoError';
-	terminal_id?: string;
-	message?: string;
-}
-
-/**
- * Create a new terminal session
+ * Create a new raw terminal via Tauri invoke
  */
 export async function createTerminal(
 	cwd?: string,
@@ -62,86 +44,54 @@ export async function createTerminal(
 	rows?: number
 ): Promise<TerminalInfo | null> {
 	try {
-		logOutput('Terminal', `Creating terminal in ${cwd || 'default directory'}`);
-		const info = await invoke<TerminalInfo>('terminal_create', { cwd, cols, rows });
-		logOutput('Terminal', `Terminal created: ${info.terminalId} (${info.shell})`);
-		return info;
+		return await invoke<TerminalInfo>('terminal_create', { cwd, cols, rows });
 	} catch (error) {
-		const err = error as TerminalError;
-		const message = err.message || 'Failed to create terminal';
-		logOutput('Terminal', `Error creating terminal: ${message}`);
-		showToast({ message, type: 'error' });
+		console.error('Terminal create error:', error);
 		return null;
 	}
 }
 
-
 /**
- * Write data to a terminal
+ * Write data to a terminal via Tauri invoke
  */
 export async function writeTerminal(terminalId: string, data: string): Promise<boolean> {
 	try {
 		await invoke('terminal_write', { terminalId, data });
 		return true;
 	} catch (error) {
-		const err = error as TerminalError;
-		if (err.type === 'AlreadyKilled') {
-			// Terminal was killed, don't show error
-			return false;
-		}
 		console.error('Terminal write error:', error);
 		return false;
 	}
 }
 
 /**
- * Resize a terminal
+ * Resize a terminal via Tauri invoke
  */
-export async function resizeTerminal(
-	terminalId: string,
-	cols: number,
-	rows: number
-): Promise<boolean> {
+export async function resizeTerminal(terminalId: string, cols: number, rows: number): Promise<boolean> {
 	try {
 		await invoke('terminal_resize', { terminalId, cols, rows });
 		return true;
 	} catch (error) {
-		const err = error as TerminalError;
-		if (err.type === 'AlreadyKilled' || err.type === 'NotFound') {
-			// Terminal was killed or not found, don't show error
-			return false;
-		}
 		console.error('Terminal resize error:', error);
 		return false;
 	}
 }
 
 /**
- * Kill a terminal
+ * Kill a terminal via Tauri invoke
  */
 export async function killTerminal(terminalId: string): Promise<boolean> {
 	try {
-		logOutput('Terminal', `Killing terminal: ${terminalId}`);
 		await invoke('terminal_kill', { terminalId });
-		logOutput('Terminal', `Terminal killed: ${terminalId}`);
 		return true;
 	} catch (error) {
-		const err = error as TerminalError;
-		if (err.type === 'AlreadyKilled' || err.type === 'NotFound') {
-			// Already killed or not found, consider success
-			logOutput('Terminal', `Terminal already killed or not found: ${terminalId}`);
-			return true;
-		}
-		const message = err.message || 'Failed to kill terminal';
-		logOutput('Terminal', `Error killing terminal: ${message}`);
-		showToast({ message, type: 'error' });
 		console.error('Terminal kill error:', error);
 		return false;
 	}
 }
 
 /**
- * List all active terminals
+ * List all active terminals via Tauri invoke
  */
 export async function listTerminals(): Promise<TerminalInfo[]> {
 	try {
@@ -152,42 +102,91 @@ export async function listTerminals(): Promise<TerminalInfo[]> {
 	}
 }
 
-/**
- * Subscribe to terminal data events
- */
-export async function onTerminalData(
-	callback: (event: TerminalDataEvent) => void
-): Promise<UnlistenFn> {
-	return listen<TerminalDataEvent>('terminal://data', (event) => {
-		callback(event.payload);
-	});
+// Global event listeners
+// NOTE: Event names use "://" format to match Rust backend emit calls
+export async function onTerminalData(callback: (event: TerminalDataEvent) => void): Promise<UnlistenFn> {
+	return listen<TerminalDataEvent>('terminal://data', (event) => callback(event.payload));
 }
 
-/**
- * Subscribe to terminal exit events
- */
-export async function onTerminalExit(
-	callback: (event: TerminalExitEvent) => void
-): Promise<UnlistenFn> {
-	return listen<TerminalExitEvent>('terminal://exit', (event) => {
-		callback(event.payload);
-	});
+export async function onTerminalExit(callback: (event: TerminalExitEvent) => void): Promise<UnlistenFn> {
+	return listen<TerminalExitEvent>('terminal://exit', (event) => callback(event.payload));
 }
 
-/**
- * Subscribe to terminal ready events
- */
-export async function onTerminalReady(
-	callback: (event: TerminalReadyEvent) => void
-): Promise<UnlistenFn> {
-	return listen<TerminalReadyEvent>('terminal://ready', (event) => {
-		callback(event.payload);
-	});
+export async function onTerminalReady(callback: (event: TerminalReadyEvent) => void): Promise<UnlistenFn> {
+	return listen<TerminalReadyEvent>('terminal://ready', (event) => callback(event.payload));
 }
 
+// ============================================================================
+// OSC 633 Shell Integration
+// ============================================================================
+
+export interface ShellIntegrationEvent {
+	type: 'prompt-start' | 'prompt-end' | 'command-start' | 'command-finish' | 'command-line' | 'property';
+	exitCode?: number;
+	command?: string;
+	property?: { key: string; value: string };
+}
+
+export interface CommandCompletion {
+	exitCode: number;
+	output: string;
+	cwd?: string;
+	timedOut: boolean;
+}
+
+const OSC_633_REGEX = /\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x07|\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x1b\\/g;
+
+function parseOscSequences(data: string): { events: ShellIntegrationEvent[]; cleanData: string } {
+	const events: ShellIntegrationEvent[] = [];
+	let cleanData = data;
+
+	let match;
+	while ((match = OSC_633_REGEX.exec(data)) !== null) {
+		const code = match[1] || match[3];
+		const params = match[2] || match[4] || '';
+
+		switch (code) {
+			case 'A': events.push({ type: 'prompt-start' }); break;
+			case 'B': events.push({ type: 'prompt-end' }); break;
+			case 'C': events.push({ type: 'command-start' }); break;
+			case 'D': events.push({ type: 'command-finish', exitCode: params ? parseInt(params, 10) : undefined }); break;
+			case 'E': events.push({ type: 'command-line', command: decodeOscString(params) }); break;
+			case 'P':
+				const parts = params.split('=');
+				if (parts.length >= 2) {
+					events.push({ type: 'property', property: { key: parts[0], value: decodeOscString(parts.slice(1).join('=')) } });
+				}
+				break;
+		}
+	}
+
+	cleanData = data.replace(OSC_633_REGEX, '');
+	return { events, cleanData };
+}
+
+function decodeOscString(str: string): string {
+	if (!str) return '';
+	return str.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+// Universal PowerShell prompt script (works in 5.1 and Core)
+export const POWERSHELL_SHELL_INTEGRATION = [
+	'function prompt {',
+	'  try {',
+	'    $e = [char]27; $a = [char]7; $c = (Get-Location).Path',
+	'    Write-Host -NoNewline "$e]633;P;Cwd=$c$a"',
+	'    Write-Host -NoNewline "$e]633;A$a"',
+	'    $p = "PS $c> "',
+	'    Write-Host -NoNewline "$e]633;B$a"',
+	'    if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline "$e]633;D;$LASTEXITCODE$a" }',
+	'    return $p',
+	'  } catch { return "PS > " }',
+	'}',
+	'Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=Volt$([char]7)"'
+].join(' ');
+
 /**
- * Terminal session manager for a single terminal instance
- * Handles event subscriptions and cleanup
+ * Terminal session manager
  */
 export class TerminalSession {
 	public info: TerminalInfo;
@@ -196,25 +195,73 @@ export class TerminalSession {
 	private readyUnlisten: UnlistenFn | null = null;
 	private onDataCallback: ((data: string) => void) | null = null;
 	private onExitCallback: ((code: number | null) => void) | null = null;
-	// Buffer for data that arrives while no UI consumer is attached.
+
 	private dataBuffer: string[] = [];
 	private dataBufferChars = 0;
 	private static readonly MAX_BUFFER_CHARS = 100_000;
 
-	// Output history buffer for AI tool access (always captures)
 	private outputHistory: string[] = [];
 	private outputHistoryChars = 0;
 	private static readonly MAX_OUTPUT_HISTORY_CHARS = 50_000;
 
-	// Backend readiness handshake
+	private cleanOutputHistory: string[] = [];
+	private cleanOutputHistoryChars = 0;
+
 	private backendReady = false;
 	private readyPromise: Promise<void>;
 	private resolveReady: (() => void) | null = null;
 
+	private shellIntegrationEnabled = false;
+	private currentCwd: string | null = null;
+	private commandCompletionCallbacks: Array<{
+		resolve: (result: CommandCompletion) => void;
+		startTime: number;
+		outputBuffer: string[];
+		startOffset: number;
+	}> = [];
+
 	constructor(info: TerminalInfo) {
 		this.info = info;
+		this.currentCwd = info.cwd;
 		this.readyPromise = new Promise((resolve) => {
 			this.resolveReady = resolve;
+		});
+	}
+
+	public get id(): string { return this.info.terminalId; }
+
+	public get hasShellIntegration(): boolean {
+		return this.shellIntegrationEnabled;
+	}
+
+	public get cwd(): string | null {
+		return this.currentCwd;
+	}
+
+	public async startListening(): Promise<void> {
+		this.readyUnlisten = await onTerminalReady((event) => {
+			if (event.terminalId === this.id) this.markReady();
+		});
+
+		this.dataUnlisten = await onTerminalData((event) => {
+			if (event.terminalId === this.id) {
+				this.markReady();
+				const { events, cleanData } = parseOscSequences(event.data);
+				for (const ev of events) this.handleShellIntegrationEvent(ev);
+
+				this.captureToHistory(event.data);
+				if (cleanData) {
+					this.captureToCleanHistory(cleanData);
+					for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
+				}
+
+				if (this.onDataCallback) this.onDataCallback(event.data);
+				else this.bufferData(event.data);
+			}
+		});
+
+		this.exitUnlisten = await onTerminalExit((event) => {
+			if (event.terminalId === this.id && this.onExitCallback) this.onExitCallback(event.code);
 		});
 	}
 
@@ -222,173 +269,20 @@ export class TerminalSession {
 		if (this.backendReady) return;
 		this.backendReady = true;
 		this.resolveReady?.();
-		this.resolveReady = null;
 	}
 
-	get id(): string {
-		return this.info.terminalId;
-	}
-
-	/**
-	 * Start listening for terminal events
-	 */
-	async startListening(): Promise<void> {
-		this.readyUnlisten = await onTerminalReady((event) => {
-			if (event.terminalId === this.info.terminalId) {
-				this.markReady();
-			}
-		});
-
-		this.dataUnlisten = await onTerminalData((event) => {
-			if (event.terminalId === this.info.terminalId) {
-				// If we receive any data, the terminal is effectively ready.
-				this.markReady();
-				// Always capture to output history (for AI tools)
-				this.captureToHistory(event.data);
-
-				if (this.onDataCallback) {
-					this.onDataCallback(event.data);
-				} else {
-					this.bufferData(event.data);
-				}
-			}
-		});
-
-		this.exitUnlisten = await onTerminalExit((event) => {
-			if (event.terminalId === this.info.terminalId && this.onExitCallback) {
-				this.onExitCallback(event.code);
-			}
-		});
-	}
-
-	/**
-	 * Wait until the backend indicates the terminal is ready.
-	 * Falls back to "first output" readiness if the ready event is missed.
-	 */
-	async waitForReady(timeoutMs = 2000): Promise<boolean> {
+	public async waitForReady(timeoutMs = 5000): Promise<boolean> {
 		if (this.backendReady) return true;
-		return await Promise.race([
-			this.readyPromise.then(() => true),
-			new Promise<boolean>((resolve) => setTimeout(() => resolve(this.backendReady), timeoutMs))
-		]);
+		const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(this.backendReady), timeoutMs));
+		return Promise.race([this.readyPromise.then(() => true), timeout]);
 	}
 
-	private bufferData(data: string): void {
-		this.dataBuffer.push(data);
-		this.dataBufferChars += data.length;
-		while (this.dataBufferChars > TerminalSession.MAX_BUFFER_CHARS && this.dataBuffer.length > 0) {
-			const removed = this.dataBuffer.shift();
-			this.dataBufferChars -= removed?.length ?? 0;
-		}
+	public async write(data: string): Promise<boolean> {
+		return writeTerminal(this.id, data);
 	}
 
-	/**
-	 * Capture data to output history (for AI tool access)
-	 */
-	private captureToHistory(data: string): void {
-		if (!data || data.length === 0) return;
-		this.outputHistory.push(data);
-		this.outputHistoryChars += data.length;
-		while (this.outputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS && this.outputHistory.length > 0) {
-			const removed = this.outputHistory.shift();
-			this.outputHistoryChars -= removed?.length ?? 0;
-		}
-	}
-
-	/**
-	 * Get recent output from the terminal (for AI tools)
-	 * @param maxChars Maximum characters to return
-	 */
-	getRecentOutput(maxChars = 10000): string {
-		const fullOutput = this.outputHistory.join('');
-		if (fullOutput.length <= maxChars) {
-			return fullOutput;
-		}
-		return fullOutput.slice(-maxChars);
-	}
-
-	/**
-	 * Clear output history
-	 */
-	clearOutputHistory(): void {
-		this.outputHistory = [];
-		this.outputHistoryChars = 0;
-	}
-
-	/**
-	 * Wait for output matching a pattern or timeout
-	 * Useful for waiting for command completion
-	 */
-	async waitForOutput(
-		predicate: (output: string) => boolean,
-		timeoutMs = 30000
-	): Promise<string> {
-		const startOutput = this.getRecentOutput();
-		const startLen = startOutput.length;
-
-		return new Promise((resolve) => {
-			const startTime = Date.now();
-			let checkCount = 0;
-
-			const checkOutput = () => {
-				checkCount++;
-				const currentOutput = this.getRecentOutput();
-				const newOutput = currentOutput.slice(startLen);
-
-				if (predicate(newOutput)) {
-					resolve(newOutput);
-					return;
-				}
-
-				if (Date.now() - startTime > timeoutMs) {
-					// On timeout, return whatever output we have (not an error message)
-					resolve(newOutput || '');
-					return;
-				}
-
-				// Check every 100ms
-				setTimeout(checkOutput, 100);
-			};
-
-			// Start checking after a small delay to let initial output arrive
-			setTimeout(checkOutput, 50);
-		});
-	}
-
-	/**
-	 * Set callback for terminal data.
-	 * - Pass a function to attach a consumer and flush buffered data.
-	 * - Pass null to detach the consumer and start buffering again.
-	 */
-	onData(callback: ((data: string) => void) | null): void {
-		this.onDataCallback = callback;
-		if (!callback) return;
-		if (this.dataBuffer.length === 0) return;
-		const buffered = this.dataBuffer.join('');
-		this.dataBuffer = [];
-		this.dataBufferChars = 0;
-		callback(buffered);
-	}
-
-	/**
-	 * Set callback for terminal exit
-	 */
-	onExit(callback: (code: number | null) => void): void {
-		this.onExitCallback = callback;
-	}
-
-	/**
-	 * Write data to the terminal
-	 */
-	async write(data: string): Promise<boolean> {
-		return writeTerminal(this.info.terminalId, data);
-	}
-
-	/**
-	 * Resize the terminal
-	 */
-	async resize(cols: number, rows: number): Promise<boolean> {
-		const success = await resizeTerminal(this.info.terminalId, cols, rows);
+	public async resize(cols: number, rows: number): Promise<boolean> {
+		const success = await resizeTerminal(this.id, cols, rows);
 		if (success) {
 			this.info.cols = cols;
 			this.info.rows = rows;
@@ -396,118 +290,170 @@ export class TerminalSession {
 		return success;
 	}
 
-	/**
-	 * Kill the terminal
-	 */
-	async kill(): Promise<boolean> {
-		return killTerminal(this.info.terminalId);
+	public onData(callback: ((data: string) => void) | null): void {
+		this.onDataCallback = callback;
+		if (callback && this.dataBuffer.length > 0) {
+			callback(this.dataBuffer.join(''));
+			this.dataBuffer = [];
+			this.dataBufferChars = 0;
+		}
 	}
 
-	/**
-	 * Clean up event listeners
-	 */
-	async dispose(): Promise<void> {
-		if (this.dataUnlisten) {
-			this.dataUnlisten();
-			this.dataUnlisten = null;
-		}
-		if (this.exitUnlisten) {
-			this.exitUnlisten();
-			this.exitUnlisten = null;
-		}
-		if (this.readyUnlisten) {
-			this.readyUnlisten();
-			this.readyUnlisten = null;
-		}
-		this.onDataCallback = null;
-		this.onExitCallback = null;
+	public onExit(callback: (code: number | null) => void): void {
+		this.onExitCallback = callback;
 	}
+
+	private handleShellIntegrationEvent(event: ShellIntegrationEvent): void {
+		switch (event.type) {
+			case 'property':
+				if (event.property?.key === 'ShellIntegration') {
+					this.shellIntegrationEnabled = true;
+				} else if (event.property?.key === 'Cwd') {
+					this.currentCwd = event.property.value;
+				}
+				break;
+			case 'command-finish':
+				const exitCode = event.exitCode ?? 0;
+				const callbacks = [...this.commandCompletionCallbacks];
+				this.commandCompletionCallbacks = [];
+				for (const cb of callbacks) {
+					cb.resolve({
+						exitCode,
+						output: this.cleanCommandOutput(cb.outputBuffer.join('')),
+						cwd: this.currentCwd ?? undefined,
+						timedOut: false
+					});
+				}
+				break;
+		}
+	}
+
+	private cleanCommandOutput(output: string): string {
+		const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+		let cleaned = output.replace(ansiRegex, '').trim();
+		cleaned = cleaned.replace(/\nPS [^\n]+>\s*$/, '');
+		cleaned = cleaned.replace(/\n\$\s*$/, '');
+		return cleaned;
+	}
+
+	private captureToHistory(data: string): void {
+		this.outputHistory.push(data);
+		this.outputHistoryChars += data.length;
+		while (this.outputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS) {
+			const removed = this.outputHistory.shift();
+			this.outputHistoryChars -= (removed?.length ?? 0);
+		}
+	}
+
+	private captureToCleanHistory(data: string): void {
+		this.cleanOutputHistory.push(data);
+		this.cleanOutputHistoryChars += data.length;
+		while (this.cleanOutputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS) {
+			const removed = this.cleanOutputHistory.shift();
+			this.cleanOutputHistoryChars -= (removed?.length ?? 0);
+		}
+	}
+
+	private bufferData(data: string): void {
+		this.dataBuffer.push(data);
+		this.dataBufferChars += data.length;
+		while (this.dataBufferChars > TerminalSession.MAX_BUFFER_CHARS) {
+			const removed = this.dataBuffer.shift();
+			this.dataBufferChars -= (removed?.length ?? 0);
+		}
+	}
+
+	public getRecentOutput(maxChars = 20000): string {
+		const full = this.outputHistory.join('');
+		return full.length <= maxChars ? full : full.slice(-maxChars);
+	}
+
+	public getRecentCleanOutput(maxChars = 10000): string {
+		const full = this.cleanOutputHistory.join('');
+		return full.length <= maxChars ? full : full.slice(-maxChars);
+	}
+
+	public getCleanOutputSince(offset: number): string {
+		return this.cleanOutputHistory.join('').slice(offset);
+	}
+
+	public async waitForOutput(predicate: (text: string) => boolean, timeoutMs = 10000, startOffset = 0): Promise<string> {
+		const startTime = Date.now();
+		return new Promise((resolve, reject) => {
+			const check = () => {
+				const recent = this.outputHistory.join('').slice(startOffset);
+				if (predicate(recent)) resolve(recent);
+				else if (Date.now() - startTime > timeoutMs) reject(new Error('Timeout'));
+				else setTimeout(check, 100);
+			};
+			check();
+		});
+	}
+
+	public async enableShellIntegration(): Promise<boolean> {
+		if (this.shellIntegrationEnabled) return true;
+		if (!this.info.shell.toLowerCase().match(/powershell|pwsh/)) return false;
+
+		// Send the complete integration script in a single line to be safe
+		await this.write(POWERSHELL_SHELL_INTEGRATION + '\r\n');
+
+		const start = Date.now();
+		while (!this.shellIntegrationEnabled && Date.now() - start < 3000) {
+			await new Promise(r => setTimeout(r, 100));
+		}
+		return this.shellIntegrationEnabled;
+	}
+
+	public async executeCommand(command: string, timeoutMs = 300000): Promise<CommandCompletion> {
+		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(command, timeoutMs);
+		return new Promise((resolve) => {
+			const startOffset = this.cleanOutputHistoryChars;
+			const tid = setTimeout(() => {
+				this.commandCompletionCallbacks = this.commandCompletionCallbacks.filter(c => c.resolve !== resolve);
+				resolve({ exitCode: -1, output: this.getCleanOutputSince(startOffset), cwd: this.currentCwd ?? undefined, timedOut: true });
+			}, timeoutMs);
+			this.commandCompletionCallbacks.push({
+				resolve: (res) => { clearTimeout(tid); resolve(res); },
+				startTime: Date.now(),
+				outputBuffer: [],
+				startOffset
+			});
+			this.write(`\x1b]633;C\x07${command}\r`);
+		});
+	}
+
+	private async executeCommandFallback(command: string, timeoutMs: number): Promise<CommandCompletion> {
+		const sentinel = Math.random().toString(36).substring(2, 12);
+		const startOffset = this.outputHistoryChars;
+		const capture = `$voltExit = if ($?) { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 } }`;
+		await this.write(`${command}; ${capture}; echo "__VOLT_EXIT_CODE_$voltExit__"; echo "__VOLT_DONE_${sentinel}__"\r`);
+
+		try {
+			const raw = await this.waitForOutput(t => t.includes(`__VOLT_DONE_${sentinel}__`), timeoutMs, startOffset);
+			const exitMatch = raw.match(/__VOLT_EXIT_CODE_(\d+)__/);
+			const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
+			const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+			let cleaned = raw.replace(ansiRegex, '');
+			const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+			let startIdx = 0;
+			for (let i = 0; i < Math.min(lines.length, 5); i++) {
+				if (lines[i].includes('$voltExit') || lines[i].includes('__VOLT_DONE_') || lines[i].includes(command.slice(0, 20))) startIdx = i + 1;
+			}
+			const final = lines.slice(startIdx).filter(l => !l.includes('__VOLT_') && !l.includes('$voltExit') && !l.includes('PS ')).join('\n').trim();
+			return { exitCode, output: final || '[Done]', cwd: this.currentCwd ?? undefined, timedOut: false };
+		} catch {
+			return { exitCode: -1, output: '[Timeout]', timedOut: true };
+		}
+	}
+
+	public async kill(): Promise<void> { await killTerminal(this.id); this.dispose(); }
+	public dispose(): void { this.dataUnlisten?.(); this.exitUnlisten?.(); this.readyUnlisten?.(); }
 }
 
-/**
- * Create a new terminal session with event handling
- */
-export async function createTerminalSession(
-	cwd?: string,
-	cols?: number,
-	rows?: number
-): Promise<TerminalSession | null> {
-	// Buffer to capture any early data before listeners are fully set up
-	const earlyDataBuffer: TerminalDataEvent[] = [];
-	const earlyReadyBuffer: TerminalReadyEvent[] = [];
-	let targetTerminalId: string | null = null;
-	let sessionListenersReady = false;
-	
-	// Set up temporary global listeners to capture early events
-	// These will capture events that arrive before the session's own listeners are ready
-	const earlyDataUnlisten = await onTerminalData((event) => {
-		// Only buffer if session listeners aren't ready yet
-		if (sessionListenersReady) return;
-		
-		// If we know the terminal ID, check if it matches
-		if (targetTerminalId && event.terminalId === targetTerminalId) {
-			earlyDataBuffer.push(event);
-		} else if (!targetTerminalId) {
-			// We don't know the ID yet, buffer all data (will filter later)
-			earlyDataBuffer.push(event);
-		}
-	});
-	
-	const earlyReadyUnlisten = await onTerminalReady((event) => {
-		if (sessionListenersReady) return;
-		
-		if (targetTerminalId && event.terminalId === targetTerminalId) {
-			earlyReadyBuffer.push(event);
-		} else if (!targetTerminalId) {
-			earlyReadyBuffer.push(event);
-		}
-	});
-	
-	try {
-		// Create the terminal
-		const info = await createTerminal(cwd, cols, rows);
-		if (!info) {
-			earlyDataUnlisten();
-			earlyReadyUnlisten();
-			return null;
-		}
-		
-		// Now we know the terminal ID
-		targetTerminalId = info.terminalId;
-
-		// Create session and start listening
-		const session = new TerminalSession(info);
-		await session.startListening();
-		
-		// Mark that session listeners are now ready - early listeners should stop buffering
-		sessionListenersReady = true;
-		
-		// Clean up early listeners
-		earlyDataUnlisten();
-		earlyReadyUnlisten();
-		
-		// Replay any early ready events
-		const relevantReadyEvents = earlyReadyBuffer.filter(e => e.terminalId === info.terminalId);
-		for (const event of relevantReadyEvents) {
-			(session as any).markReady();
-		}
-		
-		// Replay any early data that was captured for this terminal
-		const relevantEarlyData = earlyDataBuffer.filter(e => e.terminalId === info.terminalId);
-		for (const event of relevantEarlyData) {
-			// Manually trigger the data capture and buffering
-			(session as any).captureToHistory(event.data);
-			if ((session as any).onDataCallback) {
-				(session as any).onDataCallback(event.data);
-			} else {
-				(session as any).bufferData(event.data);
-			}
-		}
-		
-		return session;
-	} catch (err) {
-		earlyDataUnlisten();
-		earlyReadyUnlisten();
-		throw err;
-	}
+export async function createTerminalSession(cwd?: string, cols?: number, rows?: number): Promise<TerminalSession | null> {
+	const info = await createTerminal(cwd, cols, rows);
+	if (!info) return null;
+	const session = new TerminalSession(info);
+	await session.startListening();
+	return session;
 }
