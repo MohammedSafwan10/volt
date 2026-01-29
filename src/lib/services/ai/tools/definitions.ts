@@ -555,55 +555,9 @@ ALWAYS use this instead of str_replace for renaming! It:
     requiresApproval: true,
     allowedModes: ['agent']
   },
-  {
-    name: 'lsp_get_code_actions',
-    description: `Get ESLint quick fixes and code actions for a file or line range. Use to find and apply linting fixes.
-
-Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs (ESLint-lintable files)
-
-Use when: "Fix ESLint errors", "What fixes are available?", "Auto-fix linting issues"
-
-Options:
-- line: Get code actions for a specific line
-- end_line: Get code actions for a range (line to end_line)
-- fix_all: true to apply ALL ESLint fixes at once
-
-Returns: List of available fixes with indices. Use lsp_apply_code_action to apply a specific fix.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File path to get code actions for' },
-        line: { type: 'number', description: 'Line number (1-based) - optional, whole file if omitted' },
-        end_line: { type: 'number', description: 'End line for range (1-based) - optional' },
-        fix_all: { type: 'boolean', description: 'Apply all ESLint fixes at once (default: false)' }
-      },
-      required: ['path']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'lsp_apply_code_action',
-    description: `Apply a specific ESLint code action by index. First use lsp_get_code_actions to see available fixes.
-
-Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs
-
-Use when: User wants to apply a specific ESLint fix from the list.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File path' },
-        action_index: { type: 'number', description: 'Index of the action to apply (1-based, from lsp_get_code_actions)' },
-        line: { type: 'number', description: 'Line number (1-based) - should match the lsp_get_code_actions call' },
-        end_line: { type: 'number', description: 'End line (1-based) - should match the lsp_get_code_actions call' }
-      },
-      required: ['path', 'action_index']
-    },
-    category: 'diagnostics',
-    requiresApproval: true,
-    allowedModes: ['agent']
-  },
+  // NOTE: lsp_get_code_actions and lsp_apply_code_action REMOVED
+  // These tools were unreliable due to slow LSP initialization.
+  // AI should use: run_command({ command: "npx eslint --fix path/to/file.ts" }) instead.
 
   // ============================================
   // DIAGNOSTICS

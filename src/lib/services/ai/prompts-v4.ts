@@ -102,8 +102,6 @@ MUCH better than text search for code navigation and refactoring.
 | lsp_find_references | "What uses X?" → Find ALL usages (even renamed imports!) |
 | lsp_get_hover | "What type is X?" → Get type info + docs |
 | lsp_rename_symbol | "Rename X to Y" → Safe rename across ALL files (TS/JS + Dart) |
-| lsp_get_code_actions | "Fix ESLint errors" → Get available quick fixes |
-| lsp_apply_code_action | Apply a specific ESLint fix by index |
 
 ### Easy Usage - Just Pass Symbol Name!
 
@@ -121,12 +119,6 @@ lsp_go_to_definition({ path: "src/App.svelte", symbol: "onMount" })
 
 lsp_get_hover({ path: "styles/main.css", symbol: "--primary-color" })
 → Works for CSS variables too!
-
-lsp_get_code_actions({ path: "src/app.ts", fix_all: true })
-→ Apply ALL ESLint fixes at once
-
-lsp_get_code_actions({ path: "src/app.ts", line: 42 })
-→ Get available fixes for line 42
 \`\`\`
 
 ### ⚠️ PREFER LSP OVER TEXT SEARCH
@@ -187,10 +179,8 @@ Need to rename/refactor?
 └── Move file? → rename_path + fix imports
 
 Need to fix code?
-├── Fix ESLint issues? → lsp_get_code_actions({ fix_all: true })
-├── See available fixes? → lsp_get_code_actions({ path, line })
-├── Apply specific fix? → lsp_apply_code_action({ path, action_index })
-└── Get all diagnostics? → get_diagnostics
+├── Fix ESLint issues? → run_command({ command: "npx eslint --fix path/to/file.ts" })
+├── Get all diagnostics? → get_diagnostics
 
 Need to read?
 ├── Code file? → read_code (shows structure)

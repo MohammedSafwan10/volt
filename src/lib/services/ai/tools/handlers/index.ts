@@ -61,9 +61,8 @@ export {
   handleLspFindReferences,
   handleLspGetHover,
   handleLspRenameSymbol,
-  handleLspPrepareRename,
-  handleLspGetCodeActions,
-  handleLspApplyCodeAction
+  handleLspPrepareRename
+  // NOTE: handleLspGetCodeActions and handleLspApplyCodeAction REMOVED - use run_command with eslint instead
 } from './lsp';
 
 // Browser tools
@@ -144,8 +143,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'lsp_find_references': (args) => import('./lsp').then(m => m.handleLspFindReferences(args)),
   'lsp_get_hover': (args) => import('./lsp').then(m => m.handleLspGetHover(args)),
   'lsp_rename_symbol': (args) => import('./lsp').then(m => m.handleLspRenameSymbol(args)),
-  'lsp_get_code_actions': (args) => import('./lsp').then(m => m.handleLspGetCodeActions(args)),
-  'lsp_apply_code_action': (args) => import('./lsp').then(m => m.handleLspApplyCodeAction(args)),
+  // NOTE: lsp_get_code_actions and lsp_apply_code_action REMOVED - use run_command with eslint instead
 
   // Browser DevTools
   'browser_get_console_logs': (args) => import('./browser').then(m => m.browser_get_console_logs(args as any).then(r => ({ success: true, data: r }))),
