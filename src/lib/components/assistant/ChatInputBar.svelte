@@ -3,6 +3,11 @@
   import type { AIMode } from "$lib/stores/ai.svelte";
   import { aiSettingsStore, PROVIDERS } from "$lib/stores/ai.svelte";
   import { IMAGE_LIMITS, assistantStore } from "$lib/stores/assistant.svelte";
+  import { toastStore } from "$lib/stores/toast.svelte";
+  import { readTextFile } from "@tauri-apps/plugin-fs";
+  import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
+  import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
+  import { fade } from "svelte/transition";
 
   interface Props {
     inputRef?: HTMLTextAreaElement;
@@ -63,8 +68,10 @@
   let isDraggingOver = $state(false);
 
   let showModeMenu = $state(false);
-  let showAttachMenu = $state(false);
   let showModelMenu = $state(false);
+  let showAttachMenu = $state(false);
+  let showMentionsMenu = $state(false);
+  let mentionQuery = $state("");
 
   // Available models from provider config
   const availableModels = $derived(
@@ -173,10 +180,21 @@
     }
 
     if (e.key === "Escape") {
-      if (showModeMenu || showAttachMenu || isStreaming) {
+      if (showMentionsMenu) {
+        e.preventDefault();
+        e.stopPropagation();
+        showMentionsMenu = false;
+        mentionQuery = "";
+      } else if (
+        showModeMenu ||
+        showModelMenu ||
+        showAttachMenu ||
+        isStreaming
+      ) {
         e.preventDefault();
         e.stopPropagation();
         showModeMenu = false;
+        showModelMenu = false;
         showAttachMenu = false;
         if (isStreaming) onStop();
       }
@@ -185,21 +203,52 @@
 
   function handleInput(e: Event): void {
     const target = e.target as HTMLTextAreaElement;
-    onInput(target.value);
+    const newValue = target.value;
+    onInput(newValue);
     autoResize(target);
+
+    // Detect @ mentions
+    const cursorPos = target.selectionStart ?? newValue.length;
+    const textBeforeCursor = newValue.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+
+    if (lastAtIndex >= 0) {
+      // Check if @ is at start or preceded by whitespace
+      const charBefore =
+        lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : " ";
+      if (charBefore === " " || charBefore === "\n" || lastAtIndex === 0) {
+        const query = textBeforeCursor.slice(lastAtIndex + 1);
+        // Only show menu if no spaces in query (still typing the mention)
+        if (!query.includes(" ")) {
+          mentionQuery = query;
+          showMentionsMenu = true;
+          return;
+        }
+      }
+    }
+    // Close menu if @ was deleted or completed
+    if (showMentionsMenu) {
+      showMentionsMenu = false;
+      mentionQuery = "";
+    }
   }
 
   function autoResize(textarea: HTMLTextAreaElement): void {
-    // Reset to minimum first to get accurate scrollHeight
-    textarea.style.height = "24px";
-    const newHeight = Math.min(Math.max(textarea.scrollHeight, 24), 150);
+    if (!textarea) return;
+    // Reset to auto first to get accurate scrollHeight for current content
+    textarea.style.height = "auto";
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, 28), 200);
     textarea.style.height = newHeight + "px";
   }
 
-  // Reset textarea height when value is cleared (after sending)
+  // Auto-resize textarea when value changes (e.g. after sending or on external update like revert)
   $effect(() => {
-    if (!value && inputRef) {
-      inputRef.style.height = "24px";
+    if (inputRef) {
+      if (!value) {
+        inputRef.style.height = "28px";
+      } else {
+        autoResize(inputRef);
+      }
     }
   });
 
@@ -208,19 +257,140 @@
     showModeMenu = false;
   }
 
+  function openMentionsFromButton(): void {
+    showAttachMenu = false;
+    showMentionsMenu = true;
+    mentionQuery = "";
+    // Insert @ into input if not already there
+    if (!value.endsWith("@") && !value.endsWith("@ ")) {
+      onInput(value + (value && !value.endsWith(" ") ? " @" : "@"));
+    }
+    inputRef?.focus();
+  }
+
+  async function handleMentionSelect(item: MentionItem): Promise<void> {
+    // Handle category selection - update query prefix to filter
+    if (item.category === "category") {
+      const cat = item.data as { prefix: string };
+      if (cat.prefix) {
+        // Replace the current @ query with the category-prefixed one
+        const cursorPos = inputRef?.selectionStart ?? value.length;
+        const textBeforeCursor = value.slice(0, cursorPos);
+        const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+        if (lastAtIndex >= 0) {
+          const before = value.slice(0, lastAtIndex + 1);
+          const after = value.slice(cursorPos);
+          onInput(before + cat.prefix + after);
+          mentionQuery = cat.prefix;
+          // Move cursor to end of prefix
+          setTimeout(() => {
+            if (inputRef) {
+              const newPos = before.length + cat.prefix.length;
+              inputRef.setSelectionRange(newPos, newPos);
+            }
+          }, 0);
+        }
+      }
+      return;
+    }
+
+    // Remove the @ query from input
+    const cursorPos = inputRef?.selectionStart ?? value.length;
+    const textBeforeCursor = value.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+    if (lastAtIndex >= 0) {
+      const before = value.slice(0, lastAtIndex);
+      const after = value.slice(cursorPos);
+      onInput(before + after);
+    }
+
+    // Attach the actual context based on category
+    try {
+      if (item.category === "file") {
+        // Read file content and attach it
+        const filePath = item.id; // item.id is the full path
+        try {
+          const content = await readTextFile(filePath);
+          const result = assistantStore.attachFile(
+            filePath,
+            content,
+            item.label,
+          );
+          if (!result.success) {
+            console.warn("[Mentions] Failed to attach file:", result.error);
+            toastStore.show({
+              type: "error",
+              message: result.error || "Failed to attach file",
+            });
+          }
+        } catch (err: any) {
+          console.error("[Mentions] Failed to read file:", filePath, err);
+          toastStore.show({
+            type: "error",
+            message: `Could not read file: ${err.message || "Unknown error"}`,
+            duration: 4000,
+          });
+        }
+      } else if (item.category === "directory") {
+        // For directories, attach as folder context
+        const folderPath = item.id;
+        assistantStore.attachFolder(folderPath);
+      } else if (item.category === "terminal") {
+        // Attach terminal reference - actual output capture would need terminal integration
+        const label = `Terminal: ${item.label}`;
+        assistantStore.attachContext({
+          type: "selection",
+          content: `[Terminal session: ${item.label}]`,
+          label,
+        });
+      } else if (item.category === "conversation") {
+        // Get conversation messages and attach as context
+        const conversationId = item.id;
+        const conversation =
+          await chatHistoryStore.getConversation(conversationId);
+        if (conversation) {
+          const messages = conversation.messages
+            .slice(-10) // Last 10 messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join("\n\n");
+          assistantStore.attachContext({
+            type: "selection",
+            content: messages,
+            label: `Chat: ${item.label}`,
+          });
+        }
+      } else if (item.category === "mcp") {
+        // For MCP servers, add a reference (tools will be available)
+        assistantStore.attachContext({
+          type: "selection",
+          content: `MCP Server: ${item.label} (${item.sublabel || "connected"})`,
+          label: `MCP: ${item.label}`,
+        });
+      }
+    } catch (err) {
+      console.error("[Mentions] Failed to attach context:", err);
+    }
+
+    showMentionsMenu = false;
+    mentionQuery = "";
+    inputRef?.focus();
+  }
+
+  function closeMentionsMenu(): void {
+    showMentionsMenu = false;
+    mentionQuery = "";
+  }
+
   function handleAttachFile(): void {
     onAttachFile();
-    showAttachMenu = false;
   }
 
   function handleAttachSelection(): void {
     onAttachSelection();
-    showAttachMenu = false;
   }
 
   function handleAttachImagePicker(): void {
     onAttachImageFromPicker?.();
-    showAttachMenu = false;
   }
 
   // Handle paste for images
@@ -280,11 +450,11 @@
     if (!target.closest(".mode-dropdown-container")) {
       showModeMenu = false;
     }
-    if (!target.closest(".attach-dropdown-container")) {
-      showAttachMenu = false;
-    }
     if (!target.closest(".model-dropdown-container")) {
       showModelMenu = false;
+    }
+    if (!target.closest(".attach-dropdown-container")) {
+      showAttachMenu = false;
     }
   }
 
@@ -312,186 +482,50 @@
     </div>
   {/if}
 
-  <!-- Text Input Area -->
-  <div class="input-wrapper">
-    <textarea
-      bind:this={inputRef}
-      class="chat-textarea"
-      placeholder="Ask anything or type / for commands..."
-      rows="1"
-      {value}
-      oninput={handleInput}
-      onkeydown={handleKeydown}
-      onpaste={handlePaste}
-      aria-label="Message input"
-    ></textarea>
-  </div>
+  <div class="unified-input-container">
+    <!-- Mentions Menu (positioned above input) -->
+    {#if showMentionsMenu}
+      <MentionsMenu
+        query={mentionQuery}
+        onSelect={handleMentionSelect}
+        onClose={closeMentionsMenu}
+      />
+    {/if}
 
-  <!-- Bottom Bar with Mode Selector and Actions -->
-  <div class="bottom-bar">
-    <div class="left-controls">
-      <!-- Context Usage Ring -->
-      {#if assistantStore.messages.length > 0 || contextUsage.usedTokens > 100}
-        <div
-          class="context-ring-container"
-          class:near-limit={contextUsage.isNearLimit}
-          class:over-limit={contextUsage.isOverLimit}
-          title="{contextUsage.percentage.toFixed(
-            0,
-          )}% context usage ({assistantStore.formatTokenCount(
-            contextUsage.usedTokens,
-          )} / {assistantStore.formatTokenCount(
-            contextUsage.maxTokens,
-          )} tokens)"
-        >
-          <svg
-            class="context-ring"
-            width={RING_SIZE}
-            height={RING_SIZE}
-            viewBox="0 0 {RING_SIZE} {RING_SIZE}"
-          >
-            <!-- Background circle -->
-            <circle
-              cx={RING_SIZE / 2}
-              cy={RING_SIZE / 2}
-              r={RING_RADIUS}
-              fill="none"
-              stroke="var(--color-border)"
-              stroke-width={RING_STROKE}
-            />
-            <!-- Progress circle -->
-            <circle
-              cx={RING_SIZE / 2}
-              cy={RING_SIZE / 2}
-              r={RING_RADIUS}
-              fill="none"
-              stroke={ringColor}
-              stroke-width={RING_STROKE}
-              stroke-linecap="round"
-              stroke-dasharray={RING_CIRCUMFERENCE}
-              stroke-dashoffset={strokeDashoffset}
-              transform="rotate(-90 {RING_SIZE / 2} {RING_SIZE / 2})"
-              class="progress-circle"
-            />
-          </svg>
-        </div>
-      {/if}
-
-      <!-- Mode Selector Dropdown -->
-      <div class="mode-dropdown-container">
-        <button
-          class="mode-selector-btn"
-          onclick={() => (showModeMenu = !showModeMenu)}
-          aria-expanded={showModeMenu}
-          aria-haspopup="listbox"
-          type="button"
-        >
-          {#if currentMode === "agent"}
-            <span class="mode-check">✓</span>
-          {/if}
-          <span class="mode-label">{currentModeInfo.label}</span>
-          <UIIcon name="chevron-down" size={12} />
-        </button>
-
-        {#if showModeMenu}
-          <div class="mode-menu" role="listbox">
-            {#each modes as mode (mode.id)}
-              <button
-                class="mode-option"
-                class:active={currentMode === mode.id}
-                onclick={() => selectMode(mode.id)}
-                role="option"
-                aria-selected={currentMode === mode.id}
-                type="button"
-              >
-                <span class="option-check"
-                  >{currentMode === mode.id ? "✓" : ""}</span
-                >
-                <span class="option-label">{mode.label}</span>
-                {#if mode.shortcut}
-                  <span class="option-shortcut">{mode.shortcut}</span>
-                {/if}
-              </button>
-            {/each}
-            <div class="menu-divider"></div>
-            <button class="mode-option configure" type="button">
-              <span class="option-check"></span>
-              <span class="option-label config-label"
-                >Configure Custom Agents...</span
-              >
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <!-- Model Selector Dropdown -->
-      <div class="model-dropdown-container">
-        <button
-          class="model-selector-btn"
-          type="button"
-          title="Select model"
-          onclick={() => (showModelMenu = !showModelMenu)}
-          aria-expanded={showModelMenu}
-          aria-haspopup="listbox"
-        >
-          <span class="model-label">{getModelDisplayName(currentModel)}</span>
-          <UIIcon name="chevron-down" size={12} />
-        </button>
-
-        {#if showModelMenu}
-          <div class="model-menu" role="listbox">
-            {#each availableModels as model (model)}
-              <button
-                class="model-option"
-                class:active={currentModel === model}
-                onclick={() => selectModel(model)}
-                role="option"
-                aria-selected={currentModel === model}
-                type="button"
-              >
-                {getModelDisplayName(model)}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+    <!-- Text Input Area -->
+    <div class="input-wrapper">
+      <textarea
+        bind:this={inputRef}
+        class="chat-textarea"
+        placeholder="Ask anything (Ctrl+L), @ to mention, / for workflows"
+        rows="1"
+        {value}
+        oninput={handleInput}
+        onkeydown={handleKeydown}
+        onpaste={handlePaste}
+        aria-label="Message input"
+      ></textarea>
     </div>
 
-    <div class="right-controls">
-      <!-- Attach Button -->
-      <div class="attach-dropdown-container">
-        <button
-          class="action-icon-btn"
-          onclick={() => (showAttachMenu = !showAttachMenu)}
-          title="Attach context"
-          aria-label="Attach context"
-          aria-expanded={showAttachMenu}
-          type="button"
-        >
-          <UIIcon name="link" size={16} />
-        </button>
+    <!-- Bottom Bar with Mode Selector and Actions -->
+    <div class="bottom-bar">
+      <div class="left-controls">
+        <!-- Attach Button (+) -->
+        <div class="attach-dropdown-container">
+          <button
+            class="plus-btn"
+            onclick={() => (showAttachMenu = !showAttachMenu)}
+            title="Add context"
+            aria-expanded={showAttachMenu}
+            aria-haspopup="menu"
+            type="button"
+          >
+            <UIIcon name="plus" size={16} />
+          </button>
 
-        {#if showAttachMenu}
-          <div class="attach-menu" role="menu">
-            <button
-              class="attach-option"
-              onclick={handleAttachFile}
-              role="menuitem"
-              type="button"
-            >
-              <UIIcon name="file" size={14} />
-              <span>Current file</span>
-            </button>
-            <button
-              class="attach-option"
-              onclick={handleAttachSelection}
-              role="menuitem"
-              type="button"
-            >
-              <UIIcon name="code" size={14} />
-              <span>Selection</span>
-            </button>
-            {#if onAttachImageFromPicker}
+          {#if showAttachMenu}
+            <div class="attach-menu" role="menu">
+              <div class="menu-title">Add context</div>
               <button
                 class="attach-option"
                 onclick={handleAttachImagePicker}
@@ -499,46 +533,128 @@
                 type="button"
               >
                 <UIIcon name="image" size={14} />
-                <span>Image</span>
+                <span>Media</span>
               </button>
-            {/if}
-          </div>
-        {/if}
+              <button
+                class="attach-option"
+                onclick={openMentionsFromButton}
+                role="menuitem"
+                type="button"
+              >
+                <UIIcon name="at-sign" size={14} />
+                <span>Mentions (@)</span>
+              </button>
+              <button
+                class="attach-option"
+                onclick={() => (showAttachMenu = false)}
+                role="menuitem"
+                type="button"
+              >
+                <UIIcon name="code" size={14} />
+                <span>Workflows (/)</span>
+              </button>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Mode Selector Dropdown -->
+        <div class="mode-dropdown-container">
+          <button
+            class="mode-selector-btn"
+            onclick={() => (showModeMenu = !showModeMenu)}
+            aria-expanded={showModeMenu}
+            aria-haspopup="listbox"
+            type="button"
+          >
+            <UIIcon name="chevron-up" size={12} />
+            <span class="mode-label">{currentModeInfo.label}</span>
+          </button>
+
+          {#if showModeMenu}
+            <div class="mode-menu" role="listbox">
+              {#each modes as mode (mode.id)}
+                <button
+                  class="mode-option"
+                  class:active={currentMode === mode.id}
+                  onclick={() => selectMode(mode.id)}
+                  role="option"
+                  aria-selected={currentMode === mode.id}
+                  type="button"
+                >
+                  <span class="option-check"
+                    >{currentMode === mode.id ? "✓" : ""}</span
+                  >
+                  <span class="option-label">{mode.label}</span>
+                  {#if mode.shortcut}
+                    <span class="option-shortcut">{mode.shortcut}</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Model Selector Dropdown -->
+        <div class="model-dropdown-container">
+          <button
+            class="model-selector-btn"
+            type="button"
+            title="Select model"
+            onclick={() => (showModelMenu = !showModelMenu)}
+            aria-expanded={showModelMenu}
+            aria-haspopup="listbox"
+          >
+            <UIIcon name="chevron-up" size={12} />
+            <span class="model-label">{getModelDisplayName(currentModel)}</span>
+          </button>
+
+          {#if showModelMenu}
+            <div class="model-menu" role="listbox">
+              {#each availableModels as model (model)}
+                <button
+                  class="model-option"
+                  class:active={currentModel === model}
+                  onclick={() => selectModel(model)}
+                  role="option"
+                  aria-selected={currentModel === model}
+                  type="button"
+                >
+                  {getModelDisplayName(model)}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
 
-      <!-- Voice Button (placeholder) -->
-      <button
-        class="action-icon-btn"
-        title="Voice input"
-        aria-label="Voice input"
-        type="button"
-      >
-        <UIIcon name="record" size={16} />
-      </button>
-
-      <!-- Send/Stop Button -->
-      {#if isStreaming}
-        <button
-          class="send-btn stop"
-          onclick={onStop}
-          title="Stop (Esc)"
-          aria-label="Stop generation"
-          type="button"
-        >
-          <UIIcon name="stop" size={16} />
-        </button>
-      {:else}
-        <button
-          class="send-btn"
-          onclick={onSend}
-          disabled={!value.trim() && !inputRef?.value?.trim()}
-          title="Send (Enter)"
-          aria-label="Send message"
-          type="button"
-        >
-          <UIIcon name="send" size={16} />
-        </button>
-      {/if}
+      <div class="right-controls">
+        <!-- Send/Stop Button (Circular) -->
+        {#if isStreaming}
+          <button
+            class="send-btn stop"
+            onclick={onStop}
+            title="Stop (Esc)"
+            aria-label="Stop generation"
+            type="button"
+          >
+            <UIIcon name="stop" size={16} />
+          </button>
+        {:else}
+          <button
+            class="send-btn"
+            onclick={onSend}
+            disabled={!value.trim() &&
+              !inputRef?.value?.trim() &&
+              assistantStore.pendingAttachments.length === 0 &&
+              assistantStore.attachedContext.length === 0}
+            title="Send (Enter)"
+            aria-label="Send message"
+            type="button"
+          >
+            <UIIcon name="arrow-right" size={20} />
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 </div>
@@ -574,70 +690,70 @@
     pointer-events: none;
   }
 
-  .input-wrapper {
-    background: var(--color-bg-input);
+  .unified-input-container {
+    background: var(--color-bg-input, var(--color-surface0));
     border: 1px solid var(--color-border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    transition: border-color 0.15s ease;
+    border-radius: 12px;
+    padding: 8px 4px 6px 4px;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
+    display: flex;
+    flex-direction: column;
   }
 
-  .input-wrapper:focus-within {
-    border-color: var(--color-accent);
+  .unified-input-container:focus-within {
+    border-color: var(--color-text-disabled);
+    box-shadow: 0 0 0 1px var(--color-border);
+  }
+
+  .input-wrapper {
+    padding: 2px 12px 4px 12px;
   }
 
   .chat-textarea {
     width: 100%;
-    min-height: 24px;
-    max-height: 150px;
-    padding: 0;
+    min-height: 28px;
+    max-height: 200px;
+    padding: 2px 0;
     background: transparent;
     border: none;
     color: var(--color-text);
-    font-size: 13px;
+    font-size: 13.5px;
     line-height: 1.5;
     resize: none;
     outline: none;
+
+    /* Premium smooth interactions */
+    transition:
+      height 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+      color 0.1s ease;
+
+    caret-color: #d8b4fe;
   }
 
   .chat-textarea::placeholder {
-    color: var(--color-text-disabled);
+    color: var(--color-text-secondary);
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+  }
+
+  .chat-textarea:focus::placeholder {
+    opacity: 0.4;
   }
 
   .bottom-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding: 4px 8px;
     gap: 8px;
   }
 
   .left-controls {
     display: flex;
     align-items: center;
-    gap: 6px;
-  }
-
-  /* Context Usage Ring */
-  .context-ring-container {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: help;
-    transition: transform 0.15s ease;
-  }
-
-  .context-ring-container:hover {
-    transform: scale(1.1);
-  }
-
-  .context-ring {
-    display: block;
-  }
-
-  .progress-circle {
-    transition:
-      stroke-dashoffset 0.3s ease,
-      stroke 0.2s ease;
+    gap: 4px;
   }
 
   .right-controls {
@@ -646,58 +762,78 @@
     gap: 4px;
   }
 
-  /* Mode Selector */
-  .mode-dropdown-container {
+  /* Plus Button */
+  .plus-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    color: var(--color-text-secondary);
+    transition: all 0.1s ease;
+    border: 1px solid transparent;
+  }
+
+  .plus-btn:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+    border-color: var(--color-border);
+  }
+
+  /* Dropdowns */
+  .attach-dropdown-container,
+  .mode-dropdown-container,
+  .model-dropdown-container {
     position: relative;
   }
 
-  .mode-selector-btn {
+  .mode-selector-btn,
+  .model-selector-btn {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     padding: 4px 8px;
     background: transparent;
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--color-text);
-    font-size: 12px;
-    transition: all 0.15s ease;
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    transition: all 0.1s ease;
   }
 
-  .mode-selector-btn:hover {
+  .mode-selector-btn:hover,
+  .model-selector-btn:hover {
     background: var(--color-hover);
-    border-color: var(--color-text-secondary);
+    color: var(--color-text);
   }
 
-  .mode-check {
-    color: var(--color-accent);
-    font-size: 11px;
+  .mode-label,
+  .model-label {
+    font-weight: 400;
   }
 
-  .mode-label {
-    font-weight: 500;
-  }
-
-  .mode-menu {
+  .attach-menu,
+  .mode-menu,
+  .model-menu {
     position: absolute;
     bottom: 100%;
     left: 0;
-    margin-bottom: 4px;
-    min-width: 200px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    box-shadow: var(--shadow-elevated);
-    padding: 4px 0;
-    z-index: 100;
-    animation: dropdownIn 0.15s ease;
+    margin-bottom: 8px;
+    min-width: 210px;
+    background: #0f0f0f;
+    border: 1px solid #1a1a1a;
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8);
+    padding: 6px 0;
+    z-index: 1000;
+    animation: dropdownIn 0.12s cubic-bezier(0, 0, 0.2, 1);
     transform-origin: bottom left;
   }
 
   @keyframes dropdownIn {
     from {
       opacity: 0;
-      transform: scale(0.95) translateY(4px);
+      transform: scale(0.96) translateY(4px);
     }
     to {
       opacity: 1;
@@ -705,31 +841,50 @@
     }
   }
 
-  .mode-option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
+  .menu-title {
     padding: 6px 12px;
     font-size: 12px;
-    color: var(--color-text);
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    opacity: 0.8;
+  }
+
+  .attach-option,
+  .mode-option,
+  .model-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: calc(100% - 12px);
+    margin: 2px 6px;
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #e5e5e5;
     text-align: left;
-    transition: background 0.1s ease;
+    transition: all 0.1s ease;
+    border-radius: 6px;
   }
 
-  .mode-option:hover {
-    background: var(--color-hover);
+  .attach-option:hover,
+  .mode-option:hover,
+  .model-option:hover {
+    background: #1a1a1a;
   }
 
-  .mode-option.active {
-    background: var(--color-accent);
-    background: rgba(137, 180, 250, 0.15);
+  .mode-option.active,
+  .model-option.active {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+  }
+
+  .mode-option.active .option-check {
+    color: #3b82f6;
   }
 
   .option-check {
     width: 14px;
-    color: var(--color-accent);
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .option-label {
@@ -739,156 +894,51 @@
   .option-shortcut {
     color: var(--color-text-secondary);
     font-size: 11px;
+    opacity: 0.6;
   }
 
-  .menu-divider {
-    height: 1px;
-    background: var(--color-border);
-    margin: 4px 8px;
-  }
-
-  .config-label {
-    color: var(--color-accent);
-  }
-
-  /* Model Selector */
-  .model-dropdown-container {
-    position: relative;
-  }
-
-  .model-selector-btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    background: transparent;
-    color: var(--color-text-secondary);
-    font-size: 11px;
-    transition: all 0.15s ease;
-    border-radius: 4px;
-  }
-
-  .model-selector-btn:hover {
-    color: var(--color-text);
-    background: var(--color-hover);
-  }
-
-  .model-label {
-    opacity: 0.8;
-  }
-
-  .model-menu {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
-    min-width: 160px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    box-shadow: var(--shadow-elevated);
-    padding: 4px 0;
-    z-index: 100;
-    animation: dropdownIn 0.15s ease;
-    transform-origin: bottom left;
-  }
-
-  .model-option {
-    width: 100%;
-    padding: 8px 14px;
-    font-size: 12px;
-    color: var(--color-text);
-    text-align: left;
-    transition: background 0.1s ease;
-  }
-
-  .model-option:hover {
-    background: var(--color-hover);
-  }
-
-  .model-option.active {
-    background: rgba(137, 180, 250, 0.15);
-    color: var(--color-accent);
-  }
-
-  /* Action Buttons */
-  .action-icon-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 4px;
-    color: var(--color-text-secondary);
-    transition: all 0.15s ease;
-  }
-
-  .action-icon-btn:hover {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
-  /* Attach Menu */
-  .attach-dropdown-container {
-    position: relative;
-  }
-
-  .attach-menu {
-    position: absolute;
-    bottom: 100%;
-    right: 0;
-    margin-bottom: 4px;
-    min-width: 140px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    box-shadow: var(--shadow-elevated);
-    padding: 4px 0;
-    z-index: 100;
-    animation: dropdownIn 0.15s ease;
-    transform-origin: bottom right;
-  }
-
-  .attach-option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--color-text);
-    text-align: left;
-    transition: background 0.1s ease;
-  }
-
-  .attach-option:hover {
-    background: var(--color-hover);
-  }
-
-  /* Send Button */
+  /* Send Button (Circular and Premium) */
   .send-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 28px;
     height: 28px;
-    border-radius: 4px;
-    background: var(--color-accent);
-    color: var(--color-bg);
-    transition: all 0.15s ease;
+    border-radius: 8px; /* Slightly rounded square for modern look */
+    background: transparent;
+    color: var(--color-text-secondary);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid transparent;
+  }
+
+  /* Active state (when there is text to send) */
+  .send-btn:not(:disabled):not(.stop) {
+    background: var(--color-primary);
+    color: white;
+    box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.3);
   }
 
   .send-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
     filter: brightness(1.1);
   }
 
+  .send-btn:active:not(:disabled) {
+    transform: translateY(0);
+    filter: brightness(0.9);
+  }
+
   .send-btn:disabled {
-    opacity: 0.4;
+    opacity: 0.25;
     cursor: not-allowed;
+    background: transparent;
+    border-color: var(--color-border);
   }
 
   .send-btn.stop {
     background: var(--color-error);
+    color: white;
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3); /* Red glow for stop button */
   }
 
   .send-btn:focus-visible {
