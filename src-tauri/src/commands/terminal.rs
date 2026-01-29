@@ -67,7 +67,6 @@ struct TerminalReadyEvent {
     terminal_id: String,
 }
 
-
 /// Internal terminal session state
 struct TerminalSession {
     info: TerminalInfo,
@@ -136,14 +135,18 @@ fn detect_shell() -> (String, Vec<String>) {
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             r"C:\Program Files\PowerShell\7\pwsh.exe",
         ];
-        
+
         for path in &powershell_paths {
             if std::path::Path::new(path).exists() {
-                let shell_name = if path.contains("pwsh") { "pwsh" } else { "powershell" };
+                let shell_name = if path.contains("pwsh") {
+                    "pwsh"
+                } else {
+                    "powershell"
+                };
                 return (shell_name.to_string(), vec!["-NoLogo".to_string()]);
             }
         }
-        
+
         // Fallback to cmd.exe which is always available
         ("cmd.exe".to_string(), vec![])
     }
@@ -157,7 +160,6 @@ fn detect_shell() -> (String, Vec<String>) {
         ("/bin/bash".to_string(), vec![])
     }
 }
-
 
 /// Create a new terminal session
 /// Note: This runs synchronously but the heavy work (shell process) runs in background threads
@@ -215,21 +217,27 @@ fn create_terminal_sync(
         .slave
         .spawn_command(cmd)
         .map_err(|e| TerminalError::CreateFailed {
-        message: e.to_string(),
-    })?;
+            message: e.to_string(),
+        })?;
 
     // Clone a killer handle so we can terminate the process from other commands
     let killer = child.clone_killer();
 
     // Get writer for sending input to the terminal
-    let writer = pair.master.take_writer().map_err(|e| TerminalError::CreateFailed {
-        message: e.to_string(),
-    })?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| TerminalError::CreateFailed {
+            message: e.to_string(),
+        })?;
 
     // Get reader for receiving output from the terminal
-    let mut reader = pair.master.try_clone_reader().map_err(|e| TerminalError::CreateFailed {
-        message: e.to_string(),
-    })?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| TerminalError::CreateFailed {
+            message: e.to_string(),
+        })?;
 
     // Generate terminal ID and create info
     let manager = get_terminal_manager();
@@ -272,26 +280,48 @@ fn create_terminal_sync(
         let manager_ready = manager.clone();
         let initial_cols = cols;
         let initial_rows = rows;
-        
+
         thread::spawn(move || {
-            // Wait for shell to initialize
-            thread::sleep(Duration::from_millis(150));
+            // ConPTY Quirk Workaround:
+            // Windows ConPTY sometimes doesn't display the initial shell prompt until
+            // a resize event occurs. This is a known issue where the PTY buffers the
+            // initial output. We work around this by:
+            // 1. Waiting for the shell to initialize (polling with short intervals)
+            // 2. Triggering a resize cycle (expand by 1 col, then restore) to flush the buffer
             
-            // Trigger a resize to force prompt display (ConPTY quirk)
-            // First resize to slightly different size, then back to original
+            // Initial short delay to let the shell process start
+            thread::sleep(Duration::from_millis(100));
+            
+            // Poll for shell readiness - wait for it to produce some output
+            // Max 5 attempts at 50ms intervals (250ms total max wait)
+            for _ in 0..5 {
+                let has_output = if let Ok(mgr) = manager_ready.lock() {
+                    mgr.sessions.contains_key(&terminal_id_ready)
+                } else {
+                    false
+                };
+                
+                if has_output {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            // Trigger resize cycle to force prompt display
+            // This exploits a ConPTY behavior where resize events flush buffered output
             if let Ok(mut mgr) = manager_ready.lock() {
                 if let Some(session) = mgr.sessions.get_mut(&terminal_id_ready) {
-                    // Resize to trigger prompt
+                    // Step 1: Resize to slightly larger size
                     let _ = session.master.resize(PtySize {
                         rows: initial_rows,
                         cols: initial_cols + 1,
                         pixel_width: 0,
                         pixel_height: 0,
                     });
-                    
+
                     thread::sleep(Duration::from_millis(50));
-                    
-                    // Resize back to original
+
+                    // Step 2: Resize back to original dimensions
                     let _ = session.master.resize(PtySize {
                         rows: initial_rows,
                         cols: initial_cols,
@@ -300,8 +330,8 @@ fn create_terminal_sync(
                     });
                 }
             }
-            
-            // Emit ready event
+
+            // Emit ready event after resize trick completes
             let _ = app_ready.emit(
                 "terminal://ready",
                 TerminalReadyEvent {
@@ -313,7 +343,7 @@ fn create_terminal_sync(
 
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
-        
+
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
@@ -323,7 +353,7 @@ fn create_terminal_sync(
                 Ok(n) => {
                     // Convert to string (lossy for non-UTF8 terminal output)
                     let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    
+
                     // Emit data event
                     let _ = app_clone.emit(
                         "terminal://data",
@@ -345,7 +375,7 @@ fn create_terminal_sync(
                             .map(|s| s.killed)
                             .unwrap_or(true)
                     };
-                    
+
                     if !killed {
                         eprintln!("Terminal read error: {}", e);
                     }
@@ -355,10 +385,7 @@ fn create_terminal_sync(
         }
 
         // Wait for child process to exit and get exit code
-        let exit_code = child
-            .wait()
-            .ok()
-            .map(|status| status.exit_code() as i32);
+        let exit_code = child.wait().ok().map(|status| status.exit_code() as i32);
 
         // Emit exit event
         let _ = app_clone.emit(
@@ -377,7 +404,6 @@ fn create_terminal_sync(
 
     Ok(info)
 }
-
 
 /// Write data to a terminal
 #[tauri::command]
@@ -479,7 +505,9 @@ pub fn terminal_kill(terminal_id: String) -> Result<(), TerminalError> {
             #[cfg(windows)]
             {
                 let message_lower = message.to_lowercase();
-                if message.contains("os error 0") || message_lower.contains("operation completed successfully") {
+                if message.contains("os error 0")
+                    || message_lower.contains("operation completed successfully")
+                {
                     session.killed = true;
                     close_terminal_input(session);
                     return Ok(());
