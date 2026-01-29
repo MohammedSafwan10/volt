@@ -3,44 +3,44 @@
    * ProblemsView - Displays diagnostic problems from Monaco Editor
    * Shows errors, warnings, and info messages grouped by file
    */
-  import { SvelteSet } from 'svelte/reactivity';
-  import { tick } from 'svelte';
-  import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { assistantStore } from '$lib/stores/assistant.svelte';
-  import { showToast } from '$lib/stores/toast.svelte';
-  import { UIIcon, type UIIconName } from '$lib/components/ui';
+  import { SvelteSet } from "svelte/reactivity";
+  import { tick } from "svelte";
+  import { problemsStore, type Problem } from "$lib/stores/problems.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { assistantStore } from "$lib/stores/assistant.svelte";
+  import { showToast } from "$lib/stores/toast.svelte";
+  import { UIIcon, type UIIconName } from "$lib/components/ui";
 
   // Track expanded files (SvelteSet is already reactive)
   const expandedFiles = new SvelteSet<string>();
 
   function getSeverityIconName(severity: string): UIIconName {
     switch (severity) {
-      case 'error':
-        return 'error';
-      case 'warning':
-        return 'warning';
-      case 'info':
-      case 'hint':
-        return 'info';
+      case "error":
+        return "error";
+      case "warning":
+        return "warning";
+      case "info":
+      case "hint":
+        return "info";
       default:
-        return 'info';
+        return "info";
     }
   }
 
   // Get severity class
   function getSeverityClass(severity: string): string {
     switch (severity) {
-      case 'error':
-        return 'severity-error';
-      case 'warning':
-        return 'severity-warning';
-      case 'info':
-        return 'severity-info';
-      case 'hint':
-        return 'severity-hint';
+      case "error":
+        return "severity-error";
+      case "warning":
+        return "severity-warning";
+      case "info":
+        return "severity-info";
+      case "hint":
+        return "severity-hint";
       default:
-        return '';
+        return "";
     }
   }
 
@@ -64,13 +64,15 @@
     // The editor will be focused, and we need to navigate to the position
     // This is handled by the editor component listening to a navigation event
     // For now, we dispatch a custom event that the editor can listen to
-    window.dispatchEvent(new CustomEvent('volt:navigate-to-position', {
-      detail: {
-        file: problem.file,
-        line: problem.line,
-        column: problem.column
-      }
-    }));
+    window.dispatchEvent(
+      new CustomEvent("volt:navigate-to-position", {
+        detail: {
+          file: problem.file,
+          line: problem.line,
+          column: problem.column,
+        },
+      }),
+    );
   }
 
   // Handle send to agent
@@ -79,7 +81,7 @@
 
     const content = `[${problem.severity.toUpperCase()}] ${problem.message}
 File: ${problem.file}:${problem.line}:${problem.column}
-Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
+Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
     const attachmentResult = assistantStore.attachSelection(
       content,
@@ -88,18 +90,21 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
         startLine: problem.line,
         startCol: problem.column,
         endLine: problem.endLine,
-        endCol: problem.endColumn
-      }
+        endCol: problem.endColumn,
+      },
     );
 
     if (attachmentResult.success) {
       assistantStore.openPanel();
       // Optional: Set input value to prompt action
       if (!assistantStore.inputValue) {
-        assistantStore.setInputValue('Fix this error');
+        assistantStore.setInputValue("Fix this error");
       }
     } else {
-      showToast({ message: attachmentResult.error ?? 'Failed to attach problem', type: 'error' });
+      showToast({
+        message: attachmentResult.error ?? "Failed to attach problem",
+        type: "error",
+      });
     }
   }
 
@@ -109,20 +114,26 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
     if (allProblems.length === 0) return;
 
     // Format all problems into a concise list
-    const summary = allProblems.map(p => 
-      `[${p.severity.toUpperCase()}] ${p.file}:${p.line} - ${p.message}`
-    ).join('\n');
+    const summary = allProblems
+      .map(
+        (p) =>
+          `[${p.severity.toUpperCase()}] ${p.file}:${p.line} - ${p.message}`,
+      )
+      .join("\n");
+
+    // Clean start to avoid duplicates
+    assistantStore.clearAttachments();
 
     const attachmentResult = assistantStore.attachSelection(
       `All Workspace Problems:\n${summary}`,
       undefined, // No single file
-      undefined
+      undefined,
     );
 
     if (attachmentResult.success) {
       assistantStore.openPanel();
       if (!assistantStore.inputValue) {
-        assistantStore.setInputValue('Fix all these errors');
+        assistantStore.setInputValue("Fix all these errors");
       }
     }
   }
@@ -136,17 +147,21 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
   function sortProblems(problems: Problem[]): Problem[] {
     const severityOrder = { error: 0, warning: 1, info: 2, hint: 3 };
     return [...problems].sort((a, b) => {
-      const severityDiff = (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4);
+      const severityDiff =
+        (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4);
       if (severityDiff !== 0) return severityDiff;
       return a.line - b.line;
     });
   }
 
   // Get file error/warning counts
-  function getFileCounts(problems: Problem[]): { errors: number; warnings: number } {
+  function getFileCounts(problems: Problem[]): {
+    errors: number;
+    warnings: number;
+  } {
     return {
-      errors: problems.filter(p => p.severity === 'error').length,
-      warnings: problems.filter(p => p.severity === 'warning').length
+      errors: problems.filter((p) => p.severity === "error").length,
+      warnings: problems.filter((p) => p.severity === "warning").length,
     };
   }
 </script>
@@ -156,26 +171,36 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
     <div class="empty-state">
       <div class="empty-icon"><UIIcon name="check" size={22} /></div>
       <p class="empty-title">No Problems</p>
-      <p class="empty-description">No errors or warnings detected in the workspace</p>
+      <p class="empty-description">
+        No errors or warnings detected in the workspace
+      </p>
     </div>
   {:else}
     <div class="problems-header">
       <div class="header-left">
         <span class="problem-count">
           {#if problemsStore.errorCount > 0}
-            <span class="count-error"><UIIcon name="error" size={14} /> {problemsStore.errorCount}</span>
+            <span class="count-error"
+              ><UIIcon name="error" size={14} />
+              {problemsStore.errorCount}</span
+            >
           {/if}
           {#if problemsStore.warningCount > 0}
-            <span class="count-warning"><UIIcon name="warning" size={14} /> {problemsStore.warningCount}</span>
+            <span class="count-warning"
+              ><UIIcon name="warning" size={14} />
+              {problemsStore.warningCount}</span
+            >
           {/if}
           {#if problemsStore.infoCount > 0}
-            <span class="count-info"><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span>
+            <span class="count-info"
+              ><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span
+            >
           {/if}
         </span>
       </div>
 
-      <button 
-        class="fix-all-btn" 
+      <button
+        class="fix-all-btn"
         onclick={handleSendAllToAgent}
         title="Fix all problems with AI"
       >
@@ -189,7 +214,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
         {@const problems = problemsStore.getProblemsForFile(filePath)}
         {@const counts = getFileCounts(problems)}
         {@const expanded = isExpanded(filePath)}
-        
+
         <div class="file-group">
           <button
             class="file-header"
@@ -197,7 +222,10 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
             aria-expanded={expanded}
           >
             <span class="expand-icon">
-              <UIIcon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} />
+              <UIIcon
+                name={expanded ? "chevron-down" : "chevron-right"}
+                size={14}
+              />
             </span>
             <span class="file-name">{problems[0]?.fileName || filePath}</span>
             <span class="file-counts">
@@ -219,16 +247,25 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
                     onclick={() => handleProblemClick(problem)}
                     title="{problem.file}:{problem.line}:{problem.column}"
                   >
-                    <span class="problem-icon {getSeverityClass(problem.severity)}">
-                      <UIIcon name={getSeverityIconName(problem.severity)} size={14} />
+                    <span
+                      class="problem-icon {getSeverityClass(problem.severity)}"
+                    >
+                      <UIIcon
+                        name={getSeverityIconName(problem.severity)}
+                        size={14}
+                      />
                     </span>
                     <span class="problem-message">{problem.message}</span>
-                    <span class="problem-location">[{problem.line}, {problem.column}]</span>
+                    <span class="problem-location"
+                      >[{problem.line}, {problem.column}]</span
+                    >
                     {#if problem.code}
-                      <span class="problem-code">{problem.source}({problem.code})</span>
+                      <span class="problem-code"
+                        >{problem.source}({problem.code})</span
+                      >
                     {/if}
                   </button>
-                  <button 
+                  <button
                     class="problem-action-btn"
                     onclick={(e) => handleSendToAgent(problem, e)}
                     title="Ask Agent to Fix"
@@ -461,7 +498,9 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ''}`;
     border: none;
     cursor: pointer;
     opacity: 0; /* Hidden by default */
-    transition: opacity 0.1s ease, background 0.1s ease;
+    transition:
+      opacity 0.1s ease,
+      background 0.1s ease;
   }
 
   .problem-action-btn:hover {

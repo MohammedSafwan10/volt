@@ -1,43 +1,58 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import MenuBar from './MenuBar.svelte';
-  import StatusBar from './StatusBar.svelte';
-  import ResizablePanel from './ResizablePanel.svelte';
-  import AboutModal from './AboutModal.svelte';
-  import { ActivityBar, SidePanel } from '$lib/components/sidebar';
-  import SettingsPanel from '$lib/components/sidebar/SettingsPanel.svelte';
-  import { WelcomeScreen } from '$lib/components/welcome';
-  import { MonacoEditor, Breadcrumb, EmptyState, GoToLineDialog } from '$lib/components/editor';
-  import { TabBar } from '$lib/components/tabs';
-  import { CommandPalette, SymbolPicker } from '$lib/components/command-palette';
-  import { BottomPanel } from '$lib/components/panel';
-  import { AssistantPanel } from '$lib/components/assistant';
-  import { BrowserPanel } from '$lib/components/browser';
-  import { loadMonaco } from '$lib/services/monaco-loader';
-  import { loadXterm } from '$lib/services/terminal-loader';
-  import { uiStore } from '$lib/stores/ui.svelte';
-	import { bottomPanelStore } from '$lib/stores/bottom-panel.svelte';
-  import { projectStore } from '$lib/stores/project.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { VOLT_SETTINGS_PATH, isVoltVirtualPath } from '$lib/stores/editor.svelte';
-  import { terminalStore } from '$lib/stores/terminal.svelte';
-  import { logOutput } from '$lib/stores/output.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
-  import { assistantStore } from '$lib/stores/assistant.svelte';
-  import { browserStore } from '$lib/stores/browser.svelte';
-  import { openFolderDialog, writeFile } from '$lib/services/file-system';
-  import { 
-    initAutoSave, 
-    destroyAutoSave, 
-    scheduleAutoSave, 
-    triggerImmediateAutoSave 
-  } from '$lib/services/auto-save';
-  import { disposeLspRegistry } from '$lib/services/lsp/sidecar';
-  import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
-  import { mcpStore } from '$lib/stores/mcp.svelte';
+  import { onMount } from "svelte";
+  import MenuBar from "./MenuBar.svelte";
+  import StatusBar from "./StatusBar.svelte";
+  import ResizablePanel from "./ResizablePanel.svelte";
+  import AboutModal from "./AboutModal.svelte";
+  import { ActivityBar, SidePanel } from "$lib/components/sidebar";
+  import SettingsPanel from "$lib/components/sidebar/SettingsPanel.svelte";
+  import { WelcomeScreen } from "$lib/components/welcome";
+  import {
+    MonacoEditor,
+    Breadcrumb,
+    EmptyState,
+    GoToLineDialog,
+  } from "$lib/components/editor";
+  import { TabBar } from "$lib/components/tabs";
+  import {
+    CommandPalette,
+    SymbolPicker,
+  } from "$lib/components/command-palette";
+  import { BottomPanel } from "$lib/components/panel";
+  import { AssistantPanel } from "$lib/components/assistant";
+  import { BrowserPanel } from "$lib/components/browser";
+  import { loadMonaco } from "$lib/services/monaco-loader";
+  import { loadXterm } from "$lib/services/terminal-loader";
+  import { uiStore } from "$lib/stores/ui.svelte";
+  import { bottomPanelStore } from "$lib/stores/bottom-panel.svelte";
+  import { projectStore } from "$lib/stores/project.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import {
+    VOLT_SETTINGS_PATH,
+    isVoltVirtualPath,
+  } from "$lib/stores/editor.svelte";
+  import { terminalStore } from "$lib/stores/terminal.svelte";
+  import { logOutput } from "$lib/stores/output.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import { assistantStore } from "$lib/stores/assistant.svelte";
+  import { browserStore } from "$lib/stores/browser.svelte";
+  import { openFolderDialog, writeFile } from "$lib/services/file-system";
+  import {
+    initAutoSave,
+    destroyAutoSave,
+    scheduleAutoSave,
+    triggerImmediateAutoSave,
+  } from "$lib/services/auto-save";
+  import { disposeLspRegistry } from "$lib/services/lsp/sidecar";
+  import {
+    formatBeforeSave,
+    formatCurrentDocument,
+    isPrettierFile,
+  } from "$lib/services/prettier";
+  import { mcpStore } from "$lib/stores/mcp.svelte";
 
   interface Props {
-    children?: import('svelte').Snippet;
+    children?: import("svelte").Snippet;
   }
 
   let { children }: Props = $props();
@@ -51,7 +66,7 @@
 
   // Symbol picker state
   let symbolPickerOpen = $state(false);
-  let symbolPickerMode = $state<'file' | 'workspace'>('file');
+  let symbolPickerMode = $state<"file" | "workspace">("file");
 
   // Key-chord state (VS Code style, e.g. Ctrl+K Ctrl+O)
   let chordActive = $state(false);
@@ -80,35 +95,38 @@
     if (!path) return;
     const success = await projectStore.openProject(path);
     if (success) {
-      uiStore.setActiveSidebarPanel('explorer');
+      uiStore.setActiveSidebarPanel("explorer");
     }
   }
 
   function openGoToLine(): void {
     if (!editorStore.activeFile) return;
     // Get line count from Monaco model
-    import('$lib/services/monaco-models').then(({ getModelLineCount }) => {
-      const lineCount = getModelLineCount(editorStore.activeFile!.path);
-      goToLineMax = lineCount || 1;
-      goToLineOpen = true;
-    }).catch(() => {
-      goToLineMax = 1000;
-      goToLineOpen = true;
-    });
+    import("$lib/services/monaco-models")
+      .then(({ getModelLineCount }) => {
+        const lineCount = getModelLineCount(editorStore.activeFile!.path);
+        goToLineMax = lineCount || 1;
+        goToLineOpen = true;
+      })
+      .catch(() => {
+        goToLineMax = 1000;
+        goToLineOpen = true;
+      });
   }
 
   async function handleGoToLine(line: number): Promise<void> {
     if (!editorStore.activeFile) return;
-    const { revealLine } = await import('$lib/services/monaco-models');
+    const { revealLine } = await import("$lib/services/monaco-models");
     revealLine(editorStore.activeFile.path, line);
   }
 
   // Handle symbol picker open event from command palette
-  function handleOpenSymbolPicker(e: CustomEvent<{ mode: 'file' | 'workspace' }>): void {
+  function handleOpenSymbolPicker(
+    e: CustomEvent<{ mode: "file" | "workspace" }>,
+  ): void {
     symbolPickerMode = e.detail.mode;
     symbolPickerOpen = true;
   }
-
 
   // Handle go to line open event from command palette
   function handleOpenGoToLine(): void {
@@ -118,17 +136,21 @@
   // VS Code-like: warm Monaco and xterm at app startup so first use feels instant.
   // Also initialize auto-save listeners.
   onMount(() => {
-    logOutput('Volt', 'Volt IDE started');
-    logOutput('Volt', 'Warming up Monaco editor...');
+    logOutput("Volt", "Volt IDE started");
+    logOutput("Volt", "Warming up Monaco editor...");
     void loadMonaco();
-    logOutput('Volt', 'Warming up terminal...');
+    logOutput("Volt", "Warming up terminal...");
     void loadXterm();
     initAutoSave();
-    logOutput('Volt', 'Auto-save initialized');
-    
+    logOutput("Volt", "Auto-save initialized");
+
     // Initialize MCP servers (global, works without project)
-    logOutput('Volt', 'Initializing MCP servers...');
+    logOutput("Volt", "Initializing MCP servers...");
     void mcpStore.initialize();
+
+    // Initialize ProjectStore (restores last project)
+    // We do this here instead of in the store constructor to avoid HMR loops
+    void projectStore.init();
 
     // Handle window beforeunload to clean up LSP servers
     const handleBeforeUnload = () => {
@@ -136,12 +158,18 @@
       void disposeLspRegistry();
       void mcpStore.cleanup();
     };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     // Listen for symbol picker open events from command palette
-    window.addEventListener('volt:open-symbol-picker', handleOpenSymbolPicker as EventListener);
-    window.addEventListener('volt:open-go-to-line', handleOpenGoToLine as EventListener);
-    
+    window.addEventListener(
+      "volt:open-symbol-picker",
+      handleOpenSymbolPicker as EventListener,
+    );
+    window.addEventListener(
+      "volt:open-go-to-line",
+      handleOpenGoToLine as EventListener,
+    );
+
     return () => {
       destroyAutoSave();
       // Kill all terminals on unmount
@@ -150,9 +178,15 @@
       void disposeLspRegistry();
       // Cleanup browser
       void browserStore.cleanup();
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('volt:open-symbol-picker', handleOpenSymbolPicker as EventListener);
-      window.removeEventListener('volt:open-go-to-line', handleOpenGoToLine as EventListener);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener(
+        "volt:open-symbol-picker",
+        handleOpenSymbolPicker as EventListener,
+      );
+      window.removeEventListener(
+        "volt:open-go-to-line",
+        handleOpenGoToLine as EventListener,
+      );
     };
   });
 
@@ -183,15 +217,23 @@
     // Prefer saving the live Monaco model value to avoid any lag from debounced store updates.
     let contentToSave = activeFile.content;
     try {
-      const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
+      const { getModelValue, setModelValue } = await import(
+        "$lib/services/monaco-models"
+      );
       const modelValue = getModelValue(activeFile.path);
-      if (typeof modelValue === 'string') {
+      if (typeof modelValue === "string") {
         contentToSave = modelValue;
         editorStore.updateContent(activeFile.path, modelValue);
       }
 
-      if (settingsStore.formatOnSaveEnabled && isPrettierFile(activeFile.path)) {
-        const formatted = await formatBeforeSave(contentToSave, activeFile.path);
+      if (
+        settingsStore.formatOnSaveEnabled &&
+        isPrettierFile(activeFile.path)
+      ) {
+        const formatted = await formatBeforeSave(
+          contentToSave,
+          activeFile.path,
+        );
         if (formatted !== contentToSave) {
           contentToSave = formatted;
           setModelValue(activeFile.path, formatted);
@@ -209,32 +251,36 @@
   }
 
   async function applyNativeZoom(zoomPercent: number) {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
 
     const scaleFactor = Math.max(0.5, Math.min(2.0, zoomPercent / 100));
     try {
-      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const webview = getCurrentWebview();
       await webview.setZoom(scaleFactor);
     } catch (err) {
       // Silently fail if not in Tauri context or zoom not supported
-      console.warn('Failed to apply webview zoom:', err);
+      console.warn("Failed to apply webview zoom:", err);
     }
   }
-
 
   function isEditableTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     const tag = target.tagName;
-    return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    return (
+      target.isContentEditable ||
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT"
+    );
   }
 
   // Hide browser webview when opening command palette (so it appears on top)
-  function openCommandPaletteWithBrowserHide(mode: 'command' | 'file'): void {
+  function openCommandPaletteWithBrowserHide(mode: "command" | "file"): void {
     if (browserStore.isVisible) {
       browserStore.hide();
     }
-    if (mode === 'command') {
+    if (mode === "command") {
       commandPalette?.openCommandMode();
     } else {
       commandPalette?.openFileMode();
@@ -253,23 +299,23 @@
     const isMod = e.ctrlKey || e.metaKey;
 
     // Ctrl+Shift+P to open command palette (VS Code)
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       uiStore.closeMenus();
-      openCommandPaletteWithBrowserHide('command');
+      openCommandPaletteWithBrowserHide("command");
       return;
     }
 
     // Ctrl+P to open quick file search (VS Code)
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       uiStore.closeMenus();
-      openCommandPaletteWithBrowserHide('file');
+      openCommandPaletteWithBrowserHide("file");
       return;
     }
 
     // VS Code-style key chord: Ctrl+K (then ...)
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
       e.preventDefault();
       startChord();
       return;
@@ -278,7 +324,7 @@
     // Chord continuation: Ctrl+K Ctrl+O -> Open Folder
     if (chordActive) {
       // Any next key (including non-mod) ends the chord.
-      if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+      if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         clearChord();
         void handleOpenFolder();
@@ -291,19 +337,22 @@
 
     const editable = isEditableTarget(e.target);
     const allowInEditable =
-      e.key === 'Escape' ||
-      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') ||
-      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'g') ||
-      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') ||
-      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') ||
-      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') ||
-      (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote')) ||
-      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') ||
-      (isMod && !e.shiftKey && !e.altKey && e.key === '.');
+      e.key === "Escape" ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s") ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") ||
+      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") ||
+      (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") ||
+      (isMod &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === "`" || e.code === "Backquote")) ||
+      (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") ||
+      (isMod && !e.shiftKey && !e.altKey && e.key === ".");
 
     if (editable && !allowInEditable) return;
 
-    if (e.key === 'Escape') {
+    if (e.key === "Escape") {
       uiStore.closeMenus();
       if (assistantStore.isStreaming) {
         assistantStore.stopStreaming();
@@ -311,14 +360,14 @@
       return;
     }
 
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.toggleSidebar();
     }
 
     // Ctrl+Shift+B to toggle browser panel visibility
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
       e.preventDefault();
       uiStore.closeMenus();
       if (browserStore.isOpen) {
@@ -331,72 +380,92 @@
     }
 
     // Ctrl+S to save
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
       uiStore.closeMenus();
       void handleSave();
     }
 
     // Ctrl+G to go to line
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'g') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
       e.preventDefault();
       uiStore.closeMenus();
       openGoToLine();
     }
 
     // Ctrl+Shift+I to format document
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'i') {
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "i") {
       e.preventDefault();
       uiStore.closeMenus();
       void formatCurrentDocument();
     }
 
     // Ctrl+Shift+F to open search panel
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
       e.preventDefault();
       uiStore.closeMenus();
-      uiStore.setActiveSidebarPanel('search');
+      uiStore.setActiveSidebarPanel("search");
     }
 
     // Ctrl+Shift+O to open Go to Symbol in File
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
       e.preventDefault();
       uiStore.closeMenus();
-      void import('$lib/services/monaco-models')
-        .then(({ runEditorAction }) => runEditorAction('editor.action.quickOutline'))
+      void import("$lib/services/monaco-models")
+        .then(({ runEditorAction }) =>
+          runEditorAction("editor.action.quickOutline"),
+        )
         .catch(() => {
           // ignore
         });
     }
 
     // Ctrl+T to open Go to Symbol in Workspace
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
       e.preventDefault();
       uiStore.closeMenus();
-      symbolPickerMode = 'workspace';
+      symbolPickerMode = "workspace";
       symbolPickerOpen = true;
     }
 
-    if (isMod && !e.altKey && (e.code === 'Equal' || e.code === 'NumpadAdd' || e.key === '=' || e.key === '+')) {
+    if (
+      isMod &&
+      !e.altKey &&
+      (e.code === "Equal" ||
+        e.code === "NumpadAdd" ||
+        e.key === "=" ||
+        e.key === "+")
+    ) {
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.zoomIn();
     }
 
-    if (isMod && !e.altKey && (e.code === 'Minus' || e.code === 'NumpadSubtract' || e.key === '-' || e.key === '_')) {
+    if (
+      isMod &&
+      !e.altKey &&
+      (e.code === "Minus" ||
+        e.code === "NumpadSubtract" ||
+        e.key === "-" ||
+        e.key === "_")
+    ) {
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.zoomOut();
     }
 
-    if (isMod && !e.altKey && (e.code === 'Digit0' || e.code === 'Numpad0' || e.key === '0')) {
+    if (
+      isMod &&
+      !e.altKey &&
+      (e.code === "Digit0" || e.code === "Numpad0" || e.key === "0")
+    ) {
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.resetZoom();
     }
 
     // Ctrl+Tab to cycle to next tab
-    if (isMod && !e.altKey && e.key === 'Tab') {
+    if (isMod && !e.altKey && e.key === "Tab") {
       e.preventDefault();
       uiStore.closeMenus();
       // Trigger auto-save before switching tabs
@@ -409,7 +478,7 @@
     }
 
     // Ctrl+W to close current tab
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "w") {
       e.preventDefault();
       uiStore.closeMenus();
       if (editorStore.activeFilePath) {
@@ -418,32 +487,40 @@
     }
 
     // Ctrl+` to toggle terminal (check both key and code for cross-platform support)
-    if (isMod && !e.shiftKey && !e.altKey && (e.key === '`' || e.code === 'Backquote')) {
+    if (
+      isMod &&
+      !e.shiftKey &&
+      !e.altKey &&
+      (e.key === "`" || e.code === "Backquote")
+    ) {
       e.preventDefault();
       uiStore.closeMenus();
-      if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === 'terminal') {
+      if (
+        uiStore.bottomPanelOpen &&
+        bottomPanelStore.activeTab === "terminal"
+      ) {
         uiStore.toggleBottomPanel();
       } else {
-        uiStore.openBottomPanelTab('terminal');
+        uiStore.openBottomPanelTab("terminal");
       }
     }
 
     // Ctrl+J to toggle bottom panel (VS Code alternative)
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "j") {
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.toggleBottomPanel();
     }
 
     // Ctrl+L to toggle Assistant panel
-    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
       e.preventDefault();
       uiStore.closeMenus();
       assistantStore.togglePanel();
     }
 
     // Ctrl+. to cycle Assistant modes
-    if (isMod && !e.shiftKey && !e.altKey && e.key === '.') {
+    if (isMod && !e.shiftKey && !e.altKey && e.key === ".") {
       e.preventDefault();
       uiStore.closeMenus();
       assistantStore.cycleMode();
@@ -458,7 +535,9 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="main-layout">
-  <MenuBar onOpenCommandPalette={() => openCommandPaletteWithBrowserHide('command')} />
+  <MenuBar
+    onOpenCommandPalette={() => openCommandPaletteWithBrowserHide("command")}
+  />
 
   <div class="content-area">
     <!-- Activity Bar (always visible) -->
@@ -488,15 +567,23 @@
           <div class="editor-area">
             {#if browserStore.isVisible}
               <!-- Browser Panel (replaces editor when visible) -->
-              <BrowserPanel onAskAI={(context) => {
-                assistantStore.setInputValue(`Help me debug this:\n\n${context}`);
-                assistantStore.openPanel();
-              }} />
+              <BrowserPanel
+                onAskAI={(context) => {
+                  assistantStore.setInputValue(
+                    `Help me debug this:\n\n${context}`,
+                  );
+                  assistantStore.openPanel();
+                }}
+              />
             {:else if children}
               {@render children()}
             {:else if editorStore.activeFile}
               {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
-                <div class="settings-editor" role="region" aria-label="Settings">
+                <div
+                  class="settings-editor"
+                  role="region"
+                  aria-label="Settings"
+                >
                   <SettingsPanel />
                 </div>
               {:else}
@@ -558,7 +645,10 @@
 
   <StatusBar />
   <AboutModal />
-  <CommandPalette bind:this={commandPalette} onClose={handleCommandPaletteClose} />
+  <CommandPalette
+    bind:this={commandPalette}
+    onClose={handleCommandPaletteClose}
+  />
   <GoToLineDialog
     open={goToLineOpen}
     maxLine={goToLineMax}

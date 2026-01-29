@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { uiStore } from '$lib/stores/ui.svelte';
-	import { bottomPanelStore } from '$lib/stores/bottom-panel.svelte';
-  import { showToast } from '$lib/stores/toast.svelte';
-  import { projectStore } from '$lib/stores/project.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
-	import { editorStore } from '$lib/stores/editor.svelte';
-	import { terminalStore } from '$lib/stores/terminal.svelte';
-  import { themeStore } from '$lib/stores/theme.svelte';
-  import { assistantStore } from '$lib/stores/assistant.svelte';
-  import { openFileDialog, openFolderDialog } from '$lib/services/file-system';
-  import { formatCurrentDocument } from '$lib/services/prettier';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { UIIcon } from '$lib/components/ui';
+  import { uiStore } from "$lib/stores/ui.svelte";
+  import { bottomPanelStore } from "$lib/stores/bottom-panel.svelte";
+  import { showToast } from "$lib/stores/toast.svelte";
+  import { projectStore } from "$lib/stores/project.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { terminalStore } from "$lib/stores/terminal.svelte";
+  import { themeStore } from "$lib/stores/theme.svelte";
+  import { assistantStore } from "$lib/stores/assistant.svelte";
+  import { openFileDialog, openFolderDialog } from "$lib/services/file-system";
+  import { formatCurrentDocument } from "$lib/services/prettier";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { UIIcon } from "$lib/components/ui";
 
   interface Props {
     onOpenCommandPalette?: () => void;
@@ -36,27 +36,36 @@
 
   function handleSetThemeDark() {
     uiStore.closeMenus();
-    themeStore.setMode('dark');
-    showToast({ message: 'Theme set to Dark', type: 'info' });
+    themeStore.setMode("dark");
+    showToast({ message: "Theme set to Dark", type: "info" });
+  }
+
+  function handleSetThemeMidnight() {
+    uiStore.closeMenus();
+    themeStore.setMode("midnight");
+    showToast({ message: "Theme set to Midnight", type: "info" });
   }
 
   function handleSetThemeLight() {
     uiStore.closeMenus();
-    themeStore.setMode('light');
-    showToast({ message: 'Theme set to Light', type: 'info' });
+    themeStore.setMode("light");
+    showToast({ message: "Theme set to Light", type: "info" });
   }
 
   function handleSetThemeSystem() {
     uiStore.closeMenus();
-    themeStore.setMode('system');
-    showToast({ message: `Theme set to System (${themeStore.resolvedTheme === 'dark' ? 'Dark' : 'Light'})`, type: 'info' });
+    themeStore.setMode("system");
+    showToast({
+      message: `Theme set to System (${themeStore.resolvedTheme === "dark" ? "Dark" : "Light"})`,
+      type: "info",
+    });
   }
 
   async function handleOpenFile() {
     uiStore.closeMenus();
     const path = await openFileDialog();
     if (path) {
-      showToast({ message: `Opening file: ${path}`, type: 'info' });
+      showToast({ message: `Opening file: ${path}`, type: "info" });
     }
   }
 
@@ -67,7 +76,7 @@
       const success = await projectStore.openProject(path);
       if (success) {
         // Ensure explorer panel is visible
-        uiStore.setActiveSidebarPanel('explorer');
+        uiStore.setActiveSidebarPanel("explorer");
       }
     }
   }
@@ -86,8 +95,8 @@
   function handleToggleAutoSave() {
     settingsStore.toggleAutoSave();
     showToast({
-      message: `Auto-save ${settingsStore.autoSaveEnabled ? 'enabled' : 'disabled'}`,
-      type: 'info'
+      message: `Auto-save ${settingsStore.autoSaveEnabled ? "enabled" : "disabled"}`,
+      type: "info",
     });
   }
 
@@ -98,47 +107,47 @@
 
   function handleOpenSearch() {
     uiStore.closeMenus();
-    uiStore.setActiveSidebarPanel('search');
+    uiStore.setActiveSidebarPanel("search");
   }
 
   function handleOpenSettings() {
     uiStore.closeMenus();
-		editorStore.openSettingsTab();
+    editorStore.openSettingsTab();
   }
 
   function handleToggleFormatOnSave() {
     settingsStore.toggleFormatOnSave();
     showToast({
-      message: `Format on save ${settingsStore.formatOnSaveEnabled ? 'enabled' : 'disabled'}`,
-      type: 'info'
+      message: `Format on save ${settingsStore.formatOnSaveEnabled ? "enabled" : "disabled"}`,
+      type: "info",
     });
   }
 
   function comingSoon(feature: string) {
     return () => {
       uiStore.closeMenus();
-      showToast({ message: `${feature} - Coming soon`, type: 'info' });
+      showToast({ message: `${feature} - Coming soon`, type: "info" });
     };
   }
 
   function handleToggleTerminal() {
     uiStore.closeMenus();
-		// VS Code-like:
-		// - If Terminal is already active, toggle the panel closed
-		// - Otherwise, open the panel and focus the Terminal tab
-		if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === 'terminal') {
-			uiStore.toggleBottomPanel();
-			return;
-		}
+    // VS Code-like:
+    // - If Terminal is already active, toggle the panel closed
+    // - Otherwise, open the panel and focus the Terminal tab
+    if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === "terminal") {
+      uiStore.toggleBottomPanel();
+      return;
+    }
 
-		uiStore.openBottomPanelTab('terminal');
+    uiStore.openBottomPanelTab("terminal");
   }
 
-	function handleNewTerminal() {
-		uiStore.closeMenus();
-		uiStore.openBottomPanelTab('terminal');
-		void terminalStore.createTerminal();
-	}
+  function handleNewTerminal() {
+    uiStore.closeMenus();
+    uiStore.openBottomPanelTab("terminal");
+    void terminalStore.createTerminal();
+  }
 
   function handleAbout() {
     uiStore.openAboutModal();
@@ -161,84 +170,169 @@
 
   const menus: Menu[] = $derived.by(() => [
     {
-      id: 'file',
-      label: 'File',
+      id: "file",
+      label: "File",
       items: [
-        { label: 'New File', shortcut: 'Ctrl+N', action: comingSoon('New File') },
-        { separator: true, label: '' },
-        { label: 'Open File...', shortcut: 'Ctrl+O', action: handleOpenFile },
-        { label: 'Open Folder...', shortcut: 'Ctrl+K Ctrl+O', action: handleOpenFolder },
-        { separator: true, label: '' },
-        { label: 'Save', shortcut: 'Ctrl+S', action: comingSoon('Save') },
-        { separator: true, label: '' },
-        { label: 'Auto Save', action: handleToggleAutoSave, checked: settingsStore.autoSaveEnabled },
-        { separator: true, label: '' },
-        { label: 'Close Editor', shortcut: 'Ctrl+W', action: comingSoon('Close Editor') },
-        { label: 'Close Folder', action: handleCloseFolder },
-        { separator: true, label: '' },
-        { label: 'Exit', shortcut: 'Alt+F4', action: handleExit }
-      ]
+        {
+          label: "New File",
+          shortcut: "Ctrl+N",
+          action: comingSoon("New File"),
+        },
+        { separator: true, label: "" },
+        { label: "Open File...", shortcut: "Ctrl+O", action: handleOpenFile },
+        {
+          label: "Open Folder...",
+          shortcut: "Ctrl+K Ctrl+O",
+          action: handleOpenFolder,
+        },
+        { separator: true, label: "" },
+        { label: "Save", shortcut: "Ctrl+S", action: comingSoon("Save") },
+        { separator: true, label: "" },
+        {
+          label: "Auto Save",
+          action: handleToggleAutoSave,
+          checked: settingsStore.autoSaveEnabled,
+        },
+        { separator: true, label: "" },
+        {
+          label: "Close Editor",
+          shortcut: "Ctrl+W",
+          action: comingSoon("Close Editor"),
+        },
+        { label: "Close Folder", action: handleCloseFolder },
+        { separator: true, label: "" },
+        { label: "Exit", shortcut: "Alt+F4", action: handleExit },
+      ],
     },
     {
-      id: 'edit',
-      label: 'Edit',
+      id: "edit",
+      label: "Edit",
       items: [
-        { label: 'Undo', shortcut: 'Ctrl+Z', action: comingSoon('Undo') },
-        { label: 'Redo', shortcut: 'Ctrl+Shift+Z', action: comingSoon('Redo') },
-        { separator: true, label: '' },
-        { label: 'Cut', shortcut: 'Ctrl+X', action: comingSoon('Cut') },
-        { label: 'Copy', shortcut: 'Ctrl+C', action: comingSoon('Copy') },
-        { label: 'Paste', shortcut: 'Ctrl+V', action: comingSoon('Paste') },
-        { separator: true, label: '' },
-        { label: 'Find', shortcut: 'Ctrl+F', action: handleOpenSearch },
-        { separator: true, label: '' },
-        { label: 'Format Document', shortcut: 'Ctrl+Shift+I', action: handleFormatDocument },
-        { label: 'Format on Save', action: handleToggleFormatOnSave, checked: settingsStore.formatOnSaveEnabled }
-      ]
+        { label: "Undo", shortcut: "Ctrl+Z", action: comingSoon("Undo") },
+        { label: "Redo", shortcut: "Ctrl+Shift+Z", action: comingSoon("Redo") },
+        { separator: true, label: "" },
+        { label: "Cut", shortcut: "Ctrl+X", action: comingSoon("Cut") },
+        { label: "Copy", shortcut: "Ctrl+C", action: comingSoon("Copy") },
+        { label: "Paste", shortcut: "Ctrl+V", action: comingSoon("Paste") },
+        { separator: true, label: "" },
+        { label: "Find", shortcut: "Ctrl+F", action: handleOpenSearch },
+        { separator: true, label: "" },
+        {
+          label: "Format Document",
+          shortcut: "Ctrl+Shift+I",
+          action: handleFormatDocument,
+        },
+        {
+          label: "Format on Save",
+          action: handleToggleFormatOnSave,
+          checked: settingsStore.formatOnSaveEnabled,
+        },
+      ],
     },
     {
-      id: 'view',
-      label: 'View',
+      id: "view",
+      label: "View",
       items: [
-        { label: 'Command Palette', shortcut: 'Ctrl+Shift+P', action: () => { uiStore.closeMenus(); onOpenCommandPalette?.(); } },
-        { separator: true, label: '' },
-        { label: 'Explorer', shortcut: 'Ctrl+Shift+E', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('explorer'); } },
-        { label: 'Search', shortcut: 'Ctrl+Shift+F', action: () => { uiStore.closeMenus(); uiStore.setActiveSidebarPanel('search'); } },
-        { label: 'Settings', shortcut: 'Ctrl+,', action: handleOpenSettings },
-        { separator: true, label: '' },
-        { label: 'Problems', shortcut: 'Ctrl+Shift+M', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('problems'); } },
-        { label: 'Output', shortcut: 'Ctrl+Shift+U', action: () => { uiStore.closeMenus(); uiStore.openBottomPanelTab('output'); } },
-        { label: 'Terminal', shortcut: 'Ctrl+`', action: handleToggleTerminal },
-        { label: 'Assistant', shortcut: 'Ctrl+L', action: () => { uiStore.closeMenus(); assistantStore.togglePanel(); } },
-        { separator: true, label: '' },
-        { label: 'Zoom In', shortcut: 'Ctrl++', action: handleZoomIn },
-        { label: 'Zoom Out', shortcut: 'Ctrl+-', action: handleZoomOut },
-        { label: 'Reset Zoom', shortcut: 'Ctrl+0', action: handleResetZoom },
-        { separator: true, label: '' },
-        { 
-          label: 'Theme', 
+        {
+          label: "Command Palette",
+          shortcut: "Ctrl+Shift+P",
+          action: () => {
+            uiStore.closeMenus();
+            onOpenCommandPalette?.();
+          },
+        },
+        { separator: true, label: "" },
+        {
+          label: "Explorer",
+          shortcut: "Ctrl+Shift+E",
+          action: () => {
+            uiStore.closeMenus();
+            uiStore.setActiveSidebarPanel("explorer");
+          },
+        },
+        {
+          label: "Search",
+          shortcut: "Ctrl+Shift+F",
+          action: () => {
+            uiStore.closeMenus();
+            uiStore.setActiveSidebarPanel("search");
+          },
+        },
+        { label: "Settings", shortcut: "Ctrl+,", action: handleOpenSettings },
+        { separator: true, label: "" },
+        {
+          label: "Problems",
+          shortcut: "Ctrl+Shift+M",
+          action: () => {
+            uiStore.closeMenus();
+            uiStore.openBottomPanelTab("problems");
+          },
+        },
+        {
+          label: "Output",
+          shortcut: "Ctrl+Shift+U",
+          action: () => {
+            uiStore.closeMenus();
+            uiStore.openBottomPanelTab("output");
+          },
+        },
+        { label: "Terminal", shortcut: "Ctrl+`", action: handleToggleTerminal },
+        {
+          label: "Assistant",
+          shortcut: "Ctrl+L",
+          action: () => {
+            uiStore.closeMenus();
+            assistantStore.togglePanel();
+          },
+        },
+        { separator: true, label: "" },
+        { label: "Zoom In", shortcut: "Ctrl++", action: handleZoomIn },
+        { label: "Zoom Out", shortcut: "Ctrl+-", action: handleZoomOut },
+        { label: "Reset Zoom", shortcut: "Ctrl+0", action: handleResetZoom },
+        { separator: true, label: "" },
+        {
+          label: "Theme",
           submenu: [
-            { label: 'Dark', action: handleSetThemeDark, checked: themeStore.mode === 'dark' },
-            { label: 'Light', action: handleSetThemeLight, checked: themeStore.mode === 'light' },
-            { label: 'System', action: handleSetThemeSystem, checked: themeStore.mode === 'system' }
-          ]
-        }
-      ]
+            {
+              label: "Dark",
+              action: handleSetThemeDark,
+              checked: themeStore.mode === "dark",
+            },
+            {
+              label: "Midnight",
+              action: handleSetThemeMidnight,
+              checked: themeStore.mode === "midnight",
+            },
+            {
+              label: "Light",
+              action: handleSetThemeLight,
+              checked: themeStore.mode === "light",
+            },
+            {
+              label: "System",
+              action: handleSetThemeSystem,
+              checked: themeStore.mode === "system",
+            },
+          ],
+        },
+      ],
     },
     {
-      id: 'terminal',
-      label: 'Terminal',
+      id: "terminal",
+      label: "Terminal",
       items: [
-				{ label: 'New Terminal', shortcut: 'Ctrl+`', action: handleNewTerminal }
-      ]
+        {
+          label: "New Terminal",
+          shortcut: "Ctrl+`",
+          action: handleNewTerminal,
+        },
+      ],
     },
     {
-      id: 'help',
-      label: 'Help',
-      items: [
-        { label: 'About', action: handleAbout }
-      ]
-    }
+      id: "help",
+      label: "Help",
+      items: [{ label: "About", action: handleAbout }],
+    },
   ]);
 
   function handleMenuClick(menuId: string) {
@@ -250,15 +344,16 @@
       uiStore.openMenu(menuId);
     }
   }
-
 </script>
 
-<svelte:window onclick={(e) => {
-  const target = e.target as HTMLElement;
-  if (!target.closest('.menu-bar')) {
-    uiStore.closeMenus();
-  }
-}} />
+<svelte:window
+  onclick={(e) => {
+    const target = e.target as HTMLElement;
+    if (!target.closest(".menu-bar")) {
+      uiStore.closeMenus();
+    }
+  }}
+/>
 
 <div class="menu-bar no-select" role="menubar" aria-label="Application menu">
   <div class="menu-left">
@@ -275,52 +370,50 @@
           {menu.label}
         </button>
 
-      {#if uiStore.activeMenu === menu.id}
-        <div class="menu-dropdown" role="menu" aria-label={menu.label}>
-          {#each menu.items as item, index (index)}
-            {#if item.separator}
-              <div class="menu-separator"></div>
-            {:else if item.submenu}
-              <div class="menu-item-with-submenu">
-                <span class="menu-item-label">{item.label}</span>
-                <span class="submenu-arrow">▶</span>
-                <div class="submenu">
-                  {#each item.submenu as subitem, subindex (subindex)}
-                    <button
-                      class="menu-item"
-                      onclick={subitem.action}
-                      role="menuitem"
-                    >
-                      <span class="menu-item-label">
-                        {#if subitem.checked !== undefined}
-                          <span class="menu-check">{subitem.checked ? '✓' : ''}</span>
-                        {/if}
-                        {subitem.label}
-                      </span>
-                    </button>
-                  {/each}
+        {#if uiStore.activeMenu === menu.id}
+          <div class="menu-dropdown" role="menu" aria-label={menu.label}>
+            {#each menu.items as item, index (index)}
+              {#if item.separator}
+                <div class="menu-separator"></div>
+              {:else if item.submenu}
+                <div class="menu-item-with-submenu">
+                  <span class="menu-item-label">{item.label}</span>
+                  <span class="submenu-arrow">▶</span>
+                  <div class="submenu">
+                    {#each item.submenu as subitem, subindex (subindex)}
+                      <button
+                        class="menu-item"
+                        onclick={subitem.action}
+                        role="menuitem"
+                      >
+                        <span class="menu-item-label">
+                          {#if subitem.checked !== undefined}
+                            <span class="menu-check"
+                              >{subitem.checked ? "✓" : ""}</span
+                            >
+                          {/if}
+                          {subitem.label}
+                        </span>
+                      </button>
+                    {/each}
+                  </div>
                 </div>
-              </div>
-            {:else}
-              <button
-                class="menu-item"
-                onclick={item.action}
-                role="menuitem"
-              >
-                <span class="menu-item-label">
-                  {#if item.checked !== undefined}
-                    <span class="menu-check">{item.checked ? '✓' : ''}</span>
+              {:else}
+                <button class="menu-item" onclick={item.action} role="menuitem">
+                  <span class="menu-item-label">
+                    {#if item.checked !== undefined}
+                      <span class="menu-check">{item.checked ? "✓" : ""}</span>
+                    {/if}
+                    {item.label}
+                  </span>
+                  {#if item.shortcut}
+                    <span class="menu-shortcut">{item.shortcut}</span>
                   {/if}
-                  {item.label}
-                </span>
-                {#if item.shortcut}
-                  <span class="menu-shortcut">{item.shortcut}</span>
-                {/if}
-              </button>
-            {/if}
-          {/each}
-        </div>
-      {/if}
+                </button>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>

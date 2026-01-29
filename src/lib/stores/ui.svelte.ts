@@ -11,6 +11,9 @@ const ZOOM_MIN_PERCENT = 50;
 const ZOOM_MAX_PERCENT = 200;
 const ZOOM_STEP_PERCENT = 10;
 const ZOOM_STORAGE_KEY = 'volt.zoomPercent';
+const SIDEBAR_OPEN_KEY = 'volt.sidebarOpen';
+const SIDEBAR_PANEL_KEY = 'volt.sidebarPanel';
+const BOTTOM_PANEL_OPEN_KEY = 'volt.bottomPanelOpen';
 
 class UIStore {
   // Sidebar state
@@ -33,6 +36,7 @@ class UIStore {
 
   constructor() {
     this.loadPersistedZoom();
+    this.loadPersistedUI();
   }
 
   /**
@@ -40,6 +44,7 @@ class UIStore {
    */
   toggleSidebar(): void {
     this.sidebarOpen = !this.sidebarOpen;
+    this.persistUI();
   }
 
   /**
@@ -53,6 +58,7 @@ class UIStore {
       this.activeSidebarPanel = panel;
       this.sidebarOpen = true;
     }
+    this.persistUI();
   }
 
   /**
@@ -60,6 +66,7 @@ class UIStore {
    */
   toggleBottomPanel(): void {
     this.bottomPanelOpen = !this.bottomPanelOpen;
+    this.persistUI();
   }
 
   /**
@@ -68,6 +75,7 @@ class UIStore {
   openBottomPanelTab(tab: BottomPanelTab): void {
     bottomPanelStore.setActiveTab(tab);
     this.bottomPanelOpen = true;
+    this.persistUI();
   }
 
   /**
@@ -166,6 +174,35 @@ class UIStore {
     if (typeof window === 'undefined') return;
     try {
       localStorage.setItem(ZOOM_STORAGE_KEY, String(this.zoomPercent));
+    } catch {
+      // ignore
+    }
+  }
+
+  private loadPersistedUI(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const sidebarOpen = localStorage.getItem(SIDEBAR_OPEN_KEY);
+      if (sidebarOpen !== null) this.sidebarOpen = sidebarOpen === 'true';
+
+      const sidebarPanel = localStorage.getItem(SIDEBAR_PANEL_KEY);
+      if (sidebarPanel) this.activeSidebarPanel = sidebarPanel as SidebarPanel;
+
+      const bottomPanelOpen = localStorage.getItem(BOTTOM_PANEL_OPEN_KEY);
+      if (bottomPanelOpen !== null) this.bottomPanelOpen = bottomPanelOpen === 'true';
+    } catch {
+      // ignore
+    }
+  }
+
+  private persistUI(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(SIDEBAR_OPEN_KEY, String(this.sidebarOpen));
+      if (this.activeSidebarPanel) {
+        localStorage.setItem(SIDEBAR_PANEL_KEY, this.activeSidebarPanel);
+      }
+      localStorage.setItem(BOTTOM_PANEL_OPEN_KEY, String(this.bottomPanelOpen));
     } catch {
       // ignore
     }

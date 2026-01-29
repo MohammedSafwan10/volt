@@ -103,13 +103,13 @@ export function getModelValue(path: string): string | null {
 export function setModelValue(path: string, value: string): boolean {
   // Try to find model with various path formats
   let model = models.get(path);
-  
+
   if (!model) {
     // Try normalized path (forward slashes)
     const normalized = path.replace(/\\/g, '/');
     model = models.get(normalized);
   }
-  
+
   if (!model) {
     // Try to find by suffix match
     for (const [modelPath, m] of models.entries()) {
@@ -121,9 +121,9 @@ export function setModelValue(path: string, value: string): boolean {
       }
     }
   }
-  
+
   if (!model) return false;
-  
+
   // Use pushEditOperations to preserve undo history
   const fullRange = model.getFullModelRange();
   model.pushEditOperations(
@@ -131,7 +131,7 @@ export function setModelValue(path: string, value: string): boolean {
     [{ range: fullRange, text: value }],
     () => null
   );
-  
+
   return true;
 }
 
@@ -140,7 +140,7 @@ export function disposeModel(path: string): void {
   if (!model) return;
   model.dispose();
   models.delete(path);
-  
+
   // Remove from LRU tracking
   const idx = accessOrder.indexOf(path);
   if (idx !== -1) {
@@ -153,7 +153,7 @@ export function disposeAllModels(): void {
     model.dispose();
   }
   models.clear();
-  
+
   // Clear LRU tracking
   accessOrder.length = 0;
 }
@@ -209,14 +209,45 @@ export function getModelLineCount(path: string): number {
 export function revealLine(path: string, line: number): void {
   const model = models.get(path);
   if (!model || !activeEditor) return;
-  
+
   // Ensure line is within bounds
   const maxLine = model.getLineCount();
   const targetLine = Math.max(1, Math.min(line, maxLine));
-  
+
   // Set cursor position and reveal the line
   activeEditor.setPosition({ lineNumber: targetLine, column: 1 });
   activeEditor.revealLineInCenter(targetLine);
+  activeEditor.focus();
+}
+
+/**
+ * Set the selection in the active editor
+ */
+export function setSelection(path: string, range: {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}): void {
+  const model = models.get(path);
+  if (!model || !activeEditor) return;
+
+  const maxLine = model.getLineCount();
+  const startLine = Math.max(1, Math.min(range.startLine, maxLine));
+  const endLine = Math.max(1, Math.min(range.endLine, maxLine));
+
+  activeEditor.setSelection({
+    startLineNumber: startLine,
+    startColumn: range.startColumn,
+    endLineNumber: endLine,
+    endColumn: range.endColumn
+  });
+  activeEditor.revealRangeInCenter({
+    startLineNumber: startLine,
+    startColumn: range.startColumn,
+    endLineNumber: endLine,
+    endColumn: range.endColumn
+  });
   activeEditor.focus();
 }
 
@@ -224,14 +255,14 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
   // Try to find model with various path formats
   let model = models.get(path);
   let actualPath = path;
-  
+
   if (!model) {
     // Try normalized path (forward slashes)
     const normalized = path.replace(/\\/g, '/');
     model = models.get(normalized);
     if (model) actualPath = normalized;
   }
-  
+
   if (!model) {
     // Try to find by suffix match
     for (const [modelPath, m] of models.entries()) {
@@ -244,7 +275,7 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
       }
     }
   }
-  
+
   if (!model) {
     // Debug: log available models when highlight fails
     const availableModels = Array.from(models.keys());
@@ -279,13 +310,13 @@ export function clearReviewHighlight(path: string): void {
   // Try to find model with various path formats
   let model = models.get(path);
   let actualPath = path;
-  
+
   if (!model) {
     const normalized = path.replace(/\\/g, '/');
     model = models.get(normalized);
     if (model) actualPath = normalized;
   }
-  
+
   if (!model) {
     for (const [modelPath, m] of models.entries()) {
       const normalizedModelPath = modelPath.replace(/\\/g, '/');
@@ -297,7 +328,7 @@ export function clearReviewHighlight(path: string): void {
       }
     }
   }
-  
+
   const old = reviewDecorations.get(actualPath);
   if (model && old && old.length > 0) {
     model.deltaDecorations(old, []);
@@ -309,8 +340,8 @@ export function clearReviewHighlight(path: string): void {
  * Get the current selection from the active editor
  * Returns the selected text, file path, and selection range
  */
-export function getEditorSelection(): { 
-  text: string; 
+export function getEditorSelection(): {
+  text: string;
   path: string | null;
   range?: {
     startLineNumber: number;
@@ -320,15 +351,15 @@ export function getEditorSelection(): {
   };
 } | null {
   if (!activeEditor) return null;
-  
+
   const selection = activeEditor.getSelection();
   if (!selection || selection.isEmpty()) return null;
-  
+
   const model = activeEditor.getModel();
   if (!model) return null;
-  
+
   const text = model.getValueInRange(selection);
-  
+
   // Find the path for this model
   let path: string | null = null;
   for (const [p, m] of models.entries()) {
@@ -337,9 +368,9 @@ export function getEditorSelection(): {
       break;
     }
   }
-  
-  return { 
-    text, 
+
+  return {
+    text,
     path,
     range: {
       startLineNumber: selection.startLineNumber,

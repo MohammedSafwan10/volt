@@ -38,6 +38,7 @@
   import MessageList from "./MessageList.svelte";
   import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
+  import RevertConfirmationModal from "./RevertConfirmationModal.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import {
@@ -45,6 +46,12 @@
     clearReviewHighlight,
   } from "$lib/services/monaco-models";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
+
+  // Revert confirmation state
+  let confirmRevertOpen = $state(false);
+  let revertMetadata = $state<any[]>([]);
+  let pendingRevertId = $state<string | null>(null);
+  let selectedImage = $state<{ data: string; label: string } | null>(null);
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
@@ -270,7 +277,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
     // Add user message with attached context (deferred until smart context is ready)
     const context = [...assistantStore.attachedContext];
-    // assistantStore.addUserMessage(content, context); // REMOVED: Redundant
+    // assistantStore.addUserMessage(content, context); // REMOVED: Redundant, called later with smart context
 
     // Clear input and context - also clear the textarea directly
     assistantStore.setInputValue("");
@@ -1792,6 +1799,32 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     });
   }
 
+  async function handleRevertRequested(messageId: string): Promise<void> {
+    pendingRevertId = messageId;
+    // Show loading toast while gathering metadata
+    const metadata = await assistantStore.getRevertMetadata(messageId);
+    if (metadata.length === 0) {
+      // No file changes to revert, just revert the history
+      await assistantStore.revertToMessage(messageId);
+      return;
+    }
+    revertMetadata = metadata;
+    confirmRevertOpen = true;
+  }
+
+  async function confirmRevert(): Promise<void> {
+    if (pendingRevertId) {
+      await assistantStore.revertToMessage(pendingRevertId);
+    }
+    cancelRevert();
+  }
+
+  function cancelRevert(): void {
+    confirmRevertOpen = false;
+    pendingRevertId = null;
+    revertMetadata = [];
+  }
+
   /**
    * Handle tool approval from inline display in message
    * Supports streaming progress for file write operations
@@ -1969,6 +2002,7 @@ Start implementing now. Work through each step carefully.`;
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
       onStartImplementation={handleStartImplementation}
+      onRevert={handleRevertRequested}
     />
   </div>
 
@@ -1988,10 +2022,18 @@ Start implementing now. Work through each step carefully.`;
             role="listitem"
           >
             {#if preview.isImage && preview.thumbnailData}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <img
                 src="data:image/png;base64,{preview.thumbnailData}"
                 alt={preview.label}
                 class="attachment-thumbnail"
+                onclick={() =>
+                  (selectedImage = {
+                    data: preview.thumbnailData!,
+                    label: preview.label,
+                  })}
+                style="cursor: pointer;"
               />
             {:else}
               <UIIcon
@@ -2072,6 +2114,43 @@ Start implementing now. Work through each step carefully.`;
 <!-- Chat History Sidebar -->
 <ChatHistorySidebar />
 
+<!-- Revert Confirmation Modal -->
+<RevertConfirmationModal
+  open={confirmRevertOpen}
+  files={revertMetadata}
+  onConfirm={confirmRevert}
+  onCancel={cancelRevert}
+/>
+
+<!-- Image Preview Modal -->
+{#if selectedImage}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="image-modal"
+    onclick={() => (selectedImage = null)}
+    role="dialog"
+    aria-modal="true"
+    tabindex="0"
+  >
+    <div
+      class="image-modal-content"
+      onclick={(e) => e.stopPropagation()}
+      role="document"
+    >
+      <button class="image-modal-close" onclick={() => (selectedImage = null)}>
+        <UIIcon name="close" size={20} />
+      </button>
+      <img
+        src="data:image/png;base64,{selectedImage.data}"
+        alt={selectedImage.label}
+        class="image-modal-img"
+      />
+      <span class="image-modal-label">{selectedImage.label}</span>
+    </div>
+  </div>
+{/if}
+
 <style>
   .assistant-panel {
     display: flex;
@@ -2148,8 +2227,7 @@ Start implementing now. Work through each step carefully.`;
   }
 
   .input-area {
-    border-top: 1px solid var(--color-border);
-    background: var(--color-bg-sidebar);
+    background: transparent;
     flex-shrink: 0;
   }
 
@@ -2266,5 +2344,72 @@ Start implementing now. Work through each step carefully.`;
     opacity: 1;
     background: var(--color-hover);
     color: var(--color-text);
+  }
+  /* Image Preview Modal */
+  .image-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .image-modal-content {
+    position: relative;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .image-modal-img {
+    max-width: 100%;
+    max-height: 85vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  }
+
+  .image-modal-close {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    transition: all 0.2s ease;
+  }
+
+  .image-modal-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: scale(1.1);
+  }
+
+  .image-modal-label {
+    color: white;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 4px 12px;
+    border-radius: 20px;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 </style>

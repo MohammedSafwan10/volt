@@ -22,6 +22,7 @@
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
     onStartImplementation?: (planContent: string) => void;
+    onRevert?: (messageId: string) => void;
   }
 
   let {
@@ -31,6 +32,7 @@
     onToolApprove,
     onToolDeny,
     onStartImplementation,
+    onRevert,
   }: Props = $props();
 
   // Image preview state
@@ -84,7 +86,7 @@
   // Auto-scroll effect
   $effect(() => {
     // Track dependencies
-    messages.forEach(m => {
+    messages.forEach((m) => {
       void m.content;
       void m.thinking;
       void m.isStreaming;
@@ -93,7 +95,9 @@
     void messages.length;
 
     if (!containerRef) return;
-    const shouldScroll = userNearBottom || (messages.length > 0 && messages[messages.length - 1].role === "user");
+    const shouldScroll =
+      userNearBottom ||
+      (messages.length > 0 && messages[messages.length - 1].role === "user");
     if (shouldScroll) {
       // Use set timeout 0 to ensure DOM is fully rendered and browser calculated height
       const timer = setTimeout(() => {
@@ -174,6 +178,7 @@
             expanded={expandedMessages[message.id]}
             onToggleExpand={() => toggleMessage(message.id)}
             onImageClick={openImagePreview}
+            {onRevert}
           />
         {:else if message.role === "assistant"}
           <AssistantMessageRow

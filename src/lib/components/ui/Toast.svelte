@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { fly, fade } from 'svelte/transition';
-  import type { Toast, ToastType } from '$lib/stores/toast.svelte';
-  import { dismissToast } from '$lib/stores/toast.svelte';
+  import { fly, fade } from "svelte/transition";
+  import type { Toast, ToastType } from "$lib/stores/toast.svelte";
+  import { dismissToast } from "$lib/stores/toast.svelte";
 
   interface Props {
     toast: Toast;
@@ -10,33 +10,33 @@
   let { toast }: Props = $props();
 
   const iconMap: Record<ToastType, string> = {
-    success: '✓',
-    error: '✕',
-    warning: '⚠',
-    info: 'ℹ'
+    success: "✓",
+    error: "✕",
+    warning: "⚠",
+    info: "ℹ",
   };
 
   const colorMap: Record<ToastType, string> = {
-    success: 'var(--color-success)',
-    error: 'var(--color-error)',
-    warning: 'var(--color-warning)',
-    info: 'var(--color-accent)'
+    success: "var(--color-success)",
+    error: "var(--color-error)",
+    warning: "var(--color-warning)",
+    info: "var(--color-accent)",
   };
 
   // a11y: errors/warnings use assertive, success/info use polite
-  const ariaLiveMap: Record<ToastType, 'assertive' | 'polite'> = {
-    success: 'polite',
-    error: 'assertive',
-    warning: 'assertive',
-    info: 'polite'
+  const ariaLiveMap: Record<ToastType, "assertive" | "polite"> = {
+    success: "polite",
+    error: "assertive",
+    warning: "assertive",
+    info: "polite",
   };
 
   // a11y: errors/warnings use alert role, success/info use status
-  const roleMap: Record<ToastType, 'alert' | 'status'> = {
-    success: 'status',
-    error: 'alert',
-    warning: 'alert',
-    info: 'status'
+  const roleMap: Record<ToastType, "alert" | "status"> = {
+    success: "status",
+    error: "alert",
+    warning: "alert",
+    info: "status",
   };
 
   function handleDismiss() {
@@ -51,7 +51,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (event.key === "Enter" || event.key === " ") {
       handleDismiss();
     }
   }
@@ -61,14 +61,14 @@
   class="toast"
   role={roleMap[toast.type]}
   aria-live={ariaLiveMap[toast.type]}
-  in:fly={{ x: 100, duration: 200 }}
+  in:fly={{ x: -100, duration: 200 }}
   out:fade={{ duration: 150 }}
   style="--toast-accent: {colorMap[toast.type]}"
 >
   <div class="toast-icon" aria-hidden="true">
     {iconMap[toast.type]}
   </div>
-  
+
   <div class="toast-content">
     <span class="toast-message">
       {toast.message}
@@ -79,11 +79,7 @@
   </div>
 
   {#if toast.action}
-    <button
-      class="toast-action"
-      onclick={handleAction}
-      type="button"
-    >
+    <button class="toast-action" onclick={handleAction} type="button">
       {toast.action.label}
     </button>
   {/if}
@@ -171,7 +167,9 @@
     font-size: 12px;
     cursor: pointer;
     border-radius: 4px;
-    transition: color 0.15s ease, background-color 0.15s ease;
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease;
     flex-shrink: 0;
   }
 

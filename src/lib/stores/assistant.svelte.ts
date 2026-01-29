@@ -12,6 +12,7 @@ import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
 import { getModelConfig } from '$lib/services/ai/models';
 import { countTokens, countConversationTokens, type ContentType } from '$lib/services/token-counter';
+import { invoke } from '@tauri-apps/api/core';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool';
@@ -76,6 +77,8 @@ export interface AssistantMessage {
   contentParts?: ContentPart[];
   // Reference context block (hidden from UI, sent to provider)
   smartContextBlock?: string;
+  // User-selected mentions from @ menu (shown as chips)
+  contextMentions?: AttachedContext[];
 }
 
 // Conversation container
@@ -221,6 +224,8 @@ export const MODE_CAPABILITIES: Record<AIMode, {
 
 // Panel width storage key
 const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
+const PANEL_OPEN_KEY = 'volt.assistant.panelOpen';
+const CURRENT_CONV_ID_KEY = 'volt.assistant.currentConversationId';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
@@ -349,7 +354,9 @@ class AssistantStore {
 
   constructor() {
     this.loadPanelWidth();
+    this.loadPanelOpen();
     this.initConversation();
+    this.loadCurrentConversationId();
   }
 
   /**
@@ -383,6 +390,7 @@ class AssistantStore {
       createdAt: Date.now(),
       messages: []
     };
+    this.saveCurrentConversationId();
   }
 
   /**
@@ -513,14 +521,17 @@ class AssistantStore {
   // Panel controls
   togglePanel(): void {
     this.panelOpen = !this.panelOpen;
+    this.savePanelOpen();
   }
 
   openPanel(): void {
     this.panelOpen = true;
+    this.savePanelOpen();
   }
 
   closePanel(): void {
     this.panelOpen = false;
+    this.savePanelOpen();
   }
 
   setPanelWidth(width: number): void {
@@ -593,9 +604,20 @@ class AssistantStore {
       smartContextBlock
     };
 
-    // Include context in message if provided (legacy support)
+    // Include context in message if provided
     if (context && context.length > 0) {
-      message.content = this.formatMessageWithContext(sanitizedContent, context);
+      // Store separately for UI rendering as clean chips
+      message.contextMentions = [...context];
+
+      // Prepare full content block for AI as "smart context"
+      const fullContextBlock = context.map(c => {
+        if (c.type === 'file') {
+          return `[File: ${c.path}]\n\`\`\`\n${c.content}\n\`\`\``;
+        }
+        return `[Selection: ${c.label || 'Code'}]\n\`\`\`\n${c.content}\n\`\`\``;
+      }).join('\n\n');
+
+      message.smartContextBlock = (message.smartContextBlock ? message.smartContextBlock + '\n\n' : '') + fullContextBlock;
     }
 
     this.messages = [...this.messages, message];
@@ -610,6 +632,8 @@ class AssistantStore {
 
     // Clear pending attachments after adding to message
     this.pendingAttachments = [];
+
+    this.saveCurrentConversationId();
 
     return id;
   }
@@ -632,6 +656,8 @@ class AssistantStore {
         messages: [...this.currentConversation.messages, message]
       };
     }
+
+    this.saveCurrentConversationId();
 
     return id;
   }
@@ -1366,17 +1392,21 @@ class AssistantStore {
   }
 
   // Helper to format message with context
+  // This creates a USER-FACING version with just labels (not full content)
+  // The full context is passed to the AI separately via the attachments
   private formatMessageWithContext(content: string, context: AttachedContext[]): string {
     if (context.length === 0) return content;
 
-    const contextParts = context.map(c => {
+    // Show only labels/references to user, not full content
+    const contextLabels = context.map(c => {
       if (c.type === 'file') {
-        return `[File: ${c.path}]\n\`\`\`\n${c.content}\n\`\`\``;
+        return `📎 ${c.label}`;
       }
-      return `[Selection]\n\`\`\`\n${c.content}\n\`\`\``;
+      return `📎 ${c.label || 'Selection'}`;
     });
 
-    return `${contextParts.join('\n\n')}\n\n${content}`;
+    // Prepend context labels as a clean summary
+    return `${contextLabels.join(' | ')}\n\n${content}`;
   }
 
   // Persistence
@@ -1402,6 +1432,315 @@ class AssistantStore {
     } catch {
       // Ignore storage errors
     }
+  }
+
+  private loadPanelOpen(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(PANEL_OPEN_KEY);
+      if (stored !== null) {
+        this.panelOpen = stored === 'true';
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private savePanelOpen(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(PANEL_OPEN_KEY, String(this.panelOpen));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private loadCurrentConversationId(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(CURRENT_CONV_ID_KEY);
+      if (stored) {
+        // We'll need to fetch the actual conversation from the DB
+        // For now, we at least know what the ID was
+        void this.restoreLastConversation(stored);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private saveCurrentConversationId(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      if (this.currentConversation) {
+        localStorage.setItem(CURRENT_CONV_ID_KEY, this.currentConversation.id);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private async restoreLastConversation(id: string): Promise<void> {
+    try {
+      // Use Tauri command to get the full conversation by ID
+      const conversation = await invoke('chat_get_conversation', { id }) as any;
+      if (conversation) {
+        this.loadConversation(conversation);
+      }
+    } catch (err) {
+      console.warn('[AssistantStore] Failed to restore last conversation:', err);
+    }
+  }
+
+  /**
+   * Get metadata about what would happen if we revert to a specific message
+   * Returns a list of files and their predicted diff stats
+   */
+  async getRevertMetadata(messageId: string): Promise<Array<{
+    path: string;
+    name: string;
+    isNewFile: boolean;
+    isDeletion: boolean;
+    isRename: boolean;
+    addedLines: number;
+    removedLines: number;
+  }>> {
+    const index = this.messages.findIndex(m => m.id === messageId);
+    if (index === -1) return [];
+
+    const filesToRevert = new Map<string, { before: string | null; isNew: boolean }>();
+    const renames = new Map<string, string>(); // newPath -> oldPath
+
+    // 1. Traverse backward to find the state to revert to
+    for (let i = this.messages.length - 1; i >= index; i--) {
+      const msg = this.messages[i];
+      const toolCalls = [
+        ...(msg.toolCalls || []),
+        ...(msg.inlineToolCalls || []),
+        ...(msg.contentParts?.filter(p => p.type === 'tool').map((p: any) => p.toolCall) || [])
+      ];
+
+      for (const tc of toolCalls) {
+        if (!tc || tc.status !== 'completed' || !tc.meta) continue;
+
+        if (tc.meta.fileEdit) {
+          const { absolutePath, beforeContent, isNewFile } = tc.meta.fileEdit as any;
+          if (!filesToRevert.has(absolutePath)) {
+            filesToRevert.set(absolutePath, { before: isNewFile ? null : beforeContent, isNew: isNewFile === true });
+          }
+        }
+
+        if (tc.meta.fileDeleted) {
+          const { absolutePath, beforeContent, isDirectory } = tc.meta.fileDeleted as any;
+          if (!isDirectory && beforeContent !== null && !filesToRevert.has(absolutePath)) {
+            filesToRevert.set(absolutePath, { before: beforeContent, isNew: false });
+          }
+        }
+
+        if (tc.meta.pathRenamed) {
+          const { oldAbsolutePath, newAbsolutePath } = tc.meta.pathRenamed as any;
+          renames.set(newAbsolutePath, oldAbsolutePath);
+        }
+      }
+    }
+
+    // 2. Format results and calculate rough diffs
+    const results = [];
+    const { readFile } = await import('$lib/services/file-system');
+
+    for (const [path, { before, isNew }] of filesToRevert.entries()) {
+      const name = path.split(/[/\\]/).pop() || path;
+      let addedLines = 0;
+      let removedLines = 0;
+
+      if (isNew) {
+        // Find current line count to show as removal
+        try {
+          const currentContent = await readFile(path);
+          removedLines = currentContent ? currentContent.split('\n').length : 0;
+        } catch { }
+      } else if (before !== null) {
+        try {
+          const currentContent = await readFile(path);
+          if (currentContent !== null) {
+            const beforeLines = before.split('\n');
+            const currentLines = currentContent.split('\n');
+
+            const diff = beforeLines.length - currentLines.length;
+            if (diff > 0) addedLines = diff;
+            else removedLines = Math.abs(diff);
+
+            if (addedLines === 0 && removedLines === 0 && before !== currentContent) {
+              addedLines = 1;
+              removedLines = 1;
+            }
+          }
+        } catch { }
+      } else {
+        // This shouldn't happen with the current tool meta structure
+        // but if it does, it's a no-op modification
+      }
+
+      results.push({
+        path,
+        name,
+        isNewFile: isNew,
+        isDeletion: before === null && !isNew, // This case is actually handled by isNew mostly
+        isRename: false,
+        addedLines,
+        removedLines
+      });
+    }
+
+    for (const [newPath, oldPath] of renames.entries()) {
+      results.push({
+        path: newPath,
+        name: `${oldPath.split(/[/\\]/).pop()} (Renamed back from ${newPath.split(/[/\\]/).pop()})`,
+        isNewFile: false,
+        isDeletion: false,
+        isRename: true,
+        addedLines: 0,
+        removedLines: 0
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Revert conversation to a specific user message
+   * Reverts file changes, restores input, and removes subsequent messages
+   */
+  async revertToMessage(messageId: string): Promise<void> {
+    const index = this.messages.findIndex(m => m.id === messageId);
+    if (index === -1) return;
+
+    // 1. Identify all messages to be removed
+    // We want to revert all changes made by AI *after* this user message
+    const filesToRevert = new Map<string, string | null>(); // path -> content (null means delete)
+    const filesToRenameBack = [] as Array<{ newPath: string; oldPath: string }>;
+    const messagesToTruncate = this.messages.slice(index);
+
+    // Iterate from latest to messageId (backward for correct undo order)
+    for (let i = this.messages.length - 1; i >= index; i--) {
+      const msg = this.messages[i];
+      // Check all possible tool call locations
+      const toolCalls = [
+        ...(msg.toolCalls || []),
+        ...(msg.inlineToolCalls || []),
+        ...(msg.contentParts?.filter(p => p.type === 'tool').map((p: any) => p.toolCall) || [])
+      ];
+
+      for (const tc of toolCalls) {
+        if (!tc || tc.status !== 'completed' || !tc.meta) continue;
+
+        // Handle file write/edit
+        if (tc.meta.fileEdit) {
+          const { absolutePath, beforeContent, isNewFile } = tc.meta.fileEdit as any;
+          // Chronologically first "beforeContent" (encountered last in backward loop) wins.
+          // If isNewFile is true, we want to delete the file on revert.
+          filesToRevert.set(absolutePath, isNewFile === true ? null : beforeContent);
+        }
+
+        // Handle file deletion
+        if (tc.meta.fileDeleted) {
+          const { absolutePath, beforeContent, isDirectory } = tc.meta.fileDeleted as any;
+          if (!isDirectory && beforeContent !== null) {
+            filesToRevert.set(absolutePath, beforeContent);
+          }
+        }
+
+        // Handle renames
+        if (tc.meta.pathRenamed) {
+          const { oldAbsolutePath, newAbsolutePath } = tc.meta.pathRenamed as any;
+          filesToRenameBack.push({ newPath: newAbsolutePath, oldPath: oldAbsolutePath });
+        }
+      }
+    }
+
+    // 2. Perform physical revert
+    try {
+      // De-rename first (reverse order)
+      for (const { newPath, oldPath } of filesToRenameBack) {
+        try {
+          await invoke('rename_path', { oldPath: newPath, newPath: oldPath });
+        } catch (e) {
+          console.warn(`[Revert] Failed to rename ${newPath} back to ${oldPath}:`, e);
+        }
+      }
+
+      // Restore contents
+      for (const [path, content] of filesToRevert) {
+        try {
+          if (content === null) {
+            await invoke('delete_path', { path });
+          } else {
+            await invoke('write_file', { path, content });
+          }
+        } catch (e) {
+          console.error(`[Revert] Failed for ${path}:`, e);
+        }
+      }
+
+      // Sync editor state
+      const { editorStore } = await import('./editor.svelte');
+
+      // 1. Sync renames
+      for (const { newPath, oldPath } of filesToRenameBack) {
+        await editorStore.renameFile(newPath, oldPath);
+      }
+
+      // 2. Sync content restorations and deletions
+      for (const [path, content] of filesToRevert) {
+        if (content === null) {
+          // It was a new file produced by the AI, so we just deleted it. Close tab if open.
+          editorStore.closeFile(path, true);
+        } else {
+          // It was an edit, reload the restored content.
+          await editorStore.reloadFile(path);
+        }
+      }
+
+      // Refresh tree
+      const { projectStore } = await import('./project.svelte');
+      await projectStore.refreshTree();
+    } catch (err) {
+      console.error('[AssistantStore] Revert failed:', err);
+      const { showToast } = await import('./toast.svelte');
+      showToast({ message: 'Failed to revert some file changes', type: 'error' });
+    }
+
+    // 3. Restore user message text and context to input (as a draft)
+    const userMsg = this.messages[index];
+    if (userMsg.role === 'user') {
+      this.inputValue = userMsg.content;
+
+      // Restore attached context so the user can easily refine/resend
+      if (userMsg.contextMentions) {
+        this.attachedContext = [...userMsg.contextMentions];
+      }
+      if (userMsg.attachments) {
+        this.pendingAttachments = [...userMsg.attachments];
+      }
+    }
+
+    // 4. Truncate in-memory history
+    this.messages = this.messages.slice(0, index);
+
+    // 5. Truncate persistent history
+    if (this.currentConversation) {
+      try {
+        await invoke('chat_truncate_conversation', {
+          conversationId: this.currentConversation.id,
+          messageId
+        });
+      } catch (err) {
+        console.error('[AssistantStore] Failed to truncate history:', err);
+      }
+    }
+
+    const { showToast } = await import('./toast.svelte');
+    showToast({ message: 'Reverted conversation', type: 'info' });
   }
 }
 

@@ -67,19 +67,19 @@ class ProcessStore {
 
   private load(): void {
     if (typeof localStorage === 'undefined') return;
-    
+
     try {
       const data = localStorage.getItem(STORAGE_KEY);
       if (!data) return;
-      
+
       const parsed = JSON.parse(data) as { processes: BackgroundProcess[]; nextId: number };
       this._nextProcessId = parsed.nextId || 1;
-      
+
       for (const proc of parsed.processes) {
-        const terminalExists = proc.terminalId 
+        const terminalExists = proc.terminalId
           ? terminalStore.sessions.some(s => s.id === proc.terminalId)
           : false;
-        
+
         this._processes.set(proc.processId, {
           ...proc,
           status: terminalExists ? proc.status : 'unknown'
@@ -92,7 +92,7 @@ class ProcessStore {
 
   private save(): void {
     if (typeof localStorage === 'undefined') return;
-    
+
     try {
       const data = {
         processes: Array.from(this._processes.values()),
@@ -193,26 +193,75 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
       logOutput('Volt', `Warning: Running potential long-running command "${command}" in run_command. If this is a server, use start_process instead.`);
     }
 
-    // Execute the command using smart shell integration (OSC 633)
-    const result = await session.executeCommand(command, timeout);
+    // 195: Execute the command using smart shell integration (OSC 633)
+    // We add a "smart detach" race: if it looks like a dev server and shows "Ready" output, 
+    // we return early so the AI doesn't get stuck.
 
-    const { text, truncated } = truncateOutput(result.output);
+    const executionPromise = session.executeCommand(command, timeout);
+
+    // Poller for "Ready" signals in long-running commands
+    const detectionPromise = (async () => {
+      const waitTime = isDevServer ? 8000 : 15000;
+      const startTime = Date.now();
+      const startOffset = session.getRecentOutput().length;
+
+      while (Date.now() - startTime < waitTime) {
+        await new Promise(r => setTimeout(r, 500));
+        const output = session.getCleanOutputSince(startOffset);
+
+        // Typical "Server is ready" patterns
+        const isReady = /\b(ready|started|listening|localhost:|0\.0\.0\.0:)\b/i.test(output);
+
+        if (isReady && Date.now() - startTime > 2000) { // Give it at least 2s to show initial errors
+          return { ready: true, output };
+        }
+      }
+      return { ready: false };
+    })();
+
+    const result = await Promise.race([
+      executionPromise.then(r => ({ type: 'completion' as const, data: r })),
+      detectionPromise.then(r => ({ type: 'detection' as const, data: r }))
+    ]);
+
+    let finalOutput = '';
+    let success = false;
+    let isDetached = false;
+
+    if (result.type === 'completion') {
+      finalOutput = result.data.output;
+      success = result.data.exitCode === 0 && !result.data.timedOut;
+    } else {
+      if (result.data.ready) {
+        finalOutput = result.data.output + '\n\n[Volt AI]: Detected server startup. Detaching to let it run in background.';
+        success = true;
+        isDetached = true;
+      } else {
+        // Detection timed out, wait for actual completion
+        const finalResult = await executionPromise;
+        finalOutput = finalResult.output;
+        success = finalResult.exitCode === 0 && !finalResult.timedOut;
+      }
+    }
+
+    const { text, truncated } = truncateOutput(finalOutput);
 
     const toolResult = {
-      success: result.exitCode === 0 && !result.timedOut,
-      output: text.trim() || (result.exitCode === 0 && !result.timedOut ? '[Success - no output]' : '[Failed - no output]'),
+      success,
+      output: text.trim() || (success ? '[Success - no output]' : '[Failed - no output]'),
       truncated,
       meta: {
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
+        exitCode: result.type === 'completion' ? result.data.exitCode : 0,
+        timedOut: result.type === 'completion' ? result.data.timedOut : false,
         terminalId: session.id,
         isDevServer,
-        hasError: result.exitCode !== 0 || result.timedOut || /\b(error|failed|exception)\b/i.test(result.output)
+        isDetached,
+        hasError: !success || /\b(error|failed|exception)\b/i.test(finalOutput)
       }
     };
 
     // Improve timeout message for humans/AI
-    if (result.timedOut) {
+    if (toolResult.meta.timedOut) {
       toolResult.output = `Command timed out after ${timeout}ms. Output so far:\n\n${toolResult.output}`;
       if (isDevServer) {
         toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
@@ -220,11 +269,11 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
     }
 
     // Notify store of errors for the "Fix with AI" feature
-    if (!toolResult.success) {
+    if (!toolResult.success && !isDetached) {
       terminalStore.lastError = {
         terminalId: session.id,
         command,
-        output: result.output
+        output: finalOutput
       };
     }
 

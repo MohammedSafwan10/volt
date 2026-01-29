@@ -35,6 +35,9 @@ const openDocuments = new Map<string, { version: number; content: string }>();
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150;
 
+// Pending open operations (to prevent race conditions)
+const openingDocuments = new Map<string, Promise<void>>();
+
 // Note: messageId is managed by the transport layer
 
 /**
@@ -90,6 +93,14 @@ function pathToUri(filepath: string): string {
  */
 function uriToPath(uri: string): string {
   let path = uri.replace('file://', '');
+
+  // Decode URI components (fixes encoded drive letters like %3A)
+  try {
+    path = decodeURIComponent(path);
+  } catch (e) {
+    console.warn('[TS LSP] Failed to decode URI component:', path);
+  }
+
   // Handle Windows paths (file:///C:/...)
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
@@ -386,6 +397,15 @@ async function initializeServer(): Promise<void> {
 }
 
 
+// Helper to normalize paths for consistency (map keys)
+function normalizePath(filepath: string): string {
+  let normalized = filepath.replace(/\\/g, '/');
+  if (normalized.match(/^[a-zA-Z]:/)) {
+    normalized = normalized[0].toLowerCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
 /**
  * Notify the server that a document was opened
  */
@@ -393,42 +413,61 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
   if (!isTsJsFile(filepath)) return;
   if (!projectStore.rootPath) return;
 
-  // Initialize server if needed
-  await initializeServer();
+  const normalizedPath = normalizePath(filepath);
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
-  if (!tsServerTransport || !tsServerInitialized) return;
-
-  const uri = pathToUri(filepath);
-  const languageId = getLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await tsServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
+  // Check if update/open is already in progress to prevent races
+  if (openingDocuments.has(normalizedPath)) {
+    return openingDocuments.get(normalizedPath);
   }
 
-  // Send didOpen notification
-  await tsServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content
+  const promise = (async () => {
+    // Initialize server if needed
+    await initializeServer();
+
+    if (!tsServerTransport || !tsServerInitialized) return;
+
+    // Re-check if already open (might have been opened while we waited for init)
+    const existing = openDocuments.get(normalizedPath);
+    const uri = pathToUri(normalizedPath);
+
+    if (existing) {
+      if (existing.content === content) return;
+
+      // If it's already open but content changed, send didChange instead
+      openDocuments.set(normalizedPath, { version: existing.version + 1, content });
+
+      await tsServerTransport.sendNotification('textDocument/didChange', {
+        textDocument: {
+          uri,
+          version: existing.version + 1
+        },
+        contentChanges: [{ text: content }]
+      });
+      return;
     }
-  });
+
+    const languageId = getLanguageId(normalizedPath);
+
+    // Track document
+    openDocuments.set(normalizedPath, { version: 1, content });
+
+    // Send didOpen notification
+    await tsServerTransport.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri,
+        languageId,
+        version: 1,
+        text: content
+      }
+    });
+  })();
+
+  openingDocuments.set(normalizedPath, promise);
+  try {
+    await promise;
+  } finally {
+    openingDocuments.delete(normalizedPath);
+  }
 }
 
 /**
@@ -438,10 +477,11 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
   if (!isTsJsFile(filepath)) return;
   if (!tsServerTransport || !tsServerInitialized) return;
 
-  const doc = openDocuments.get(filepath);
+  const normalizedPath = normalizePath(filepath);
+  const doc = openDocuments.get(normalizedPath);
   if (!doc) {
     // Document wasn't opened, open it now
-    await notifyDocumentOpened(filepath, content);
+    await notifyDocumentOpened(normalizedPath, content);
     return;
   }
 
@@ -449,16 +489,16 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
   doc.version++;
   doc.content = content;
 
-  const uri = pathToUri(filepath);
+  const uri = pathToUri(normalizedPath);
 
   // Debounce the change notification
-  const existingTimer = diagnosticDebounceTimers.get(filepath);
+  const existingTimer = diagnosticDebounceTimers.get(normalizedPath);
   if (existingTimer) {
     clearTimeout(existingTimer);
   }
 
-  diagnosticDebounceTimers.set(filepath, setTimeout(async () => {
-    diagnosticDebounceTimers.delete(filepath);
+  diagnosticDebounceTimers.set(normalizedPath, setTimeout(async () => {
+    diagnosticDebounceTimers.delete(normalizedPath);
 
     if (!tsServerTransport || !tsServerInitialized) return;
 
@@ -480,7 +520,8 @@ export async function notifyDocumentSaved(filepath: string, content: string): Pr
   if (!isTsJsFile(filepath)) return;
   if (!tsServerTransport || !tsServerInitialized) return;
 
-  const uri = pathToUri(filepath);
+  const normalizedPath = normalizePath(filepath);
+  const uri = pathToUri(normalizedPath);
 
   await tsServerTransport.sendNotification('textDocument/didSave', {
     textDocument: { uri },
@@ -495,16 +536,56 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!isTsJsFile(filepath)) return;
   if (!tsServerTransport || !tsServerInitialized) return;
 
-  openDocuments.delete(filepath);
+  const normalizedPath = normalizePath(filepath);
+  openDocuments.delete(normalizedPath);
 
-  const uri = pathToUri(filepath);
+  const uri = pathToUri(normalizedPath);
 
   await tsServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri }
   });
 
   // Clear TypeScript problems for this file
-  problemsStore.clearProblemsForFile(filepath, 'typescript');
+  problemsStore.clearProblemsForFile(normalizedPath, 'typescript');
+}
+
+/**
+ * Perform background analysis of all TS/JS files in the project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps if any
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const tsJsFiles = allFiles.filter(f => isTsJsFile(f.path));
+
+  if (tsJsFiles.length === 0) {
+    console.log('[TS LSP] No JS/TS files found for background analysis.');
+    return;
+  }
+
+  console.log(`[TS LSP] Starting project-wide analysis of ${tsJsFiles.length} files...`);
+
+  // Process singly with delay to avoid blocking LSP server
+  for (const file of tsJsFiles) {
+    // console.log(`[TS LSP] Background analyzing: ${file.path}`);
+    const normalizedPath = normalizePath(file.path);
+
+    // Only open if not already open (prevent double-counting)
+    if (openDocuments.has(normalizedPath)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      // This will automatically initialize server if needed
+      await notifyDocumentOpened(normalizedPath, content);
+
+      // Intentional delay to let the server breathe and process other requests (Code Actions, etc.)
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
 }
 
 /**
@@ -851,7 +932,9 @@ export async function executeRename(
   newName: string
 ): Promise<WorkspaceEdit | null> {
   if (!isTsJsFile(filepath)) return null;
-  if (!tsServerTransport || !tsServerInitialized) return null;
+  if (!tsServerTransport || !tsServerInitialized) {
+    throw new Error('TypeScript server is not initialized');
+  }
 
   const uri = pathToUri(filepath);
 
@@ -868,7 +951,7 @@ export async function executeRename(
     return result;
   } catch (error) {
     console.error('[TS LSP] Rename error:', error);
-    return null;
+    throw error;
   }
 }
 
@@ -962,43 +1045,6 @@ export async function restartTsLsp(): Promise<void> {
 /**
  * Perform background analysis of all TS/JS files in the project
  */
-export async function startProjectWideAnalysis(): Promise<void> {
-  if (!projectStore.rootPath) return;
-
-  // Use dynamic import for fileIndex to avoid circular deps if any
-  const { getAllFiles } = await import('$lib/services/file-index');
-  const { readFileQuiet } = await import('$lib/services/file-system');
-
-  const allFiles = getAllFiles();
-  const tsJsFiles = allFiles.filter(f => isTsJsFile(f.path));
-
-  if (tsJsFiles.length === 0) {
-    console.log('[TS LSP] No JS/TS files found for background analysis.');
-    return;
-  }
-
-  console.log(`[TS LSP] Starting project-wide analysis of ${tsJsFiles.length} files...`);
-
-  // Process in small batches to avoid blocking
-  for (const file of tsJsFiles) {
-    console.log(`[TS LSP] Background analyzing: ${file.path}`);
-    // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(file.path)) continue;
-
-    const content = await readFileQuiet(file.path);
-    if (content) {
-      // This will automatically initialize server if needed
-      await notifyDocumentOpened(file.path, content);
-      console.log(`[TS LSP] Sent ${file.path} to server`);
-
-      // If we've opened many files, yield to event loop
-      if (tsJsFiles.indexOf(file) % 5 === 0) {
-        await new Promise(r => setTimeout(r, 0));
-      }
-    }
-  }
-}
-
 // Export types for external use
 export type {
   CompletionItem,

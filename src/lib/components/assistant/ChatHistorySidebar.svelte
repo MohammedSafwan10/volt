@@ -106,6 +106,32 @@
         }
     }
 
+    async function handleClearAll() {
+        if (
+            confirm(
+                "Are you sure you want to clear ALL chat history? This cannot be undone.",
+            )
+        ) {
+            await chatHistoryStore.clearAll();
+        }
+    }
+
+    async function handleDeleteSelected() {
+        const count = chatHistoryStore.selectedIds.size;
+        if (count === 0) return;
+
+        if (confirm(`Delete ${count} selected conversation(s)?`)) {
+            await chatHistoryStore.deleteMultiple(
+                Array.from(chatHistoryStore.selectedIds),
+            );
+        }
+    }
+
+    function handleToggleSelection(e: MouseEvent, id: string) {
+        e.stopPropagation();
+        chatHistoryStore.toggleSelection(id);
+    }
+
     function handleSearchInput(e: Event) {
         const input = e.target as HTMLInputElement;
         chatHistoryStore.search(input.value);
@@ -191,13 +217,26 @@
     <aside class="chat-history-sidebar">
         <!-- Header -->
         <header class="sidebar-header">
-            <h2>Chat History</h2>
-            <button
-                class="close-btn"
-                onclick={() => chatHistoryStore.closeSidebar()}
-            >
-                <UIIcon name="close" size={18} />
-            </button>
+            <div class="header-main">
+                <h2>Chat History</h2>
+                <div class="header-actions">
+                    {#if chatHistoryStore.conversations.length > 0}
+                        <button
+                            class="icon-btn delete-all"
+                            onclick={handleClearAll}
+                            title="Clear All History"
+                        >
+                            <UIIcon name="trash" size={16} />
+                        </button>
+                    {/if}
+                    <button
+                        class="icon-btn close-btn"
+                        onclick={() => chatHistoryStore.closeSidebar()}
+                    >
+                        <UIIcon name="close" size={18} />
+                    </button>
+                </div>
+            </div>
         </header>
 
         <!-- Search -->
@@ -211,11 +250,25 @@
             />
         </div>
 
-        <!-- New Chat Button -->
-        <button class="new-chat-btn" onclick={handleNewChat}>
-            <UIIcon name="plus" size={18} />
-            <span>New Chat</span>
-        </button>
+        <!-- Toolbar -->
+        <div class="sidebar-toolbar">
+            <button class="new-chat-btn" onclick={handleNewChat}>
+                <UIIcon name="plus" size={18} />
+                <span>New Chat</span>
+            </button>
+            {#if chatHistoryStore.conversations.length > 0}
+                <button
+                    class="select-mode-btn"
+                    class:active={chatHistoryStore.isSelectionMode}
+                    onclick={() =>
+                        chatHistoryStore.isSelectionMode
+                            ? chatHistoryStore.clearSelection()
+                            : (chatHistoryStore.isSelectionMode = true)}
+                >
+                    {chatHistoryStore.isSelectionMode ? "Cancel" : "Select"}
+                </button>
+            {/if}
+        </div>
 
         <!-- Conversation List -->
         <div class="conversation-list">
@@ -223,8 +276,18 @@
                 <div class="loading">Loading...</div>
             {:else if chatHistoryStore.conversations.length === 0}
                 <div class="empty-state">
-                    <UIIcon name="comment" size={32} />
-                    <p>No conversations yet</p>
+                    <div class="empty-icon">
+                        <UIIcon name="comment" size={48} />
+                    </div>
+                    <h3>Start a Conversation</h3>
+                    <p>
+                        Your chat history will appear here once you start
+                        interacting with the assistant.
+                    </p>
+                    <button class="empty-action-btn" onclick={handleNewChat}>
+                        <UIIcon name="plus" size={16} />
+                        <span>Start New Chat</span>
+                    </button>
                 </div>
             {:else}
                 {#each groupOrder as group}
@@ -239,36 +302,92 @@
                                 {groupLabels[group]}
                             </div>
                             {#each conversations as conv (conv.id)}
-                                <button
-                                    class="conversation-item"
-                                    class:active={chatHistoryStore.activeConversationId ===
-                                        conv.id}
-                                    onclick={() =>
-                                        handleSelectConversation(conv)}
-                                    oncontextmenu={(e) =>
-                                        handleContextMenu(e, conv)}
+                                <div
+                                    class="conversation-item-wrapper"
+                                    class:selected={chatHistoryStore.selectedIds.has(
+                                        conv.id,
+                                    )}
                                 >
-                                    <div class="conv-icon">
-                                        <UIIcon name="comment" size={16} />
-                                    </div>
-                                    <div class="conv-content">
-                                        <div class="conv-title">
-                                            {conv.title}
+                                    {#if chatHistoryStore.isSelectionMode}
+                                        <button
+                                            class="selection-checkbox"
+                                            onclick={(e) =>
+                                                handleToggleSelection(
+                                                    e,
+                                                    conv.id,
+                                                )}
+                                        >
+                                            {#if chatHistoryStore.selectedIds.has(conv.id)}
+                                                <UIIcon
+                                                    name="check"
+                                                    size={14}
+                                                />
+                                            {/if}
+                                        </button>
+                                    {/if}
+
+                                    <button
+                                        class="conversation-item"
+                                        class:active={chatHistoryStore.activeConversationId ===
+                                            conv.id}
+                                        onclick={() =>
+                                            chatHistoryStore.isSelectionMode
+                                                ? chatHistoryStore.toggleSelection(
+                                                      conv.id,
+                                                  )
+                                                : handleSelectConversation(
+                                                      conv,
+                                                  )}
+                                        oncontextmenu={(e) =>
+                                            handleContextMenu(e, conv)}
+                                    >
+                                        <div class="conv-icon">
+                                            <UIIcon name="comment" size={16} />
                                         </div>
-                                        <div class="conv-meta">
-                                            {conv.messageCount} messages
+                                        <div class="conv-content">
+                                            <div class="conv-title">
+                                                {conv.title}
+                                            </div>
+                                            <div class="conv-meta">
+                                                {conv.messageCount} messages
+                                            </div>
                                         </div>
-                                    </div>
-                                    <div class="conv-time">
-                                        {formatDateTime(conv.updatedAt)}
-                                    </div>
-                                </button>
+                                        <div class="conv-time">
+                                            {formatDateTime(conv.updatedAt)}
+                                        </div>
+                                    </button>
+                                </div>
                             {/each}
                         </div>
                     {/if}
                 {/each}
             {/if}
         </div>
+
+        <!-- Batch Action Bar -->
+        {#if chatHistoryStore.isSelectionMode && chatHistoryStore.selectedIds.size > 0}
+            <div class="batch-action-bar">
+                <div class="selection-info">
+                    {chatHistoryStore.selectedIds.size} selected
+                </div>
+                <div class="batch-actions">
+                    <button
+                        class="text-btn"
+                        onclick={() => chatHistoryStore.selectAll()}
+                    >
+                        Select All
+                    </button>
+                    <button
+                        class="danger-btn"
+                        onclick={handleDeleteSelected}
+                        title="Delete Selected"
+                    >
+                        <UIIcon name="trash" size={16} />
+                        <span>Delete</span>
+                    </button>
+                </div>
+            </div>
+        {/if}
     </aside>
 
     <!-- Context Menu -->
@@ -349,34 +468,49 @@
     }
 
     .sidebar-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
         padding: 16px;
         border-bottom: 1px solid var(--border-color, #333);
     }
 
-    .sidebar-header h2 {
+    .header-main {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .header-main h2 {
         margin: 0;
         font-size: 16px;
         font-weight: 600;
     }
 
-    .close-btn {
+    .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .icon-btn {
         background: none;
         border: none;
         color: var(--text-secondary, #888);
         cursor: pointer;
-        padding: 4px;
+        padding: 6px;
         border-radius: 4px;
         display: flex;
         align-items: center;
         justify-content: center;
+        transition: all 0.15s;
     }
 
-    .close-btn:hover {
+    .icon-btn:hover {
         background: var(--bg-hover, #333);
         color: var(--text-primary, #fff);
+    }
+
+    .icon-btn.delete-all:hover {
+        color: #f44336;
+        background: rgba(244, 67, 54, 0.1);
     }
 
     .search-container {
@@ -397,23 +531,26 @@
         font-size: 13px;
     }
 
-    .search-container input:focus {
-        outline: none;
-        border-color: var(--accent-color, #007acc);
-    }
-
-    .new-chat-btn {
+    .sidebar-toolbar {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin: 12px 16px;
-        padding: 10px 16px;
+        padding: 12px 16px;
+    }
+
+    .new-chat-btn {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px;
         background: var(--accent-color, #007acc);
         color: white;
         border: none;
         border-radius: 8px;
         cursor: pointer;
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 500;
         transition: background 0.15s;
     }
@@ -422,44 +559,137 @@
         background: var(--accent-color-hover, #0066b8);
     }
 
+    .select-mode-btn {
+        padding: 8px 12px;
+        background: var(--bg-tertiary, #2a2a2a);
+        border: 1px solid var(--border-color, #444);
+        color: var(--text-secondary, #aaa);
+        border-radius: 8px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.15s;
+    }
+
+    .select-mode-btn:hover {
+        background: var(--bg-hover, #333);
+        color: var(--text-primary, #fff);
+    }
+
+    .select-mode-btn.active {
+        background: var(--accent-color, #007acc);
+        color: white;
+        border-color: var(--accent-color, #007acc);
+    }
+
     .conversation-list {
         flex: 1;
         overflow-y: auto;
         padding: 8px 0;
+        display: flex;
+        flex-direction: column;
     }
 
-    .loading,
     .empty-state {
+        flex: 1;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        padding: 48px 16px;
-        color: var(--text-secondary, #888);
-        gap: 12px;
+        padding: 32px;
+        text-align: center;
+        color: var(--text-secondary, #808080);
     }
 
-    .date-group {
-        margin-bottom: 8px;
-    }
-
-    .group-label {
+    .empty-icon {
+        width: 80px;
+        height: 80px;
+        background: var(--bg-tertiary, #252526);
+        border-radius: 50%;
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 8px 16px;
-        font-size: 12px;
+        justify-content: center;
+        margin-bottom: 20px;
+        color: var(--text-tertiary, #666);
+    }
+
+    .empty-state h3 {
+        margin: 0 0 8px 0;
+        font-size: 16px;
         font-weight: 600;
+        color: var(--text-primary, #fff);
+    }
+
+    .empty-state p {
+        margin: 0 0 24px 0;
+        font-size: 13px;
+        line-height: 1.5;
+        max-width: 200px;
+    }
+
+    .empty-action-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 20px;
+        background: var(--accent-color, #007acc);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: transform 0.2s;
+    }
+
+    .empty-action-btn:hover {
+        transform: translateY(-2px);
+        background: var(--accent-color-hover, #0066b8);
+    }
+
+    .loading {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         color: var(--text-secondary, #888);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        font-size: 13px;
+    }
+
+    .conversation-item-wrapper {
+        display: flex;
+        align-items: center;
+        position: relative;
+    }
+
+    .conversation-item-wrapper.selected {
+        background: rgba(0, 122, 204, 0.1);
+    }
+
+    .selection-checkbox {
+        flex-shrink: 0;
+        width: 18px;
+        height: 18px;
+        margin-left: 16px;
+        border: 2px solid var(--border-color, #555);
+        border-radius: 4px;
+        background: transparent;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+    }
+
+    .conversation-item-wrapper.selected .selection-checkbox {
+        background: var(--accent-color, #007acc);
+        border-color: var(--accent-color, #007acc);
     }
 
     .conversation-item {
+        flex: 1;
         display: flex;
         align-items: center;
         gap: 12px;
-        width: 100%;
         padding: 10px 16px;
         background: none;
         border: none;
@@ -467,6 +697,7 @@
         text-align: left;
         color: var(--text-primary, #fff);
         transition: background 0.1s;
+        min-width: 0;
     }
 
     .conversation-item:hover {
@@ -497,15 +728,78 @@
     }
 
     .conv-meta {
-        font-size: 12px;
+        font-size: 11px;
         color: var(--text-secondary, #888);
         margin-top: 2px;
     }
 
     .conv-time {
         flex-shrink: 0;
-        font-size: 12px;
+        font-size: 11px;
         color: var(--text-tertiary, #666);
+    }
+
+    /* Batch Action Bar */
+    .batch-action-bar {
+        position: sticky;
+        bottom: 0;
+        background: var(--bg-secondary, #1e1e1e);
+        border-top: 1px solid var(--border-color, #333);
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+        animation: slideUp 0.15s ease-out;
+    }
+
+    @keyframes slideUp {
+        from {
+            transform: translateY(100%);
+        }
+        to {
+            transform: translateY(0);
+        }
+    }
+
+    .selection-info {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary, #fff);
+    }
+
+    .batch-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .text-btn {
+        background: none;
+        border: none;
+        color: var(--accent-color, #007acc);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        padding: 4px 8px;
+    }
+
+    .danger-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: #f44336;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+    }
+
+    .danger-btn:hover {
+        background: #d32f2f;
     }
 
     /* Context Menu */
@@ -546,74 +840,19 @@
         background: rgba(244, 67, 54, 0.15);
     }
 
-    /* Rename Dialog */
-    .dialog-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.5);
+    .date-group {
+        margin-bottom: 8px;
+    }
+
+    .group-label {
         display: flex;
         align-items: center;
-        justify-content: center;
-        z-index: 1002;
-    }
-
-    .rename-dialog {
-        background: var(--bg-secondary, #252526);
-        border: 1px solid var(--border-color, #444);
-        border-radius: 12px;
-        padding: 20px;
-        width: 340px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-    }
-
-    .rename-dialog h3 {
-        margin: 0 0 16px;
-        font-size: 16px;
-        font-weight: 600;
-    }
-
-    .rename-dialog input {
-        width: 100%;
-        padding: 10px 12px;
-        background: var(--bg-tertiary, #1e1e1e);
-        border: 1px solid var(--border-color, #444);
-        border-radius: 6px;
-        color: var(--text-primary, #fff);
-        font-size: 14px;
-        box-sizing: border-box;
-    }
-
-    .rename-dialog input:focus {
-        outline: none;
-        border-color: var(--accent-color, #007acc);
-    }
-
-    .dialog-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        margin-top: 16px;
-    }
-
-    .dialog-actions button {
+        gap: 6px;
         padding: 8px 16px;
-        border-radius: 6px;
-        font-size: 14px;
-        cursor: pointer;
-        border: none;
-    }
-
-    .dialog-actions .cancel {
-        background: var(--bg-hover, #333);
-        color: var(--text-primary, #fff);
-    }
-
-    .dialog-actions .confirm {
-        background: var(--accent-color, #007acc);
-        color: white;
-    }
-
-    .dialog-actions .confirm:hover {
-        background: var(--accent-color-hover, #0066b8);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary, #888);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
 </style>

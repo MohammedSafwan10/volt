@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Toast from './Toast.svelte';
-  import { toastStore } from '$lib/stores/toast.svelte';
+  import Toast from "./Toast.svelte";
+  import { toastStore } from "$lib/stores/toast.svelte";
 </script>
 
 <!--
@@ -19,7 +19,7 @@
   .toast-container {
     position: fixed;
     bottom: 40px; /* Above status bar */
-    right: 16px;
+    left: 16px;
     z-index: 9999;
     display: flex;
     flex-direction: column;

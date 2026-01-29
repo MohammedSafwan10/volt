@@ -17,7 +17,17 @@ import { writable } from 'svelte/store';
 export const indexUpdateTick = writable(0);
 
 // Threshold for triggering full rescan instead of incremental update
-const FULL_RESCAN_THRESHOLD = 100;
+const FULL_RESCAN_THRESHOLD = 200;
+
+/**
+ * Check if a path should be excluded from the index
+ */
+export function shouldIgnorePath(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
+  const parts = normalized.split('/');
+  const ignoreDirs = ['node_modules', '.git', '.next', 'dist', 'target', 'build', 'out'];
+  return parts.some(part => ignoreDirs.includes(part));
+}
 
 export interface IndexedFile {
   /** File name */
@@ -28,6 +38,8 @@ export interface IndexedFile {
   relativePath: string;
   /** Parent directory name */
   parentDir: string;
+  /** Whether this is a directory */
+  isDir: boolean;
 }
 
 /**
@@ -560,6 +572,8 @@ export function searchFiles(query: string, recentPaths: string[] = [], limit = 5
     for (const file of fileIndex) {
       if (others.length + recent.length >= limit) break;
       if (recentSet.has(file.path)) continue;
+      // When no query, prioritize files over directories in results
+      if (file.isDir) continue;
       others.push(file);
     }
 
@@ -573,6 +587,11 @@ export function searchFiles(query: string, recentPaths: string[] = [], limit = 5
   const recentSet = new Set(recentPaths);
 
   for (const file of fileIndex) {
+    // Safety check: ensure no junk directories slip through search results
+    if (shouldIgnorePath(file.relativePath)) {
+      continue;
+    }
+
     const score = fuzzyScore(queryLower, file);
     if (score > 0) {
       // Boost recent/open files
@@ -590,6 +609,7 @@ export function searchFiles(query: string, recentPaths: string[] = [], limit = 5
     path: r.file.path,
     relativePath: r.file.relativePath,
     parentDir: r.file.parentDir,
+    isDir: r.file.isDir,
   }));
 }
 
@@ -629,6 +649,12 @@ export async function searchFilesAsync(
 
     for (let j = i; j < end; j++) {
       const file = fileIndex[j];
+
+      // Safety check: ensure no junk directories slip through search results
+      if (shouldIgnorePath(file.relativePath)) {
+        continue;
+      }
+
       const score = fuzzyScore(queryLower, file);
       if (score > 0) {
         const boost = recentSet.has(file.path) ? 100 : 0;
@@ -655,6 +681,7 @@ export async function searchFilesAsync(
     path: r.file.path,
     relativePath: r.file.relativePath,
     parentDir: r.file.parentDir,
+    isDir: r.file.isDir,
   }));
 }
 
@@ -681,11 +708,17 @@ export function addFileToIndex(absolutePath: string, relativePath: string): void
   const name = getBasename(relativePath);
   const parentDir = getParentDir(relativePath);
 
+  // Deep check: don't index if it's in a junk directory
+  if (shouldIgnorePath(relativePath)) {
+    return;
+  }
+
   const newFile: IndexedFile = {
     name,
     path: absolutePath,
     relativePath,
     parentDir,
+    isDir: false // Assume file for incremental updates if not specified
   };
 
   // Normalize and add to index
@@ -725,11 +758,18 @@ export function updateFileInIndex(
     const name = getBasename(newRelativePath);
     const parentDir = getParentDir(newRelativePath);
 
+    // If renamed TO a junk path, remove it from index instead
+    if (shouldIgnorePath(newRelativePath)) {
+      removeFileFromIndex(oldAbsolutePath);
+      return;
+    }
+
     const updatedFile: IndexedFile = {
       name,
       path: newAbsolutePath,
       relativePath: newRelativePath,
       parentDir,
+      isDir: false // Rename usually preserves file/dir status, assuming file for now
     };
 
     // Normalize and update
@@ -805,6 +845,7 @@ export function getAllFiles(): IndexedFile[] {
     path: f.path,
     relativePath: f.relativePath,
     parentDir: f.parentDir,
+    isDir: f.isDir,
   }));
 }
 

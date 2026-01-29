@@ -468,21 +468,63 @@ class EditorStore {
     if (!file) return false;
 
     // Use original path for file system access
-    const content = await readFile(path);
-    if (content === null) return false;
-
-    file.content = content;
-    file.originalContent = content;
-
-    // Also update the Monaco model so the editor shows the new content
     try {
-      const { setModelValue } = await import('$lib/services/monaco-models');
+      const content = await readFile(path);
+      if (content === null) return false;
+
+      file.content = content;
+      file.originalContent = content;
+
+      // Also update the Monaco model so the editor shows the new content
+      const { setModelValue, clearReviewHighlight } = await import('$lib/services/monaco-models');
       setModelValue(normalizedPath, content);
-    } catch {
-      // Monaco model might not exist yet, that's ok
+
+      // Clear any AI edit highlights (the green blocks) on reload
+      clearReviewHighlight(normalizedPath);
+
+      return true;
+    } catch (e) {
+      console.error(`[EditorStore] Failed to reload ${path}:`, e);
+      return false;
+    }
+  }
+
+  /**
+   * Update internal state when a file is renamed on disk
+   */
+  async renameFile(oldPath: string, newPath: string): Promise<void> {
+    const normOld = normalizePath(oldPath);
+    const normNew = normalizePath(newPath);
+
+    const file = this.openFiles.find(f => f.path === normOld);
+    if (!file) return;
+
+    // Update metadata
+    file.path = normNew;
+    file.name = newPath.split(/[/\\]/).pop() || newPath;
+
+    // Refresh content from new location
+    await this.reloadFile(newPath);
+
+    if (this.activeFilePath === normOld) {
+      this.activeFilePath = normNew;
     }
 
-    return true;
+    // Dispose old model if it exists (reloadFile will create/update the new one)
+    disposeModel(normOld);
+  }
+
+  /**
+   * Set the selection in the active editor
+   */
+  async setSelection(path: string, range: {
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  }): Promise<void> {
+    const { setSelection } = await import('$lib/services/monaco-models');
+    setSelection(path, range);
   }
 }
 

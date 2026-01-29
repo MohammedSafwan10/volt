@@ -79,21 +79,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
-    color: var(--color-bg);
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: var(--color-surface0);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
     margin-bottom: 4px;
-  }
-
-  .empty-icon.ask {
-    background: linear-gradient(135deg, var(--color-accent), var(--color-sapphire));
-  }
-  .empty-icon.agent {
-    background: linear-gradient(135deg, var(--color-green), var(--color-teal));
-  }
-  .empty-icon.plan {
-    background: linear-gradient(135deg, var(--color-mauve), var(--color-pink));
   }
 
   .empty-title {

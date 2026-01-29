@@ -6,6 +6,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tauri + SvelteKit + Typescript App</title>
     %sveltekit.head%
+    <script>
+      (function() {
+        try {
+          const stored = localStorage.getItem('volt.theme');
+          const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          const resolved = (stored === 'system' || !stored) ? (isDark ? 'dark' : 'light') : stored;
+          
+          if (resolved === 'dark') document.documentElement.style.backgroundColor = '#000000';
+          else if (resolved === 'midnight') document.documentElement.style.backgroundColor = '#1e1e2e';
+          else if (resolved === 'light') document.documentElement.style.backgroundColor = '#ffffff';
+          
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">%sveltekit.body%</div>

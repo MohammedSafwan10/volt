@@ -1,13 +1,20 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import type { Terminal } from '@xterm/xterm';
-	import type { FitAddon } from '@xterm/addon-fit';
-	import type { WebLinksAddon } from '@xterm/addon-web-links';
-	import { loadXterm, createTerminal, createFitAddon, createWebLinksAddon, getTerminalTheme, isXtermLoaded } from '$lib/services/terminal-loader';
-	import type { TerminalSession } from '$lib/services/terminal-client';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import { open } from '@tauri-apps/plugin-shell';
-	import TerminalActions from './TerminalActions.svelte';
+	import { onMount, onDestroy } from "svelte";
+	import type { Terminal } from "@xterm/xterm";
+	import type { FitAddon } from "@xterm/addon-fit";
+	import type { WebLinksAddon } from "@xterm/addon-web-links";
+	import {
+		loadXterm,
+		createTerminal,
+		createFitAddon,
+		createWebLinksAddon,
+		getTerminalTheme,
+		isXtermLoaded,
+	} from "$lib/services/terminal-loader";
+	import type { TerminalSession } from "$lib/services/terminal-client";
+	import { themeStore } from "$lib/stores/theme.svelte";
+	import { open } from "@tauri-apps/plugin-shell";
+	import TerminalActions from "./TerminalActions.svelte";
 
 	interface Props {
 		session: TerminalSession;
@@ -36,8 +43,8 @@
 			setOption?: (key: string, value: unknown) => void;
 			options?: { theme?: unknown };
 		};
-		if (typeof anyTerm.setOption === 'function') {
-			anyTerm.setOption('theme', theme);
+		if (typeof anyTerm.setOption === "function") {
+			anyTerm.setOption("theme", theme);
 			return;
 		}
 		// Older type definitions / runtime: mutate the theme field only (do NOT assign the full options object).
@@ -56,7 +63,7 @@
 		flushScheduled = true;
 		requestAnimationFrame(() => {
 			if (terminal && writeBuffer.length > 0) {
-				terminal.write(writeBuffer.join(''));
+				terminal.write(writeBuffer.join(""));
 				writeBuffer = [];
 			}
 			flushScheduled = false;
@@ -86,7 +93,11 @@
 				if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
 				resizeDebounceTimer = setTimeout(() => {
 					resizeDebounceTimer = null;
-					if (pendingCols === lastSentCols && pendingRows === lastSentRows) return;
+					if (
+						pendingCols === lastSentCols &&
+						pendingRows === lastSentRows
+					)
+						return;
 					lastSentCols = pendingCols;
 					lastSentRows = pendingRows;
 					void session.resize(pendingCols, pendingRows);
@@ -113,9 +124,11 @@
 		applyTheme(terminal);
 		fitAddon = createFitAddon();
 		// WebLinksAddon with handler to open URLs via Tauri shell
-		webLinksAddon = createWebLinksAddon((_event: MouseEvent, uri: string) => {
-			void open(uri);
-		});
+		webLinksAddon = createWebLinksAddon(
+			(_event: MouseEvent, uri: string) => {
+				void open(uri);
+			},
+		);
 
 		terminal.loadAddon(fitAddon);
 		terminal.loadAddon(webLinksAddon);
@@ -123,7 +136,11 @@
 
 		// Handle Ctrl+C: copy if selection exists, otherwise send SIGINT
 		terminal.attachCustomKeyEventHandler((event) => {
-			if (event.ctrlKey && event.key === 'c' && event.type === 'keydown') {
+			if (
+				event.ctrlKey &&
+				event.key === "c" &&
+				event.type === "keydown"
+			) {
 				if (terminal?.hasSelection()) {
 					const selection = terminal.getSelection();
 					void navigator.clipboard.writeText(selection);
@@ -176,6 +193,16 @@
 		try {
 			await initTerminal();
 			initialized = true;
+
+			// Double check fit after a few frames to handle any late layout shifts
+			setTimeout(() => {
+				void fitTerminal();
+				if (active && terminal) terminal.focus();
+			}, 100);
+
+			setTimeout(() => {
+				void fitTerminal();
+			}, 500);
 		} finally {
 			initializing = false;
 		}
@@ -192,10 +219,13 @@
 				terminal.focus();
 			}
 		};
-		window.addEventListener('volt:terminal-focus', handleFocusRequest);
+		window.addEventListener("volt:terminal-focus", handleFocusRequest);
 
 		return () => {
-			window.removeEventListener('volt:terminal-focus', handleFocusRequest);
+			window.removeEventListener(
+				"volt:terminal-focus",
+				handleFocusRequest,
+			);
 		};
 	});
 
@@ -240,10 +270,7 @@
 </script>
 
 <div class="terminal-view" class:active>
-	<div
-		class="terminal-container"
-		bind:this={containerRef}
-	></div>
+	<div class="terminal-container" bind:this={containerRef}></div>
 	<TerminalActions terminalId={session.id} />
 </div>
 
@@ -264,7 +291,8 @@
 		flex: 1;
 		overflow: hidden;
 		background: var(--color-bg);
-		border-left: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+		border-left: 1px solid
+			color-mix(in srgb, var(--color-border) 80%, transparent);
 	}
 
 	/* xterm.js styles */

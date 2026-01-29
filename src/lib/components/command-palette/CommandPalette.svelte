@@ -1,24 +1,41 @@
 <script lang="ts">
-  import { uiStore } from '$lib/stores/ui.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { projectStore } from '$lib/stores/project.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
-  import { themeStore } from '$lib/stores/theme.svelte';
-  import { showToast } from '$lib/stores/toast.svelte';
-  import { UIIcon, VirtualList } from '$lib/components/ui';
-  import { FileIcon } from '$lib/components/file-tree';
-  import { openFileDialog, openFolderDialog, writeFile } from '$lib/services/file-system';
-  import { formatBeforeSave, formatCurrentDocument, isPrettierFile } from '$lib/services/prettier';
-  import { indexProject, indexUpdateTick, searchFiles, searchFilesAsync, cancelAsyncSearch, isIndexing, getIndexStatus, type IndexedFile } from '$lib/services/file-index';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { uiStore } from "$lib/stores/ui.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { projectStore } from "$lib/stores/project.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import { themeStore } from "$lib/stores/theme.svelte";
+  import { showToast } from "$lib/stores/toast.svelte";
+  import { UIIcon, VirtualList } from "$lib/components/ui";
+  import { FileIcon } from "$lib/components/file-tree";
+  import {
+    openFileDialog,
+    openFolderDialog,
+    writeFile,
+  } from "$lib/services/file-system";
+  import {
+    formatBeforeSave,
+    formatCurrentDocument,
+    isPrettierFile,
+  } from "$lib/services/prettier";
+  import {
+    indexProject,
+    indexUpdateTick,
+    searchFiles,
+    searchFilesAsync,
+    cancelAsyncSearch,
+    isIndexing,
+    getIndexStatus,
+    type IndexedFile,
+  } from "$lib/services/file-index";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     type Command,
     type CommandWithMeta,
     registerCommands,
     searchCommands,
     addToRecent,
-    getRecentCommandIds
-  } from './commands';
+    getRecentCommandIds,
+  } from "./commands";
 
   interface Props {
     onClose?: () => void;
@@ -26,17 +43,17 @@
 
   let { onClose }: Props = $props();
 
-  type PaletteMode = 'file' | 'command';
+  type PaletteMode = "file" | "command";
 
   // Debounce delay for file search (ms)
   const FILE_SEARCH_DEBOUNCE_MS = 50;
 
   let isOpen = $state(false);
-  let mode = $state<PaletteMode>('file');
-  let searchQuery = $state('');
+  let mode = $state<PaletteMode>("file");
+  let searchQuery = $state("");
   let selectedIndex = $state(0);
   let inputElement: HTMLInputElement | undefined = $state();
-  
+
   // Debounce timer for file search
   let fileSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -44,23 +61,24 @@
   let fileResults = $state<IndexedFile[]>([]);
 
   // Virtualized file results list
-  let fileList: { ensureVisible: (index: number) => void } | null = $state(null);
+  let fileList: { ensureVisible: (index: number) => void } | null =
+    $state(null);
   const FILE_ROW_HEIGHT = 32;
   const FILE_OVERSCAN = 5;
 
   // Get recently opened file paths
-  const recentFilePaths = $derived(editorStore.openFiles.map(f => f.path));
+  const recentFilePaths = $derived(editorStore.openFiles.map((f) => f.path));
 
   // Derive if we're in command mode (query starts with >)
   const effectiveMode = $derived.by(() => {
-    if (mode === 'command') return 'command';
-    if (searchQuery.startsWith('>')) return 'command';
-    return 'file';
+    if (mode === "command") return "command";
+    if (searchQuery.startsWith(">")) return "command";
+    return "file";
   });
 
   // Get the actual search query (strip > prefix for commands)
   const effectiveQuery = $derived.by(() => {
-    if (effectiveMode === 'command' && searchQuery.startsWith('>')) {
+    if (effectiveMode === "command" && searchQuery.startsWith(">")) {
       return searchQuery.slice(1).trim();
     }
     return searchQuery;
@@ -68,56 +86,66 @@
 
   const allCommands: Command[] = [
     {
-      id: 'file.newFile',
-      label: 'New File',
-      category: 'File',
-      shortcut: 'Ctrl+N',
-      action: () => { showToast({ message: 'New File - Coming soon', type: 'info' }); }
+      id: "file.newFile",
+      label: "New File",
+      category: "File",
+      shortcut: "Ctrl+N",
+      action: () => {
+        showToast({ message: "New File - Coming soon", type: "info" });
+      },
     },
     {
-      id: 'file.openFile',
-      label: 'Open File...',
-      category: 'File',
-      shortcut: 'Ctrl+O',
+      id: "file.openFile",
+      label: "Open File...",
+      category: "File",
+      shortcut: "Ctrl+O",
       action: async () => {
         const path = await openFileDialog();
         if (path) await editorStore.openFile(path);
-      }
+      },
     },
     {
-      id: 'file.openFolder',
-      label: 'Open Folder...',
-      category: 'File',
-      shortcut: 'Ctrl+K Ctrl+O',
+      id: "file.openFolder",
+      label: "Open Folder...",
+      category: "File",
+      shortcut: "Ctrl+K Ctrl+O",
       action: async () => {
         const path = await openFolderDialog();
         if (path) {
           const success = await projectStore.openProject(path);
-          if (success) uiStore.setActiveSidebarPanel('explorer');
+          if (success) uiStore.setActiveSidebarPanel("explorer");
         }
-      }
+      },
     },
     {
-      id: 'file.save',
-      label: 'Save',
-      category: 'File',
-      shortcut: 'Ctrl+S',
+      id: "file.save",
+      label: "Save",
+      category: "File",
+      shortcut: "Ctrl+S",
       action: async () => {
         const activeFile = editorStore.activeFile;
         if (!activeFile) {
-          showToast({ message: 'No file to save', type: 'warning' });
+          showToast({ message: "No file to save", type: "warning" });
           return;
         }
         let contentToSave = activeFile.content;
         try {
-          const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
+          const { getModelValue, setModelValue } = await import(
+            "$lib/services/monaco-models"
+          );
           const modelValue = getModelValue(activeFile.path);
-          if (typeof modelValue === 'string') {
+          if (typeof modelValue === "string") {
             contentToSave = modelValue;
           }
 
-          if (settingsStore.formatOnSaveEnabled && isPrettierFile(activeFile.path)) {
-            const formatted = await formatBeforeSave(contentToSave, activeFile.path);
+          if (
+            settingsStore.formatOnSaveEnabled &&
+            isPrettierFile(activeFile.path)
+          ) {
+            const formatted = await formatBeforeSave(
+              contentToSave,
+              activeFile.path,
+            );
             if (formatted !== contentToSave) {
               contentToSave = formatted;
               setModelValue(activeFile.path, formatted);
@@ -125,234 +153,262 @@
           }
 
           editorStore.updateContent(activeFile.path, contentToSave);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         const success = await writeFile(activeFile.path, contentToSave);
         if (success) editorStore.markSaved(activeFile.path);
       },
-      enabled: () => editorStore.activeFile !== null
+      enabled: () => editorStore.activeFile !== null,
     },
     {
-      id: 'file.closeEditor',
-      label: 'Close Editor',
-      category: 'File',
-      shortcut: 'Ctrl+W',
+      id: "file.closeEditor",
+      label: "Close Editor",
+      category: "File",
+      shortcut: "Ctrl+W",
       action: () => {
-        if (editorStore.activeFilePath) editorStore.closeFile(editorStore.activeFilePath);
+        if (editorStore.activeFilePath)
+          editorStore.closeFile(editorStore.activeFilePath);
       },
-      enabled: () => editorStore.activeFilePath !== null
+      enabled: () => editorStore.activeFilePath !== null,
     },
     {
-      id: 'file.closeFolder',
-      label: 'Close Folder',
-      category: 'File',
+      id: "file.closeFolder",
+      label: "Close Folder",
+      category: "File",
       action: () => {
         projectStore.closeProject();
         editorStore.closeAllFiles(true);
       },
-      enabled: () => projectStore.rootPath !== null
+      enabled: () => projectStore.rootPath !== null,
     },
     {
-      id: 'file.toggleAutoSave',
-      label: 'Toggle Auto Save',
-      category: 'File',
+      id: "file.toggleAutoSave",
+      label: "Toggle Auto Save",
+      category: "File",
       action: () => {
         settingsStore.toggleAutoSave();
         showToast({
-          message: `Auto-save ${settingsStore.autoSaveEnabled ? 'enabled' : 'disabled'}`,
-          type: 'info'
+          message: `Auto-save ${settingsStore.autoSaveEnabled ? "enabled" : "disabled"}`,
+          type: "info",
         });
-      }
+      },
     },
     {
-      id: 'edit.formatDocument',
-      label: 'Format Document',
-      category: 'Edit',
-      shortcut: 'Ctrl+Shift+I',
+      id: "edit.formatDocument",
+      label: "Format Document",
+      category: "Edit",
+      shortcut: "Ctrl+Shift+I",
       action: async () => {
         await formatCurrentDocument();
       },
       enabled: () => {
         const activeFile = editorStore.activeFile;
         return activeFile !== null && isPrettierFile(activeFile.path);
-      }
+      },
     },
     {
-      id: 'edit.toggleFormatOnSave',
-      label: 'Toggle Format on Save',
-      category: 'Edit',
+      id: "edit.toggleFormatOnSave",
+      label: "Toggle Format on Save",
+      category: "Edit",
       action: () => {
         settingsStore.toggleFormatOnSave();
         showToast({
-          message: `Format on save ${settingsStore.formatOnSaveEnabled ? 'enabled' : 'disabled'}`,
-          type: 'info'
+          message: `Format on save ${settingsStore.formatOnSaveEnabled ? "enabled" : "disabled"}`,
+          type: "info",
         });
-      }
+      },
     },
     {
-      id: 'file.exit',
-      label: 'Exit',
-      category: 'File',
-      shortcut: 'Alt+F4',
+      id: "file.exit",
+      label: "Exit",
+      category: "File",
+      shortcut: "Alt+F4",
       action: async () => {
         const appWindow = getCurrentWindow();
         await appWindow.close();
-      }
+      },
     },
     {
-      id: 'view.toggleSidebar',
-      label: 'Toggle Sidebar',
-      category: 'View',
-      shortcut: 'Ctrl+B',
-      action: () => uiStore.toggleSidebar()
+      id: "view.toggleSidebar",
+      label: "Toggle Sidebar",
+      category: "View",
+      shortcut: "Ctrl+B",
+      action: () => uiStore.toggleSidebar(),
     },
     {
-      id: 'view.explorer',
-      label: 'Show Explorer',
-      category: 'View',
-      shortcut: 'Ctrl+Shift+E',
-      action: () => uiStore.setActiveSidebarPanel('explorer')
+      id: "view.explorer",
+      label: "Show Explorer",
+      category: "View",
+      shortcut: "Ctrl+Shift+E",
+      action: () => uiStore.setActiveSidebarPanel("explorer"),
     },
     {
-      id: 'view.search',
-      label: 'Search: Find in Files',
-      category: 'View',
-      shortcut: 'Ctrl+Shift+F',
-      action: () => uiStore.setActiveSidebarPanel('search')
+      id: "view.search",
+      label: "Search: Find in Files",
+      category: "View",
+      shortcut: "Ctrl+Shift+F",
+      action: () => uiStore.setActiveSidebarPanel("search"),
     },
     {
-      id: 'view.toggleTerminal',
-      label: 'Toggle Terminal',
-      category: 'View',
-      shortcut: 'Ctrl+`',
-      action: () => uiStore.toggleBottomPanel()
+      id: "view.toggleTerminal",
+      label: "Toggle Terminal",
+      category: "View",
+      shortcut: "Ctrl+`",
+      action: () => uiStore.toggleBottomPanel(),
     },
     {
-      id: 'view.zoomIn',
-      label: 'Zoom In',
-      category: 'View',
-      shortcut: 'Ctrl+Plus',
-      action: () => uiStore.zoomIn()
+      id: "view.zoomIn",
+      label: "Zoom In",
+      category: "View",
+      shortcut: "Ctrl+Plus",
+      action: () => uiStore.zoomIn(),
     },
     {
-      id: 'view.zoomOut',
-      label: 'Zoom Out',
-      category: 'View',
-      shortcut: 'Ctrl+Minus',
-      action: () => uiStore.zoomOut()
+      id: "view.zoomOut",
+      label: "Zoom Out",
+      category: "View",
+      shortcut: "Ctrl+Minus",
+      action: () => uiStore.zoomOut(),
     },
     {
-      id: 'view.resetZoom',
-      label: 'Reset Zoom',
-      category: 'View',
-      shortcut: 'Ctrl+0',
-      action: () => uiStore.resetZoom()
+      id: "view.resetZoom",
+      label: "Reset Zoom",
+      category: "View",
+      shortcut: "Ctrl+0",
+      action: () => uiStore.resetZoom(),
     },
     {
-      id: 'terminal.new',
-      label: 'New Terminal',
-      category: 'Terminal',
+      id: "terminal.new",
+      label: "New Terminal",
+      category: "Terminal",
       action: () => {
-        uiStore.openBottomPanelTab('terminal');
-      }
+        uiStore.openBottomPanelTab("terminal");
+      },
     },
     {
-      id: 'help.about',
-      label: 'About Volt',
-      category: 'Help',
-      action: () => uiStore.openAboutModal()
+      id: "help.about",
+      label: "About Volt",
+      category: "Help",
+      action: () => uiStore.openAboutModal(),
     },
     {
-      id: 'developer.reloadWindow',
-      label: 'Developer: Reload Window',
-      category: 'View',
+      id: "developer.reloadWindow",
+      label: "Developer: Reload Window",
+      category: "View",
       action: () => {
-        if (typeof window !== 'undefined') window.location.reload();
-      }
+        if (typeof window !== "undefined") window.location.reload();
+      },
     },
     {
-      id: 'view.theme.dark',
-      label: 'Preferences: Color Theme - Dark',
-      category: 'View',
+      id: "view.theme.dark",
+      label: "Preferences: Color Theme - Dark",
+      category: "View",
       action: () => {
-        themeStore.setMode('dark');
-        showToast({ message: 'Theme set to Dark', type: 'info' });
-      }
+        themeStore.setMode("dark");
+        showToast({ message: "Theme set to Dark", type: "info" });
+      },
     },
     {
-      id: 'view.theme.light',
-      label: 'Preferences: Color Theme - Light',
-      category: 'View',
+      id: "view.theme.midnight",
+      label: "Preferences: Color Theme - Midnight",
+      category: "View",
       action: () => {
-        themeStore.setMode('light');
-        showToast({ message: 'Theme set to Light', type: 'info' });
-      }
+        themeStore.setMode("midnight");
+        showToast({ message: "Theme set to Midnight", type: "info" });
+      },
     },
     {
-      id: 'view.theme.system',
-      label: 'Preferences: Color Theme - System',
-      category: 'View',
+      id: "view.theme.light",
+      label: "Preferences: Color Theme - Light",
+      category: "View",
       action: () => {
-        themeStore.setMode('system');
-        showToast({ message: `Theme set to System (${themeStore.resolvedTheme === 'dark' ? 'Dark' : 'Light'})`, type: 'info' });
-      }
+        themeStore.setMode("light");
+        showToast({ message: "Theme set to Light", type: "info" });
+      },
     },
     {
-      id: 'view.theme.toggle',
-      label: 'Preferences: Toggle Color Theme',
-      category: 'View',
+      id: "view.theme.system",
+      label: "Preferences: Color Theme - System",
+      category: "View",
+      action: () => {
+        themeStore.setMode("system");
+        showToast({
+          message: `Theme set to System (${themeStore.resolvedTheme === "dark" ? "Dark" : "Light"})`,
+          type: "info",
+        });
+      },
+    },
+    {
+      id: "view.theme.toggle",
+      label: "Preferences: Toggle Color Theme",
+      category: "View",
       action: () => {
         themeStore.toggle();
-        showToast({ message: `Theme: ${themeStore.displayName}`, type: 'info' });
-      }
+        showToast({
+          message: `Theme: ${themeStore.displayName}`,
+          type: "info",
+        });
+      },
     },
     {
-      id: 'preferences.openSettings',
-      label: 'Preferences: Open Settings',
-      category: 'View',
+      id: "preferences.openSettings",
+      label: "Preferences: Open Settings",
+      category: "View",
       action: () => {
         editorStore.openSettingsTab();
-      }
+      },
     },
     {
-      id: 'go.goToSymbolInFile',
-      label: 'Go to Symbol in File...',
-      category: 'Go',
-      shortcut: 'Ctrl+Shift+O',
+      id: "go.goToSymbolInFile",
+      label: "Go to Symbol in File...",
+      category: "Go",
+      shortcut: "Ctrl+Shift+O",
       action: () => {
         // Dispatch event to open symbol picker in file mode
-        window.dispatchEvent(new CustomEvent('volt:open-symbol-picker', { detail: { mode: 'file' } }));
+        window.dispatchEvent(
+          new CustomEvent("volt:open-symbol-picker", {
+            detail: { mode: "file" },
+          }),
+        );
       },
-      enabled: () => editorStore.activeFile !== null
+      enabled: () => editorStore.activeFile !== null,
     },
     {
-      id: 'go.goToSymbolInWorkspace',
-      label: 'Go to Symbol in Workspace...',
-      category: 'Go',
-      shortcut: 'Ctrl+T',
+      id: "go.goToSymbolInWorkspace",
+      label: "Go to Symbol in Workspace...",
+      category: "Go",
+      shortcut: "Ctrl+T",
       action: () => {
         // Dispatch event to open symbol picker in workspace mode
-        window.dispatchEvent(new CustomEvent('volt:open-symbol-picker', { detail: { mode: 'workspace' } }));
+        window.dispatchEvent(
+          new CustomEvent("volt:open-symbol-picker", {
+            detail: { mode: "workspace" },
+          }),
+        );
       },
-      enabled: () => projectStore.rootPath !== null
+      enabled: () => projectStore.rootPath !== null,
     },
     {
-      id: 'go.goToLine',
-      label: 'Go to Line...',
-      category: 'Go',
-      shortcut: 'Ctrl+G',
+      id: "go.goToLine",
+      label: "Go to Line...",
+      category: "Go",
+      shortcut: "Ctrl+G",
       action: () => {
         // Dispatch event to open go to line dialog
-        window.dispatchEvent(new CustomEvent('volt:open-go-to-line'));
+        window.dispatchEvent(new CustomEvent("volt:open-go-to-line"));
       },
-      enabled: () => editorStore.activeFile !== null
-    }
+      enabled: () => editorStore.activeFile !== null,
+    },
   ];
 
   registerCommands(allCommands);
 
   // Command search results
   const filteredCommands = $derived(searchCommands(effectiveQuery));
-  const hasRecentCommands = $derived(!effectiveQuery.trim() && getRecentCommandIds().length > 0);
+  const hasRecentCommands = $derived(
+    !effectiveQuery.trim() && getRecentCommandIds().length > 0,
+  );
 
   function getOtherCommandsStartIndex(): number {
     if (!hasRecentCommands) return -1;
@@ -364,29 +420,29 @@
     if (!isOpen) {
       return;
     }
-    if (effectiveMode === 'file' && projectStore.rootPath) {
+    if (effectiveMode === "file" && projectStore.rootPath) {
       // Track index updates to refresh results as chunks stream in
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       void $indexUpdateTick;
       const query = effectiveQuery;
       const recent = recentFilePaths;
-      
+
       // Clear any pending search
       if (fileSearchTimer) {
         clearTimeout(fileSearchTimer);
         fileSearchTimer = null;
       }
-      
+
       // Cancel any in-flight async search
       cancelAsyncSearch();
-      
+
       // For empty query or very short queries, search immediately (no debounce)
       // This makes the initial state feel snappy
       if (query.length <= 1) {
         fileResults = searchFiles(query, recent);
         return;
       }
-      
+
       // Debounce longer queries to avoid work on every keystroke
       // Use async search to prevent UI jank on large indexes
       fileSearchTimer = setTimeout(() => {
@@ -401,7 +457,7 @@
       }, FILE_SEARCH_DEBOUNCE_MS);
     }
   });
-  
+
   // Cleanup debounce timer when component closes
   $effect(() => {
     if (!isOpen && fileSearchTimer) {
@@ -411,7 +467,7 @@
   });
 
   // Reset selected index when query changes
-  let prevQuery = $state('');
+  let prevQuery = $state("");
   $effect.pre(() => {
     if (searchQuery !== prevQuery) {
       prevQuery = searchQuery;
@@ -427,29 +483,31 @@
   });
 
   // Get total result count for current mode
-  const resultCount = $derived(effectiveMode === 'file' ? fileResults.length : filteredCommands.length);
+  const resultCount = $derived(
+    effectiveMode === "file" ? fileResults.length : filteredCommands.length,
+  );
 
-  export function open(initialMode: PaletteMode = 'file'): void {
+  export function open(initialMode: PaletteMode = "file"): void {
     isOpen = true;
     mode = initialMode;
-    searchQuery = initialMode === 'command' ? '>' : '';
+    searchQuery = initialMode === "command" ? ">" : "";
     selectedIndex = 0;
     setTimeout(() => inputElement?.focus(), 0);
   }
 
   export function openFileMode(): void {
-    open('file');
+    open("file");
   }
 
   export function openCommandMode(): void {
-    open('command');
+    open("command");
   }
 
   export function close(): void {
     isOpen = false;
-    searchQuery = '';
+    searchQuery = "";
     selectedIndex = 0;
-    mode = 'file';
+    mode = "file";
     onClose?.();
   }
 
@@ -464,7 +522,7 @@
     try {
       void command.action();
     } catch (err) {
-      showToast({ message: 'Command failed', type: 'error' });
+      showToast({ message: "Command failed", type: "error" });
     }
   }
 
@@ -476,25 +534,26 @@
   function handleKeydown(e: KeyboardEvent): void {
     if (!isOpen) return;
     switch (e.key) {
-      case 'Escape':
+      case "Escape":
         e.preventDefault();
         close();
         break;
-      case 'ArrowDown':
+      case "ArrowDown":
         e.preventDefault();
         if (resultCount > 0) {
           selectedIndex = (selectedIndex + 1) % resultCount;
         }
         break;
-      case 'ArrowUp':
+      case "ArrowUp":
         e.preventDefault();
         if (resultCount > 0) {
-          selectedIndex = selectedIndex <= 0 ? resultCount - 1 : selectedIndex - 1;
+          selectedIndex =
+            selectedIndex <= 0 ? resultCount - 1 : selectedIndex - 1;
         }
         break;
-      case 'Enter':
+      case "Enter":
         e.preventDefault();
-        if (effectiveMode === 'file') {
+        if (effectiveMode === "file") {
           if (fileResults[selectedIndex]) {
             void openFile(fileResults[selectedIndex]);
           }
@@ -504,12 +563,12 @@
           }
         }
         break;
-      case 'Backspace':
+      case "Backspace":
         // If query is just ">", switch back to file mode
-        if (searchQuery === '>') {
+        if (searchQuery === ">") {
           e.preventDefault();
-          searchQuery = '';
-          mode = 'file';
+          searchQuery = "";
+          mode = "file";
         }
         break;
     }
@@ -519,23 +578,26 @@
     if (e.target === e.currentTarget) close();
   }
 
-  function scrollIntoView(node: HTMLElement, isSelected: boolean): { update: (s: boolean) => void } {
+  function scrollIntoView(
+    node: HTMLElement,
+    isSelected: boolean,
+  ): { update: (s: boolean) => void } {
     function update(s: boolean) {
-      if (s) node.scrollIntoView({ block: 'nearest' });
+      if (s) node.scrollIntoView({ block: "nearest" });
     }
     update(isSelected);
     return { update };
   }
 
   function formatShortcut(shortcut: string): string[] {
-    return shortcut.split('+').map((k) => k.trim());
+    return shortcut.split("+").map((k) => k.trim());
   }
 
   function getPlaceholder(): string {
-    if (effectiveMode === 'command') {
-      return 'Type a command';
+    if (effectiveMode === "command") {
+      return "Type a command";
     }
-    return 'Search files by name (type > for commands)';
+    return "Search files by name (type > for commands)";
   }
 
   function isRecentFile(file: IndexedFile): boolean {
@@ -544,7 +606,7 @@
 
   // Ensure selected item is visible in virtualized list
   $effect(() => {
-    if (!fileList || !isOpen || effectiveMode !== 'file') return;
+    if (!fileList || !isOpen || effectiveMode !== "file") return;
     if (selectedIndex < 0 || selectedIndex >= fileResults.length) return;
     fileList.ensureVisible(selectedIndex);
   });
@@ -554,8 +616,16 @@
 
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="command-palette-backdrop" role="presentation" onclick={handleBackdropClick}>
-    <div class="command-palette" role="dialog" aria-label={effectiveMode === 'file' ? 'Quick Open' : 'Command Palette'}>
+  <div
+    class="command-palette-backdrop"
+    role="presentation"
+    onclick={handleBackdropClick}
+  >
+    <div
+      class="command-palette"
+      role="dialog"
+      aria-label={effectiveMode === "file" ? "Quick Open" : "Command Palette"}
+    >
       <div class="search-container">
         <span class="search-icon" aria-hidden="true">
           <UIIcon name="search" size={16} />
@@ -566,7 +636,9 @@
           type="text"
           class="search-input"
           placeholder={getPlaceholder()}
-          aria-label={effectiveMode === 'file' ? 'Search files' : 'Search commands'}
+          aria-label={effectiveMode === "file"
+            ? "Search files"
+            : "Search commands"}
           autocomplete="off"
           spellcheck="false"
         />
@@ -576,7 +648,7 @@
       </div>
 
       <div class="results-list" role="listbox">
-        {#if effectiveMode === 'file'}
+        {#if effectiveMode === "file"}
           <!-- File search results -->
           {#if !projectStore.rootPath}
             <div class="no-results">Open a folder to search files</div>
@@ -606,7 +678,7 @@
                   <button
                     class="result-item"
                     class:selected={index === selectedIndex}
-                    style={style}
+                    {style}
                     onclick={() => void openFile(file)}
                     onmouseenter={() => (selectedIndex = index)}
                     role="option"
@@ -631,7 +703,9 @@
                 <div class="indexing-indicator">
                   <span class="spinner"></span>
                   {#if status.progress.total > 0}
-                    Indexing... {Math.round((status.progress.current / status.progress.total) * 100)}%
+                    Indexing... {Math.round(
+                      (status.progress.current / status.progress.total) * 100,
+                    )}%
                   {:else}
                     Indexing...
                   {/if}
@@ -718,13 +792,19 @@
     display: flex;
     align-items: center;
     padding: 10px 12px;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+    border-bottom: 1px solid
+      color-mix(in srgb, var(--color-border) 85%, transparent);
     gap: 10px;
-    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-bg-sidebar)) 85%, var(--color-surface0));
+    background: color-mix(
+      in srgb,
+      var(--color-bg-elevated, var(--color-bg-sidebar)) 85%,
+      var(--color-surface0)
+    );
   }
 
   .search-container:focus-within {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--color-accent) 55%, transparent);
   }
 
   .search-icon {
@@ -783,7 +863,6 @@
     flex-direction: column;
   }
 
-
   .no-results {
     display: flex;
     align-items: center;
@@ -806,7 +885,9 @@
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .indexing-indicator {
@@ -817,7 +898,8 @@
     font-size: 11px;
     color: var(--color-text-secondary);
     background: color-mix(in srgb, var(--color-surface0) 50%, transparent);
-    border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    border-top: 1px solid
+      color-mix(in srgb, var(--color-border) 50%, transparent);
   }
 
   .indexing-indicator .spinner {
@@ -834,7 +916,7 @@
   }
 
   .section-divider::before {
-    content: '';
+    content: "";
     height: 1px;
     flex: 1;
     background: color-mix(in srgb, var(--color-border) 70%, transparent);

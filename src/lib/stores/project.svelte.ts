@@ -46,6 +46,7 @@ export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 const LOCK_FILES = ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json'];
 
 const RECENT_PROJECTS_KEY = 'volt.recentProjects';
+const CURRENT_PROJECT_KEY = 'volt.currentProject';
 const MAX_RECENT_PROJECTS = 10;
 
 export interface TreeNode extends FileEntry {
@@ -91,6 +92,26 @@ class ProjectStore {
 
   constructor() {
     this.loadRecentProjects();
+    // Init must be called manually by the app root to avoid HMR loops
+  }
+
+  /**
+   * Initialize the store and restore state
+   */
+  public async init(): Promise<void> {
+    if (typeof window === 'undefined') return;
+
+    const lastProject = localStorage.getItem(CURRENT_PROJECT_KEY);
+    if (lastProject) {
+      console.log('[ProjectStore] Restoring last project:', lastProject);
+      // We check if the directory still exists before opening
+      const exists = await invoke('get_file_info', { path: lastProject }).then(() => true).catch(() => false);
+      if (exists) {
+        await this.openProject(lastProject);
+      } else {
+        localStorage.removeItem(CURRENT_PROJECT_KEY);
+      }
+    }
   }
 
   /**
@@ -99,8 +120,16 @@ class ProjectStore {
   async openProject(path: string): Promise<boolean> {
     this.loading = true;
 
+    // Check if we are already in this project (and it's valid)
+    // This prevents re-initialization loops on HMR or redundant calls
+    if (this.rootPath && this.rootPath === path) {
+      console.log('[ProjectStore] Project already open:', path);
+      this.loading = false;
+      return true;
+    }
+
     // Stop any existing LSP servers and cancel file indexing from previous project
-    if (this.rootPath && this.rootPath !== path) {
+    if (this.rootPath) {
       await this.stopLspServers();
       await cancelIndexing();
     }
@@ -113,6 +142,9 @@ class ProjectStore {
     }
 
     this.rootPath = path;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(CURRENT_PROJECT_KEY, path);
+    }
     this.projectName = this.extractFolderName(path);
     this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
     this.selectedPath = null;
@@ -524,6 +556,9 @@ class ProjectStore {
     await terminalStore.killAll();
 
     this.rootPath = null;
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(CURRENT_PROJECT_KEY);
+    }
     this.projectName = '';
     this.tree = [];
     this.selectedPath = null;

@@ -1,36 +1,47 @@
 <script lang="ts">
-  import { settingsStore } from '$lib/stores/settings.svelte';
-  import { themeStore, type ThemeMode } from '$lib/stores/theme.svelte';
-  import AISettingsSection from './AISettingsSection.svelte';
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import { themeStore, type ThemeMode } from "$lib/stores/theme.svelte";
+  import AISettingsSection from "./AISettingsSection.svelte";
 
   function toNumber(value: string): number | null {
-    if (value.trim() === '') return null;
+    if (value.trim() === "") return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
 
   function handleThemeChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value as ThemeMode;
-    if (value === 'dark' || value === 'light' || value === 'system') {
+    if (
+      value === "dark" ||
+      value === "light" ||
+      value === "midnight" ||
+      value === "system"
+    ) {
       themeStore.setMode(value);
     }
   }
 
-  function handleCheckboxChange(event: Event, setValue: (v: boolean) => void): void {
+  function handleCheckboxChange(
+    event: Event,
+    setValue: (v: boolean) => void,
+  ): void {
     setValue((event.target as HTMLInputElement).checked);
   }
 
-  function handleNumberChange(event: Event, setValue: (v: number) => void): void {
+  function handleNumberChange(
+    event: Event,
+    setValue: (v: number) => void,
+  ): void {
     const n = toNumber((event.target as HTMLInputElement).value);
     if (n === null) return;
     setValue(n);
   }
 
   function handleResetDefaults(): void {
-    const ok = confirm('Reset all settings to defaults?');
+    const ok = confirm("Reset all settings to defaults?");
     if (!ok) return;
     settingsStore.resetToDefaults();
-    themeStore.setMode('system');
+    themeStore.setMode("system");
   }
 
   const previewText = `function hello(name) {
@@ -42,7 +53,12 @@
 <div class="settings">
   <div class="header">
     <div class="header-title">Settings</div>
-    <button class="reset" type="button" onclick={handleResetDefaults} aria-label="Reset settings to defaults">
+    <button
+      class="reset"
+      type="button"
+      onclick={handleResetDefaults}
+      aria-label="Reset settings to defaults"
+    >
       Reset to defaults
     </button>
   </div>
@@ -53,12 +69,20 @@
     <div class="setting">
       <div class="setting-label">
         <div class="name">Color theme</div>
-        <div class="description">Choose Dark, Light, or follow System.</div>
+        <div class="description">
+          Choose Dark, Midnight, Light, or follow System.
+        </div>
       </div>
       <div class="setting-control">
-        <select class="select" value={themeStore.mode} onchange={handleThemeChange} aria-label="Color theme">
+        <select
+          class="select"
+          value={themeStore.mode}
+          onchange={handleThemeChange}
+          aria-label="Color theme"
+        >
           <option value="system">System</option>
           <option value="dark">Dark</option>
+          <option value="midnight">Midnight</option>
           <option value="light">Light</option>
         </select>
       </div>
@@ -81,7 +105,8 @@
           max={24}
           step={1}
           value={settingsStore.editorFontSize}
-          oninput={(e) => handleNumberChange(e, (v) => settingsStore.setEditorFontSize(v))}
+          oninput={(e) =>
+            handleNumberChange(e, (v) => settingsStore.setEditorFontSize(v))}
           aria-label="Editor font size"
         />
       </div>
@@ -89,8 +114,12 @@
 
     <div class="preview" aria-label="Editor font size preview">
       <div class="preview-title">Preview</div>
-      <pre class="preview-code" style={`font-size: ${settingsStore.editorFontSize}px`}>{previewText}</pre>
-      <div class="preview-hint">Open any file tab to see it applied in the editor.</div>
+      <pre
+        class="preview-code"
+        style={`font-size: ${settingsStore.editorFontSize}px`}>{previewText}</pre>
+      <div class="preview-hint">
+        Open any file tab to see it applied in the editor.
+      </div>
     </div>
 
     <div class="setting">
@@ -103,7 +132,10 @@
           <input
             type="checkbox"
             checked={settingsStore.editorLineNumbersEnabled}
-            onchange={(e) => handleCheckboxChange(e, (v) => settingsStore.setEditorLineNumbersEnabled(v))}
+            onchange={(e) =>
+              handleCheckboxChange(e, (v) =>
+                settingsStore.setEditorLineNumbersEnabled(v),
+              )}
           />
           <span>Enabled</span>
         </label>
@@ -120,7 +152,10 @@
           <input
             type="checkbox"
             checked={settingsStore.editorMinimapEnabled}
-            onchange={(e) => handleCheckboxChange(e, (v) => settingsStore.setEditorMinimapEnabled(v))}
+            onchange={(e) =>
+              handleCheckboxChange(e, (v) =>
+                settingsStore.setEditorMinimapEnabled(v),
+              )}
           />
           <span>Enabled</span>
         </label>
@@ -142,7 +177,8 @@
             max={8}
             step={1}
             value={settingsStore.editorTabSize}
-            oninput={(e) => handleNumberChange(e, (v) => settingsStore.setEditorTabSize(v))}
+            oninput={(e) =>
+              handleNumberChange(e, (v) => settingsStore.setEditorTabSize(v))}
             aria-label="Editor tab size"
           />
         </label>
@@ -151,7 +187,10 @@
           <input
             type="checkbox"
             checked={settingsStore.editorInsertSpaces}
-            onchange={(e) => handleCheckboxChange(e, (v) => settingsStore.setEditorInsertSpaces(v))}
+            onchange={(e) =>
+              handleCheckboxChange(e, (v) =>
+                settingsStore.setEditorInsertSpaces(v),
+              )}
           />
           <span class="field-label">Spaces</span>
         </label>
@@ -165,14 +204,19 @@
     <div class="setting">
       <div class="setting-label">
         <div class="name">Auto-save</div>
-        <div class="description">Save files automatically after a short delay.</div>
+        <div class="description">
+          Save files automatically after a short delay.
+        </div>
       </div>
       <div class="setting-control">
         <label class="checkbox">
           <input
             type="checkbox"
             checked={settingsStore.autoSaveEnabled}
-            onchange={(e) => handleCheckboxChange(e, (v) => settingsStore.setAutoSaveEnabled(v))}
+            onchange={(e) =>
+              handleCheckboxChange(e, (v) =>
+                settingsStore.setAutoSaveEnabled(v),
+              )}
           />
           <span>Enabled</span>
         </label>
@@ -182,7 +226,9 @@
     <div class="setting">
       <div class="setting-label">
         <div class="name">Auto-save delay (ms)</div>
-        <div class="description">How long to wait after edits before saving.</div>
+        <div class="description">
+          How long to wait after edits before saving.
+        </div>
       </div>
       <div class="setting-control">
         <input
@@ -194,7 +240,8 @@
           value={settingsStore.autoSaveDelay}
           disabled={!settingsStore.autoSaveEnabled}
           aria-disabled={!settingsStore.autoSaveEnabled}
-          oninput={(e) => handleNumberChange(e, (v) => settingsStore.setAutoSaveDelay(v))}
+          oninput={(e) =>
+            handleNumberChange(e, (v) => settingsStore.setAutoSaveDelay(v))}
           aria-label="Auto-save delay"
         />
       </div>
@@ -207,14 +254,19 @@
     <div class="setting">
       <div class="setting-label">
         <div class="name">Format on save</div>
-        <div class="description">Automatically format supported files when saving.</div>
+        <div class="description">
+          Automatically format supported files when saving.
+        </div>
       </div>
       <div class="setting-control">
         <label class="checkbox">
           <input
             type="checkbox"
             checked={settingsStore.formatOnSaveEnabled}
-            onchange={(e) => handleCheckboxChange(e, (v) => settingsStore.setFormatOnSaveEnabled(v))}
+            onchange={(e) =>
+              handleCheckboxChange(e, (v) =>
+                settingsStore.setFormatOnSaveEnabled(v),
+              )}
           />
           <span>Enabled</span>
         </label>

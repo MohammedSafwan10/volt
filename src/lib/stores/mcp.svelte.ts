@@ -45,23 +45,23 @@ interface McpServerEvent {
 class McpStore {
   // Server states
   servers = $state<Map<string, McpServerState>>(new Map());
-  
+
   // All available tools (server_id, tool)
   tools = $state<Array<{ serverId: string; tool: McpTool }>>([]);
-  
+
   // Config
   userConfig = $state<McpConfig | null>(null);
   workspaceConfig = $state<McpConfig | null>(null);
-  
+
   // Loading state
   loading = $state(false);
   initialized = $state(false);
-  
+
   // File watchers
   private userConfigWatcher: (() => void) | null = null;
   private workspaceConfigWatcher: (() => void) | null = null;
   private eventUnlisteners: UnlistenFn[] = [];
-  
+
   // Paths
   private userConfigPath: string | null = null;
   private workspaceConfigPath: string | null = null;
@@ -69,15 +69,15 @@ class McpStore {
   /** Get merged config (workspace overrides user) */
   get mergedConfig(): McpConfig {
     const merged: McpConfig = { mcpServers: {} };
-    
+
     if (this.userConfig?.mcpServers) {
       Object.assign(merged.mcpServers!, this.userConfig.mcpServers);
     }
-    
+
     if (this.workspaceConfig?.mcpServers) {
       Object.assign(merged.mcpServers!, this.workspaceConfig.mcpServers);
     }
-    
+
     return merged;
   }
 
@@ -129,11 +129,11 @@ class McpStore {
       }
       return;
     }
-    
+
     logOutput('MCP', 'Initializing MCP system...');
     this.loading = true;
     this.currentWorkspace = workspacePath || null;
-    
+
     try {
       // Clean up any stale servers from previous session
       try {
@@ -141,29 +141,29 @@ class McpStore {
       } catch {
         // Ignore - might not have any
       }
-      
+
       // Set up event listeners
       await this.setupEventListeners();
-      
+
       // Determine config paths
       const home = await homeDir();
       this.userConfigPath = await join(home, '.volt', 'settings', 'mcp.json');
       logOutput('MCP', `User config: ${this.userConfigPath}`);
-      
+
       if (workspacePath) {
         this.workspaceConfigPath = await join(workspacePath, '.volt', 'mcp.json');
         logOutput('MCP', `Workspace config: ${this.workspaceConfigPath}`);
       }
-      
+
       // Load configs
       await this.loadConfigs();
-      
+
       // Watch for config changes
       await this.watchConfigs();
-      
+
       // Start enabled servers
       await this.startEnabledServers();
-      
+
       this.initialized = true;
       logOutput('MCP', `MCP initialized. ${this.connectedCount} servers connected, ${this.toolCount} tools available`);
     } catch (error) {
@@ -177,16 +177,16 @@ class McpStore {
   /** Update workspace config when project changes */
   private async updateWorkspaceConfig(workspacePath: string): Promise<void> {
     this.currentWorkspace = workspacePath;
-    
+
     // Stop watching old workspace config
     if (this.workspaceConfigWatcher) {
       this.workspaceConfigWatcher();
       this.workspaceConfigWatcher = null;
     }
-    
+
     // Set new workspace config path
     this.workspaceConfigPath = await join(workspacePath, '.volt', 'mcp.json');
-    
+
     // Load new workspace config
     try {
       const content = await readTextFile(this.workspaceConfigPath);
@@ -194,7 +194,7 @@ class McpStore {
     } catch {
       this.workspaceConfig = null;
     }
-    
+
     // Watch new workspace config
     try {
       this.workspaceConfigWatcher = await watchImmediate(
@@ -208,7 +208,7 @@ class McpStore {
     } catch {
       // File might not exist yet
     }
-    
+
     // Reload servers with new merged config
     await this.reload();
   }
@@ -221,13 +221,13 @@ class McpStore {
     } catch (error) {
       console.error('[MCP] Cleanup error:', error);
     }
-    
+
     // Remove event listeners
     for (const unlisten of this.eventUnlisteners) {
       unlisten();
     }
     this.eventUnlisteners = [];
-    
+
     // Stop file watchers
     if (this.userConfigWatcher) {
       this.userConfigWatcher();
@@ -237,7 +237,7 @@ class McpStore {
       this.workspaceConfigWatcher();
       this.workspaceConfigWatcher = null;
     }
-    
+
     this.servers.clear();
     this.tools = [];
     this.initialized = false;
@@ -247,19 +247,19 @@ class McpStore {
   async reload(): Promise<void> {
     logOutput('MCP', 'Reloading MCP servers...');
     this.loading = true;
-    
+
     try {
       // Stop all current servers
       await invoke('stop_all_mcp_servers');
       this.servers.clear();
       this.tools = [];
-      
+
       // Reload configs
       await this.loadConfigs();
-      
+
       // Start enabled servers
       await this.startEnabledServers();
-      
+
       logOutput('MCP', `Reload complete. ${this.connectedCount} servers connected, ${this.toolCount} tools available`);
       showToast({ message: 'MCP servers reloaded', type: 'success' });
     } catch (error) {
@@ -279,10 +279,10 @@ class McpStore {
       showToast({ message: `Server '${serverId}' not found in config`, type: 'error' });
       return;
     }
-    
+
     logOutput('MCP', `Starting server: ${serverId}`);
     logOutput('MCP', `  Command: ${config.command} ${(config.args || []).join(' ')}`);
-    
+
     // Set initial connecting state in UI immediately
     this.servers.set(serverId, {
       id: serverId,
@@ -291,7 +291,7 @@ class McpStore {
       tools: [],
     });
     this.servers = new Map(this.servers);
-    
+
     try {
       const state = await invoke<McpServerState>('start_mcp_server', {
         serverId,
@@ -303,22 +303,22 @@ class McpStore {
           auto_approve: config.autoApprove || [],
         },
       });
-      
+
       console.log('[MCP] Server started:', serverId, state.status);
       this.servers.set(serverId, state);
       this.servers = new Map(this.servers);
       this.updateTools();
-      
+
       logOutput('MCP', `Server '${serverId}' connected with ${state.tools.length} tools`);
       for (const tool of state.tools) {
         logOutput('MCP', `  - ${tool.name}${tool.description ? `: ${tool.description.slice(0, 60)}...` : ''}`);
       }
-      
+
     } catch (error) {
       const errorMsg = String(error);
       logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${errorMsg}`);
       console.error(`[MCP] Failed to start server '${serverId}':`, error);
-      
+
       // Update state to show error
       this.servers.set(serverId, {
         id: serverId,
@@ -328,7 +328,7 @@ class McpStore {
         error: errorMsg,
       });
       this.servers = new Map(this.servers);
-      
+
       showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
     }
   }
@@ -338,13 +338,13 @@ class McpStore {
     logOutput('MCP', `Stopping server: ${serverId}`);
     try {
       await invoke('stop_mcp_server', { serverId });
-      
+
       const server = this.servers.get(serverId);
       if (server) {
         this.servers.set(serverId, { ...server, status: 'stopped' });
         this.servers = new Map(this.servers);
       }
-      
+
       this.updateTools();
       logOutput('MCP', `Server '${serverId}' stopped`);
     } catch (error) {
@@ -392,7 +392,7 @@ class McpStore {
       this.updateTools();
     });
     this.eventUnlisteners.push(unlistenState);
-    
+
     // Server stopped
     const unlistenStopped = await listen<string>('mcp://server-stopped', (event) => {
       const serverId = event.payload;
@@ -428,7 +428,7 @@ class McpStore {
         this.userConfig = null;
       }
     }
-    
+
     // Load workspace config (this one is in workspace so FS plugin works)
     if (this.workspaceConfigPath) {
       try {
@@ -445,7 +445,7 @@ class McpStore {
     // Note: User config (~/.volt/settings/mcp.json) cannot be watched due to Tauri security scope
     // User must click Reload button after editing the config file
     // Only workspace config can be auto-watched
-    
+
     // Watch workspace config (if in workspace, it can be watched)
     if (this.workspaceConfigPath) {
       try {
@@ -466,7 +466,7 @@ class McpStore {
   private async startEnabledServers(): Promise<void> {
     const config = this.mergedConfig;
     if (!config.mcpServers) return;
-    
+
     // First, populate all servers from config (including disabled ones)
     for (const [serverId, serverConfig] of Object.entries(config.mcpServers)) {
       if (!this.servers.has(serverId)) {
@@ -479,28 +479,30 @@ class McpStore {
         });
       }
     }
-    
+
     const enabledServers = Object.entries(config.mcpServers).filter(([, cfg]) => !cfg.disabled);
-    
+
     if (enabledServers.length === 0) {
       logOutput('MCP', 'No enabled servers to start');
       return;
     }
-    
+
     logOutput('MCP', `Starting ${enabledServers.length} enabled server(s)...`);
-    
-    // Start all servers in parallel (don't await - let them connect in background)
+
+    // Start all servers with a stagger to avoid resource contention
     for (const [serverId] of enabledServers) {
       // Fire and forget - don't block initialization
       this.startServer(serverId).catch(err => {
         logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${err}`);
       });
+      // Small stagger to prevent CPU spikes
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 
   private updateTools(): void {
     const allTools: Array<{ serverId: string; tool: McpTool }> = [];
-    
+
     for (const [serverId, server] of this.servers) {
       if (server.status === 'connected') {
         for (const tool of server.tools) {
@@ -508,7 +510,7 @@ class McpStore {
         }
       }
     }
-    
+
     this.tools = allTools;
   }
 }

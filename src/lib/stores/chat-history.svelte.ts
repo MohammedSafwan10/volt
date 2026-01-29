@@ -66,6 +66,10 @@ class ChatHistoryStore {
     // Current active conversation ID (synced with assistant store)
     activeConversationId = $state<string | null>(null);
 
+    // Selection state for batch operations
+    selectedIds = $state<Set<string>>(new Set());
+    isSelectionMode = $state(false);
+
     /**
      * Load all conversations from the database
      */
@@ -165,10 +169,44 @@ class ChatHistoryStore {
 
         // Remove from local state
         this.conversations = this.conversations.filter(c => c.id !== conversationId);
+        this.selectedIds.delete(conversationId);
 
         // If we deleted the active conversation, clear it
         if (this.activeConversationId === conversationId) {
             this.activeConversationId = null;
+        }
+
+        if (this.selectedIds.size === 0) {
+            this.isSelectionMode = false;
+        }
+    }
+
+    /**
+     * Delete multiple conversations at once
+     */
+    async deleteMultiple(ids: string[]): Promise<void> {
+        this.isLoading = true;
+        try {
+            // Sequential deletion for safety with SQLite, or we could add a backend command for batch
+            for (const id of ids) {
+                await invoke('chat_delete_conversation', { conversationId: id });
+            }
+
+            // Update local state
+            this.conversations = this.conversations.filter(c => !ids.includes(c.id));
+            ids.forEach(id => this.selectedIds.delete(id));
+
+            if (ids.includes(this.activeConversationId || '')) {
+                this.activeConversationId = null;
+            }
+
+            if (this.selectedIds.size === 0) {
+                this.isSelectionMode = false;
+            }
+        } catch (err) {
+            console.error('[ChatHistory] Batch delete failed:', err);
+        } finally {
+            this.isLoading = false;
         }
     }
 
@@ -176,9 +214,47 @@ class ChatHistoryStore {
      * Clear all chat history (dangerous!)
      */
     async clearAll(): Promise<void> {
-        await invoke('chat_clear_all');
-        this.conversations = [];
-        this.activeConversationId = null;
+        this.isLoading = true;
+        try {
+            await invoke('chat_clear_all');
+            this.conversations = [];
+            this.activeConversationId = null;
+            this.selectedIds.clear();
+            this.isSelectionMode = false;
+        } catch (err) {
+            console.error('[ChatHistory] Clear all failed:', err);
+        } finally {
+            this.isLoading = false;
+        }
+    }
+
+    /**
+     * Selection Helpers
+     */
+    toggleSelection(id: string): void {
+        if (this.selectedIds.has(id)) {
+            this.selectedIds.delete(id);
+        } else {
+            this.selectedIds.add(id);
+        }
+        // Force reactivity for the Set
+        this.selectedIds = new Set(this.selectedIds);
+
+        if (this.selectedIds.size > 0) {
+            this.isSelectionMode = true;
+        } else {
+            this.isSelectionMode = false;
+        }
+    }
+
+    clearSelection(): void {
+        this.selectedIds = new Set();
+        this.isSelectionMode = false;
+    }
+
+    selectAll(): void {
+        this.selectedIds = new Set(this.conversations.map(c => c.id));
+        this.isSelectionMode = true;
     }
 
     /**

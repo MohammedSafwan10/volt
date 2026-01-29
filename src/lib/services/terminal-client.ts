@@ -102,17 +102,66 @@ export async function listTerminals(): Promise<TerminalInfo[]> {
 	}
 }
 
-// Global event listeners
-// NOTE: Event names use "://" format to match Rust backend emit calls
-export async function onTerminalData(callback: (event: TerminalDataEvent) => void): Promise<UnlistenFn> {
+// Global event dispatcher to prevent race conditions
+const sessionRegistry = new Map<string, TerminalSession>();
+const pendingEvents = new Map<string, Array<{ type: string; payload: any }>>();
+
+/**
+ * Start global listeners immediately to capture all terminal events
+ */
+async function startGlobalListeners() {
+	await Promise.all([
+		listen<TerminalDataEvent>('terminal://data', (event) => {
+			const session = sessionRegistry.get(event.payload.terminalId);
+			if (session) {
+				session.handleDataEvent(event.payload);
+			} else {
+				const events = pendingEvents.get(event.payload.terminalId) || [];
+				events.push({ type: 'data', payload: event.payload });
+				pendingEvents.set(event.payload.terminalId, events);
+			}
+		}),
+		listen<TerminalExitEvent>('terminal://exit', (event) => {
+			const session = sessionRegistry.get(event.payload.terminalId);
+			if (session) {
+				session.handleExitEvent(event.payload);
+			} else {
+				const events = pendingEvents.get(event.payload.terminalId) || [];
+				events.push({ type: 'exit', payload: event.payload });
+				pendingEvents.set(event.payload.terminalId, events);
+			}
+		}),
+		listen<TerminalReadyEvent>('terminal://ready', (event) => {
+			const session = sessionRegistry.get(event.payload.terminalId);
+			if (session) {
+				session.handleReadyEvent(event.payload);
+			} else {
+				const events = pendingEvents.get(event.payload.terminalId) || [];
+				events.push({ type: 'ready', payload: event.payload });
+				pendingEvents.set(event.payload.terminalId, events);
+			}
+		})
+	]);
+}
+
+// Kick off global listeners
+void startGlobalListeners();
+
+export async function onTerminalData(
+	callback: (event: TerminalDataEvent) => void
+): Promise<UnlistenFn> {
 	return listen<TerminalDataEvent>('terminal://data', (event) => callback(event.payload));
 }
 
-export async function onTerminalExit(callback: (event: TerminalExitEvent) => void): Promise<UnlistenFn> {
+export async function onTerminalExit(
+	callback: (event: TerminalExitEvent) => void
+): Promise<UnlistenFn> {
 	return listen<TerminalExitEvent>('terminal://exit', (event) => callback(event.payload));
 }
 
-export async function onTerminalReady(callback: (event: TerminalReadyEvent) => void): Promise<UnlistenFn> {
+export async function onTerminalReady(
+	callback: (event: TerminalReadyEvent) => void
+): Promise<UnlistenFn> {
 	return listen<TerminalReadyEvent>('terminal://ready', (event) => callback(event.payload));
 }
 
@@ -173,16 +222,17 @@ function decodeOscString(str: string): string {
 export const POWERSHELL_SHELL_INTEGRATION = [
 	'function prompt {',
 	'  try {',
-	'    $e = [char]27; $a = [char]7; $c = (Get-Location).Path',
-	'    Write-Host -NoNewline "$e]633;P;Cwd=$c$a"',
-	'    Write-Host -NoNewline "$e]633;A$a"',
-	'    $p = "PS $c> "',
-	'    Write-Host -NoNewline "$e]633;B$a"',
-	'    if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline "$e]633;D;$LASTEXITCODE$a" }',
-	'    return $p',
+	'    $e = [char]27; $a = [char]7; $c = (Get-Location).Path;',
+	'    Write-Host -NoNewline "$e]633;P;Cwd=$c$a";',
+	'    Write-Host -NoNewline "$e]633;A$a";',
+	'    $p = "PS $c> ";',
+	'    Write-Host -NoNewline "$e]633;B$a";',
+	'    if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline "$e]633;D;$LASTEXITCODE$a" };',
+	'    return $p;',
 	'  } catch { return "PS > " }',
-	'}',
-	'Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=Volt$([char]7)"'
+	'};',
+	'Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=Volt$([char]7)";',
+	'Clear-Host'
 ].join(' ');
 
 /**
@@ -239,30 +289,42 @@ export class TerminalSession {
 	}
 
 	public async startListening(): Promise<void> {
-		this.readyUnlisten = await onTerminalReady((event) => {
-			if (event.terminalId === this.id) this.markReady();
-		});
+		// Register with global dispatcher
+		sessionRegistry.set(this.id, this);
 
-		this.dataUnlisten = await onTerminalData((event) => {
-			if (event.terminalId === this.id) {
-				this.markReady();
-				const { events, cleanData } = parseOscSequences(event.data);
-				for (const ev of events) this.handleShellIntegrationEvent(ev);
-
-				this.captureToHistory(event.data);
-				if (cleanData) {
-					this.captureToCleanHistory(cleanData);
-					for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
-				}
-
-				if (this.onDataCallback) this.onDataCallback(event.data);
-				else this.bufferData(event.data);
+		// Flush any pending events that arrived before we started listening
+		const events = pendingEvents.get(this.id);
+		if (events) {
+			pendingEvents.delete(this.id);
+			for (const event of events) {
+				if (event.type === 'data') this.handleDataEvent(event.payload);
+				else if (event.type === 'exit') this.handleExitEvent(event.payload);
+				else if (event.type === 'ready') this.handleReadyEvent(event.payload);
 			}
-		});
+		}
+	}
 
-		this.exitUnlisten = await onTerminalExit((event) => {
-			if (event.terminalId === this.id && this.onExitCallback) this.onExitCallback(event.code);
-		});
+	public handleDataEvent(payload: TerminalDataEvent): void {
+		this.markReady();
+		const { events, cleanData } = parseOscSequences(payload.data);
+		for (const ev of events) this.handleShellIntegrationEvent(ev);
+
+		this.captureToHistory(payload.data);
+		if (cleanData) {
+			this.captureToCleanHistory(cleanData);
+			for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
+		}
+
+		if (this.onDataCallback) this.onDataCallback(payload.data);
+		else this.bufferData(payload.data);
+	}
+
+	public handleExitEvent(payload: TerminalExitEvent): void {
+		if (this.onExitCallback) this.onExitCallback(payload.code);
+	}
+
+	public handleReadyEvent(payload: TerminalReadyEvent): void {
+		this.markReady();
 	}
 
 	private markReady(): void {
@@ -446,8 +508,18 @@ export class TerminalSession {
 		}
 	}
 
-	public async kill(): Promise<void> { await killTerminal(this.id); this.dispose(); }
-	public dispose(): void { this.dataUnlisten?.(); this.exitUnlisten?.(); this.readyUnlisten?.(); }
+	public async kill(): Promise<void> {
+		await killTerminal(this.id);
+		this.dispose();
+	}
+
+	public dispose(): void {
+		sessionRegistry.delete(this.id);
+		pendingEvents.delete(this.id);
+		this.dataUnlisten?.();
+		this.exitUnlisten?.();
+		this.readyUnlisten?.();
+	}
 }
 
 export async function createTerminalSession(cwd?: string, cols?: number, rows?: number): Promise<TerminalSession | null> {

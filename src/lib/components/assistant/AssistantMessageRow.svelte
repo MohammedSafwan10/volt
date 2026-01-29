@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
   import { UIIcon, Markdown } from "$lib/components/ui";
   import type {
@@ -12,6 +13,7 @@
   import { writeFile } from "$lib/services/file-system";
   import { showToast } from "$lib/stores/toast.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
+  import StreamingStatus from "./StreamingStatus.svelte";
 
   interface Props {
     message: AssistantMessage;
@@ -239,6 +241,27 @@
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     const beforeContent = fileEdit?.beforeContent as string | undefined;
     const absolutePath = fileEdit?.absolutePath as string | undefined;
+    const isNewFile = fileEdit?.isNewFile === true;
+
+    // For new files, we want to delete on revert
+    if (isNewFile && absolutePath) {
+      try {
+        await invoke("delete_path", { path: absolutePath });
+        revertedIds = new Set([...revertedIds, toolCall.id]);
+        showToast({ message: "File deleted (reverted)", type: "success" });
+
+        // Close tab if open
+        editorStore.closeFile(absolutePath, true);
+        return;
+      } catch (e) {
+        console.error("[Revert] Delete failed:", e);
+        showToast({
+          message: "Failed to delete file on revert",
+          type: "error",
+        });
+        return;
+      }
+    }
 
     if (typeof beforeContent !== "string" || !absolutePath) {
       showToast({
@@ -288,9 +311,8 @@
     // Write the AI content back
     const success = await writeFile(absolutePath, contentToRestore);
     if (success) {
-      const newSet = new Set(revertedIds);
-      newSet.delete(toolCall.id);
-      revertedIds = newSet;
+      revertedIds.delete(toolCall.id);
+      revertedIds = new Set(revertedIds);
       showToast({ message: "Changes restored", type: "success" });
 
       // Reload file in editor if open
@@ -306,7 +328,6 @@
 </script>
 
 <article class="message-row assistant" class:streaming={message.isStreaming}>
-  <div class="avatar"><UIIcon name="bolt" size={14} /></div>
   <div class="msg-body">
     {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? `thinking-${i}` : `text-${i}`)}
       {#if part.type === "thinking"}
@@ -392,29 +413,21 @@
       <div class="msg-content"><span class="cursor"></span></div>
     {/if}
 
-    {#if message.isStreaming && message.inlineToolCalls?.some((tc) => tc.status === "running")}
-      <div class="processing-indicator">
-        <UIIcon name="spinner" size={12} /><span>Processing tools...</span>
-      </div>
+    {#if message.isStreaming}
+      <StreamingStatus
+        isStreaming={message.isStreaming}
+        isThinking={message.isThinking || false}
+        activeToolNames={message.inlineToolCalls
+          ?.filter((tc) => tc.status === "running" || tc.status === "pending")
+          .map((tc) => tc.name) || []}
+      />
     {/if}
 
     {#if !message.isStreaming && message.content}
-      <div class="msg-actions">
-        <button class="action-btn" title="Copy" type="button"
-          ><UIIcon name="copy" size={12} /></button
-        >
-        <button class="action-btn" title="Insert" type="button"
-          ><UIIcon name="code" size={12} /></button
-        >
-        <button class="action-btn" title="Regenerate" type="button"
-          ><UIIcon name="refresh" size={12} /></button
-        >
-      </div>
       {#if elapsedTime}
-        <div class="elapsed-time">
-          <UIIcon name="clock" size={10} /><span
-            >Elapsed time: {elapsedTime}</span
-          >
+        <div class="elapsed-time" title="Generation time">
+          <UIIcon name="clock" size={12} />
+          <span>{elapsedTime}</span>
         </div>
       {/if}
     {/if}
@@ -438,26 +451,10 @@
     }
   }
 
-  .avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    flex-shrink: 0;
-    background: linear-gradient(
-      135deg,
-      var(--color-accent),
-      var(--color-mauve)
-    );
-    color: var(--color-bg);
-  }
-
   .msg-body {
     flex: 1;
     min-width: 0;
-    max-width: calc(100% - 36px);
+    max-width: 100%;
     padding-top: 2px;
   }
   .inline-tool-wrapper {
@@ -491,22 +488,6 @@
     }
   }
 
-  .processing-indicator {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 12px;
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    background: var(--color-surface0);
-    border-radius: 6px;
-    border: 1px solid var(--color-border);
-  }
-  .processing-indicator :global(svg) {
-    animation: spin 1s linear infinite;
-    color: var(--color-accent);
-  }
   @keyframes spin {
     from {
       transform: rotate(0deg);
@@ -516,40 +497,27 @@
     }
   }
 
-  .msg-actions {
-    display: flex;
-    gap: 2px;
-    margin-top: 6px;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-  }
-  .message-row:hover .msg-actions {
-    opacity: 1;
-  }
-
-  .action-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 4px;
-    color: var(--color-text-secondary);
-    transition: all 0.15s ease;
-  }
-  .action-btn:hover {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
   .elapsed-time {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    margin-top: 6px;
-    font-size: 10px;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    font-size: 11px;
     color: var(--color-text-secondary);
-    opacity: 0.7;
+    opacity: 0.8;
+    transition: all 0.2s ease;
+    user-select: none;
+  }
+
+  .elapsed-time:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--color-accent);
+    color: var(--color-text);
   }
 
   /* Inline thinking block (Cursor-style - transparent/minimal) */

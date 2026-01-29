@@ -1,22 +1,58 @@
 <script lang="ts">
   import { UIIcon } from "$lib/components/ui";
-  import type { AssistantMessage, ImageAttachment, ElementAttachment } from "$lib/stores/assistant.svelte";
+  import type {
+    AssistantMessage,
+    ImageAttachment,
+    ElementAttachment,
+    FileAttachment,
+    FolderAttachment,
+    SelectionAttachment,
+  } from "$lib/stores/assistant.svelte";
 
   interface Props {
     message: AssistantMessage;
     expanded?: boolean;
     onToggleExpand?: () => void;
     onImageClick?: (img: ImageAttachment) => void;
+    onRevert?: (id: string) => void;
   }
 
-  let { message, expanded = false, onToggleExpand, onImageClick }: Props = $props();
+  let {
+    message,
+    expanded = false,
+    onToggleExpand,
+    onImageClick,
+    onRevert,
+  }: Props = $props();
 
   const images = $derived(
-    (message.attachments ?? []).filter((a) => a.type === "image") as ImageAttachment[]
+    (message.attachments ?? []).filter(
+      (a) => a.type === "image",
+    ) as ImageAttachment[],
   );
 
   const elements = $derived(
-    (message.attachments ?? []).filter((a) => a.type === "element") as ElementAttachment[]
+    (message.attachments ?? []).filter(
+      (a) => a.type === "element",
+    ) as ElementAttachment[],
+  );
+
+  const files = $derived(
+    (message.attachments ?? []).filter(
+      (a) => a.type === "file",
+    ) as FileAttachment[],
+  );
+
+  const folders = $derived(
+    (message.attachments ?? []).filter(
+      (a) => a.type === "folder",
+    ) as FolderAttachment[],
+  );
+
+  const selections = $derived(
+    (message.attachments ?? []).filter(
+      (a) => a.type === "selection",
+    ) as SelectionAttachment[],
   );
 
   const isLong = $derived(message.content.length > 500);
@@ -32,7 +68,11 @@
 <div class="message-row user">
   <div class="user-bubble">
     {#if images.length > 0}
-      <div class="message-images" class:single={images.length === 1} class:multiple={images.length > 1}>
+      <div
+        class="message-images"
+        class:single={images.length === 1}
+        class:multiple={images.length > 1}
+      >
         {#each images as img (img.id)}
           <button
             class="message-image-btn"
@@ -50,18 +90,50 @@
       </div>
     {/if}
 
-    {#if elements.length > 0}
+    {#if elements.length > 0 || files.length > 0 || folders.length > 0 || selections.length > 0 || (message.contextMentions && message.contextMentions.length > 0)}
       <div class="message-elements">
         {#each elements as el (el.id)}
           <div class="element-chip">
             <UIIcon name="target" size={12} />
             <span class="element-label">{el.label}</span>
-            <span class="element-size">{Math.round(el.rect.width)}×{Math.round(el.rect.height)}</span>
+            <span class="element-size"
+              >{Math.round(el.rect.width)}×{Math.round(el.rect.height)}</span
+            >
           </div>
         {/each}
+
+        {#each files as f (f.id)}
+          <div class="element-chip">
+            <UIIcon name="file" size={12} />
+            <span class="element-label">{f.label}</span>
+          </div>
+        {/each}
+
+        {#each folders as f (f.id)}
+          <div class="element-chip">
+            <UIIcon name="folder" size={12} />
+            <span class="element-label">{f.label}</span>
+          </div>
+        {/each}
+
+        {#each selections as s (s.id)}
+          <div class="element-chip">
+            <UIIcon name="code" size={12} />
+            <span class="element-label">{s.label}</span>
+          </div>
+        {/each}
+
+        {#if message.contextMentions}
+          {#each message.contextMentions as ctx}
+            <div class="element-chip context-mention-chip">
+              <UIIcon name={ctx.type === "file" ? "file" : "code"} size={12} />
+              <span class="element-label">{ctx.label}</span>
+            </div>
+          {/each}
+        {/if}
       </div>
     {/if}
-    
+
     {#if message.content.trim()}
       <div class="bubble-text">
         {#if isLong && !expanded}
@@ -77,8 +149,21 @@
         </button>
       {/if}
     {/if}
-    
-    <span class="bubble-time">{formatTime(message.timestamp)}</span>
+
+    <div class="bubble-footer">
+      <span class="bubble-time">{formatTime(message.timestamp)}</span>
+      {#if onRevert}
+        <button
+          class="revert-btn"
+          onclick={() => onRevert(message.id)}
+          title="Revert to this message (undoes all subsequent AI changes)"
+          type="button"
+          aria-label="Revert"
+        >
+          <UIIcon name="undo" size={14} />
+        </button>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -91,16 +176,22 @@
   }
 
   @keyframes slideIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .user-bubble {
     max-width: 80%;
     padding: 10px 14px;
-    background: var(--color-accent);
-    color: var(--color-bg);
-    border-radius: 16px 16px 4px 16px;
+    background: var(--color-surface1);
+    color: var(--color-text);
+    border-radius: 12px;
     font-size: 13px;
     line-height: 1.5;
   }
@@ -111,11 +202,41 @@
   }
 
   .bubble-time {
-    display: block;
     font-size: 10px;
     opacity: 0.7;
-    margin-top: 4px;
-    text-align: right;
+  }
+
+  .bubble-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 6px;
+    gap: 12px;
+  }
+
+  .revert-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 2px;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0;
+    margin-right: -4px;
+    margin-bottom: -2px;
+  }
+
+  .user-bubble:hover .revert-btn {
+    opacity: 0.8;
+  }
+
+  .revert-btn:hover {
+    opacity: 1 !important;
+    background: rgba(0, 0, 0, 0.2);
   }
 
   .message-images {
@@ -125,8 +246,12 @@
     margin-bottom: 8px;
   }
 
-  .message-images.single { max-width: 200px; }
-  .message-images.multiple { max-width: 100%; }
+  .message-images.single {
+    max-width: 200px;
+  }
+  .message-images.multiple {
+    max-width: 100%;
+  }
 
   .message-image-btn {
     display: block;
@@ -134,7 +259,9 @@
     border-radius: 8px;
     overflow: hidden;
     cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      transform 0.15s ease,
+      box-shadow 0.15s ease;
     background: transparent;
   }
 
@@ -172,7 +299,9 @@
     text-decoration: underline;
   }
 
-  .expand-msg-btn:hover { opacity: 1; }
+  .expand-msg-btn:hover {
+    opacity: 1;
+  }
 
   .message-elements {
     display: flex;
@@ -185,10 +314,23 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 8px;
+    padding: 4px 8px;
+    background: rgba(var(--color-text-rgb), 0.08);
+    border: 1px solid rgba(var(--color-text-rgb), 0.05);
+    border-radius: 6px;
     font-size: 11px;
+    transition: all 0.15s ease;
+  }
+
+  .element-chip:hover {
+    background: rgba(var(--color-text-rgb), 0.12);
+    border-color: rgba(var(--color-text-rgb), 0.1);
+  }
+
+  .context-mention-chip {
+    background: rgba(var(--color-primary-rgb), 0.1);
+    border-color: rgba(var(--color-primary-rgb), 0.2);
+    color: var(--color-primary);
   }
 
   .element-chip :global(.ui-icon) {
@@ -196,7 +338,7 @@
   }
 
   .element-label {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-weight: 500;
   }
 

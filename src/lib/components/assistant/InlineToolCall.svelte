@@ -14,6 +14,7 @@
     ToolCallStatus,
     StreamingProgress,
   } from "$lib/stores/assistant.svelte";
+  import type { Problem } from "$lib/stores/problems.svelte";
 
   interface Props {
     toolCall: ToolCall;
@@ -64,6 +65,19 @@
     }
 
     await editorStore.openFile(fullPath);
+  }
+
+  async function handleProblemClick(
+    problem: Problem & { relativePath?: string },
+  ) {
+    const path = problem.file;
+    await editorStore.openFile(path);
+    editorStore.setSelection(path, {
+      startLine: problem.line,
+      startColumn: problem.column,
+      endLine: problem.endLine || problem.line,
+      endColumn: problem.endColumn || problem.column,
+    });
   }
 
   // Tool display names (more user-friendly)
@@ -414,6 +428,33 @@
     });
   });
 
+  const diagnosticSummary = $derived.by(() => {
+    if (toolCall.name !== "get_diagnostics" || !toolCall.meta) return null;
+    const meta = toolCall.meta as any;
+    const items = (meta.problems || []) as (Problem & {
+      relativePath: string;
+    })[];
+
+    // Group by file
+    const byFile = new Map<string, typeof items>();
+    for (const p of items) {
+      if (!byFile.has(p.relativePath)) byFile.set(p.relativePath, []);
+      byFile.get(p.relativePath)!.push(p);
+    }
+
+    return {
+      errorCount: meta.errorCount || 0,
+      warningCount: meta.warningCount || 0,
+      fileCount: meta.fileCount || 0,
+      files: Array.from(byFile.entries()).map(([path, problems]) => ({
+        path,
+        problems,
+        errorCount: problems.filter((p) => p.severity === "error").length,
+        warningCount: problems.filter((p) => p.severity === "warning").length,
+      })),
+    };
+  });
+
   const diffStats = $derived.by(() => {
     const meta = toolCall.meta as Record<string, any> | undefined;
     const stats = meta?.fileEdit as Record<string, any> | undefined;
@@ -482,7 +523,23 @@
 
       <span class="tool-name">{getToolDisplayName()}</span>
 
-      {#if files.length > 0}
+      {#if diagnosticSummary}
+        <div class="diag-mini-summary">
+          {#if diagnosticSummary.errorCount > 0}
+            <span class="diag-badge error"
+              >{diagnosticSummary.errorCount} Errors</span
+            >
+          {/if}
+          {#if diagnosticSummary.warningCount > 0}
+            <span class="diag-badge warning"
+              >{diagnosticSummary.warningCount} Warnings</span
+            >
+          {/if}
+          {#if diagnosticSummary.errorCount === 0 && diagnosticSummary.warningCount === 0}
+            <span class="diag-badge success">Clean</span>
+          {/if}
+        </div>
+      {:else if files.length > 0}
         <div class="files-container" class:multi={files.length > 1}>
           {#each files as file}
             <div
@@ -592,27 +649,76 @@
 
   {#if expanded}
     <div class="tool-details">
-      {#if meta?.why && !isPending}
-        <div class="detail-row">
-          <span class="detail-label">Why:</span>
-          <span class="detail-value">{meta.why}</span>
+      {#if diagnosticSummary && diagnosticSummary.files.length > 0}
+        <div class="diagnostic-details">
+          {#each diagnosticSummary.files as file}
+            <div class="diag-file-group">
+              <button
+                class="diag-file-header"
+                onclick={() => handleFileClick(file.path)}
+                type="button"
+              >
+                <UIIcon name={getFileIcon(getFileExt(file.path))} size={14} />
+                <span class="diag-filename">{file.path}</span>
+                <div class="diag-file-badges">
+                  {#if file.errorCount > 0}
+                    <span class="diag-count-badge error">{file.errorCount}</span
+                    >
+                  {/if}
+                  {#if file.warningCount > 0}
+                    <span class="diag-count-badge warning"
+                      >{file.warningCount}</span
+                    >
+                  {/if}
+                </div>
+              </button>
+              <div class="diag-problems">
+                {#each file.problems as p}
+                  <button
+                    class="diag-problem-row"
+                    onclick={() => handleProblemClick(p)}
+                    type="button"
+                  >
+                    <span class="diag-problem-severity {p.severity}">
+                      <UIIcon
+                        name={p.severity === "error" ? "error" : "warning"}
+                        size={12}
+                      />
+                    </span>
+                    <span class="diag-problem-loc">L{p.line}:</span>
+                    <span class="diag-problem-msg">{p.message}</span>
+                    {#if p.code}
+                      <span class="diag-problem-code">[{p.code}]</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
         </div>
-      {/if}
+      {:else}
+        {#if meta?.why && !isPending}
+          <div class="detail-row">
+            <span class="detail-label">Why:</span>
+            <span class="detail-value">{meta.why}</span>
+          </div>
+        {/if}
 
-      {#if meta?.risk}
-        <div class="detail-row">
-          <span class="detail-label">Risk:</span>
-          <span class="detail-value risk-{meta.risk}">{meta.risk}</span>
-        </div>
-      {/if}
+        {#if meta?.risk}
+          <div class="detail-row">
+            <span class="detail-label">Risk:</span>
+            <span class="detail-value risk-{meta.risk}">{meta.risk}</span>
+          </div>
+        {/if}
 
-      {#if toolCall.output}
-        <div class="detail-section">
-          <span class="detail-label">Output:</span>
-          <pre class="detail-output">{@html formatOutputWithLinks(
-              toolCall.output,
-            )}</pre>
-        </div>
+        {#if toolCall.output}
+          <div class="detail-section">
+            <span class="detail-label">Output:</span>
+            <pre class="detail-output">{@html formatOutputWithLinks(
+                toolCall.output,
+              )}</pre>
+          </div>
+        {/if}
       {/if}
 
       {#if toolCall.data?.image_base64}
@@ -796,10 +902,173 @@
   }
 
   .files-container.multi {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .diag-mini-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: -4px;
+  }
+
+  .diag-badge {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.2px;
+  }
+
+  .diag-badge.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+  }
+  .diag-badge.warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+  }
+  .diag-badge.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+  }
+
+  /* Diagnostic Details */
+  .diagnostic-details {
+    display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
+    gap: 12px;
+    padding-top: 4px;
+  }
+
+  .diag-file-group {
+    display: flex;
+    flex-direction: column;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    border: 1px solid var(--color-border-subtle);
+    overflow: hidden;
+  }
+
+  .diag-file-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: none;
+    border-bottom: 1px solid var(--color-border-subtle);
     width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .diag-file-header:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .diag-filename {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--color-text);
+    opacity: 0.9;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diag-file-badges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .diag-count-badge {
+    min-width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 4px;
+  }
+
+  .diag-count-badge.error {
+    background: #ef4444;
+    color: white;
+  }
+  .diag-count-badge.warning {
+    background: #f59e0b;
+    color: black;
+  }
+
+  .diag-problems {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .diag-problem-row {
+    display: grid;
+    grid-template-columns: 20px 35px 1fr auto;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 12px;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  }
+
+  .diag-problem-row:last-child {
+    border-bottom: none;
+  }
+
+  .diag-problem-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .diag-problem-severity {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 14px;
+    margin-top: 1px;
+  }
+
+  .diag-problem-severity.error {
+    color: #ef4444;
+  }
+  .diag-problem-severity.warning {
+    color: #f59e0b;
+  }
+
+  .diag-problem-loc {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-text-disabled);
+    margin-top: 2px;
+  }
+
+  .diag-problem-msg {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+    padding-bottom: 2px;
+  }
+
+  .diag-problem-code {
+    font-size: 10px;
+    color: var(--color-text-disabled);
+    opacity: 0.7;
     margin-top: 2px;
   }
 

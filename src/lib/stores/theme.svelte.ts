@@ -5,19 +5,20 @@
 
 import { darkThemeVars, voltDarkMonacoTheme } from '$lib/themes/dark';
 import { lightThemeVars, voltLightMonacoTheme } from '$lib/themes/light';
+import { midnightThemeVars, voltMidnightMonacoTheme } from '$lib/themes/midnight';
 
 const STORAGE_KEY = 'volt.theme';
 
-export type ThemeMode = 'dark' | 'light' | 'system';
-export type ResolvedTheme = 'dark' | 'light';
+export type ThemeMode = 'dark' | 'light' | 'midnight' | 'system';
+export type ResolvedTheme = 'dark' | 'light' | 'midnight';
 
 class ThemeStore {
-  /** User's theme preference (dark, light, or system) */
+  /** User's theme preference (dark, light, midnight, or system) */
   mode = $state<ThemeMode>('system');
-  
-  /** The actual resolved theme (dark or light) based on mode and system preference */
+
+  /** The actual resolved theme based on mode and system preference */
   resolvedTheme = $state<ResolvedTheme>('dark');
-  
+
   /** Media query for system preference detection */
   private mediaQuery: MediaQueryList | null = null;
 
@@ -41,33 +42,34 @@ class ThemeStore {
   }
 
   /**
-   * Toggle between dark and light themes
-   * If currently on system, switches to the opposite of current resolved theme
+   * Toggle between themes (cycling behavior)
    */
   toggle(): void {
-    if (this.mode === 'system') {
-      // Switch to explicit opposite of current resolved theme
-      this.setMode(this.resolvedTheme === 'dark' ? 'light' : 'dark');
-    } else {
-      this.setMode(this.mode === 'dark' ? 'light' : 'dark');
-    }
+    this.cycle();
   }
 
   /**
-   * Cycle through themes: dark -> light -> system -> dark
+   * Cycle through themes: dark -> midnight -> light -> system -> dark
    */
   cycle(): void {
-    const order: ThemeMode[] = ['dark', 'light', 'system'];
+    const order: ThemeMode[] = ['dark', 'midnight', 'light', 'system'];
     const currentIndex = order.indexOf(this.mode);
     const nextIndex = (currentIndex + 1) % order.length;
     this.setMode(order[nextIndex]);
   }
 
   /**
-   * Check if dark mode is active
+   * Check if dark mode (anysphere) is active
    */
   get isDark(): boolean {
     return this.resolvedTheme === 'dark';
+  }
+
+  /**
+   * Check if midnight mode (classic dark) is active
+   */
+  get isMidnight(): boolean {
+    return this.resolvedTheme === 'midnight';
   }
 
   /**
@@ -90,8 +92,9 @@ class ThemeStore {
   get displayName(): string {
     switch (this.mode) {
       case 'dark': return 'Dark';
+      case 'midnight': return 'Midnight';
       case 'light': return 'Light';
-      case 'system': return `System (${this.resolvedTheme === 'dark' ? 'Dark' : 'Light'})`;
+      case 'system': return `System (${this.resolvedTheme.charAt(0).toUpperCase() + this.resolvedTheme.slice(1)})`;
     }
   }
 
@@ -108,6 +111,7 @@ class ThemeStore {
 
   /**
    * Get system color scheme preference
+   * Defaults to 'dark' (Anysphere) as the primary dark mode
    */
   private getSystemPreference(): ResolvedTheme {
     if (typeof window === 'undefined') return 'dark';
@@ -119,16 +123,16 @@ class ThemeStore {
    */
   private setupSystemPreferenceListener(): void {
     if (typeof window === 'undefined') return;
-    
+
     this.mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    
+
     const handleChange = () => {
       if (this.mode === 'system') {
         this.updateResolvedTheme();
         this.applyTheme();
       }
     };
-    
+
     // Use addEventListener for modern browsers
     this.mediaQuery.addEventListener('change', handleChange);
   }
@@ -138,18 +142,24 @@ class ThemeStore {
    */
   private applyTheme(): void {
     if (typeof document === 'undefined') return;
-    
-    const vars = this.resolvedTheme === 'dark' ? darkThemeVars : lightThemeVars;
+
+    let vars: Record<string, string>;
+    switch (this.resolvedTheme) {
+      case 'dark': vars = darkThemeVars; break;
+      case 'midnight': vars = midnightThemeVars; break;
+      case 'light': vars = lightThemeVars; break;
+    }
+
     const root = document.documentElement;
-    
+
     // Apply all CSS variables
     for (const [key, value] of Object.entries(vars)) {
       root.style.setProperty(key, value);
     }
-    
+
     // Set data attribute for potential CSS selectors
     root.setAttribute('data-theme', this.resolvedTheme);
-    
+
     // Update Monaco theme if loaded
     this.updateMonacoTheme();
   }
@@ -162,17 +172,23 @@ class ThemeStore {
     void import('$lib/services/monaco-loader').then(({ getMonaco }) => {
       const monaco = getMonaco();
       if (!monaco) return;
-      
-      const themeName = this.resolvedTheme === 'dark' ? 'volt-dark' : 'volt-light';
-      
+
+      let themeName;
+      switch (this.resolvedTheme) {
+        case 'dark': themeName = 'volt-dark'; break;
+        case 'midnight': themeName = 'volt-midnight'; break;
+        case 'light': themeName = 'volt-light'; break;
+      }
+
       // Define themes if not already defined
       try {
         monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
+        monaco.editor.defineTheme('volt-midnight', voltMidnightMonacoTheme);
         monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
       } catch {
         // Themes may already be defined
       }
-      
+
       // Set the active theme
       monaco.editor.setTheme(themeName);
     }).catch(() => {
@@ -185,10 +201,10 @@ class ThemeStore {
    */
   private loadFromStorage(): void {
     if (typeof window === 'undefined') return;
-    
+
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored && ['dark', 'light', 'system'].includes(stored)) {
+      if (stored && ['dark', 'midnight', 'light', 'system'].includes(stored)) {
         this.mode = stored as ThemeMode;
       }
     } catch {
@@ -201,7 +217,7 @@ class ThemeStore {
    */
   private saveToStorage(): void {
     if (typeof window === 'undefined') return;
-    
+
     try {
       localStorage.setItem(STORAGE_KEY, this.mode);
     } catch {
@@ -217,5 +233,9 @@ export const themeStore = new ThemeStore();
  * Get the current Monaco theme name based on resolved theme
  */
 export function getMonacoThemeName(): string {
-  return themeStore.resolvedTheme === 'dark' ? 'volt-dark' : 'volt-light';
+  switch (themeStore.resolvedTheme) {
+    case 'dark': return 'volt-dark';
+    case 'midnight': return 'volt-midnight';
+    case 'light': return 'volt-light';
+  }
 }

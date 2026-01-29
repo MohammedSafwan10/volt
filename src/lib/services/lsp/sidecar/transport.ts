@@ -370,8 +370,8 @@ export class LspTransport {
    */
   private async sendHealthPing(): Promise<void> {
     // Create a simple request that should return quickly
-    // We'll use a custom timeout shorter than the normal request timeout
-    const timeoutMs = this.healthConfig.timeoutMs;
+    // We'll use a custom timeout but ensure it's at least 5000ms to avoid false positives on busy servers
+    const timeoutMs = Math.max(this.healthConfig.timeoutMs, 5000);
 
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
@@ -381,13 +381,6 @@ export class LspTransport {
       // Send a $/cancelRequest which most servers handle quickly
       // Even if they return an error, it proves the server is responsive
       const id = this.nextRequestId++;
-      const request: JsonRpcRequest = {
-        jsonrpc: '2.0',
-        id,
-        method: '$/cancelRequest',
-        params: { id: -1 }, // Cancel a non-existent request
-      };
-
       // Set up one-time response handler
       const cleanup = () => {
         clearTimeout(timeoutId);
@@ -405,11 +398,23 @@ export class LspTransport {
           // Only timeout means server is unresponsive
           resolve();
         },
-        method: '$/cancelRequest',
+        method: 'textDocument/hover',
         timestamp: Date.now(),
       });
 
       // Send the request
+      // We use textDocument/hover on a non-existent file to force a quick "null" or "error" response
+      // This is more reliable than $/cancelRequest which some servers ignore
+      const request: JsonRpcRequest = {
+        jsonrpc: '2.0',
+        id,
+        method: 'textDocument/hover',
+        params: {
+          textDocument: { uri: 'file:///health-check-ping' },
+          position: { line: 0, character: 0 }
+        },
+      };
+
       const message = JSON.stringify(request);
       invoke('lsp_send_message', {
         serverId: this.serverId,
@@ -425,214 +430,214 @@ export class LspTransport {
    * Record a response time for average calculation
    */
   private recordResponseTime(timeMs: number): void {
-    this.responseTimes.push(timeMs);
-    // Keep only the last N response times
-    if (this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
-      this.responseTimes.shift();
-    }
+  this.responseTimes.push(timeMs);
+  // Keep only the last N response times
+  if(this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
+  this.responseTimes.shift();
+}
   }
 
   /**
    * Calculate average response time from recorded times
    */
   private calculateAvgResponseTime(): number | null {
-    if (this.responseTimes.length === 0) return null;
-    const sum = this.responseTimes.reduce((a, b) => a + b, 0);
-    return Math.round(sum / this.responseTimes.length);
-  }
+  if (this.responseTimes.length === 0) return null;
+  const sum = this.responseTimes.reduce((a, b) => a + b, 0);
+  return Math.round(sum / this.responseTimes.length);
+}
 
   /**
    * Update health status and notify handlers
    */
   private updateHealthStatus(partial: Partial<HealthStatus>): void {
-    const previousHealthy = this.healthStatus.healthy;
-    this.healthStatus = { ...this.healthStatus, ...partial };
+  const previousHealthy = this.healthStatus.healthy;
+  this.healthStatus = { ...this.healthStatus, ...partial };
 
-    // Only notify handlers if health state changed or it's the first check
-    const healthChanged = previousHealthy !== this.healthStatus.healthy;
-    const isFirstCheck = this.healthStatus.lastCheckAt === partial.lastCheckAt && partial.lastCheckAt !== null;
+  // Only notify handlers if health state changed or it's the first check
+  const healthChanged = previousHealthy !== this.healthStatus.healthy;
+  const isFirstCheck = this.healthStatus.lastCheckAt === partial.lastCheckAt && partial.lastCheckAt !== null;
 
-    if (healthChanged || isFirstCheck) {
-      for (const handler of this.healthHandlers) {
-        try {
-          handler(this.health);
-        } catch (e) {
-          console.error('[LSP Transport] Health handler error:', e);
-        }
-      }
+  if(healthChanged || isFirstCheck) {
+  for (const handler of this.healthHandlers) {
+    try {
+      handler(this.health);
+    } catch (e) {
+      console.error('[LSP Transport] Health handler error:', e);
     }
+  }
+}
   }
 
   /**
    * Manually trigger a health check (useful for testing or on-demand verification)
    */
-  async checkHealth(): Promise<HealthStatus> {
-    await this.performHealthCheck();
-    return this.health;
+  async checkHealth(): Promise < HealthStatus > {
+  await this.performHealthCheck();
+  return this.health;
+}
+
+/**
+ * Update health configuration at runtime
+ */
+configureHealth(config: HealthConfig): void {
+  this.healthConfig = { ...this.healthConfig, ...config };
+
+  // Restart monitoring if enabled state changed
+  if(this.isConnected) {
+  this.stopHealthMonitoring();
+  if (this.healthConfig.enabled) {
+    this.startHealthMonitoring();
   }
-
-  /**
-   * Update health configuration at runtime
-   */
-  configureHealth(config: HealthConfig): void {
-    this.healthConfig = { ...this.healthConfig, ...config };
-
-    // Restart monitoring if enabled state changed
-    if (this.isConnected) {
-      this.stopHealthMonitoring();
-      if (this.healthConfig.enabled) {
-        this.startHealthMonitoring();
-      }
-    }
+}
   }
 
   /**
    * Send a JSON-RPC request and wait for response
    */
-  async sendRequest<T = unknown>(method: string, params?: unknown): Promise<T> {
-    if (!this.isConnected) {
-      throw new Error('Transport not connected');
-    }
+  async sendRequest < T = unknown > (method: string, params ?: unknown): Promise < T > {
+  if(!this.isConnected) {
+  throw new Error('Transport not connected');
+}
 
-    const id = this.nextRequestId++;
-    const request: JsonRpcRequest = {
-      jsonrpc: '2.0',
-      id,
-      method,
-      params,
-    };
+const id = this.nextRequestId++;
+const request: JsonRpcRequest = {
+  jsonrpc: '2.0',
+  id,
+  method,
+  params,
+};
 
-    // Create promise for the response
-    const responsePromise = new Promise<T>((resolve, reject) => {
-      this.pendingRequests.set(id, {
-        resolve: resolve as (result: unknown) => void,
-        reject,
-        method,
-        timestamp: Date.now(),
-      });
-    });
+// Create promise for the response
+const responsePromise = new Promise<T>((resolve, reject) => {
+  this.pendingRequests.set(id, {
+    resolve: resolve as (result: unknown) => void,
+    reject,
+    method,
+    timestamp: Date.now(),
+  });
+});
 
-    // Send the request
-    const message = JSON.stringify(request);
-    await invoke('lsp_send_message', {
-      serverId: this.serverId,
-      message,
-    });
+// Send the request
+const message = JSON.stringify(request);
+await invoke('lsp_send_message', {
+  serverId: this.serverId,
+  message,
+});
 
-    return responsePromise;
+return responsePromise;
   }
 
   /**
    * Send a JSON-RPC notification (no response expected)
    */
-  async sendNotification(method: string, params?: unknown): Promise<void> {
-    if (!this.isConnected) {
-      throw new Error('Transport not connected');
-    }
+  async sendNotification(method: string, params ?: unknown): Promise < void> {
+  if(!this.isConnected) {
+  throw new Error('Transport not connected');
+}
 
-    const notification: JsonRpcNotification = {
-      jsonrpc: '2.0',
-      method,
-      params,
-    };
+const notification: JsonRpcNotification = {
+  jsonrpc: '2.0',
+  method,
+  params,
+};
 
-    const message = JSON.stringify(notification);
-    await invoke('lsp_send_message', {
-      serverId: this.serverId,
-      message,
-    });
+const message = JSON.stringify(notification);
+await invoke('lsp_send_message', {
+  serverId: this.serverId,
+  message,
+});
   }
 
   /**
    * Send a JSON-RPC response to a server request
    */
-  async sendResponse(id: number | string, result: unknown): Promise<void> {
-    if (!this.isConnected) {
-      throw new Error('Transport not connected');
-    }
+  async sendResponse(id: number | string, result: unknown): Promise < void> {
+  if(!this.isConnected) {
+  throw new Error('Transport not connected');
+}
 
-    const response: JsonRpcResponse = {
-      jsonrpc: '2.0',
-      id,
-      result,
-    };
+const response: JsonRpcResponse = {
+  jsonrpc: '2.0',
+  id,
+  result,
+};
 
-    const message = JSON.stringify(response);
-    await invoke('lsp_send_message', {
-      serverId: this.serverId,
-      message,
-    });
+const message = JSON.stringify(response);
+await invoke('lsp_send_message', {
+  serverId: this.serverId,
+  message,
+});
   }
 
-  /**
-   * Register a message handler
-   */
-  onMessage(handler: MessageHandler): () => void {
-    this.messageHandlers.add(handler);
-    return () => this.messageHandlers.delete(handler);
-  }
+/**
+ * Register a message handler
+ */
+onMessage(handler: MessageHandler): () => void {
+  this.messageHandlers.add(handler);
+  return() => this.messageHandlers.delete(handler);
+}
 
-  /**
-   * Register an error handler
-   */
-  onError(handler: ErrorHandler): () => void {
-    this.errorHandlers.add(handler);
-    return () => this.errorHandlers.delete(handler);
-  }
+/**
+ * Register an error handler
+ */
+onError(handler: ErrorHandler): () => void {
+  this.errorHandlers.add(handler);
+  return() => this.errorHandlers.delete(handler);
+}
 
-  /**
-   * Register an exit handler
-   */
-  onExit(handler: ExitHandler): () => void {
-    this.exitHandlers.add(handler);
-    return () => this.exitHandlers.delete(handler);
-  }
+/**
+ * Register an exit handler
+ */
+onExit(handler: ExitHandler): () => void {
+  this.exitHandlers.add(handler);
+  return() => this.exitHandlers.delete(handler);
+}
 
-  /**
-   * Register a health status change handler
-   */
-  onHealth(handler: HealthHandler): () => void {
-    this.healthHandlers.add(handler);
-    return () => this.healthHandlers.delete(handler);
-  }
+/**
+ * Register a health status change handler
+ */
+onHealth(handler: HealthHandler): () => void {
+  this.healthHandlers.add(handler);
+  return() => this.healthHandlers.delete(handler);
+}
 
   /**
    * Stop the server and clean up
    */
-  async stop(): Promise<void> {
-    // Stop health monitoring first
-    this.stopHealthMonitoring();
+  async stop(): Promise < void> {
+  // Stop health monitoring first
+  this.stopHealthMonitoring();
 
-    // Remove all event listeners
-    for (const unlisten of this.unlisteners) {
-      unlisten();
-    }
-    this.unlisteners = [];
+  // Remove all event listeners
+  for(const unlisten of this.unlisteners) {
+  unlisten();
+}
+this.unlisteners = [];
 
-    // Stop the server
-    if (this.isConnected) {
-      try {
-        await invoke('lsp_stop_server', { serverId: this.serverId });
-      } catch (e) {
-        console.error('[LSP Transport] Error stopping server:', e);
-      }
-    }
+// Stop the server
+if (this.isConnected) {
+  try {
+    await invoke('lsp_stop_server', { serverId: this.serverId });
+  } catch (e) {
+    console.error('[LSP Transport] Error stopping server:', e);
+  }
+}
 
-    this.isConnected = false;
-    this.messageHandlers.clear();
-    this.errorHandlers.clear();
-    this.exitHandlers.clear();
-    this.healthHandlers.clear();
-    this.pendingRequests.clear();
-    this.responseTimes = [];
+this.isConnected = false;
+this.messageHandlers.clear();
+this.errorHandlers.clear();
+this.exitHandlers.clear();
+this.healthHandlers.clear();
+this.pendingRequests.clear();
+this.responseTimes = [];
   }
 
-  /**
-   * Dispose the transport (alias for stop)
-   */
-  dispose(): Promise<void> {
-    return this.stop();
-  }
+/**
+ * Dispose the transport (alias for stop)
+ */
+dispose(): Promise < void> {
+  return this.stop();
+}
 }
 
 /**
