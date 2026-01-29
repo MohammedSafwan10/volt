@@ -16,7 +16,7 @@ use cdp::commands::{
 use chat_history::{
     chat_clear_all, chat_create_conversation, chat_delete_conversation, chat_get_conversation,
     chat_list_conversations, chat_save_message, chat_search_conversations, chat_toggle_pin,
-    chat_update_title, ChatHistoryState,
+    chat_truncate_conversation, chat_update_title, ChatHistoryState,
 };
 use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
 use commands::browser::{
@@ -62,7 +62,8 @@ use commands::search::{
 };
 use commands::system::{get_env_var, get_system_info, run_command};
 use commands::terminal::{
-    terminal_create, terminal_kill, terminal_list, terminal_resize, terminal_write,
+    terminal_create, terminal_kill, terminal_kill_all, terminal_list, terminal_resize,
+    terminal_write,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -97,6 +98,7 @@ pub fn run() {
             chat_toggle_pin,
             chat_delete_conversation,
             chat_search_conversations,
+            chat_truncate_conversation,
             chat_clear_all,
             // File operations
             read_file,
@@ -113,6 +115,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_kill,
+            terminal_kill_all,
             terminal_list,
             // FS scope helpers
             fs_allow_directory,
@@ -243,6 +246,12 @@ pub fn run() {
             stop_all_file_watches,
             is_watching,
         ])
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Kill all terminals when window closes
+                let _ = terminal_kill_all();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

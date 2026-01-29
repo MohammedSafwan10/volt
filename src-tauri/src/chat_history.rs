@@ -510,3 +510,52 @@ pub async fn chat_clear_all<R: Runtime>(
 
     Ok(())
 }
+
+/// Truncate a conversation by removing all messages after (and including) a specific message ID
+#[tauri::command]
+pub async fn chat_truncate_conversation<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, ChatHistoryState>,
+    conversation_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    ensure_db(&app, &state)?;
+
+    let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let conn = db_guard.as_ref().ok_or("Database not initialized")?;
+
+    // Find the timestamp of the target message
+    let timestamp: i64 = conn
+        .query_row(
+            "SELECT timestamp FROM messages WHERE id = ?1 AND conversation_id = ?2",
+            params![message_id, conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Message not found: {}", e))?;
+
+    // Delete all messages in this conversation that are NEWER than the target message
+    // Since we want to revert FROM the user message, we delete it and everything after.
+    conn.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1 AND timestamp >= ?2",
+        params![conversation_id, timestamp],
+    )
+    .map_err(|e| format!("Failed to truncate conversation: {}", e))?;
+
+    // Update conversation metadata (count and updated_at)
+    let count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to update counts: {}", e))?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        "UPDATE conversations SET message_count = ?1, updated_at = ?2 WHERE id = ?3",
+        params![count, now, conversation_id],
+    )
+    .map_err(|e| format!("Failed to update conversation metadata: {}", e))?;
+
+    Ok(())
+}

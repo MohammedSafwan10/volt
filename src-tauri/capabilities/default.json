@@ -2,7 +2,10 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "volt-browser"],
+  "windows": [
+    "main",
+    "volt-browser"
+  ],
   "permissions": [
     "core:default",
     "core:webview:default",
@@ -20,6 +23,38 @@
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
     "fs:default",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
     "fs:allow-watch",
     "fs:allow-unwatch",
     "shell:allow-spawn",

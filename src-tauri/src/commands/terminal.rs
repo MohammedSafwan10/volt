@@ -73,6 +73,7 @@ struct TerminalSession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    pid: u32,
     killed: bool,
 }
 
@@ -222,6 +223,7 @@ fn create_terminal_sync(
 
     // Clone a killer handle so we can terminate the process from other commands
     let killer = child.clone_killer();
+    let pid = child.process_id().unwrap_or(0);
 
     // Get writer for sending input to the terminal
     let writer = pair
@@ -261,6 +263,7 @@ fn create_terminal_sync(
                 writer,
                 master: pair.master,
                 killer,
+                pid,
                 killed: false,
             },
         );
@@ -287,39 +290,38 @@ fn create_terminal_sync(
             // a resize event occurs. This is a known issue where the PTY buffers the
             // initial output. We work around this by:
             // 1. Waiting for the shell to initialize (polling with short intervals)
-            // 2. Triggering a resize cycle (expand by 1 col, then restore) to flush the buffer
-            
-            // Initial short delay to let the shell process start
-            thread::sleep(Duration::from_millis(100));
-            
-            // Poll for shell readiness - wait for it to produce some output
-            // Max 5 attempts at 50ms intervals (250ms total max wait)
-            for _ in 0..5 {
-                let has_output = if let Ok(mgr) = manager_ready.lock() {
+            // 2. Triggering a resize cycle (expand by 2 cols, then restore) to flush the buffer
+
+            // Initial delay to let the shell process start (especially slow on Windows)
+            thread::sleep(Duration::from_millis(250));
+
+            // Poll for shell readiness - wait for it to be inserted into manager
+            for _ in 0..10 {
+                let exists = if let Ok(mgr) = manager_ready.lock() {
                     mgr.sessions.contains_key(&terminal_id_ready)
                 } else {
                     false
                 };
-                
-                if has_output {
+
+                if exists {
                     break;
                 }
-                thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(100));
             }
 
             // Trigger resize cycle to force prompt display
             // This exploits a ConPTY behavior where resize events flush buffered output
             if let Ok(mut mgr) = manager_ready.lock() {
                 if let Some(session) = mgr.sessions.get_mut(&terminal_id_ready) {
-                    // Step 1: Resize to slightly larger size
+                    // Step 1: Resize to slightly larger size (+2 for clearer change)
                     let _ = session.master.resize(PtySize {
                         rows: initial_rows,
-                        cols: initial_cols + 1,
+                        cols: initial_cols + 2,
                         pixel_width: 0,
                         pixel_height: 0,
                     });
 
-                    thread::sleep(Duration::from_millis(50));
+                    thread::sleep(Duration::from_millis(100));
 
                     // Step 2: Resize back to original dimensions
                     let _ = session.master.resize(PtySize {
@@ -328,6 +330,9 @@ fn create_terminal_sync(
                         pixel_width: 0,
                         pixel_height: 0,
                     });
+
+                    // Optional: nudge with a small write if it's still quiet
+                    // But usually resize is enough and safer than writing characters
                 }
             }
 
@@ -492,11 +497,26 @@ pub fn terminal_kill(terminal_id: String) -> Result<(), TerminalError> {
         return Err(TerminalError::AlreadyKilled { terminal_id });
     }
 
+    let pid = session.pid;
     let kill_result = session.killer.kill();
+
     match kill_result {
         Ok(()) => {
             session.killed = true;
             close_terminal_input(session);
+
+            #[cfg(windows)]
+            if pid > 0 {
+                // On Windows, TerminateProcess only kills the shell.
+                // We use taskkill to kill the whole process tree (e.g. build tools, dev servers).
+                let _ = std::process::Command::new("taskkill")
+                    .arg("/F")
+                    .arg("/T")
+                    .arg("/PID")
+                    .arg(pid.to_string())
+                    .output();
+            }
+
             Ok(())
         }
         Err(e) => {
@@ -510,6 +530,16 @@ pub fn terminal_kill(terminal_id: String) -> Result<(), TerminalError> {
                 {
                     session.killed = true;
                     close_terminal_input(session);
+
+                    if pid > 0 {
+                        let _ = std::process::Command::new("taskkill")
+                            .arg("/F")
+                            .arg("/T")
+                            .arg("/PID")
+                            .arg(pid.to_string())
+                            .output();
+                    }
+
                     return Ok(());
                 }
             }
@@ -533,4 +563,38 @@ pub fn terminal_list() -> Result<Vec<TerminalInfo>, TerminalError> {
         .collect();
 
     Ok(terminals)
+}
+
+/// Kill all active terminals
+#[tauri::command]
+pub fn terminal_kill_all() -> Result<(), TerminalError> {
+    let manager = get_terminal_manager();
+    let mut mgr = lock_manager(&manager)?;
+
+    let terminal_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
+
+    for id in terminal_ids {
+        if let Some(session) = mgr.sessions.get_mut(&id) {
+            if !session.killed {
+                let pid = session.pid;
+                let _ = session.killer.kill();
+                session.killed = true;
+                close_terminal_input(session);
+
+                #[cfg(windows)]
+                if pid > 0 {
+                    let _ = std::process::Command::new("taskkill")
+                        .arg("/F")
+                        .arg("/T")
+                        .arg("/PID")
+                        .arg(pid.to_string())
+                        .output();
+                }
+            }
+        }
+    }
+
+    mgr.sessions.clear();
+
+    Ok(())
 }

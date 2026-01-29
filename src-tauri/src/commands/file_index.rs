@@ -25,6 +25,8 @@ pub struct IndexedFile {
     pub relative_path: String,
     /// Parent directory name (relative)
     pub parent_dir: String,
+    /// Whether this is a directory
+    pub is_dir: bool,
 }
 
 /// Index status
@@ -141,7 +143,7 @@ const MAX_CACHE_FILES: usize = 100_000;
 const MAX_DISK_CACHE_FILES: usize = 1_000_000;
 
 /// Disk cache format version
-const DISK_CACHE_VERSION: u32 = 1;
+const DISK_CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,11 +281,23 @@ fn load_disk_cache_stream(
         let full_path = join_root_relative(&root, &relative_path);
         let path_str = strip_windows_long_path_prefix(full_path.to_string_lossy().to_string());
 
+        if relative_path.contains("node_modules")
+            || relative_path.contains(".git/")
+            || relative_path.contains(".next/")
+            || relative_path.contains("dist/")
+            || relative_path.contains("target/")
+            || relative_path.contains("build/")
+            || relative_path.contains("out/")
+        {
+            continue;
+        }
+
         batch.push(IndexedFile {
             name,
             path: path_str,
             relative_path: relative_path.replace('\\', "/"),
             parent_dir: parent_dir.replace('\\', "/"),
+            is_dir: false, // Legacy cache only had files
         });
         total_count += 1;
 
@@ -347,6 +361,14 @@ pub async fn index_workspace_stream(
     if !path.exists() || !path.is_dir() {
         return Err(IndexError::InvalidPath { path: root_path });
     }
+
+    // Normalize root path for consistent prefix stripping on Windows
+    let path = if cfg!(windows) {
+        let p_str = path.to_string_lossy().to_string();
+        PathBuf::from(strip_windows_long_path_prefix(p_str))
+    } else {
+        path
+    };
 
     // Cancel any previous indexing
     state.cancelled.store(true, Ordering::SeqCst);
@@ -475,6 +497,22 @@ pub async fn index_workspace_stream(
             .follow_links(false)
             .max_depth(None); // No depth limit
 
+        builder.filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            if name == "node_modules"
+                || name == ".git"
+                || name == ".next"
+                || name == "dist"
+                || name == "target"
+                || name == "build"
+                || name == "out"
+                || name == ".DS_Store"
+            {
+                return false; // Skip this and all descendants
+            }
+            true
+        });
+
         let walker = builder.build();
 
         for entry in walker {
@@ -501,10 +539,15 @@ pub async fn index_workspace_stream(
                 Err(_) => continue,
             };
 
-            // Skip directories
-            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(true) {
+            // The filter_entry above already handles pruning directories.
+            // This is an extra safety check for the current entry.
+            let name = entry.file_name().to_string_lossy();
+            if name == ".DS_Store" {
                 continue;
             }
+
+            // Index both files and directories
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
 
             let entry_path = entry.path();
             let path_str = strip_windows_long_path_prefix(entry_path.to_string_lossy().to_string());
@@ -535,6 +578,7 @@ pub async fn index_workspace_stream(
                 path: path_str,
                 relative_path,
                 parent_dir,
+                is_dir,
             };
 
             // Stream to UI
