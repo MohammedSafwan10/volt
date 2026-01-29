@@ -150,6 +150,24 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
     isNewFile = true;
   }
 
+  if (!isNewFile && before === content) {
+    return {
+      success: true,
+      output: `No changes: ${relativePath}`,
+      meta: {
+        fileEdit: {
+          relativePath,
+          absolutePath: path,
+          beforeContent: before.length <= 100_000 ? before : null,
+          afterContent: content.length <= 100_000 ? content : null,
+          isNewFile: false,
+          errorCount: 0,
+          warningCount: 0
+        }
+      }
+    };
+  }
+
   // Write to disk
   try {
     await invoke('write_file', { path, content });
@@ -329,6 +347,22 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
 
   // Apply replacement
   const newContent = content.slice(0, match.index) + newStr + content.slice(match.index + match.length);
+  if (newContent === content) {
+    return {
+      success: true,
+      output: `No changes: ${relativePath}`,
+      meta: {
+        fileEdit: {
+          relativePath,
+          absolutePath: path,
+          beforeContent: content.length <= 100_000 ? content : null,
+          afterContent: newContent.length <= 100_000 ? newContent : null,
+          errorCount: 0,
+          warningCount: 0
+        }
+      }
+    };
+  }
 
   // Validate syntax
   const syntaxError = validateSyntax(content, newContent, relativePath);
@@ -529,6 +563,22 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   const newLines = newContent.split('\n');
   
   const resultContent = [...before, ...newLines, ...after].join('\n');
+  if (resultContent === content) {
+    return {
+      success: true,
+      output: `No changes: ${relativePath}`,
+      meta: {
+        fileEdit: {
+          relativePath,
+          absolutePath: path,
+          beforeContent: content.length <= 100_000 ? content : null,
+          afterContent: resultContent.length <= 100_000 ? resultContent : null,
+          errorCount: 0,
+          warningCount: 0
+        }
+      }
+    };
+  }
 
   // Write
   try {

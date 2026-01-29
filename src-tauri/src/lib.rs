@@ -1,4 +1,5 @@
 mod cdp;
+mod chat_history;
 mod commands;
 mod lsp;
 
@@ -11,6 +12,11 @@ use cdp::commands::{
     cdp_is_available, cdp_navigate, cdp_press_key, cdp_screenshot, cdp_screenshot_element,
     cdp_scroll_by, cdp_scroll_to_element, cdp_set_viewport, cdp_type, cdp_wait_for_selector,
     CdpState,
+};
+use chat_history::{
+    chat_clear_all, chat_create_conversation, chat_delete_conversation, chat_get_conversation,
+    chat_list_conversations, chat_save_message, chat_search_conversations, chat_toggle_pin,
+    chat_update_title, ChatHistoryState,
 };
 use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
 use commands::browser::{
@@ -75,12 +81,23 @@ pub fn run() {
         .manage(McpState::default())
         .manage(BrowserState::default())
         .manage(CdpState::default())
+        .manage(ChatHistoryState::default())
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
             ai_get_api_key,
             ai_has_api_key,
             ai_remove_api_key,
+            // Chat history persistence
+            chat_create_conversation,
+            chat_list_conversations,
+            chat_get_conversation,
+            chat_save_message,
+            chat_update_title,
+            chat_toggle_pin,
+            chat_delete_conversation,
+            chat_search_conversations,
+            chat_clear_all,
             // File operations
             read_file,
             write_file,

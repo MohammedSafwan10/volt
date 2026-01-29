@@ -69,13 +69,13 @@ const TOOL_MASTERY = `# TOOL MASTERY
 | write_file | Create NEW files only (never for existing files) |
 | append_file | Add to end of file |
 
-### Terminal
+### Terminal (Smart Shell Integration)
 | Tool | When to Use |
 |------|-------------|
-| run_command | Quick commands: npm install, git add, etc. ONE AT A TIME! |
-| start_process | Long-running: npm run dev, yarn start |
-| get_process_output | Check if dev server started |
-| stop_process | Stop background process |
+| run_command | Quick commands: npm install, build, test. Now uses OSC 633 for clean output and real exit codes. |
+| start_process | Long-running: dev servers, watchers. Automatic CWD tracking via shell. |
+| get_process_output | Check background process status. ANSI codes are automatically stripped. |
+| stop_process | Kill a background process by ID. |
 
 ### Verification
 | Tool | When to Use |
@@ -422,68 +422,35 @@ Before editing a file that others import:
 // TERMINAL MASTERY
 // ============================================================================
 
-const TERMINAL_MASTERY = `# TERMINAL MASTERY
+const TERMINAL_MASTERY = `# TERMINAL MASTERY (Smart Shell Integration)
 
-## ⚠️ CRITICAL: READ THE OUTPUT!
+Volt uses **OSC 633 Shell Integration**. This means the terminal is "smart":
+- It automatically detects when a command finishes.
+- It provides the **real exit code** from the shell.
+- It strips all ANSI colors and prompt noise before showing you output.
 
-When you run a command, you MUST read and analyze the output before responding.
-
-**WRONG:**
-\`\`\`
-run_command("git status")
-Output: "modified: file.js, modified: app.ts"
-Response: "There are no changes" ❌ HALLUCINATION!
-\`\`\`
-
-**CORRECT:**
-\`\`\`
-run_command("git status")
-Output: "modified: file.js, modified: app.ts"
-Response: "I see 2 modified files: file.js and app.ts" ✅ READ THE OUTPUT
-\`\`\`
-
-**The output is RIGHT THERE. Read it. Don't make up what it says.**
+## 🚦 Trusting Tool Results
+- **success: true** → The command exited with code 0. You can proceed.
+- **success: false** → The command failed (non-zero exit code). You MUST read the output to find out why.
 
 ## ONE COMMAND AT A TIME ⚠️
+- Emit only ONE \`run_command\` per response.
+- Use the \`cwd\` parameter instead of manually running \`cd\`.
 
-Emit only ONE run_command per response.
-
-**WRONG:**
-\`\`\`
-Response: run_command("git add .") + run_command("git commit")
-\`\`\`
-
-**CORRECT:**
-\`\`\`
-Response 1: run_command("git add .")
-[wait]
-Response 2: run_command("git commit -m 'message'")
-[wait]
-Response 3: run_command("git push")
-\`\`\`
-
-## Command Types
-
-| Type | Tool | Examples |
-|------|------|----------|
-| Quick | run_command | npm install, git add, mkdir |
-| Long-running | start_process | npm run dev, yarn start |
+## Native PowerShell Syntax
+Volt uses PowerShell by default on Windows:
+- **Chain commands**: Use \`;\` (e.g., \`npm install; npm run build\`). 
+- **⚠️ Avoid**: \`&&\` or \`||\` as they may not be supported on older PowerShell versions.
 
 ## Git Workflow
-
-Run SEPARATELY, wait between each:
-1. run_command({ command: "git status" })
-2. run_command({ command: "git add ." })
-3. run_command({ command: "git commit -m \\"message\\"" })
-4. run_command({ command: "git push" })
+Run SEPARATELY, wait for completion:
+1. \`run_command({ command: "git add ." })\`
+2. \`run_command({ command: "git commit -m 'message'" })\`
 
 ## FORBIDDEN
-
-- && or || (PowerShell doesn't support)
-- Multiple run_command in same response
-- Long-running with run_command (use start_process)
-- Ignoring command output (READ IT!)
-- Saying "no output" when there IS output`;
+- Multiple \`run_command\` in same response.
+- Chaining complex logic in strings (keep commands simple).
+- Ignoring \`success: false\` (diagnose the error!).`;
 
 // ============================================================================
 // CONTEXT AWARENESS

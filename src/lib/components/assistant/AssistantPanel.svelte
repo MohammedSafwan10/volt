@@ -36,6 +36,7 @@
     executeToolCall,
   } from "$lib/services/ai/tools";
   import MessageList from "./MessageList.svelte";
+  import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
@@ -43,6 +44,7 @@
     setReviewHighlight,
     clearReviewHighlight,
   } from "$lib/services/monaco-models";
+  import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
@@ -316,6 +318,69 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       // Always reset streaming state when done
       assistantStore.isStreaming = false;
       assistantStore.abortController = null;
+
+      // Auto-save: Persist conversation to chat history
+      await saveConversationToHistory();
+    }
+  }
+
+  /**
+   * Save the current conversation to persistent storage
+   */
+  async function saveConversationToHistory(): Promise<void> {
+    const conv = assistantStore.currentConversation;
+    if (!conv || conv.messages.length === 0) return;
+
+    try {
+      // Always try to create/update the conversation first
+      // The backend will handle upsert logic (ignore if exists)
+      try {
+        await chatHistoryStore.createConversation(
+          conv.id,
+          assistantStore.currentMode,
+        );
+        chatHistoryStore.activeConversationId = conv.id;
+      } catch (createErr) {
+        // Conversation might already exist, that's fine
+        console.log(
+          "[AssistantPanel] Conversation may already exist:",
+          createErr,
+        );
+      }
+
+      // Save each message
+      for (const msg of conv.messages) {
+        const metadata = JSON.stringify({
+          attachments: msg.attachments,
+          toolCalls: msg.toolCalls,
+          inlineToolCalls: msg.inlineToolCalls,
+          contentParts: msg.contentParts,
+          thinking: msg.thinking,
+        });
+
+        try {
+          await chatHistoryStore.saveMessage(conv.id, {
+            id: msg.id,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp,
+            metadata,
+          });
+        } catch (msgErr) {
+          // Message might already exist (duplicate ID), skip
+          console.log("[AssistantPanel] Message may already exist:", msgErr);
+        }
+      }
+
+      console.log(
+        "[AssistantPanel] Saved conversation:",
+        conv.id,
+        "with",
+        conv.messages.length,
+        "messages",
+      );
+    } catch (err) {
+      console.error("[AssistantPanel] Failed to save conversation:", err);
     }
   }
 
@@ -1680,8 +1745,17 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     assistantStore.removeAttachment(id);
   }
 
-  function handleClearConversation(): void {
-    assistantStore.clearConversation();
+  async function handleClearConversation(): Promise<void> {
+    // Save current conversation BEFORE creating new one
+    await saveConversationToHistory();
+
+    // Reload conversations list to show the saved one
+    await chatHistoryStore.loadConversations();
+
+    // Now create fresh conversation
+    assistantStore.newConversation();
+    chatHistoryStore.activeConversationId =
+      assistantStore.currentConversation?.id ?? null;
   }
 
   async function handleToolApprove(toolCall: ToolCall): Promise<void> {
@@ -1844,9 +1918,27 @@ Start implementing now. Work through each step carefully.`;
       <div class="header-icon">
         <UIIcon name="comment" size={14} />
       </div>
-      <span class="header-title">CHAT</span>
+      <span
+        class="header-title"
+        title={chatHistoryStore.conversations.find(
+          (c) => c.id === chatHistoryStore.activeConversationId,
+        )?.title || "New Chat"}
+      >
+        {chatHistoryStore.conversations.find(
+          (c) => c.id === chatHistoryStore.activeConversationId,
+        )?.title || "New Chat"}
+      </span>
     </div>
     <div class="header-actions">
+      <button
+        class="header-btn"
+        onclick={() => chatHistoryStore.toggleSidebar()}
+        title="Chat history"
+        aria-label="Chat history"
+        type="button"
+      >
+        <UIIcon name="history" size={14} />
+      </button>
       <button
         class="header-btn"
         onclick={handleClearConversation}
@@ -1855,22 +1947,6 @@ Start implementing now. Work through each step carefully.`;
         type="button"
       >
         <UIIcon name="plus" size={14} />
-      </button>
-      <button
-        class="header-btn"
-        title="Settings"
-        aria-label="Settings"
-        type="button"
-      >
-        <UIIcon name="settings" size={14} />
-      </button>
-      <button
-        class="header-btn"
-        title="More actions"
-        aria-label="More actions"
-        type="button"
-      >
-        <UIIcon name="more" size={14} />
       </button>
       <button
         class="header-btn"
@@ -1992,6 +2068,9 @@ Start implementing now. Work through each step carefully.`;
     />
   </div>
 </aside>
+
+<!-- Chat History Sidebar -->
+<ChatHistorySidebar />
 
 <style>
   .assistant-panel {

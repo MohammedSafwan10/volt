@@ -241,6 +241,8 @@ fn get_selector_script(enabled: bool) -> String {
             }};
             if (window.__TAURI__) {{
                 window.__TAURI__.core.invoke('browser_element_selected', {{ element: data }});
+                // Also turn off select mode locally
+                window.__voltSetSelectMode(false);
             }}
         }}
         

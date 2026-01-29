@@ -583,7 +583,7 @@ class BrowserStore {
           await invoke('browser_set_select_mode', { enabled: false });
         } catch { /* ignore */ }
         this.mode = 'normal';
-        this.selectedElement = null;
+        // DO NOT clear selectedElement here, so it stays visible in the panel
       }
     } catch (err) {
       console.error('[Browser] Toggle select mode failed:', err);
@@ -795,6 +795,7 @@ class BrowserStore {
   private async setupListeners(): Promise<void> {
     const unlistenSelect = await listen<SelectedElement>('browser://element-selected', (event) => {
       this.selectedElement = event.payload;
+      this.mode = 'normal'; // Auto-exit select mode when element is picked
     });
     this.unlisteners.push(unlistenSelect);
 

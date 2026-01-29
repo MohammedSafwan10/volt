@@ -249,55 +249,135 @@ export async function executeToolCall(
 ): Promise<ToolResult> {
   const { signal } = options;
 
-  // Handle MCP tools
   if (isMcpTool(toolName)) {
-    return executeMcpTool(toolName, args);
+    const result = await executeMcpTool(toolName, args);
+    return normalizeToolResult(toolName, result);
   }
 
-  // Get timeout from args or use default
   const requestedTimeout = typeof args.timeout === 'number' ? args.timeout : DEFAULT_TIMEOUT_MS;
   const timeoutMs = Math.min(Math.max(0, requestedTimeout), MAX_TIMEOUT_MS);
 
-  // Get handler
   const handler = toolHandlers[toolName];
   if (!handler) {
-    return { success: false, error: `No handler for tool: ${toolName}` };
+    return normalizeToolResult(toolName, { success: false, error: `No handler for tool: ${toolName}` });
   }
 
-  // Create timeout promise
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<ToolResult>((resolve) => {
-    timeoutId = setTimeout(() => {
-      resolve({ success: false, error: 'Tool execution timed out' });
-    }, timeoutMs);
-  });
+  const toolDef = getToolByName(toolName);
+  const maxAttempts = shouldRetryTool(toolDef) ? 2 : 1;
+  let attempt = 0;
 
-  // Create abort promise
-  let abortHandler: (() => void) | undefined;
-  const abortPromise = new Promise<ToolResult>((resolve) => {
-    if (!signal) return;
-    abortHandler = () => resolve({ success: false, error: 'Tool execution cancelled' });
-    signal.addEventListener('abort', abortHandler, { once: true });
-  });
+  while (attempt < maxAttempts) {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<ToolResult>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({ success: false, error: 'Tool execution timed out' });
+      }, timeoutMs);
+    });
 
-  try {
-    // Execute with timeout and abort handling
-    const result = await Promise.race([
-      handler(args),
-      timeoutPromise,
-      ...(signal ? [abortPromise] : [])
-    ]);
+    let abortHandler: (() => void) | undefined;
+    const abortPromise = new Promise<ToolResult>((resolve) => {
+      if (!signal) return;
+      abortHandler = () => resolve({ success: false, error: 'Tool execution cancelled' });
+      signal.addEventListener('abort', abortHandler, { once: true });
+    });
 
-    return result;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { success: false, error: message };
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-    if (signal && abortHandler) {
-      signal.removeEventListener('abort', abortHandler);
+    try {
+      const result = await Promise.race([
+        handler(args),
+        timeoutPromise,
+        ...(signal ? [abortPromise] : [])
+      ]);
+
+      const normalized = normalizeToolResult(toolName, result);
+      if (normalized.success || !shouldRetryResult(toolDef, normalized, attempt, maxAttempts)) {
+        return normalized;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const normalized = normalizeToolResult(toolName, { success: false, error: message });
+      if (!shouldRetryResult(toolDef, normalized, attempt, maxAttempts)) {
+        return normalized;
+      }
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (signal && abortHandler) {
+        signal.removeEventListener('abort', abortHandler);
+      }
     }
+
+    attempt++;
+    await delay(200 * attempt);
   }
+
+  return normalizeToolResult(toolName, { success: false, error: 'Tool execution failed' });
+}
+
+function normalizeToolResult(toolName: string, result: ToolResult): ToolResult {
+  const normalized: ToolResult = { ...result };
+  normalized.tool = toolName;
+  normalized.timestamp = Date.now();
+
+  if (!normalized.success) {
+    if (!normalized.error && typeof normalized.output === 'string') {
+      normalized.error = normalized.output;
+    }
+    normalized.code = mapErrorCode(normalized.error);
+    normalized.retryable = isRetryableError(normalized.error);
+  } else {
+    normalized.code = 'OK';
+    normalized.retryable = false;
+  }
+
+  return normalized;
+}
+
+function mapErrorCode(error?: string): string {
+  const message = (error ?? '').toLowerCase();
+  if (!message) return 'ERROR';
+  if (message.includes('timed out')) return 'TIMEOUT';
+  if (message.includes('cancelled')) return 'CANCELLED';
+  if (message.includes('no handler') || message.includes('unknown tool')) return 'TOOL_NOT_FOUND';
+  if (message.includes('missing')) return 'MISSING_PARAM';
+  if (message.includes('outside workspace')) return 'PATH_OUTSIDE_WORKSPACE';
+  if (message.includes('not found')) return 'NOT_FOUND';
+  if (message.includes('permission') || message.includes('denied')) return 'PERMISSION_DENIED';
+  if (message.includes('invalid line range') || message.includes('exceeds file length')) return 'INVALID_RANGE';
+  if (message.includes('syntax')) return 'SYNTAX_ERROR';
+  return 'ERROR';
+}
+
+function isRetryableError(error?: string): boolean {
+  const message = (error ?? '').toLowerCase();
+  if (!message) return false;
+  if (message.includes('timed out')) return true;
+  if (message.includes('temporarily') || message.includes('transient')) return true;
+  if (message.includes('network') || message.includes('econn') || message.includes('connection')) return true;
+  return false;
+}
+
+function shouldRetryTool(toolDef: ReturnType<typeof getToolByName>): boolean {
+  const category = toolDef?.category;
+  return category === 'workspace_read' ||
+    category === 'workspace_search' ||
+    category === 'diagnostics' ||
+    category === 'editor_context' ||
+    category === 'browser';
+}
+
+function shouldRetryResult(
+  toolDef: ReturnType<typeof getToolByName>,
+  result: ToolResult,
+  attempt: number,
+  maxAttempts: number
+): boolean {
+  if (attempt >= maxAttempts - 1) return false;
+  if (!shouldRetryTool(toolDef)) return false;
+  if (!result.retryable) return false;
+  return true;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**

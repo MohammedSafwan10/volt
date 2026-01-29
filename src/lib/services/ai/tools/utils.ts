@@ -36,12 +36,12 @@ export function extractErrorMessage(err: unknown): string {
 export function resolvePath(relativePath: string): string {
   const root = projectStore.rootPath;
   if (!root) return relativePath;
-  
+
   // Already absolute
   if (relativePath.startsWith('/') || /^[A-Za-z]:/.test(relativePath)) {
     return relativePath;
   }
-  
+
   // Join with root
   const separator = root.includes('\\') ? '\\' : '/';
   return root.endsWith(separator) ? root + relativePath : root + separator + relativePath;
@@ -128,7 +128,7 @@ export function formatWithLineNumbers(content: string, startLine: number = 1): s
   const lines = content.split('\n');
   const maxLineNum = startLine + lines.length - 1;
   const padding = String(maxLineNum).length;
-  
+
   return lines
     .map((line, i) => {
       const lineNum = String(startLine + i).padStart(padding, ' ');
@@ -145,7 +145,10 @@ export interface ToolResult {
   output?: string;
   error?: string;
   truncated?: boolean;
-  meta?: Record<string, unknown>;
-  /** Additional data (e.g., image_base64 for screenshots) */
-  data?: Record<string, unknown>;
+  meta?: Record<string, any>;
+  data?: any;
+  tool?: string;
+  code?: string;
+  retryable?: boolean;
+  timestamp?: number;
 }

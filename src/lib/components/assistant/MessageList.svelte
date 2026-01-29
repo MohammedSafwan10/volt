@@ -63,7 +63,7 @@
     if (!containerRef) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    userNearBottom = distanceFromBottom < 80;
+    userNearBottom = distanceFromBottom < 30;
     showJumpButton = distanceFromBottom > 150;
   }
 
@@ -77,21 +77,29 @@
   }
 
   function scrollToBottom(): void {
-    if (containerRef) containerRef.scrollTop = containerRef.scrollHeight;
+    if (!containerRef) return;
+    containerRef.scrollTop = containerRef.scrollHeight;
   }
 
   // Auto-scroll effect
   $effect(() => {
-    const lastMsg = messages[messages.length - 1];
-    void lastMsg?.content;
-    void lastMsg?.thinking;
-    void lastMsg?.isStreaming;
+    // Track dependencies
+    messages.forEach(m => {
+      void m.content;
+      void m.thinking;
+      void m.isStreaming;
+      void m.contentParts;
+    });
     void messages.length;
 
     if (!containerRef) return;
-    const shouldScroll = userNearBottom || lastMsg?.role === "user";
+    const shouldScroll = userNearBottom || (messages.length > 0 && messages[messages.length - 1].role === "user");
     if (shouldScroll) {
-      requestAnimationFrame(() => scrollToBottom());
+      // Use set timeout 0 to ensure DOM is fully rendered and browser calculated height
+      const timer = setTimeout(() => {
+        scrollToBottom();
+      }, 0);
+      return () => clearTimeout(timer);
     }
   });
 
@@ -232,8 +240,6 @@
     overflow-y: auto;
     height: 100%;
     gap: 12px;
-    /* Prevent browser from anchoring scroll to top elements during streaming updates */
-    overflow-anchor: none;
   }
 
   .jump-to-bottom {

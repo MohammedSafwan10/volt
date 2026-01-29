@@ -1061,6 +1061,9 @@ impl CdpManager {
                                 // Element was selected! Emit event and clear
                                 let _ = app_clone.emit("browser://element-selected", value.clone());
                                 
+                                // Also emit that select mode is now off
+                                let _ = app_clone.emit("browser://select-mode", false);
+                                
                                 // Clear the selection
                                 let _ = page.evaluate("window.__voltSelectedElement = null".to_string()).await;
                                 break;

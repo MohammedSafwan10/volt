@@ -57,7 +57,7 @@ export async function handleGetOpenFiles(): Promise<ToolResult> {
   const activeFile = editorStore.activeFile;
   const lines = openFiles.map(f => {
     const isActive = f.path === activeFile?.path;
-    const modified = f.isDirty ? ' (modified)' : '';
+    const modified = editorStore.isDirty(f.path) ? ' (modified)' : '';
     return `${isActive ? '→ ' : '  '}${f.path}${modified}`;
   });
   

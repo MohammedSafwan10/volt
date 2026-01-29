@@ -324,26 +324,18 @@ Requires Prettier installed in project (npm install -D prettier).`,
   // ============================================
   {
     name: 'run_command',
-    description: `Run a shell command and wait for completion.
+    description: `Run a shell command and wait for its completion. 
+Executes in an isolated terminal to prevent interference with other processes.
 
 CRITICAL RULES:
-1. Do NOT chain commands with && or || (doesn't work in PowerShell)
-2. Call run_command ONCE per command, wait for result before next
-3. Do NOT use for long-running commands (use start_process instead)
-
-For git workflow, call SEPARATELY and WAIT between each:
-1. run_command({ command: "git add ." })
-2. run_command({ command: "git commit -m \\"message\\"" })
-3. run_command({ command: "git push" })
-
-Examples of valid commands:
-- npm install, npm run build
-- git add, git commit, git push (ONE at a time!)
-- mkdir, cp, mv, rm`,
+1. Supports command chaining (&&, ||, ;)
+2. Each run_command executes independently
+3. Use only for short-running tasks (install, git, mkdir, etc.)
+4. For interactive prompts after start, use "send_terminal_input"`,
     parameters: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Single command to run (no && or ||)' },
+        command: { type: 'string', description: 'The command to execute' },
         cwd: { type: 'string', description: 'Working directory (optional)' },
         timeout: { type: 'number', description: 'Timeout ms (default: 60000)' }
       },
@@ -355,14 +347,13 @@ Examples of valid commands:
   },
   {
     name: 'start_process',
-    description: `Start a background process (dev servers, watchers, etc.).
-Returns a processId to track the process.
+    description: `Start a long-running background process (dev servers, watchers, etc.).
+Runs in its own persistent terminal instance.
 
 Use this for:
 - npm run dev, yarn start, pnpm dev
 - webpack --watch, vite
-- nodemon, ts-node-dev
-- Any long-running command
+- any command that doesn't exit immediately
 
 After starting, use "get_process_output" to check status.`,
     parameters: {
@@ -425,6 +416,21 @@ After starting, use "get_process_output" to check status.`,
       properties: {
         maxLines: { type: 'number', description: 'Lines to return (default: 100)' }
       }
+    },
+    category: 'terminal',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'send_terminal_input',
+    description: 'Send raw text input to an active terminal process (e.g. answering "y/n" prompts, interacting with a REPL).',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The text to send (e.g. "y", "n", "exit")' },
+        processId: { type: 'number', description: 'Process ID to send input to (optional, defaults to last started process)' }
+      },
+      required: ['text']
     },
     category: 'terminal',
     requiresApproval: false,
@@ -608,10 +614,10 @@ Use when: User wants to apply a specific ESLint fix from the list.`,
     parameters: {
       type: 'object',
       properties: {
-        paths: { 
-          type: 'array', 
-          items: { type: 'string' }, 
-          description: 'Files to check, e.g. ["src/app.ts", "src/utils.ts"]' 
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Files to check, e.g. ["src/app.ts", "src/utils.ts"]'
         }
       }
     },
@@ -832,7 +838,7 @@ Use when: User wants to apply a specific ESLint fix from the list.`,
     requiresApproval: false,
     allowedModes: ['agent']
   },
-  
+
   // Plan mode tool
   {
     name: 'write_plan_file',
@@ -881,12 +887,12 @@ export function isToolAllowed(toolName: string, mode: 'ask' | 'plan' | 'agent'):
  */
 export function getAllToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
   const builtInTools = getToolsForMode(mode);
-  
+
   // MCP tools only available in agent mode
   if (mode === 'agent') {
     const mcpTools = getMcpToolDefinitions();
     return [...builtInTools, ...mcpTools];
   }
-  
+
   return builtInTools;
 }

@@ -40,6 +40,10 @@ dirs = "5"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# Chat history persistence
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+
 # CDP (Chrome DevTools Protocol) - Browser automation like Playwright/Puppeteer
 chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"] }
 futures = "0.3"
