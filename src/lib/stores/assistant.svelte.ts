@@ -11,6 +11,7 @@
 import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
 import { getModelConfig } from '$lib/services/ai/models';
+import { countTokens, countConversationTokens, type ContentType } from '$lib/services/token-counter';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool';
@@ -170,9 +171,6 @@ export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputT
 
 // Default context limit if model not found
 const DEFAULT_CONTEXT_LIMIT = { inputTokens: 1_000_000, outputTokens: 8_192 };
-
-// Rough estimate: ~4 characters per token (conservative for code)
-const CHARS_PER_TOKEN = 4;
 
 // Context packing limits
 export const CONTEXT_LIMITS = {
@@ -368,6 +366,89 @@ class AssistantStore {
   }
 
   /**
+   * Start a fresh conversation (clears current and creates new ID)
+   * Called by UI when user clicks "New Chat"
+   */
+  newConversation(): void {
+    // Clear current state
+    this.messages = [];
+    this.activeToolCalls = [];
+    this.pendingAttachments = [];
+    this.inputValue = "";
+    this.currentMode = 'agent';
+
+    // Initialize fresh conversation
+    this.currentConversation = {
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+      messages: []
+    };
+  }
+
+  /**
+   * Load a conversation from chat history
+   * Restores messages and mode from persisted data
+   */
+  loadConversation(conversation: {
+    id: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    isPinned: boolean;
+    mode: string;
+    messages: Array<{
+      id: string;
+      role: string;
+      content: string;
+      timestamp: number;
+      metadata?: string;
+    }>;
+  }): void {
+    // Clear current state
+    this.activeToolCalls = [];
+    this.pendingAttachments = [];
+    this.inputValue = "";
+
+    // Restore mode
+    this.currentMode = (conversation.mode as AIMode) || 'agent';
+
+    // Convert persisted messages to AssistantMessage format
+    const restoredMessages: AssistantMessage[] = conversation.messages.map(msg => {
+      const base: AssistantMessage = {
+        id: msg.id,
+        role: msg.role as MessageRole,
+        content: msg.content,
+        timestamp: msg.timestamp,
+      };
+
+      // Restore metadata (tool calls, attachments, etc.)
+      if (msg.metadata) {
+        try {
+          const meta = JSON.parse(msg.metadata);
+          if (meta.attachments) base.attachments = meta.attachments;
+          if (meta.toolCalls) base.toolCalls = meta.toolCalls;
+          if (meta.inlineToolCalls) base.inlineToolCalls = meta.inlineToolCalls;
+          if (meta.contentParts) base.contentParts = meta.contentParts;
+          if (meta.thinking) base.thinking = meta.thinking;
+        } catch (e) {
+          console.warn('[AssistantStore] Failed to parse message metadata:', e);
+        }
+      }
+
+      return base;
+    });
+
+    this.messages = restoredMessages;
+
+    // Set current conversation
+    this.currentConversation = {
+      id: conversation.id,
+      createdAt: conversation.createdAt,
+      messages: restoredMessages
+    };
+  }
+
+  /**
    * Get current mode capabilities
    */
   get modeCapabilities() {
@@ -543,6 +624,15 @@ class AssistantStore {
       isStreaming
     };
     this.messages = [...this.messages, message];
+
+    // Update conversation
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: [...this.currentConversation.messages, message]
+      };
+    }
+
     return id;
   }
 
@@ -553,6 +643,18 @@ class AssistantStore {
       const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
       return { ...msg, content, isStreaming, endTime };
     });
+
+    // Also update in currentConversation
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(msg => {
+          if (msg.id !== id) return msg;
+          const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
+          return { ...msg, content, isStreaming, endTime };
+        })
+      };
+    }
   }
 
   updateAssistantThinking(id: string, thinking: string, isThinking = true): void {
@@ -1102,35 +1204,60 @@ class AssistantStore {
   }
 
   /**
-   * Estimate token count from character count
+   * Estimate token count from character count (uses accurate token counter)
    */
-  estimateTokens(charCount: number): number {
-    return Math.ceil(charCount / CHARS_PER_TOKEN);
+  estimateTokens(charCount: number, contentType: ContentType = 'mixed'): number {
+    return countTokens('x'.repeat(charCount), contentType);
   }
 
   /**
-   * Get total conversation context size in characters
+   * Get accurate token count for the entire conversation
+   * Uses content-aware token counting (code vs prose vs mixed)
+   */
+  getConversationTokens(): number {
+    const messagesForCount = this.messages.map(msg => ({
+      content: msg.content + (msg.thinking ? `\n${msg.thinking}` : ''),
+      attachments: msg.attachments?.map(a => {
+        if (a.type === 'file' || a.type === 'selection') {
+          return { type: a.type, content: (a as FileAttachment | SelectionAttachment).content };
+        }
+        if (a.type === 'image') {
+          return { type: a.type, data: (a as ImageAttachment).data };
+        }
+        return { type: a.type };
+      })
+    }));
+
+    const pendingAtts = this.pendingAttachments.map(a => {
+      if (a.type === 'file' || a.type === 'selection') {
+        return { type: a.type, content: (a as FileAttachment | SelectionAttachment).content };
+      }
+      if (a.type === 'image') {
+        return { type: a.type, data: (a as ImageAttachment).data };
+      }
+      return { type: a.type };
+    });
+
+    return countConversationTokens(messagesForCount, this.inputValue, pendingAtts);
+  }
+
+  /**
+   * Get total conversation context size in characters (legacy, for compatibility)
    * Includes all messages + pending attachments + input
    */
   getConversationContextChars(): number {
     let total = 0;
 
-    // Count all messages
     for (const msg of this.messages) {
       total += msg.content.length;
-
-      // Count thinking content if present
       if (msg.thinking) {
         total += msg.thinking.length;
       }
-
-      // Count attachments in messages
       if (msg.attachments) {
         for (const a of msg.attachments) {
           if (a.type === 'file' || a.type === 'selection') {
             total += (a as FileAttachment | SelectionAttachment).content.length;
           }
-          // Images are counted differently (base64 is ~1.33x the byte size)
           if (a.type === 'image') {
             total += (a as ImageAttachment).data.length;
           }
@@ -1138,17 +1265,14 @@ class AssistantStore {
       }
     }
 
-    // Add pending attachments
     total += this.getTotalContextSize();
-
-    // Add current input
     total += this.inputValue.length;
 
     return total;
   }
 
   /**
-   * Get context usage info for UI display
+   * Get context usage info for UI display (uses accurate token counting)
    */
   getContextUsage(model = 'gemini-2.5-flash'): {
     usedTokens: number;
@@ -1158,14 +1282,12 @@ class AssistantStore {
     isNearLimit: boolean;
     isOverLimit: boolean;
   } {
-    // Try model registry first, then fall back to old limits
     const modelConfig = getModelConfig(model);
 
     let maxTokens: number;
     if (modelConfig) {
       maxTokens = modelConfig.contextWindow;
     } else {
-      // Fallback to old method
       const normalizedModel = model
         .replace(/\|thinking$/g, '')
         .replace(/^models\//g, '');
@@ -1174,7 +1296,7 @@ class AssistantStore {
     }
 
     const usedChars = this.getConversationContextChars();
-    const usedTokens = this.estimateTokens(usedChars);
+    const usedTokens = this.getConversationTokens(); // Use accurate counting
     const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
 
     return {
