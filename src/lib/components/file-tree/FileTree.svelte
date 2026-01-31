@@ -749,6 +749,36 @@
       projectStore.removeNode(node.path);
     }
   }
+
+  async function handleDeleteSelection(): Promise<void> {
+    closeContextMenu();
+
+    const selected = [...projectStore.selectedPaths].filter(
+      (path) => !path.startsWith("__draft__:"),
+    );
+
+    if (selected.length === 0) return;
+
+    const confirmed = await requestConfirm({
+      title: "Delete",
+      message:
+        selected.length === 1
+          ? `Delete "${selected[0].split(/[\\/]/).pop() ?? selected[0]}"?`
+          : `Delete ${selected.length} selected items?`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    for (const path of selected) {
+      const ok = await deletePath(path);
+      if (ok) {
+        projectStore.removeNode(path);
+      }
+    }
+
+    projectStore.clearSelection();
+  }
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -941,7 +971,10 @@
         class="context-item danger"
         role="menuitem"
         type="button"
-        onclick={() => contextNode && void handleDelete(contextNode)}
+        onclick={() =>
+          projectStore.selectedPaths.size > 1
+            ? void handleDeleteSelection()
+            : contextNode && void handleDelete(contextNode)}
       >
         <UIIcon name="trash" size={16} />
         <span>Delete</span>

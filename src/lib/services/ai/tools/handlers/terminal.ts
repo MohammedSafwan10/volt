@@ -18,6 +18,9 @@ import { logOutput } from '$lib/stores/output.svelte';
 import type { TerminalSession } from '$lib/services/terminal-client';
 import { truncateOutput, extractErrorMessage, type ToolResult } from '../utils';
 
+let aiCommandQueue: Promise<ToolResult> = Promise.resolve({ success: true, output: '' });
+const recentAiCommands = new Map<string, { command: string; timestamp: number }>();
+
 /**
  * Get or create a dedicated terminal for a background process.
  */
@@ -163,132 +166,162 @@ const processes = {
  * Run a shell command and wait for completion using a UUID sentinel
  */
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
-  const command = String(args.command);
+  const command = String(args.command).trim();
   const cwd = args.cwd ? String(args.cwd) : undefined;
   const timeout = Number(args.timeout) || 300000;
 
-  try {
-    // Ensure terminal panel is open so user sees progress
-    uiStore.openBottomPanelTab('terminal');
+  const run = async (): Promise<ToolResult> => {
+    try {
+      // Ensure terminal panel is open so user sees progress
+      uiStore.openBottomPanelTab('terminal');
 
-    // Get or create the shared AI terminal
-    const session = await terminalStore.getOrCreateAiTerminal(cwd);
-    if (!session) {
-      return { success: false, error: 'Failed to access AI terminal' };
-    }
+      // Get or create the shared AI terminal
+      const session = await terminalStore.getOrCreateAiTerminal(cwd);
+      if (!session) {
+        return { success: false, error: 'Failed to access AI terminal' };
+      }
 
-    // Switch to this terminal in the UI
-    terminalStore.setActive(session.id);
+      await session.waitForReady(3000);
+      if (!session.hasShellIntegration) {
+        await session.enableShellIntegration();
+      }
 
-    console.log(`[TerminalTool] Executing command: "${command}" in cwd: "${cwd || session.cwd || session.info.cwd}"`);
+      // Switch to this terminal in the UI
+      terminalStore.setActive(session.id);
 
-    // If a different CWD is requested, cd there first
-    const currentCwd = session.cwd || session.info.cwd;
-    if (cwd && currentCwd !== cwd) {
-      const safeCwd = cwd.replace(/'/g, "''");
-      await session.write(`Set-Location -LiteralPath '${safeCwd}'\r`);
-      // Wait a bit for the CWD to update
-      await new Promise(resolve => setTimeout(resolve, 300));
-    }
+      const slowListPatterns = [/\bls\s+-R\b/i, /\bdir\s+\/s\b/i, /\bGet-ChildItem\b.*-Recurse/i];
+      if (slowListPatterns.some((pattern) => pattern.test(command))) {
+        return {
+          success: true,
+          output: 'Skipping slow recursive listing. Use get_file_tree for a fast, structured tree output instead.',
+          meta: { terminalId: session.id, skipped: true }
+        };
+      }
 
-    // Heuristic: Warn if running a command that looks like a dev server in run_command
-    const isDevServer = /\b(dev|serve|start|watch)\b/i.test(command) && command.includes('npm') || command.includes('yarn');
-    if (isDevServer) {
-      logOutput('Volt', `Warning: Running potential long-running command "${command}" in run_command. If this is a server, use start_process instead.`);
-    }
+      const now = Date.now();
+      const recent = recentAiCommands.get(session.id);
+      if (recent && recent.command === command && now - recent.timestamp < 800) {
+        return {
+          success: true,
+          output: `[Volt]: Skipped duplicate command (debounced): ${command}`,
+          meta: { terminalId: session.id, debounced: true }
+        };
+      }
+      recentAiCommands.set(session.id, { command, timestamp: now });
 
-    // 195: Execute the command using smart shell integration (OSC 633)
-    // We add a "smart detach" race: if it looks like a dev server and shows "Ready" output, 
-    // we return early so the AI doesn't get stuck.
+      console.log(`[TerminalTool] Executing command: "${command}" in cwd: "${cwd || session.cwd || session.info.cwd}"`);
 
-    const executionPromise = session.executeCommand(command, timeout);
+      // If a different CWD is requested, cd there first
+      const currentCwd = session.cwd || session.info.cwd;
+      if (cwd && currentCwd !== cwd) {
+        const safeCwd = cwd.replace(/'/g, "''");
+        await session.write(`Set-Location -LiteralPath '${safeCwd}'\r`);
+        // Wait a bit for the CWD to update
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
 
-    // Poller for "Ready" signals in long-running commands
-    const detectionPromise = (async () => {
-      const waitTime = isDevServer ? 8000 : 15000;
-      const startTime = Date.now();
-      const startOffset = session.getRecentOutput().length;
+      // Heuristic: Warn if running a command that looks like a dev server in run_command
+      const isDevServer = /\b(dev|serve|start|watch)\b/i.test(command) && command.includes('npm') || command.includes('yarn');
+      if (isDevServer) {
+        logOutput('Volt', `Warning: Running potential long-running command "${command}" in run_command. If this is a server, use start_process instead.`);
+      }
 
-      while (Date.now() - startTime < waitTime) {
-        await new Promise(r => setTimeout(r, 500));
-        const output = session.getCleanOutputSince(startOffset);
+      // 195: Execute the command using smart shell integration (OSC 633)
+      // We add a "smart detach" race: if it looks like a dev server and shows "Ready" output, 
+      // we return early so the AI doesn't get stuck.
 
-        // Typical "Server is ready" patterns
-        const isReady = /\b(ready|started|listening|localhost:|0\.0\.0\.0:)\b/i.test(output);
+      const executionPromise = session.executeCommand(command, timeout);
 
-        if (isReady && Date.now() - startTime > 2000) { // Give it at least 2s to show initial errors
-          return { ready: true, output };
+      // Poller for "Ready" signals in long-running commands
+      const detectionPromise = (async () => {
+        const waitTime = isDevServer ? 8000 : 15000;
+        const startTime = Date.now();
+        const startOffset = session.getRecentOutput().length;
+
+        while (Date.now() - startTime < waitTime) {
+          await new Promise(r => setTimeout(r, 500));
+          const output = session.getCleanOutputSince(startOffset);
+
+          // Typical "Server is ready" patterns
+          const isReady = /\b(ready|started|listening|localhost:|0\.0\.0\.0:)\b/i.test(output);
+
+          if (isReady && Date.now() - startTime > 2000) { // Give it at least 2s to show initial errors
+            return { ready: true, output };
+          }
+        }
+        return { ready: false };
+      })();
+
+      const result = await Promise.race([
+        executionPromise.then(r => ({ type: 'completion' as const, data: r })),
+        detectionPromise.then(r => ({ type: 'detection' as const, data: r }))
+      ]);
+
+      let finalOutput = '';
+      let success = false;
+      let isDetached = false;
+
+      if (result.type === 'completion') {
+        finalOutput = result.data.output;
+        success = result.data.exitCode === 0 && !result.data.timedOut;
+      } else {
+        if (result.data.ready) {
+          finalOutput = result.data.output + '\n\n[Volt AI]: Detected server startup. Detaching to let it run in background.';
+          success = true;
+          isDetached = true;
+        } else {
+          // Detection timed out, wait for actual completion
+          const finalResult = await executionPromise;
+          finalOutput = finalResult.output;
+          success = finalResult.exitCode === 0 && !finalResult.timedOut;
         }
       }
-      return { ready: false };
-    })();
 
-    const result = await Promise.race([
-      executionPromise.then(r => ({ type: 'completion' as const, data: r })),
-      detectionPromise.then(r => ({ type: 'detection' as const, data: r }))
-    ]);
+      const { text, truncated } = truncateOutput(finalOutput);
 
-    let finalOutput = '';
-    let success = false;
-    let isDetached = false;
-
-    if (result.type === 'completion') {
-      finalOutput = result.data.output;
-      success = result.data.exitCode === 0 && !result.data.timedOut;
-    } else {
-      if (result.data.ready) {
-        finalOutput = result.data.output + '\n\n[Volt AI]: Detected server startup. Detaching to let it run in background.';
-        success = true;
-        isDetached = true;
-      } else {
-        // Detection timed out, wait for actual completion
-        const finalResult = await executionPromise;
-        finalOutput = finalResult.output;
-        success = finalResult.exitCode === 0 && !finalResult.timedOut;
-      }
-    }
-
-    const { text, truncated } = truncateOutput(finalOutput);
-
-    const toolResult = {
-      success,
-      output: text.trim() || (success ? '[Success - no output]' : '[Failed - no output]'),
-      truncated,
-      meta: {
-        exitCode: result.type === 'completion' ? result.data.exitCode : 0,
-        timedOut: result.type === 'completion' ? result.data.timedOut : false,
-        terminalId: session.id,
-        isDevServer,
-        isDetached,
-        hasError: !success || /\b(error|failed|exception)\b/i.test(finalOutput)
-      }
-    };
-
-    // Improve timeout message for humans/AI
-    if (toolResult.meta.timedOut) {
-      toolResult.output = `Command timed out after ${timeout}ms. Output so far:\n\n${toolResult.output}`;
-      if (isDevServer) {
-        toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
-      }
-    }
-
-    // Notify store of errors for the "Fix with AI" feature
-    if (!toolResult.success && !isDetached) {
-      terminalStore.lastError = {
-        terminalId: session.id,
-        command,
-        output: finalOutput
+      const toolResult = {
+        success,
+        output: text.trim() || (success ? '[Success - no output]' : '[Failed - no output]'),
+        truncated,
+        meta: {
+          exitCode: result.type === 'completion' ? result.data.exitCode : 0,
+          timedOut: result.type === 'completion' ? result.data.timedOut : false,
+          terminalId: session.id,
+          isDevServer,
+          isDetached,
+          hasError: !success || /\b(error|failed|exception)\b/i.test(finalOutput)
+        }
       };
-    }
 
-    if (projectStore.rootPath) {
-      void projectDiagnostics.runDiagnostics(projectStore.rootPath);
-    }
+      // Improve timeout message for humans/AI
+      if (toolResult.meta.timedOut) {
+        toolResult.output = `Command timed out after ${timeout}ms. Output so far:\n\n${toolResult.output}`;
+        if (isDevServer) {
+          toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
+        }
+      }
 
-    return toolResult;
-  } catch (err) {
-    return { success: false, error: `Command execution failed: ${extractErrorMessage(err)}` };
-  }
+      // Notify store of errors for the "Fix with AI" feature
+      if (!toolResult.success && !isDetached) {
+        terminalStore.lastError = {
+          terminalId: session.id,
+          command,
+          output: finalOutput
+        };
+      }
+
+      if (projectStore.rootPath) {
+        void projectDiagnostics.runDiagnostics(projectStore.rootPath);
+      }
+
+      return toolResult;
+    } catch (err) {
+      return { success: false, error: `Command execution failed: ${extractErrorMessage(err)}` };
+    }
+  };
+
+  aiCommandQueue = aiCommandQueue.then(run, run);
+  return aiCommandQueue;
 }
 
 /**

@@ -280,6 +280,7 @@
 		height: 100%;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 		background: var(--color-bg);
 	}
 
@@ -289,6 +290,7 @@
 
 	.terminal-container {
 		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 		background: var(--color-bg);
 		border-left: 1px solid
@@ -297,7 +299,7 @@
 
 	/* xterm.js styles */
 	:global(.terminal-view .xterm) {
-		padding: 10px 12px;
+		padding: 6px 10px;
 		height: 100%;
 	}
 

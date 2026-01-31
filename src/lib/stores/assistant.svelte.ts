@@ -861,6 +861,11 @@ class AssistantStore {
 
     try {
       const { chatHistoryStore } = await import('./chat-history.svelte');
+      try {
+        await chatHistoryStore.createConversation(convId, this.currentMode);
+      } catch (createErr) {
+        console.debug('[AssistantStore] Conversation may already exist:', createErr);
+      }
       const metadata = JSON.stringify({
         attachments: msg.attachments,
         toolCalls: msg.toolCalls,

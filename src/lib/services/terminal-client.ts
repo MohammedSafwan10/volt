@@ -315,8 +315,16 @@ export class TerminalSession {
 			for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
 		}
 
-		if (this.onDataCallback) this.onDataCallback(payload.data);
-		else this.bufferData(payload.data);
+		const displayData = cleanData || payload.data;
+		const filteredDisplay = displayData
+			.replace(/__VOLT_EXIT_CODE_\d+__/g, '')
+			.replace(/__VOLT_DONE_[A-Za-z0-9]+__/g, '')
+			.replace(/^\s*\$voltExit.*\r?\n?/gm, '');
+
+		if (filteredDisplay) {
+			if (this.onDataCallback) this.onDataCallback(filteredDisplay);
+			else this.bufferData(filteredDisplay);
+		}
 	}
 
 	public handleExitEvent(payload: TerminalExitEvent): void {
