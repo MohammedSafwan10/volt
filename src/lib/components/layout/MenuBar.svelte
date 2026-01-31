@@ -34,6 +34,12 @@
     items: MenuItem[];
   }
 
+  function handleSetThemeDarkModern() {
+    uiStore.closeMenus();
+    themeStore.setMode("dark-modern");
+    showToast({ message: "Theme set to Dark Modern", type: "info" });
+  }
+
   function handleSetThemeDark() {
     uiStore.closeMenus();
     themeStore.setMode("dark");
@@ -54,9 +60,8 @@
 
   function handleSetThemeSystem() {
     uiStore.closeMenus();
-    themeStore.setMode("system");
     showToast({
-      message: `Theme set to System (${themeStore.resolvedTheme === "dark" ? "Dark" : "Light"})`,
+      message: `System theme sync removed. Defaulting to Dark Modern.`,
       type: "info",
     });
   }
@@ -294,6 +299,11 @@
           label: "Theme",
           submenu: [
             {
+              label: "Dark Modern",
+              action: handleSetThemeDarkModern,
+              checked: themeStore.mode === "dark-modern",
+            },
+            {
               label: "Dark",
               action: handleSetThemeDark,
               checked: themeStore.mode === "dark",
@@ -307,11 +317,6 @@
               label: "Light",
               action: handleSetThemeLight,
               checked: themeStore.mode === "light",
-            },
-            {
-              label: "System",
-              action: handleSetThemeSystem,
-              checked: themeStore.mode === "system",
             },
           ],
         },
