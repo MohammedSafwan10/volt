@@ -9,6 +9,7 @@
   import { UIIcon, type UIIconName } from "$lib/components/ui";
   import { editorStore } from "$lib/stores/editor.svelte";
   import { projectStore } from "$lib/stores/project.svelte";
+  import { projectDiagnostics } from "$lib/services/project-diagnostics";
   import type {
     ToolCall,
     ToolCallStatus,
@@ -78,6 +79,11 @@
       endLine: problem.endLine || problem.line,
       endColumn: problem.endColumn || problem.column,
     });
+  }
+
+  async function handleRefreshDiagnostics(): Promise<void> {
+    if (!projectStore.rootPath) return;
+    await projectDiagnostics.runDiagnostics(projectStore.rootPath);
   }
 
   // Tool display names (more user-friendly)
@@ -429,9 +435,13 @@
   });
 
   const diagnosticSummary = $derived.by(() => {
-    if (toolCall.name !== "get_diagnostics" || !toolCall.meta) return null;
+    if (!toolCall.meta) return null;
     const meta = toolCall.meta as any;
-    const items = (meta.problems || []) as (Problem & {
+    const diagnosticsMeta = toolCall.name === "get_diagnostics"
+      ? meta
+      : meta.diagnostics;
+    if (!diagnosticsMeta) return null;
+    const items = (diagnosticsMeta.problems || []) as (Problem & {
       relativePath: string;
     })[];
 
@@ -443,9 +453,9 @@
     }
 
     return {
-      errorCount: meta.errorCount || 0,
-      warningCount: meta.warningCount || 0,
-      fileCount: meta.fileCount || 0,
+      errorCount: diagnosticsMeta.errorCount || 0,
+      warningCount: diagnosticsMeta.warningCount || 0,
+      fileCount: diagnosticsMeta.fileCount || 0,
       files: Array.from(byFile.entries()).map(([path, problems]) => ({
         path,
         problems,
@@ -510,12 +520,10 @@
     >
       <span
         class="tool-icon category-{getToolCategory()}"
-        class:spinning={isRunning && !isStreaming}
+        class:spinning={isRunning}
       >
-        {#if isStreaming}
-          <UIIcon name="pencil" size={12} />
-        {:else if isRunning}
-          <UIIcon name="spinner" size={12} />
+        {#if isRunning}
+          <UIIcon name="spinner" size={12} class="animate-spin" />
         {:else}
           <UIIcon name={getToolIcon()} size={12} />
         {/if}
@@ -523,86 +531,106 @@
 
       <span class="tool-name">{getToolDisplayName()}</span>
 
-      {#if diagnosticSummary}
-        <div class="diag-mini-summary">
-          {#if diagnosticSummary.errorCount > 0}
-            <span class="diag-badge error"
-              >{diagnosticSummary.errorCount} Errors</span
-            >
-          {/if}
-          {#if diagnosticSummary.warningCount > 0}
-            <span class="diag-badge warning"
-              >{diagnosticSummary.warningCount} Warnings</span
-            >
-          {/if}
-          {#if diagnosticSummary.errorCount === 0 && diagnosticSummary.warningCount === 0}
-            <span class="diag-badge success">Clean</span>
-          {/if}
-        </div>
-      {:else if files.length > 0}
-        <div class="files-container" class:multi={files.length > 1}>
-          {#each files as file}
-            <div
-              class="file-pill"
-              class:is-loading={isRunning}
-              role="button"
-              tabindex="0"
-              onclick={(e) => {
-                e.stopPropagation();
-                handleFileClick(file.path);
-              }}
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+      <div class="header-right-meta">
+        {#if diagnosticSummary}
+          <div class="diag-mini-summary">
+            {#if diagnosticSummary.errorCount > 0}
+              <span class="diag-badge error"
+                >{diagnosticSummary.errorCount} Errors</span
+              >
+            {/if}
+            {#if diagnosticSummary.warningCount > 0}
+              <span class="diag-badge warning"
+                >{diagnosticSummary.warningCount} Warnings</span
+              >
+            {/if}
+            {#if diagnosticSummary.errorCount === 0 && diagnosticSummary.warningCount === 0}
+              <span class="diag-badge success">Clean</span>
+            {/if}
+          </div>
+          <span
+            class="diag-refresh"
+            role="button"
+            tabindex="0"
+            title="Refresh diagnostics"
+            onclick={(event) => {
+              event.stopPropagation();
+              void handleRefreshDiagnostics();
+            }}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.stopPropagation();
+                void handleRefreshDiagnostics();
+              }
+            }}
+          >
+            <UIIcon name="refresh" size={12} />
+          </span>
+        {:else if files.length > 0}
+          <div class="files-container" class:multi={files.length > 1}>
+            {#each files as file}
+              <div
+                class="file-pill"
+                class:is-loading={isRunning}
+                role="button"
+                tabindex="0"
+                onclick={(e) => {
                   e.stopPropagation();
                   handleFileClick(file.path);
-                }
-              }}
-              aria-label="Open {file.filename}"
-            >
-              {#if isRunning && !isStreaming}
-                <UIIcon name="spinner" size={14} class="spinner-icon" />
-              {:else if isStreaming}
-                <UIIcon name="spinner" size={14} class="spinner-icon" />
-              {:else}
-                <UIIcon name={file.icon} size={14} />
-              {/if}
-              <span class="filename">{file.filename}</span>
+                }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    handleFileClick(file.path);
+                  }
+                }}
+                aria-label="Open {file.filename}"
+              >
+                {#if isRunning && !isStreaming}
+                  <UIIcon name="spinner" size={14} class="spinner-icon" />
+                {:else if isStreaming}
+                  <UIIcon name="spinner" size={14} class="spinner-icon" />
+                {:else}
+                  <UIIcon name={file.icon} size={14} />
+                {/if}
+                <span class="filename">{file.filename}</span>
 
-              {#if isStreaming && streamingProgress}
-                <div class="pill-progress-bar">
-                  <div
-                    class="pill-progress-fill"
-                    style="width: {streamingProgress.percent}%"
-                  ></div>
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if diffStats && (isComplete || isStreaming)}
-        <div class="diff-stats">
-          {#if diffStats.added > 0}
-            <span class="stat-added">+{diffStats.added}</span>
-          {/if}
-          {#if diffStats.removed > 0}
-            <span class="stat-removed">-{diffStats.removed}</span>
-          {/if}
-        </div>
-      {/if}
-
-      {#if summary && !isStreaming}
-        {@const isRedundantPath = files.length > 0 && !summary.includes("#L")}
-        {#if !isRedundantPath}
-          <span
-            class="tool-summary"
-            class:is-line-range={summary.includes("#L")}
-          >
-            {summary.includes("#L") ? "#" + summary.split("#")[1] : summary}
-          </span>
+                {#if isStreaming && streamingProgress}
+                  <div class="pill-progress-bar">
+                    <div
+                      class="pill-progress-fill"
+                      style="width: {streamingProgress.percent}%"
+                    ></div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
-      {/if}
+
+        {#if diffStats && (isComplete || isStreaming)}
+          <div class="diff-stats">
+            {#if diffStats.added > 0}
+              <span class="stat-added">+{diffStats.added}</span>
+            {/if}
+            {#if diffStats.removed > 0}
+              <span class="stat-removed">-{diffStats.removed}</span>
+            {/if}
+          </div>
+        {/if}
+
+        {#if summary && !isStreaming}
+          {@const isRedundantPath = files.length > 0 && !summary.includes("#L")}
+          {#if !isRedundantPath}
+            <span
+              class="tool-summary"
+              class:is-line-range={summary.includes("#L")}
+            >
+              {summary.includes("#L") ? "#" + summary.split("#")[1] : summary}
+            </span>
+          {/if}
+        {/if}
+      </div>
 
       <span class="tool-status-icon">
         {#if isStreaming}
@@ -891,6 +919,37 @@
     font-weight: 400;
     color: var(--color-text-secondary);
     white-space: nowrap;
+    transition: opacity 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .header-right-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .inline-tool-call.running .tool-name {
+    animation: shimmer 2s infinite linear;
+    background: linear-gradient(
+      90deg,
+      var(--color-text-secondary) 0%,
+      var(--color-text) 50%,
+      var(--color-text-secondary) 100%
+    );
+    background-size: 200% auto;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  @keyframes shimmer {
+    to {
+      background-position: 200% center;
+    }
   }
 
   .files-container {
@@ -913,6 +972,29 @@
     margin-left: -4px;
   }
 
+  .diag-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-left: 6px;
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .diag-refresh:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--color-text);
+  }
+
+  .diag-refresh:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   .diag-badge {
     padding: 2px 6px;
     border-radius: 4px;
@@ -920,190 +1002,61 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.2px;
+    backdrop-filter: blur(4px);
+    transition: all 0.2s ease;
   }
 
   .diag-badge.error {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgba(239, 68, 68, 0.1);
     color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
   .diag-badge.warning {
-    background: rgba(245, 158, 11, 0.15);
+    background: rgba(245, 158, 11, 0.1);
     color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.2);
   }
   .diag-badge.success {
-    background: rgba(34, 197, 94, 0.15);
+    background: rgba(34, 197, 94, 0.1);
     color: #4ade80;
-  }
-
-  /* Diagnostic Details */
-  .diagnostic-details {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding-top: 4px;
-  }
-
-  .diag-file-group {
-    display: flex;
-    flex-direction: column;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 8px;
-    border: 1px solid var(--color-border-subtle);
-    overflow: hidden;
-  }
-
-  .diag-file-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    background: rgba(255, 255, 255, 0.02);
-    border: none;
-    border-bottom: 1px solid var(--color-border-subtle);
-    width: 100%;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s ease;
-  }
-
-  .diag-file-header:hover {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .diag-filename {
-    flex: 1;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-text);
-    opacity: 0.9;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .diag-file-badges {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .diag-count-badge {
-    min-width: 16px;
-    height: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    font-size: 9px;
-    font-weight: 700;
-    padding: 0 4px;
-  }
-
-  .diag-count-badge.error {
-    background: #ef4444;
-    color: white;
-  }
-  .diag-count-badge.warning {
-    background: #f59e0b;
-    color: black;
-  }
-
-  .diag-problems {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .diag-problem-row {
-    display: grid;
-    grid-template-columns: 20px 35px 1fr auto;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 6px 12px;
-    border: none;
-    background: none;
-    width: 100%;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s ease;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-  }
-
-  .diag-problem-row:last-child {
-    border-bottom: none;
-  }
-
-  .diag-problem-row:hover {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .diag-problem-severity {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 14px;
-    margin-top: 1px;
-  }
-
-  .diag-problem-severity.error {
-    color: #ef4444;
-  }
-  .diag-problem-severity.warning {
-    color: #f59e0b;
-  }
-
-  .diag-problem-loc {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-text-disabled);
-    margin-top: 2px;
-  }
-
-  .diag-problem-msg {
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    line-height: 1.4;
-    padding-bottom: 2px;
-  }
-
-  .diag-problem-code {
-    font-size: 10px;
-    color: var(--color-text-disabled);
-    opacity: 0.7;
-    margin-top: 2px;
+    border: 1px solid rgba(34, 197, 94, 0.2);
   }
 
   .file-pill {
     display: flex;
     align-items: center;
     gap: 6px;
-    background: transparent;
-    padding: 2px 0;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 4px 8px;
+    border-radius: 6px;
     max-width: fit-content;
     min-width: 0;
     position: relative;
     overflow: hidden;
     cursor: pointer;
-    border: none;
+    border: 1px solid rgba(255, 255, 255, 0.05);
     text-align: left;
     font-family: inherit;
-    transition: opacity 0.2s ease;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(4px);
   }
 
   .file-pill:hover {
-    opacity: 0.7;
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
+    transform: translateY(-1px);
   }
 
   .file-pill:hover .filename {
-    text-decoration: underline;
+    color: var(--color-text);
   }
 
   .file-pill.is-loading {
     opacity: 0.8;
   }
 
-  :global(.spinner-icon) {
+  :global(.animate-spin) {
     animation: spin 1s linear infinite;
-    color: var(--color-accent);
   }
 
   @keyframes spin {
@@ -1120,15 +1073,38 @@
     bottom: 0;
     left: 0;
     right: 0;
-    height: 1.5px;
-    background: transparent;
+    height: 2px;
+    background: rgba(var(--color-accent-rgb), 0.1);
   }
 
   .pill-progress-fill {
     height: 100%;
     background: var(--color-accent);
-    transition: width 0.1s ease-out;
-    box-shadow: 0 0 4px var(--color-accent);
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 0 8px var(--color-accent);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .pill-progress-fill::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.3),
+      transparent
+    );
+    animation: progress-shimmer 1.5s infinite;
+  }
+
+  @keyframes progress-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
   }
 
   .filename {
@@ -1338,7 +1314,23 @@
   .tool-details {
     padding: 8px 12px;
     border-top: 1px solid var(--color-border);
-    background: var(--color-bg);
+    background: rgba(var(--color-bg-rgb), 0.3);
+    animation: slide-down 0.2s ease-out;
+    overflow: hidden;
+    backdrop-filter: blur(5px);
+  }
+
+  @keyframes slide-down {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+      max-height: 0;
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      max-height: 1000px;
+    }
   }
 
   .detail-row {
