@@ -44,6 +44,7 @@
   // Scroll state
   let containerRef: HTMLDivElement | undefined = $state();
   let userNearBottom = $state(true);
+  let isFollowing = $state(true);
   let showJumpButton = $state(false);
 
   function openImagePreview(img: ImageAttachment): void {
@@ -65,36 +66,56 @@
     if (!containerRef) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    userNearBottom = distanceFromBottom < 30;
-    showJumpButton = distanceFromBottom > 150;
+
+    const atBottom = distanceFromBottom < 40;
+    userNearBottom = atBottom;
+    showJumpButton = distanceFromBottom > 200;
+
+    // If we're streaming and user manually scrolls up, stop following
+    if (!atBottom && isFollowing && (isStreaming || messages.length > 0)) {
+      // Small buffer to allow minor layout shifts
+      if (distanceFromBottom > 80) {
+        isFollowing = false;
+      }
+    }
+
+    // If user scrolls back to bottom, resume following
+    if (atBottom) {
+      isFollowing = true;
+    }
   }
 
   function jumpToBottom(): void {
-    containerRef?.scrollTo({
+    if (!containerRef) return;
+    containerRef.scrollTo({
       top: containerRef.scrollHeight,
       behavior: "smooth",
     });
-    showJumpButton = false;
+    isFollowing = true;
     userNearBottom = true;
+    showJumpButton = false;
   }
 
-  function scrollToBottom(): void {
+  function scrollToBottom(behavior: ScrollBehavior = "auto"): void {
     if (!containerRef) return;
-    containerRef.scrollTop = containerRef.scrollHeight;
+    containerRef.scrollTo({
+      top: containerRef.scrollHeight,
+      behavior,
+    });
   }
 
   // Auto-scroll effect
   $effect(() => {
-    // Track dependencies more explicitly for streaming content
+    // Track dependencies for streaming content
     messages.forEach((m) => {
       void m.content;
       void m.thinking;
       void m.isStreaming;
       if (m.contentParts) {
-        m.contentParts.forEach(p => {
-          if (p.type === 'text') void p.text;
-          if (p.type === 'thinking') void p.thinking;
-          if (p.type === 'tool') {
+        m.contentParts.forEach((p) => {
+          if (p.type === "text") void p.text;
+          if (p.type === "thinking") void p.thinking;
+          if (p.type === "tool") {
             void p.toolCall.status;
             void p.toolCall.output;
             void p.toolCall.streamingProgress;
@@ -105,21 +126,29 @@
     void messages.length;
 
     if (!containerRef) return;
-    
-    // During streaming, we should follow more aggressively if the user hasn't scrolled up significantly
-    const shouldScroll = userNearBottom || 
-      (messages.length > 0 && messages[messages.length - 1].role === "user") ||
-      (isStreaming && userNearBottom);
+
+    // Logic:
+    // 1. If user just sent a message, always scroll to bottom
+    // 2. If we are streaming and currently following, scroll to bottom
+    // 3. If a new message arrived and we were at the bottom, follow it
+    const lastMsgIsUser =
+      messages.length > 0 && messages[messages.length - 1].role === "user";
+    const shouldScroll =
+      lastMsgIsUser || (isStreaming && isFollowing) || userNearBottom;
 
     if (shouldScroll) {
-      // Immediate scroll for responsiveness during streaming
-      scrollToBottom();
-      
-      // Secondary check to ensure it catches layout shifts
-      const timer = setTimeout(() => {
-        scrollToBottom();
-      }, 30);
-      return () => clearTimeout(timer);
+      // Use requestAnimationFrame to ensure DOM is updated
+      requestAnimationFrame(() => {
+        scrollToBottom(lastMsgIsUser ? "smooth" : "auto");
+
+        // Secondary safety check for dynamic height elements (like images/code blocks)
+        const timer = setTimeout(() => {
+          if (isFollowing || userNearBottom) {
+            scrollToBottom("auto");
+          }
+        }, 100);
+        return () => clearTimeout(timer);
+      });
     }
   });
 
@@ -257,10 +286,10 @@
   .message-list {
     display: flex;
     flex-direction: column;
-    padding: 16px;
+    padding: 12px;
     overflow-y: auto;
     height: 100%;
-    gap: 12px;
+    gap: 8px;
   }
 
   .jump-to-bottom {

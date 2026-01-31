@@ -187,31 +187,35 @@
   }
 
   .user-bubble {
-    max-width: 80%;
-    padding: 10px 14px;
-    background: var(--color-surface1);
+    max-width: 85%;
+    padding: 8px 12px;
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
     color: var(--color-text);
-    border-radius: 12px;
+    border-radius: 8px;
     font-size: 13px;
     line-height: 1.5;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   }
 
   .bubble-text {
     white-space: pre-wrap;
     word-break: break-word;
+    letter-spacing: -0.01em;
   }
 
   .bubble-time {
     font-size: 10px;
-    opacity: 0.7;
+    color: var(--color-text-secondary);
+    opacity: 0.6;
   }
 
   .bubble-footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-top: 6px;
-    gap: 12px;
+    justify-content: flex-end;
+    margin-top: 4px;
+    gap: 8px;
   }
 
   .revert-btn {

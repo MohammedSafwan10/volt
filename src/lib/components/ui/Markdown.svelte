@@ -3,33 +3,33 @@
    * Markdown - Renders markdown content with syntax highlighting
    * Uses marked for parsing and custom styling for code blocks
    */
-  import { marked } from 'marked';
-  import { browserStore } from '$lib/stores/browser.svelte';
+  import { marked } from "marked";
+  import { browserStore } from "$lib/stores/browser.svelte";
 
   interface Props {
     content: string;
     class?: string;
   }
 
-  let { content, class: className = '' }: Props = $props();
+  let { content, class: className = "" }: Props = $props();
 
   // Configure marked for safe rendering
   // Note: breaks: false to avoid excessive <br> tags in lists
   marked.setOptions({
     gfm: true,
-    breaks: false
+    breaks: false,
   });
 
   // Custom renderer for code blocks with copy button support
   const renderer = new marked.Renderer();
-  
+
   renderer.code = ({ text, lang }) => {
-    const language = lang || 'text';
+    const language = lang || "text";
     const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
     return `<div class="code-block" data-lang="${language}">
       <div class="code-header">
         <span class="code-lang">${language}</span>
@@ -46,16 +46,17 @@
 
   renderer.codespan = ({ text }) => {
     const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
     return `<code class="inline-code">${escaped}</code>`;
   };
 
   // Custom link renderer - add data attribute for interception
   renderer.link = ({ href, title, text }) => {
-    const titleAttr = title ? ` title="${title}"` : '';
-    const isExternal = href.startsWith('http://') || href.startsWith('https://');
+    const titleAttr = title ? ` title="${title}"` : "";
+    const isExternal =
+      href.startsWith("http://") || href.startsWith("https://");
     if (isExternal) {
       return `<a href="${href}"${titleAttr} data-external-link="true">${text}</a>`;
     }
@@ -68,15 +69,16 @@
   function preProcessContent(raw: string): string {
     let out = raw;
     // Normalize line endings
-    out = out.replace(/\r\n/g, '\n');
+    out = out.replace(/\r\n/g, "\n");
     // Remove trailing spaces on lines
-    out = out.replace(/[ \t]+$/gm, '');
-    // Collapse any 2+ consecutive blank lines to single blank line
-    out = out.replace(/\n\s*\n\s*\n/g, '\n\n');
+    out = out.replace(/[ \t]+$/gm, "");
+    // Collapse multiple blank lines into one
+    out = out.replace(/\n\s*\n\s*\n+/g, "\n\n");
     // Remove blank lines after headers
-    out = out.replace(/(^#{1,6}\s+.+)\n\n+/gm, '$1\n');
-    // Remove blank lines before list items
-    out = out.replace(/\n\n+([-*+]|\d+\.)\s/g, '\n$1 ');
+    out = out.replace(/(^#{1,6}\s+.+)\n+/gm, "$1\n");
+    // Remove blank lines before/after list items to keep them tight
+    out = out.replace(/\n\n+([-*+]|\d+\.)\s/g, "\n$1 ");
+    out = out.replace(/([-*+]|\d+\.)\s(.+)\n\n+/g, "$1 $2\n");
     // Remove leading/trailing whitespace
     out = out.trim();
     return out;
@@ -85,35 +87,42 @@
   function postProcessHtml(raw: string): string {
     let out = raw;
     // Remove empty paragraphs
-    out = out.replace(/<p>\s*<br\s*\/?\s*>\s*<\/p>/gi, '');
-    out = out.replace(/<p>\s*(?:&nbsp;|\s)*<\/p>/gi, '');
-    out = out.replace(/<p><\/p>/gi, '');
+    out = out.replace(/<p>\s*<br\s*\/?\s*>\s*<\/p>/gi, "");
+    out = out.replace(/<p>\s*(?:&nbsp;|\s)*<\/p>/gi, "");
+    out = out.replace(/<p><\/p>/gi, "");
     // Collapse 2+ consecutive <br> into nothing (remove them)
-    out = out.replace(/(?:<br\s*\/?\s*>\s*){2,}/gi, '');
+    out = out.replace(/(?:<br\s*\/?\s*>\s*){2,}/gi, "");
     // Remove standalone <br> tags between block elements
-    out = out.replace(/(<\/(?:p|div|ul|ol|h[1-6]|blockquote)>)\s*<br\s*\/?\s*>\s*(<(?:p|div|ul|ol|h[1-6]|blockquote))/gi, '$1$2');
+    out = out.replace(
+      /(<\/(?:p|div|ul|ol|h[1-6]|blockquote)>)\s*<br\s*\/?\s*>\s*(<(?:p|div|ul|ol|h[1-6]|blockquote))/gi,
+      "$1$2",
+    );
     // Remove <br> immediately after opening <li> or before closing </li>
-    out = out.replace(/<li>\s*<br\s*\/?\s*>/gi, '<li>');
-    out = out.replace(/<br\s*\/?\s*>\s*<\/li>/gi, '</li>');
+    out = out.replace(/<li>\s*<br\s*\/?\s*>/gi, "<li>");
+    out = out.replace(/<br\s*\/?\s*>\s*<\/li>/gi, "</li>");
     // Remove <br> between </li> and <li>
-    out = out.replace(/<\/li>\s*<br\s*\/?\s*>\s*<li>/gi, '</li><li>');
+    out = out.replace(/<\/li>\s*<br\s*\/?\s*>\s*<li>/gi, "</li><li>");
     // Remove <br> after headers
-    out = out.replace(/(<\/h[1-6]>)\s*<br\s*\/?\s*>/gi, '$1');
+    out = out.replace(/(<\/h[1-6]>)\s*<br\s*\/?\s*>/gi, "$1");
     return out;
   }
 
-  const html = $derived.by(() => postProcessHtml(marked.parse(preProcessContent(content)) as string));
+  const html = $derived.by(() =>
+    postProcessHtml(marked.parse(preProcessContent(content)) as string),
+  );
 
   // Handle link clicks - open in built-in browser
   function handleClick(e: MouseEvent): void {
     const target = e.target as HTMLElement;
-    const link = target.closest('a[data-external-link="true"]') as HTMLAnchorElement | null;
-    
+    const link = target.closest(
+      'a[data-external-link="true"]',
+    ) as HTMLAnchorElement | null;
+
     if (link) {
       e.preventDefault();
       e.stopPropagation();
       const url = link.href;
-      
+
       // Open in built-in browser
       if (browserStore.isOpen) {
         browserStore.navigate(url);
@@ -130,59 +139,67 @@
 
 <style>
   .markdown {
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 13.5px;
+    line-height: 1.65;
     color: var(--color-text);
     word-break: break-word;
   }
 
+  /* Spacious spacing for all top-level elements like Windsurf */
+  .markdown :global(> *) {
+    margin-top: 12px !important;
+    margin-bottom: 12px !important;
+  }
+
+  .markdown :global(> *:first-child) {
+    margin-top: 0 !important;
+  }
+
+  .markdown :global(> *:last-child) {
+    margin-bottom: 0 !important;
+  }
+
   .markdown :global(p) {
-    margin: 0 0 4px 0;
+    margin: 12px 0;
   }
 
-  .markdown :global(p:last-child) {
-    margin-bottom: 0;
-  }
-
-  .markdown :global(p:empty) {
-    display: none;
-    margin: 0;
-  }
-
-  /* Compact headers - less margin */
+  /* Professional headers like Windsurf */
   .markdown :global(h1),
   .markdown :global(h2),
   .markdown :global(h3),
   .markdown :global(h4) {
-    margin: 8px 0 4px 0;
+    margin: 24px 0 12px 0 !important;
     font-weight: 600;
-    color: var(--color-text);
+    color: #ffffff;
     line-height: 1.3;
   }
 
-  .markdown :global(h1:first-child),
-  .markdown :global(h2:first-child),
-  .markdown :global(h3:first-child),
-  .markdown :global(h4:first-child) {
-    margin-top: 0;
+  .markdown :global(h1) {
+    font-size: 18px;
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 4px;
+  }
+  .markdown :global(h2) {
+    font-size: 16px;
+  }
+  .markdown :global(h3) {
+    font-size: 14.5px;
+  }
+  .markdown :global(h4) {
+    font-size: 13.5px;
+    font-weight: 600;
   }
 
-  .markdown :global(h1) { font-size: 16px; }
-  .markdown :global(h2) { font-size: 14px; }
-  .markdown :global(h3) { font-size: 13px; }
-  .markdown :global(h4) { font-size: 13px; font-weight: 500; }
-
-  /* Compact lists */
+  /* Spacious lists */
   .markdown :global(ul),
   .markdown :global(ol) {
-    margin: 2px 0;
-    padding-left: 16px;
+    margin: 12px 0 !important;
+    padding-left: 24px;
   }
 
   .markdown :global(li) {
-    margin: 0;
+    margin: 6px 0;
     padding: 0;
-    line-height: 1.4;
   }
 
   .markdown :global(li p) {
@@ -190,16 +207,7 @@
     display: inline;
   }
 
-  .markdown :global(li > ul),
-  .markdown :global(li > ol) {
-    margin: 0;
-  }
-
-  /* Nested list items even more compact */
-  .markdown :global(li li) {
-    margin: 0;
-  }
-
+  /* Links */
   .markdown :global(a) {
     color: var(--color-accent);
     text-decoration: none;
@@ -209,49 +217,38 @@
     text-decoration: underline;
   }
 
+  /* Bold/Italic - Windsurf uses pure white for bold */
   .markdown :global(strong) {
     font-weight: 600;
-    color: var(--color-text);
+    color: #ffffff;
   }
 
-  .markdown :global(em) {
-    font-style: italic;
-  }
-
-  /* Compact blockquotes */
+  /* Blockquotes - refined like Windsurf */
   .markdown :global(blockquote) {
-    margin: 6px 0;
-    padding: 6px 10px;
-    border-left: 2px solid var(--color-accent);
-    background: var(--color-surface0);
-    border-radius: 0 4px 4px 0;
+    margin: 16px 0 !important;
+    padding: 8px 16px;
+    border-left: 3px solid var(--color-accent);
+    background: rgba(var(--color-accent-rgb), 0.05);
+    border-radius: 0 6px 6px 0;
+    color: var(--color-text-secondary);
   }
 
-  .markdown :global(blockquote p) {
-    margin: 0;
-  }
-
-  .markdown :global(hr) {
-    margin: 10px 0;
-    border: none;
-    border-top: 1px solid var(--color-border);
-  }
-
-  /* Inline code - more compact */
+  /* Inline code - polished like Windsurf */
   .markdown :global(.inline-code) {
-    padding: 1px 5px;
-    background: var(--color-surface0);
-    border-radius: 3px;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 12px;
-    color: var(--color-mauve);
+    padding: 2px 5px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    font-family: var(--font-mono, "JetBrains Mono", monospace);
+    font-size: 12.5px;
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.05);
   }
 
-  /* Code blocks - more compact */
+  /* Code blocks - integrated and dark like Windsurf */
   .markdown :global(.code-block) {
-    margin: 8px 0;
-    border-radius: 6px;
-    background: var(--color-mantle);
+    margin: 16px 0 !important;
+    border-radius: 8px;
+    background: #181818;
     border: 1px solid var(--color-border);
     overflow: hidden;
   }
@@ -260,72 +257,50 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 4px 10px;
-    background: var(--color-surface0);
+    padding: 6px 12px;
+    background: #252526;
     border-bottom: 1px solid var(--color-border);
   }
 
   .markdown :global(.code-lang) {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--color-text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    text-transform: lowercase;
   }
 
-  .markdown :global(.copy-btn) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 3px;
-    background: transparent;
-    border: none;
-    border-radius: 3px;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .markdown :global(.copy-btn:hover) {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
+  /* Markdown content within code block */
   .markdown :global(.code-block pre) {
     margin: 0;
-    padding: 10px;
+    padding: 12px 16px;
     overflow-x: auto;
   }
 
   .markdown :global(.code-block code) {
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--color-text);
-    white-space: pre;
+    font-family: var(--font-mono, "JetBrains Mono", monospace);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #cccccc;
   }
 
-  /* Tables - more compact */
+  /* Tables */
   .markdown :global(table) {
-    width: 100%;
-    margin: 8px 0;
+    margin: 16px 0 !important;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: 13px;
+    width: 100%;
   }
 
   .markdown :global(th),
   .markdown :global(td) {
-    padding: 5px 10px;
+    padding: 8px 12px;
     border: 1px solid var(--color-border);
     text-align: left;
   }
 
   .markdown :global(th) {
-    background: var(--color-surface0);
+    background: rgba(255, 255, 255, 0.03);
     font-weight: 600;
-  }
-
-  .markdown :global(tr:nth-child(even)) {
-    background: var(--color-surface0);
+    color: #ffffff;
   }
 </style>

@@ -325,93 +325,132 @@
   const contentParts = $derived(getContentParts(message));
   const fileEditGroups = $derived(groupFileEdits(contentParts));
   const firstPendingTerminalId = $derived(getFirstPendingTerminalId());
+
+  // Track manual toggle state for thinking blocks to avoid auto-reopening during streaming
+  let manualThinkingStates = $state<Record<number, boolean>>({});
+
+  function handleThinkingToggle(idx: number, event: Event) {
+    const details = event.currentTarget as HTMLDetailsElement;
+    manualThinkingStates[idx] = details.open;
+  }
 </script>
 
 <article class="message-row assistant" class:streaming={message.isStreaming}>
   <div class="msg-body">
-    {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? `thinking-${i}` : `text-${i}`)}
-      {#if part.type === "thinking"}
-        <!-- Inline thinking block (Cursor-style - minimal) -->
-        <details class="inline-thinking" open={part.isActive}>
-          <summary class="thinking-header">
-            <div class="thinking-header-content">
-              <span class="thinking-icon" class:active={part.isActive}>
-                <UIIcon name="chevron-right" size={10} />
-              </span>
-              {#if part.isActive}
-                <span class="thinking-label">
-                  Thinking for {formatThinkingDuration(
-                    part.startTime,
-                    undefined,
-                    true,
-                  )}...
-                </span>
-              {:else}
-                <span class="thinking-duration">
-                  Thought for {formatThinkingDuration(
-                    part.startTime,
-                    part.endTime,
-                    false,
-                  )}
-                </span>
+    <div class="activity-thread">
+      <div class="activity-spine"></div>
+      <div class="activity-content">
+        {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? `thinking-${i}` : `text-${i}`)}
+          <div class="activity-item">
+            {#if part.type === "thinking"}
+              <!-- Inline thinking block (Cursor-style - minimal) -->
+              <details
+                class="inline-thinking"
+                open={manualThinkingStates[i] ?? part.isActive}
+                ontoggle={(e) => handleThinkingToggle(i, e)}
+              >
+                <summary class="thinking-header">
+                  <div class="thinking-header-content">
+                    <span class="thinking-icon" class:active={part.isActive}>
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path
+                          d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
+                        />
+                        <path
+                          d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
+                        />
+                      </svg>
+                    </span>
+                    {#if part.isActive}
+                      <span class="thinking-label">
+                        {part.title || "Thinking"}
+                        <span class="thinking-dots"></span>
+                        <span class="thinking-duration"
+                          >({formatThinkingDuration(
+                            part.startTime,
+                            undefined,
+                            true,
+                          )})</span
+                        >
+                      </span>
+                    {:else}
+                      <span class="thinking-duration">
+                        {part.title || "Thought"} for {formatThinkingDuration(
+                          part.startTime,
+                          part.endTime,
+                          false,
+                        )}
+                      </span>
+                    {/if}
+                  </div>
+                </summary>
+                <div class="thinking-body">
+                  {#if part.title && !part.isActive}
+                    <div class="thinking-title">{part.title}</div>
+                  {/if}
+                  <div class="thinking-content">{part.thinking}</div>
+                </div>
+              </details>
+            {:else if part.type === "tool"}
+              {@const isGroupedChild = shouldSkipToolCall(
+                part.toolCall.id,
+                fileEditGroups,
+              )}
+              {#if !isGroupedChild}
+                <div class="inline-tool-wrapper">
+                  {#if isFileEditTool(part.toolCall)}
+                    {@const group = fileEditGroups.get(part.toolCall.id)}
+                    <FileEditCard
+                      toolCall={part.toolCall}
+                      groupedToolCalls={group?.grouped ?? []}
+                      onViewDiff={handleViewDiff}
+                      onRevert={handleRevert}
+                      onUndoRevert={handleUndoRevert}
+                      isReverted={revertedIds.has(part.toolCall.id)}
+                      {revertedIds}
+                    />
+                  {:else}
+                    <InlineToolCall
+                      toolCall={part.toolCall}
+                      streamingProgress={part.toolCall.streamingProgress}
+                      onApprove={onToolApprove
+                        ? () => onToolApprove(message.id, part.toolCall)
+                        : undefined}
+                      onDeny={onToolDeny
+                        ? () => onToolDeny(message.id, part.toolCall)
+                        : undefined}
+                      isFirstPendingTerminal={!isTerminalTool(part.toolCall) ||
+                        part.toolCall.id === firstPendingTerminalId}
+                    />
+                  {/if}
+                </div>
               {/if}
-            </div>
-          </summary>
-          <div class="thinking-body">
-            {#if part.title && !part.isActive}
-              <div class="thinking-title">{part.title}</div>
-            {/if}
-            <div class="thinking-content">{part.thinking}</div>
-          </div>
-        </details>
-      {:else if part.type === "tool"}
-        {@const isGroupedChild = shouldSkipToolCall(
-          part.toolCall.id,
-          fileEditGroups,
-        )}
-        {#if !isGroupedChild}
-          <div class="inline-tool-wrapper">
-            {#if isFileEditTool(part.toolCall)}
-              {@const group = fileEditGroups.get(part.toolCall.id)}
-              <FileEditCard
-                toolCall={part.toolCall}
-                groupedToolCalls={group?.grouped ?? []}
-                onViewDiff={handleViewDiff}
-                onRevert={handleRevert}
-                onUndoRevert={handleUndoRevert}
-                isReverted={revertedIds.has(part.toolCall.id)}
-                {revertedIds}
-              />
-            {:else}
-              <InlineToolCall
-                toolCall={part.toolCall}
-                streamingProgress={part.toolCall.streamingProgress}
-                onApprove={onToolApprove
-                  ? () => onToolApprove(message.id, part.toolCall)
-                  : undefined}
-                onDeny={onToolDeny
-                  ? () => onToolDeny(message.id, part.toolCall)
-                  : undefined}
-                isFirstPendingTerminal={!isTerminalTool(part.toolCall) ||
-                  part.toolCall.id === firstPendingTerminalId}
-              />
+            {:else if part.type === "text" && part.text.trim()}
+              <div class="msg-content">
+                {#if message.isStreaming && i === contentParts.length - 1}
+                  <Markdown content={part.text} /><span class="cursor"></span>
+                {:else}
+                  <Markdown content={part.text} />
+                {/if}
+              </div>
             {/if}
           </div>
-        {/if}
-      {:else if part.type === "text" && part.text.trim()}
-        <div class="msg-content">
-          {#if message.isStreaming && i === contentParts.length - 1}
-            <Markdown content={part.text} /><span class="cursor"></span>
-          {:else}
-            <Markdown content={part.text} />
-          {/if}
-        </div>
-      {/if}
-    {/each}
+        {/each}
 
-    {#if contentParts.length === 0 && message.isStreaming}
-      <div class="msg-content"><span class="cursor"></span></div>
-    {/if}
+        {#if contentParts.length === 0 && message.isStreaming}
+          <div class="msg-content"><span class="cursor"></span></div>
+        {/if}
+      </div>
+    </div>
 
     {#if message.isStreaming}
       <StreamingStatus
@@ -455,8 +494,49 @@
     flex: 1;
     min-width: 0;
     max-width: 100%;
-    padding-top: 2px;
+    padding-top: 0;
   }
+
+  .activity-thread {
+    position: relative;
+    padding-left: 18px;
+  }
+
+  .activity-spine {
+    position: absolute;
+    left: 4px;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    background: linear-gradient(
+      to bottom,
+      var(--color-border) 0%,
+      var(--color-border) 70%,
+      transparent 100%
+    );
+    opacity: 0.5;
+  }
+
+  .activity-item {
+    position: relative;
+    margin-bottom: 8px;
+  }
+
+  .activity-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .activity-item::before {
+    content: "";
+    position: absolute;
+    left: -14px;
+    top: 8px;
+    width: 13px;
+    height: 1px;
+    background: var(--color-border);
+    opacity: 0.3;
+  }
+
   .inline-tool-wrapper {
     margin: 2px 0;
   }
@@ -465,7 +545,6 @@
     font-size: 13px;
     line-height: 1.6;
     color: var(--color-text);
-    white-space: pre-wrap;
     word-break: break-word;
   }
 
@@ -516,38 +595,69 @@
 
   /* Inline thinking block (Cursor-style - transparent/minimal) */
   .inline-thinking {
-    margin: 6px 0;
+    margin: 2px 0;
   }
   .thinking-header {
-    padding: 6px 0;
-    font-size: 13.5px;
+    padding: 4px 0;
+    font-size: 13px;
     color: var(--color-text-secondary);
     cursor: pointer;
     user-select: none;
     list-style: none;
     transition: color 0.15s ease;
-  }
-  .thinking-header-content {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    outline: none;
   }
   .thinking-header::-webkit-details-marker {
     display: none;
   }
-  .thinking-header:hover {
-    color: var(--color-text);
+  .thinking-header-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .thinking-icon {
     display: flex;
     color: var(--color-text-secondary);
-    transition: transform 0.15s ease;
+    opacity: 0.7;
+    flex-shrink: 0;
   }
   .thinking-icon.active {
-    animation: pulse 1.5s ease-in-out infinite;
+    animation: pulse 2s ease-in-out infinite;
+    color: var(--color-accent);
+    opacity: 1;
   }
   .inline-thinking[open] .thinking-icon {
-    transform: rotate(90deg);
+    opacity: 1;
+  }
+
+  /* Smooth Dot Animation */
+  .thinking-dots {
+    display: inline-block;
+    width: 16px;
+    margin-right: 8px;
+  }
+  .thinking-dots::after {
+    content: "";
+    display: inline-block;
+    animation: thinking-dots 2s steps(4, end) infinite;
+    text-align: left;
+  }
+
+  @keyframes thinking-dots {
+    0%,
+    20% {
+      content: "";
+    }
+    40% {
+      content: ".";
+    }
+    60% {
+      content: "..";
+    }
+    80%,
+    100% {
+      content: "...";
+    }
   }
   @keyframes pulse {
     0%,
@@ -563,6 +673,8 @@
   }
   .thinking-duration {
     color: var(--color-text-secondary);
+    font-size: 11px;
+    opacity: 0.6;
     font-weight: 400;
   }
   .thinking-body {

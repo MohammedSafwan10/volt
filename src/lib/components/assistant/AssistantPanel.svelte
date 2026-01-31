@@ -363,6 +363,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           inlineToolCalls: msg.inlineToolCalls,
           contentParts: msg.contentParts,
           thinking: msg.thinking,
+          smartContextBlock: msg.smartContextBlock,
+          contextMentions: msg.contextMentions
         });
 
         try {

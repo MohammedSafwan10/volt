@@ -31,6 +31,42 @@ export function extractErrorMessage(err: unknown): string {
 }
 
 /**
+ * Calculate simple line-based diff statistics (added/removed)
+ * This is used for the green/red indicators in the chat UI
+ */
+export function calculateDiffStats(before: string, after: string): { added: number; removed: number } {
+  if (before === after) return { added: 0, removed: 0 };
+  
+  const beforeLines = before.split('\n');
+  const afterLines = after.split('\n');
+  
+  // Use a simple map to track line occurrences for counting
+  const beforeMap = new Map<string, number>();
+  for (const line of beforeLines) {
+    beforeMap.set(line, (beforeMap.get(line) || 0) + 1);
+  }
+  
+  let added = 0;
+  const afterMap = new Map<string, number>();
+  for (const line of afterLines) {
+    const count = beforeMap.get(line) || 0;
+    if (count > 0) {
+      beforeMap.set(line, count - 1);
+    } else {
+      added++;
+    }
+  }
+  
+  // Remaining lines in beforeMap are removed lines
+  let removed = 0;
+  for (const count of beforeMap.values()) {
+    removed += count;
+  }
+  
+  return { added, removed };
+}
+
+/**
  * Resolve relative path to absolute using workspace root
  */
 export function resolvePath(relativePath: string): string {

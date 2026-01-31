@@ -358,21 +358,84 @@ pub async fn delete_path(path: String) -> Result<(), FileError> {
         return Err(FileError::InvalidPath { path });
     }
 
-    let path_clone = path.clone();
-    spawn_blocking(move || {
-        let path_buf = normalize_path(&path_clone);
+    let path_buf = normalize_path(&path);
 
-        if !path_buf.exists() {
-            return Err(FileError::NotFound { path: path_clone });
+    if !path_buf.exists() {
+        return Err(FileError::NotFound { path });
+    }
+
+    // Windows specific handling for large deletions like node_modules
+    #[cfg(windows)]
+    {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut last_error = None;
+        for attempt in 0..5 {
+            if attempt > 0 {
+                // Exponential backoff: 50ms, 100ms, 200ms, 400ms
+                thread::sleep(Duration::from_millis(50 * (2u64.pow(attempt as u32 - 1))));
+            }
+
+            let result = if path_buf.is_dir() {
+                fs::remove_dir_all(&path_buf)
+            } else {
+                fs::remove_file(&path_buf)
+            };
+
+            match result {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    // If it's permission denied, it might be a readonly file or a locked file
+                    if e.kind() == std::io::ErrorKind::PermissionDenied {
+                        // Try to clear readonly attributes recursively if it's a directory
+                        if path_buf.is_dir() {
+                            let _ = clear_readonly_recursively(&path_buf);
+                        } else {
+                            if let Ok(metadata) = fs::metadata(&path_buf) {
+                                let mut permissions = metadata.permissions();
+                                if permissions.readonly() {
+                                    permissions.set_readonly(false);
+                                    let _ = fs::set_permissions(&path_buf, permissions);
+                                }
+                            }
+                        }
+                    }
+                    last_error = Some(e);
+                }
+            }
         }
 
-        if path_buf.is_dir() {
-            fs::remove_dir_all(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
-        } else {
-            fs::remove_file(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
+        if let Some(e) = last_error {
+            return Err(io_error_with_path(e, &path));
         }
-    })
-    .await
+    }
+
+    // Fallback/Non-Windows
+    if path_buf.is_dir() {
+        fs::remove_dir_all(&path_buf).map_err(|e| io_error_with_path(e, &path))
+    } else {
+        fs::remove_file(&path_buf).map_err(|e| io_error_with_path(e, &path))
+    }
+}
+
+#[cfg(windows)]
+fn clear_readonly_recursively(path: &std::path::Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            clear_readonly_recursively(&path)?;
+        }
+    }
+
+    let metadata = fs::metadata(path)?;
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() {
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
 
 

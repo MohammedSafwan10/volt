@@ -438,6 +438,8 @@ class AssistantStore {
           if (meta.inlineToolCalls) base.inlineToolCalls = meta.inlineToolCalls;
           if (meta.contentParts) base.contentParts = meta.contentParts;
           if (meta.thinking) base.thinking = meta.thinking;
+          if (meta.smartContextBlock) base.smartContextBlock = meta.smartContextBlock;
+          if (meta.contextMentions) base.contextMentions = meta.contextMentions;
         } catch (e) {
           console.warn('[AssistantStore] Failed to parse message metadata:', e);
         }
@@ -681,6 +683,9 @@ class AssistantStore {
         })
       };
     }
+
+    // Persist to database immediately
+    this.persistMessageToHistory(id);
   }
 
   updateAssistantThinking(id: string, thinking: string, isThinking = true): void {
@@ -690,6 +695,9 @@ class AssistantStore {
     this.messages = this.messages.map(msg =>
       msg.id === id ? { ...msg, thinking: safeThinking, isThinking } : msg
     );
+
+    // Persist to database immediately
+    this.persistMessageToHistory(id);
   }
 
   addToolMessage(toolCall: ToolCall): string {
@@ -702,6 +710,16 @@ class AssistantStore {
       toolCalls: [toolCall]
     };
     this.messages = [...this.messages, message];
+
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: [...this.currentConversation.messages, message]
+      };
+    }
+
+    this.saveCurrentConversationId();
+    this.persistMessageToHistory(id);
     return id;
   }
 
@@ -725,18 +743,29 @@ class AssistantStore {
    */
   addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
     this.messages = this.messages.map(msg => {
-      if (msg.id === messageId) {
-        const existing = msg.inlineToolCalls ?? [];
-        const existingParts = msg.contentParts ?? [];
-        return {
-          ...msg,
-          inlineToolCalls: [...existing, toolCall],
-          // Add tool to content parts for interleaved rendering
-          contentParts: [...existingParts, { type: 'tool' as const, toolCall }]
-        };
-      }
-      return msg;
+      if (msg.id !== messageId) return msg;
+      const inlineToolCalls = [...(msg.inlineToolCalls || []), toolCall];
+      const contentParts = [...(msg.contentParts || [])];
+      contentParts.push({ type: "tool", toolCall });
+      return { ...msg, inlineToolCalls, contentParts };
     });
+
+    // Also update in currentConversation
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(msg => {
+          if (msg.id !== messageId) return msg;
+          const inlineToolCalls = [...(msg.inlineToolCalls || []), toolCall];
+          const contentParts = [...(msg.contentParts || [])];
+          contentParts.push({ type: "tool", toolCall });
+          return { ...msg, inlineToolCalls, contentParts };
+        }),
+      };
+    }
+
+    // Persist to database immediately
+    this.persistMessageToHistory(messageId);
   }
 
   /**
@@ -744,32 +773,84 @@ class AssistantStore {
    */
   updateToolCallInMessage(messageId: string, toolCallId: string, updates: Partial<ToolCall>): void {
     this.messages = this.messages.map(msg => {
-      if (msg.id === messageId) {
-        // Update in inlineToolCalls
-        const updatedInline = msg.inlineToolCalls?.map(tc =>
-          tc.id === toolCallId ? { ...tc, ...updates } : tc
-        );
-        // Update in contentParts
-        const updatedParts = msg.contentParts?.map(part => {
-          if (part.type === 'tool' && part.toolCall.id === toolCallId) {
-            return { ...part, toolCall: { ...part.toolCall, ...updates } };
-          }
-          return part;
-        });
-        return {
-          ...msg,
-          inlineToolCalls: updatedInline,
-          contentParts: updatedParts
-        };
-      }
-      return msg;
+      if (msg.id !== messageId) return msg;
+
+      const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
+        tc.id === toolCallId ? { ...tc, ...updates } : tc,
+      );
+
+      const contentParts = (msg.contentParts || []).map(part => {
+        if (part.type === "tool" && part.toolCall.id === toolCallId) {
+          return {
+            ...part,
+            toolCall: { ...part.toolCall, ...updates },
+          };
+        }
+        return part;
+      });
+
+      return { ...msg, inlineToolCalls, contentParts };
     });
+
+    // Also update in currentConversation
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(msg => {
+          if (msg.id !== messageId) return msg;
+          const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
+            tc.id === toolCallId ? { ...tc, ...updates } : tc,
+          );
+          const contentParts = (msg.contentParts || []).map(part => {
+            if (part.type === "tool" && part.toolCall.id === toolCallId) {
+              return {
+                ...part,
+                toolCall: { ...part.toolCall, ...updates },
+              };
+            }
+            return part;
+          });
+          return { ...msg, inlineToolCalls, contentParts };
+        }),
+      };
+    }
+
+    // Persist to database immediately
+    this.persistMessageToHistory(messageId);
   }
 
   /**
-   * Add or update text content in a message (for interleaved rendering)
-   * This appends text to the last text part or creates a new one
+   * Helper to persist a specific message to history database
    */
+  private async persistMessageToHistory(messageId: string): Promise<void> {
+    const msg = this.messages.find(m => m.id === messageId);
+    const convId = this.currentConversation?.id;
+    if (!msg || !convId) return;
+
+    try {
+      const { chatHistoryStore } = await import('./chat-history.svelte');
+      const metadata = JSON.stringify({
+        attachments: msg.attachments,
+        toolCalls: msg.toolCalls,
+        inlineToolCalls: msg.inlineToolCalls,
+        contentParts: msg.contentParts,
+        thinking: msg.thinking,
+        smartContextBlock: msg.smartContextBlock,
+        contextMentions: msg.contextMentions
+      });
+
+      await chatHistoryStore.saveMessage(convId, {
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp,
+        metadata
+      });
+    } catch (err) {
+      console.error('[AssistantStore] Failed to persist message to history:', err);
+    }
+  }
+
   appendTextToMessage(messageId: string, text: string, isStreaming: boolean): void {
     this.messages = this.messages.map(msg => {
       if (msg.id === messageId) {
@@ -778,13 +859,11 @@ class AssistantStore {
 
         let newParts: ContentPart[];
         if (lastPart && lastPart.type === 'text') {
-          // Append to existing text part
           newParts = [
             ...parts.slice(0, -1),
             { type: 'text' as const, text: lastPart.text + text }
           ];
         } else {
-          // Create new text part
           newParts = [...parts, { type: 'text' as const, text }];
         }
 
@@ -798,6 +877,9 @@ class AssistantStore {
       }
       return msg;
     });
+
+    // Persist to database immediately
+    this.persistMessageToHistory(messageId);
   }
 
   /**
@@ -838,10 +920,18 @@ class AssistantStore {
           .map(p => (p as { type: 'thinking'; thinking: string }).thinking)
           .join('\n\n');
 
-        return { ...msg, contentParts: newParts, thinking: fullThinking, isThinking: true };
+        return {
+          ...msg,
+          contentParts: newParts,
+          thinking: fullThinking,
+          isThinking: true
+        };
       }
       return msg;
     });
+
+    // Persist to database immediately
+    this.persistMessageToHistory(messageId);
   }
 
   /**
@@ -881,6 +971,9 @@ class AssistantStore {
       }
       return msg;
     });
+
+    // Persist to database immediately
+    this.persistMessageToHistory(messageId);
   }
 
   /**

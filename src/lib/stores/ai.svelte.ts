@@ -43,12 +43,14 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       maxContextHint: 1000000
     },
     models: [
+      'gemini-3-pro-preview|thinking',
+      'gemini-3-pro-preview',
       'gemini-3-flash-preview|thinking',
       'gemini-3-flash-preview',
       'gemini-2.5-flash|thinking',
       'gemini-2.5-flash'
     ],
-    defaultModel: 'gemini-3-flash-preview|thinking'
+    defaultModel: 'gemini-3-pro-preview|thinking'
   },
   openrouter: {
     id: 'openrouter',
@@ -85,18 +87,18 @@ const PREFS_STORAGE_KEY = 'volt.ai.preferences';
 
 class AISettingsStore {
   selectedProvider = $state<AIProvider>('gemini');
-  
+
   modelPerMode = $state<Record<AIMode, string>>({
-    ask: 'gemini-3-flash-preview|thinking',
-    plan: 'gemini-3-flash-preview|thinking',
-    agent: 'gemini-3-flash-preview|thinking'
+    ask: 'gemini-3-pro-preview|thinking',
+    plan: 'gemini-3-pro-preview|thinking',
+    agent: 'gemini-3-pro-preview|thinking'
   });
-  
+
   hasApiKey = $state<Record<AIProvider, boolean>>({
     gemini: false,
     openrouter: false
   });
-  
+
   isValidating = $state(false);
   validationError = $state<string | null>(null);
 
@@ -108,7 +110,7 @@ class AISettingsStore {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    
+
     try {
       for (const provider of Object.keys(PROVIDERS) as AIProvider[]) {
         const hasKey = await invoke<boolean>('ai_has_api_key', { provider });
@@ -161,16 +163,16 @@ class AISettingsStore {
   async validateApiKey(provider: AIProvider): Promise<ValidationResult> {
     this.isValidating = true;
     this.validationError = null;
-    
+
     try {
       const key = await this.getApiKey(provider);
       if (!key) {
         this.validationError = 'No API key configured';
         return { success: false, error: 'No API key configured' };
       }
-      
+
       let result: ValidationResult;
-      
+
       if (provider === 'gemini') {
         const { validateGeminiKey } = await import('$lib/services/ai/gemini');
         result = await validateGeminiKey(key);
@@ -180,7 +182,7 @@ class AISettingsStore {
       } else {
         result = { success: false, error: 'Unknown provider' };
       }
-      
+
       if (!result.success) {
         this.validationError = result.error ?? 'Validation failed';
       }
@@ -197,17 +199,17 @@ class AISettingsStore {
 
   private loadPreferences(): void {
     if (typeof window === 'undefined') return;
-    
+
     try {
       const raw = localStorage.getItem(PREFS_STORAGE_KEY);
       if (!raw) return;
-      
+
       const prefs = JSON.parse(raw) as Partial<AIPreferences>;
-      
+
       if (prefs.selectedProvider && PROVIDERS[prefs.selectedProvider]) {
         this.selectedProvider = prefs.selectedProvider;
       }
-      
+
       if (prefs.modelPerMode) {
         const stored = prefs.modelPerMode as unknown as Record<string, string>;
         const askModel = stored.ask;
@@ -238,7 +240,7 @@ class AISettingsStore {
 
   private savePreferences(): void {
     if (typeof window === 'undefined') return;
-    
+
     try {
       const prefs: AIPreferences = {
         selectedProvider: this.selectedProvider,

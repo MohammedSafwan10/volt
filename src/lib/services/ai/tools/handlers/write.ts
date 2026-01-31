@@ -12,7 +12,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from '$lib/stores/editor.svelte';
-import { resolvePath, extractErrorMessage, isSameOrSuffixPath, type ToolResult } from '../utils';
+import { resolvePath, extractErrorMessage, isSameOrSuffixPath, calculateDiffStats, type ToolResult } from '../utils';
 
 /**
  * Get diagnostics for a file after edit
@@ -220,6 +220,7 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
 
   // Calculate changed line range for highlighting
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, content);
+  const diffStats = calculateDiffStats(before, content);
 
   // Get diagnostics after edit (Kiro-style auto-check)
   const diagnostics = await getPostEditDiagnostics(path, relativePath);
@@ -255,6 +256,8 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
         isNewFile,
         firstChangedLine,
         lastChangedLine,
+        added: diffStats.added,
+        removed: diffStats.removed,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
       },
@@ -308,6 +311,7 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
 
   const addedLines = textToAppend.split('\n').length;
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(existing, newContent);
+  const diffStats = calculateDiffStats(existing, newContent);
 
   // Get diagnostics after edit
   const diagnostics = await getPostEditDiagnostics(path, relativePath);
@@ -336,6 +340,8 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
         afterContent: newContent.length <= 100_000 ? newContent : null,
         firstChangedLine,
         lastChangedLine,
+        added: diffStats.added,
+        removed: diffStats.removed,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
       },
@@ -435,6 +441,7 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
 
   // Calculate changed line range for highlighting
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, newContent);
+  const diffStats = calculateDiffStats(content, newContent);
 
   // Get diagnostics after edit
   const diagnostics = await getPostEditDiagnostics(path, relativePath);
@@ -463,6 +470,8 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
         afterContent: newContent.length <= 100_000 ? newContent : null,
         firstChangedLine,
         lastChangedLine,
+        added: diffStats.added,
+        removed: diffStats.removed,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
       },
@@ -665,6 +674,7 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
 
   const replacedLines = actualEndLine - startLine + 1;
   const insertedLines = newLines.length;
+  const diffStats = calculateDiffStats(content, resultContent);
 
   // Get diagnostics after edit
   const diagnostics = await getPostEditDiagnostics(path, relativePath);
@@ -693,6 +703,8 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
         afterContent: resultContent.length <= 100_000 ? resultContent : null,
         firstChangedLine: startLine,
         lastChangedLine: startLine + insertedLines - 1,
+        added: diffStats.added,
+        removed: diffStats.removed,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
       },

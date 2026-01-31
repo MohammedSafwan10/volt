@@ -18,6 +18,24 @@ export interface ModelConfig {
  */
 export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   // ============ Gemini Models ============
+  'gemini-3-pro-preview|thinking': {
+    id: 'gemini-3-pro-preview|thinking',
+    name: 'Gemini 3 Pro (thinking)',
+    provider: 'gemini',
+    contextWindow: 1000000,
+    maxOutput: 65536,
+    supportsTools: true,
+    free: false
+  },
+  'gemini-3-pro-preview': {
+    id: 'gemini-3-pro-preview',
+    name: 'Gemini 3 Pro',
+    provider: 'gemini',
+    contextWindow: 1000000,
+    maxOutput: 65536,
+    supportsTools: true,
+    free: false
+  },
   'gemini-3-flash-preview|thinking': {
     id: 'gemini-3-flash-preview|thinking',
     name: 'Gemini 3 Flash (thinking)',
@@ -99,10 +117,10 @@ export function getModelConfig(modelId: string): ModelConfig | undefined {
 export function getSafeMaxOutput(modelId: string, inputTokens: number = 0): number {
   const config = MODEL_REGISTRY[modelId];
   if (!config) return 8192; // Safe default
-  
+
   const buffer = 1000; // Safety buffer
   const available = config.contextWindow - inputTokens - buffer;
-  
+
   // Return minimum of model's max output and available space
   return Math.max(1024, Math.min(config.maxOutput, available));
 }

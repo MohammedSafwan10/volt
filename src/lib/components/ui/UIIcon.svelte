@@ -50,6 +50,7 @@
     "chevron-left": "codicon:chevron-left",
     "arrow-left": "codicon:arrow-left",
     "arrow-right": "codicon:arrow-right",
+    "arrow-up": "codicon:arrow-up",
     "collapse-all": "codicon:collapse-all",
     "expand-all": "codicon:expand-all",
     // Status

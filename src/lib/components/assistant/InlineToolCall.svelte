@@ -263,6 +263,11 @@
         } else if (endLine) {
           return `#L1-${endLine}`;
         }
+
+        // Ghost snippet: first 30 chars of output if available
+        if (toolCall.output && toolCall.output.length > 5) {
+          return `"${toolCall.output.trim().slice(0, 30).replace(/\n/g, " ")}..."`;
+        }
         return "";
       }
       case "read_files": {
@@ -437,9 +442,8 @@
   const diagnosticSummary = $derived.by(() => {
     if (!toolCall.meta) return null;
     const meta = toolCall.meta as any;
-    const diagnosticsMeta = toolCall.name === "get_diagnostics"
-      ? meta
-      : meta.diagnostics;
+    const diagnosticsMeta =
+      toolCall.name === "get_diagnostics" ? meta : meta.diagnostics;
     if (!diagnosticsMeta) return null;
     const items = (diagnosticsMeta.problems || []) as (Problem & {
       relativePath: string;
@@ -483,33 +487,47 @@
   aria-label="Tool: {getToolDisplayName()}"
 >
   {#if isTerminalTool}
-    <!-- Special terminal-style display -->
-    <button
-      class="tool-header terminal-header"
-      onclick={() => (expanded = !expanded)}
-      aria-expanded={expanded}
-      type="button"
-    >
-      <span class="terminal-prompt">
-        <UIIcon name="terminal" size={14} />
-        <span class="prompt-symbol">$</span>
-      </span>
-      <span class="terminal-command">{terminalCommand || "command"}</span>
-      <span class="tool-status-icon">
-        {#if isRunning}
-          <span class="terminal-running-indicator"></span>
-        {:else if isComplete}
-          <!-- No check mark -->
-        {:else if isFailed}
-          <UIIcon name="error" size={12} />
-        {:else if isPending}
-          <UIIcon name="clock" size={12} />
-        {/if}
-      </span>
-      <span class="expand-icon" class:expanded>
-        <UIIcon name="chevron-down" size={12} />
-      </span>
-    </button>
+    <!-- Special terminal-style display - Next Level UI -->
+    <div class="terminal-tool-container" class:expanded>
+      <button
+        class="terminal-header"
+        onclick={() => (expanded = !expanded)}
+        aria-expanded={expanded}
+        type="button"
+      >
+        <div class="terminal-badge icon-only">
+          <UIIcon name="terminal" size={14} />
+        </div>
+
+        <div class="terminal-command-preview">
+          <span class="prompt-char">$</span>
+          <span class="command-text">{terminalCommand || "command"}</span>
+        </div>
+
+        <div class="terminal-meta">
+          {#if isRunning}
+            <span class="status-pill running icon-only" title="Running">
+              <span class="pulse-dot"></span>
+            </span>
+          {:else if isComplete}
+            <span class="status-pill success icon-only" title="Completed">
+              <UIIcon name="check" size={12} />
+            </span>
+          {:else if isFailed}
+            <span class="status-pill error icon-only" title="Failed">
+              <UIIcon name="error" size={12} />
+            </span>
+          {:else if isPending}
+            <span class="status-pill pending icon-only" title="Approval Needed">
+              <UIIcon name="clock" size={12} />
+            </span>
+          {/if}
+          <span class="expand-caret" class:rotated={expanded}>
+            <UIIcon name="chevron-down" size={14} />
+          </span>
+        </div>
+      </button>
+    </div>
   {:else}
     <!-- Standard tool display -->
     <button
@@ -518,60 +536,47 @@
       aria-expanded={expanded}
       type="button"
     >
-      <span
-        class="tool-icon category-{getToolCategory()}"
-        class:spinning={isRunning}
-      >
-        {#if isRunning}
-          <UIIcon name="spinner" size={12} class="animate-spin" />
-        {:else}
-          <UIIcon name={getToolIcon()} size={12} />
+      <div class="tool-main-info">
+        {#if files.length === 0}
+          <span
+            class="tool-icon category-{getToolCategory()}"
+            class:spinning={isRunning}
+          >
+            {#if isRunning}
+              <UIIcon name="spinner" size={12} class="animate-spin" />
+            {:else}
+              <UIIcon name={getToolIcon()} size={12} />
+            {/if}
+          </span>
         {/if}
-      </span>
-
-      <span class="tool-name">{getToolDisplayName()}</span>
+        <span class="tool-name">{getToolDisplayName()}</span>
+      </div>
 
       <div class="header-right-meta">
         {#if diagnosticSummary}
           <div class="diag-mini-summary">
             {#if diagnosticSummary.errorCount > 0}
               <span class="diag-badge error"
-                >{diagnosticSummary.errorCount} Errors</span
+                >{diagnosticSummary.errorCount}</span
               >
             {/if}
             {#if diagnosticSummary.warningCount > 0}
               <span class="diag-badge warning"
-                >{diagnosticSummary.warningCount} Warnings</span
+                >{diagnosticSummary.warningCount}</span
               >
             {/if}
             {#if diagnosticSummary.errorCount === 0 && diagnosticSummary.warningCount === 0}
               <span class="diag-badge success">Clean</span>
             {/if}
           </div>
-          <span
-            class="diag-refresh"
-            role="button"
-            tabindex="0"
-            title="Refresh diagnostics"
-            onclick={(event) => {
-              event.stopPropagation();
-              void handleRefreshDiagnostics();
-            }}
-            onkeydown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.stopPropagation();
-                void handleRefreshDiagnostics();
-              }
-            }}
-          >
-            <UIIcon name="refresh" size={12} />
-          </span>
         {:else if files.length > 0}
           <div class="files-container" class:multi={files.length > 1}>
             {#each files as file}
+              {@const parts = file.path.split(/[/\\]/)}
+              {@const dir =
+                parts.length > 1 ? parts.slice(0, -1).join("/") : null}
               <div
-                class="file-pill"
-                class:is-loading={isRunning}
+                class="file-pill-group"
                 role="button"
                 tabindex="0"
                 onclick={(e) => {
@@ -584,32 +589,33 @@
                     handleFileClick(file.path);
                   }
                 }}
-                aria-label="Open {file.filename}"
               >
-                {#if isRunning && !isStreaming}
-                  <UIIcon name="spinner" size={14} class="spinner-icon" />
-                {:else if isStreaming}
-                  <UIIcon name="spinner" size={14} class="spinner-icon" />
-                {:else}
-                  <UIIcon name={file.icon} size={14} />
+                {#if dir}
+                  <span class="path-pill">{dir}/</span>
                 {/if}
-                <span class="filename">{file.filename}</span>
-
-                {#if isStreaming && streamingProgress}
-                  <div class="pill-progress-bar">
-                    <div
-                      class="pill-progress-fill"
-                      style="width: {streamingProgress.percent}%"
-                    ></div>
-                  </div>
-                {/if}
+                <div class="file-pill" class:is-loading={isRunning}>
+                  {#if isRunning && !isStreaming}
+                    <UIIcon name="spinner" size={12} class="spinner-icon" />
+                  {:else}
+                    <UIIcon name={file.icon} size={12} />
+                  {/if}
+                  <span class="filename">{file.filename}</span>
+                  {#if isStreaming && streamingProgress}
+                    <div class="pill-progress-bar">
+                      <div
+                        class="pill-progress-fill"
+                        style="width: {streamingProgress.percent}%"
+                      ></div>
+                    </div>
+                  {/if}
+                </div>
               </div>
             {/each}
           </div>
         {/if}
 
         {#if diffStats && (isComplete || isStreaming)}
-          <div class="diff-stats">
+          <div class="diff-ledger">
             {#if diffStats.added > 0}
               <span class="stat-added">+{diffStats.added}</span>
             {/if}
@@ -620,13 +626,17 @@
         {/if}
 
         {#if summary && !isStreaming}
-          {@const isRedundantPath = files.length > 0 && !summary.includes("#L")}
+          {@const isLineRange = summary.includes("#L")}
+          {@const isSnippet = summary.startsWith('"')}
+          {@const isRedundantPath =
+            files.length > 0 && !isLineRange && !isSnippet}
           {#if !isRedundantPath}
             <span
               class="tool-summary"
-              class:is-line-range={summary.includes("#L")}
+              class:is-line-range={isLineRange}
+              class:is-snippet={isSnippet}
             >
-              {summary.includes("#L") ? "#" + summary.split("#")[1] : summary}
+              {isLineRange ? "#" + summary.split("#")[1] : summary}
             </span>
           {/if}
         {/if}
@@ -635,10 +645,6 @@
       <span class="tool-status-icon">
         {#if isStreaming}
           <span class="streaming-indicator"></span>
-        {:else if isRunning}
-          <!-- Already showing spinner in tool-icon -->
-        {:else if isComplete}
-          <!-- No check mark -->
         {:else if isFailed}
           <UIIcon name="error" size={12} />
         {:else if isPending}
@@ -647,7 +653,7 @@
       </span>
 
       <span class="expand-icon" class:expanded>
-        <UIIcon name="chevron-down" size={14} />
+        <UIIcon name="chevron-down" size={12} />
       </span>
     </button>
   {/if}
@@ -779,127 +785,174 @@
     font-size: 12px;
   }
 
-  /* Terminal tool special styling - keep distinct */
-  .inline-tool-call.terminal-tool {
-    background: var(--color-surface0);
+  /* Terminal Tool Next Level UI */
+  .terminal-tool-container {
+    margin: 4px 0;
+    border-radius: 8px;
+    background: #1e1e1e; /* Specific heavy terminal background */
     border: 1px solid var(--color-border);
-    border-radius: 6px;
     overflow: hidden;
+    transition: all 0.2s ease;
   }
 
-  .inline-tool-call.terminal-tool.running {
-    border-color: var(--color-accent);
-  }
-
-  .inline-tool-call.terminal-tool.completed {
-    border-color: var(--color-success);
-  }
-
-  .inline-tool-call.terminal-tool.failed {
-    border-color: var(--color-error);
-  }
-
-  .inline-tool-call.terminal-tool.pending {
-    border-color: var(--color-warning);
+  .terminal-tool-container:hover {
+    border-color: var(--color-border-hover, #3c3c3c);
   }
 
   .terminal-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 12px;
     width: 100%;
-    padding: 8px 10px;
+    padding: 10px 14px;
+    background: transparent;
+    color: #cccccc;
+    font-family: var(--font-mono, monospace);
+    font-size: 13px;
+    cursor: pointer;
     text-align: left;
-    color: var(--color-text);
-    background: var(--color-surface0);
-    font-family: var(--font-mono, "Fira Code", "Consolas", monospace);
   }
 
-  .terminal-header:hover {
-    background: var(--color-hover);
-  }
-
-  .terminal-prompt {
+  .terminal-badge {
     display: flex;
     align-items: center;
-    gap: 4px;
-    color: var(--color-success);
-    flex-shrink: 0;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08); /* Slightly darker/subtle */
+    color: #a0a0a0;
   }
 
-  .prompt-symbol {
-    font-weight: 600;
-    font-size: 13px;
-  }
-
-  .terminal-command {
+  .terminal-command-preview {
     flex: 1;
-    font-size: 12px;
-    color: var(--color-text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+    color: #e0e0e0;
+  }
+
+  .prompt-char {
+    color: #4ade80; /* Terminal green */
+    font-weight: bold;
+    user-select: none;
+  }
+
+  .command-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 0.9;
   }
 
-  .terminal-running-indicator {
-    width: 8px;
-    height: 8px;
+  .terminal-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .status-pill.icon-only {
+    padding: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%; /* Circular for valid UI */
+  }
+
+  .status-pill.running {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+  }
+
+  .status-pill.success {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+  }
+
+  .status-pill.error {
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+  }
+
+  .status-pill.pending {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+  }
+
+  .pulse-dot {
+    width: 6px;
+    height: 6px;
+    background: currentColor;
     border-radius: 50%;
-    background: var(--color-accent);
-    animation: terminal-pulse 1s ease-in-out infinite;
+    animation: pulse 1.5s infinite;
   }
 
-  @keyframes terminal-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.4;
-    }
+  .expand-caret {
+    color: #808080;
+    transition: transform 0.2s ease;
+  }
+
+  .expand-caret.rotated {
+    transform: rotate(180deg);
   }
 
   /* Standard tool - transparent header */
   .tool-header {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
-    padding: 8px 0;
+    padding: 6px 0;
     text-align: left;
     color: var(--color-text-secondary);
-    font-size: 13.5px;
-    transition: color 0.15s ease;
+    font-size: 13px;
+    transition: all 0.2s ease;
+    border-radius: 6px;
+  }
+
+  .tool-main-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
   }
 
   .tool-header:hover {
     color: var(--color-text);
   }
 
+  /* Muted grey for all tool icons as requested */
   .tool-icon {
     display: flex;
     align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
   }
 
-  /* Category-based icon colors */
-  .tool-icon.category-search {
-    color: #60a5fa;
-  } /* Blue for search */
-  .tool-icon.category-file {
-    color: #4ade80;
-  } /* Green for file read */
-  .tool-icon.category-edit {
-    color: #fbbf24;
-  } /* Amber for edits */
-  .tool-icon.category-terminal {
-    color: #a78bfa;
-  } /* Purple for terminal */
+  .tool-icon.category-search,
+  .tool-icon.category-file,
+  .tool-icon.category-edit,
+  .tool-icon.category-terminal,
   .tool-icon.category-diagnostic {
-    color: #f97316;
-  } /* Orange for diagnostics */
-  .tool-icon.category-other {
     color: var(--color-text-secondary);
+    border-color: var(--color-border);
   }
 
   .tool-icon.spinning :global(svg) {
@@ -916,177 +969,27 @@
   }
 
   .tool-name {
-    font-weight: 400;
+    font-weight: 500;
     color: var(--color-text-secondary);
     white-space: nowrap;
-    transition: opacity 0.2s ease;
-    flex-shrink: 0;
+    font-size: 12px;
   }
 
   .header-right-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex: 1;
     min-width: 0;
     justify-content: flex-start;
   }
 
-  .inline-tool-call.running .tool-name {
-    animation: shimmer 2s infinite linear;
-    background: linear-gradient(
-      90deg,
-      var(--color-text-secondary) 0%,
-      var(--color-text) 50%,
-      var(--color-text-secondary) 100%
-    );
-    background-size: 200% auto;
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-
-  @keyframes shimmer {
-    to {
-      background-position: 200% center;
-    }
-  }
-
-  .files-container {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
-  .files-container.multi {
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .diag-mini-summary {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: -4px;
-  }
-
-  .diag-refresh {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    margin-left: 6px;
-    border-radius: 6px;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-  }
-
-  .diag-refresh:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--color-text);
-  }
-
-  .diag-refresh:focus-visible {
-    outline: 1px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  .diag-badge {
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.2px;
-    backdrop-filter: blur(4px);
-    transition: all 0.2s ease;
-  }
-
-  .diag-badge.error {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.2);
-  }
-  .diag-badge.warning {
-    background: rgba(245, 158, 11, 0.1);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.2);
-  }
-  .diag-badge.success {
-    background: rgba(34, 197, 94, 0.1);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.2);
-  }
-
-  .file-pill {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(255, 255, 255, 0.03);
-    padding: 4px 8px;
-    border-radius: 6px;
-    max-width: fit-content;
-    min-width: 0;
-    position: relative;
-    overflow: hidden;
-    cursor: pointer;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    text-align: left;
-    font-family: inherit;
-    transition: all 0.2s ease;
-    backdrop-filter: blur(4px);
-  }
-
-  .file-pill:hover {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.1);
-    transform: translateY(-1px);
-  }
-
-  .file-pill:hover .filename {
-    color: var(--color-text);
-  }
-
-  .file-pill.is-loading {
-    opacity: 0.8;
-  }
-
-  :global(.animate-spin) {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .pill-progress-bar {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: rgba(var(--color-accent-rgb), 0.1);
-  }
-
-  .pill-progress-fill {
-    height: 100%;
-    background: var(--color-accent);
-    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 0 8px var(--color-accent);
+  .inline-tool-call.running .tool-header {
     position: relative;
     overflow: hidden;
   }
 
-  .pill-progress-fill::after {
+  .inline-tool-call.running .tool-header::after {
     content: "";
     position: absolute;
     top: 0;
@@ -1096,70 +999,154 @@
     background: linear-gradient(
       90deg,
       transparent,
-      rgba(255, 255, 255, 0.3),
+      rgba(255, 255, 255, 0.05),
       transparent
     );
-    animation: progress-shimmer 1.5s infinite;
+    animation: header-shimmer 2s infinite linear;
+    pointer-events: none;
   }
 
-  @keyframes progress-shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+  @keyframes header-shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  .files-container {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .file-pill-group {
+    display: flex;
+    align-items: center;
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    gap: 0;
+    cursor: pointer;
+    transition: all 0.1s ease;
+    max-width: 280px;
+    overflow: hidden;
+  }
+
+  .file-pill-group:hover {
+    background: var(--color-hover);
+    border-color: var(--color-active);
+  }
+
+  .path-pill {
+    color: var(--color-text-secondary);
+    opacity: 0.6;
+    font-size: 11px;
+    white-space: nowrap;
+    padding-right: 4px;
+  }
+
+  .file-pill {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    color: var(--color-text-secondary);
   }
 
   .filename {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    color: var(--color-text);
+    color: var(--color-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 180px; /* Prevent long names from pushing everything off */
+    opacity: 0.9;
   }
 
-  .file-count {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--color-accent);
-    background: var(--color-accent-alpha);
-    padding: 0 4px;
-    border-radius: 4px;
-    margin-left: -2px;
+  .file-pill-group:hover .filename {
+    color: var(--color-text);
+    opacity: 1;
   }
 
-  .diff-stats {
+  .diag-mini-summary {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 12px;
+    gap: 4px;
+  }
+
+  .diag-badge {
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .diag-badge.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+  }
+  .diag-badge.warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+  }
+  .diag-badge.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+  }
+
+  .diff-ledger {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
     font-weight: 600;
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 2px 6px;
   }
 
   .stat-added {
     color: #4ade80;
-    text-shadow: 0 0 10px rgba(74, 222, 128, 0.2);
   }
 
   .stat-removed {
     color: #f87171;
-    text-shadow: 0 0 10px rgba(248, 113, 113, 0.2);
   }
 
   .tool-summary {
     color: var(--color-text-secondary);
-    opacity: 0.8;
-    flex: 1;
+    opacity: 0.6;
+    font-size: 11px;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 13px;
+    max-width: 200px;
   }
 
   .tool-summary.is-line-range {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.08);
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+
+  .tool-summary.is-snippet {
+    font-style: italic;
     font-family: var(--font-mono, monospace);
-    color: #60a5fa; /* Blue-ish for line numbers as requested */
-    font-size: 11px;
-    opacity: 0.7;
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    opacity: 0.4;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    padding-left: 6px;
   }
 
   .tool-progress {

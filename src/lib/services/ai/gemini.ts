@@ -42,10 +42,10 @@ function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThi
     // Gemini 3 series: use thinkingLevel
     return {
       includeThoughts: thinkingEnabled,
-      thinkingLevel: thinkingEnabled ? 'HIGH' : 'LOW'
+      thinkingLevel: thinkingEnabled ? 'LOW' : 'LOW'
     };
   }
-  
+
   // Gemini 2.5 series: use thinkingBudget (camelCase for REST API)
   return {
     includeThoughts: thinkingEnabled,
@@ -455,7 +455,7 @@ export const geminiProvider: AIProvider = {
       topK: 40,
       topP: 0.95
     };
-    
+
     if (request.temperature !== undefined) {
       geminiRequest.generationConfig.temperature = request.temperature;
     }
@@ -549,7 +549,7 @@ export const geminiProvider: AIProvider = {
       topK: 40,
       topP: 0.95
     };
-    
+
     if (request.temperature !== undefined) {
       geminiRequest.generationConfig.temperature = request.temperature;
     }
@@ -586,7 +586,7 @@ export const geminiProvider: AIProvider = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    
+
     // Keepalive timeout - if no data received for this long, consider connection dead
     // Kiro-style: detect stalled connections
     const KEEPALIVE_TIMEOUT_MS = 60000; // 60 seconds
@@ -607,15 +607,15 @@ export const geminiProvider: AIProvider = {
               setTimeout(() => resolve({ timeout: true }), remaining);
             }
           });
-          
+
           const raceResult = await Promise.race([readPromise, timeoutPromise]);
-          
+
           if ('timeout' in raceResult) {
             console.warn('[Gemini] Stream timeout - no data received for', KEEPALIVE_TIMEOUT_MS, 'ms');
             yield { type: 'error', error: 'Connection timeout - no response from server.' };
             break;
           }
-          
+
           result = raceResult;
           lastDataTime = Date.now(); // Reset keepalive timer
         } catch (err: any) {
@@ -697,15 +697,15 @@ export const geminiProvider: AIProvider = {
                   };
                   continue; // Don't process text for this part
                 }
-                
+
                 // Skip empty text parts (with or without thought signature)
                 if (!part.text || !part.text.trim()) {
                   continue;
                 }
-                
+
                 const text = part.text;
                 const isThought = Boolean((part as any).thought);
-                
+
                 if (isThought) {
                   yield { type: 'thinking', thinking: text };
                 } else {

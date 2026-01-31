@@ -7,6 +7,7 @@
   import { readTextFile } from "@tauri-apps/plugin-fs";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
   import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
+  import ContextUsage from "./ContextUsage.svelte";
   import { fade } from "svelte/transition";
 
   interface Props {
@@ -625,6 +626,8 @@
             </div>
           {/if}
         </div>
+
+        <ContextUsage {currentMode} {isStreaming} />
       </div>
 
       <div class="right-controls">
@@ -651,7 +654,7 @@
             aria-label="Send message"
             type="button"
           >
-            <UIIcon name="arrow-right" size={20} />
+            <UIIcon name="arrow-up" size={18} />
           </button>
         {/if}
       </div>
@@ -820,10 +823,10 @@
     left: 0;
     margin-bottom: 8px;
     min-width: 210px;
-    background: #0f0f0f;
-    border: 1px solid #1a1a1a;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
     border-radius: 10px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8);
+    box-shadow: var(--shadow-elevated, 0 12px 40px rgba(0, 0, 0, 0.8));
     padding: 6px 0;
     z-index: 1000;
     animation: dropdownIn 0.12s cubic-bezier(0, 0, 0.2, 1);
@@ -860,7 +863,7 @@
     padding: 8px 12px;
     font-size: 14px;
     font-weight: 500;
-    color: #e5e5e5;
+    color: var(--color-text);
     text-align: left;
     transition: all 0.1s ease;
     border-radius: 6px;
@@ -869,22 +872,25 @@
   .attach-option:hover,
   .mode-option:hover,
   .model-option:hover {
-    background: #1a1a1a;
+    background: var(--color-hover);
   }
 
   .mode-option.active,
   .model-option.active {
-    background: rgba(59, 130, 246, 0.15);
-    color: #3b82f6;
+    background: var(--color-accent-alpha);
+    color: var(
+      --color-text
+    ); /* Keep text readable, maybe --color-accent if desired, but text often cleaner */
   }
 
   .mode-option.active .option-check {
-    color: #3b82f6;
+    color: var(--color-accent);
   }
 
   .option-check {
     width: 14px;
     font-size: 12px;
+    color: var(--color-accent);
   }
 
   .option-label {
@@ -902,43 +908,42 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 8px; /* Slightly rounded square for modern look */
-    background: transparent;
-    color: var(--color-text-secondary);
+    width: 32px;
+    height: 32px;
+    border-radius: 50%; /* Pure circular like the request */
+    background: #3c3c3c; /* Grey background when no text */
+    color: #1e1e1e; /* Darker icon color for contrast on grey */
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    border: 1px solid transparent;
+    border: none;
+    cursor: pointer;
   }
 
   /* Active state (when there is text to send) */
   .send-btn:not(:disabled):not(.stop) {
-    background: var(--color-primary);
-    color: white;
-    box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.3);
+    background: #ffffff; /* Bright white when active */
+    color: #000000; /* Dark icon when active */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
   }
 
   .send-btn:hover:not(:disabled) {
-    transform: translateY(-1px);
+    transform: scale(1.05);
     filter: brightness(1.1);
   }
 
   .send-btn:active:not(:disabled) {
-    transform: translateY(0);
-    filter: brightness(0.9);
+    transform: scale(0.95);
   }
 
   .send-btn:disabled {
-    opacity: 0.25;
-    cursor: not-allowed;
-    background: transparent;
-    border-color: var(--color-border);
+    cursor: default;
+    opacity: 0.5;
   }
 
   .send-btn.stop {
     background: var(--color-error);
     color: white;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3); /* Red glow for stop button */
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    border-radius: 8px; /* Square with rounded corners for stop */
   }
 
   .send-btn:focus-visible {

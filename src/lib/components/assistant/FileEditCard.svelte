@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * FileEditCard - Clean file edit display card
-   * Shows: Edited filename.ext [diff] [revert]
+   * Shows: Edited filename.ext [+10 -5] [Open diff]
    */
   import { UIIcon } from "$lib/components/ui";
   import { editorStore } from "$lib/stores/editor.svelte";
@@ -92,7 +92,7 @@
 
   const fileIcon = $derived(getFileIcon(fileExt));
 
-  // Diff stats from meta
+  // Diff stats from meta or calculated from arguments
   const diffStats = $derived.by(() => {
     let added = 0;
     let removed = 0;
@@ -101,14 +101,48 @@
     for (const tc of allToolCalls) {
       const meta = tc.meta as Record<string, any> | undefined;
       const stats = meta?.fileEdit as Record<string, any> | undefined;
-      if (stats) {
-        if (typeof stats.added === "number") {
-          added += stats.added;
-          hasStats = true;
-        }
-        if (typeof stats.removed === "number") {
-          removed += stats.removed;
-          hasStats = true;
+
+      if (
+        stats &&
+        (typeof stats.added === "number" || typeof stats.removed === "number")
+      ) {
+        // Use server-provided stats if available
+        if (typeof stats.added === "number") added += stats.added;
+        if (typeof stats.removed === "number") removed += stats.removed;
+        hasStats = true;
+      } else {
+        // Fallback: Calculate from arguments
+        const args = tc.arguments as Record<string, any>;
+        const name = tc.name;
+
+        if (name === "replace_file_content") {
+          if (args.ReplacementContent) {
+            added += (args.ReplacementContent.match(/\n/g) || []).length + 1;
+            hasStats = true;
+          }
+          if (args.TargetContent) {
+            removed += (args.TargetContent.match(/\n/g) || []).length + 1;
+            hasStats = true;
+          }
+        } else if (
+          name === "multi_replace_file_content" &&
+          Array.isArray(args.ReplacementChunks)
+        ) {
+          for (const chunk of args.ReplacementChunks) {
+            if (chunk.ReplacementContent) {
+              added += (chunk.ReplacementContent.match(/\n/g) || []).length + 1;
+              hasStats = true;
+            }
+            if (chunk.TargetContent) {
+              removed += (chunk.TargetContent.match(/\n/g) || []).length + 1;
+              hasStats = true;
+            }
+          }
+        } else if (name === "write_to_file") {
+          if (args.CodeContent) {
+            added += (args.CodeContent.match(/\n/g) || []).length + 1;
+            hasStats = true;
+          }
         }
       }
     }
@@ -128,7 +162,11 @@
     if (tc.status !== "completed") return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-    return typeof fileEdit?.beforeContent === "string";
+    // We can view diff if we have beforeContent OR if it's a new file (beforeContent might be empty)
+    return (
+      typeof fileEdit?.beforeContent === "string" ||
+      fileEdit?.isNewFile === true
+    );
   }
 
   const canRevert = $derived(allToolCalls.some((tc) => canRevertEdit(tc)));
@@ -189,14 +227,13 @@
     role={isGrouped ? "button" : undefined}
     onclick={isGrouped ? () => (isExpanded = !isExpanded) : undefined}
   >
-    <!-- Status indicator -->
-    <div class="status-icon">
-      <UIIcon name="file" size={14} />
-    </div>
+    <!-- Combined Status & File Info Block -->
+    <div class="main-info">
+      <div class="status-indicator">
+        <UIIcon name={isAllFailed ? "error" : "pencil"} size={13} />
+        <span class="status-label">{statusText}</span>
+      </div>
 
-    <!-- Main content -->
-    <div class="content">
-      <span class="status-text">{statusText}</span>
       <div
         class="file-pill"
         class:is-loading={isAllRunning}
@@ -212,12 +249,12 @@
             handleFileClick(toolCall.arguments.path as string);
           }
         }}
-        aria-label="Open {filename}"
+        title={toolCall.arguments.path as string}
       >
         {#if isAllRunning}
-          <UIIcon name="spinner" size={14} class="spinner-icon" />
+          <UIIcon name="spinner" size={13} class="spinner-icon" />
         {:else}
-          <UIIcon name={fileIcon} size={14} />
+          <UIIcon name={fileIcon} size={13} />
         {/if}
         <span class="filename">{filename}</span>
 
@@ -230,13 +267,19 @@
           </div>
         {/if}
       </div>
-      {#if diffStats && hasAnyComplete && !isReverted}
+
+      <!-- Stats - Always show if available -->
+      {#if diffStats}
         <div class="diff-stats">
           {#if diffStats.added > 0}
-            <span class="stat-added">+{diffStats.added}</span>
+            <span class="stat-added" title="Lines added"
+              >+{diffStats.added}</span
+            >
           {/if}
           {#if diffStats.removed > 0}
-            <span class="stat-removed">-{diffStats.removed}</span>
+            <span class="stat-removed" title="Lines removed"
+              >-{diffStats.removed}</span
+            >
           {/if}
         </div>
       {:else if isGrouped}
@@ -355,72 +398,61 @@
 <style>
   .edit-card {
     margin: 4px 0;
+    border-radius: 6px;
+    background: transparent;
   }
 
   .card-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 0;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
     cursor: default;
-    font-size: 13.5px;
-    transition: color 0.15s ease;
+    font-size: 13px;
   }
 
-  .edit-card:has(.edit-count) .card-row {
-    cursor: pointer;
-  }
-  .edit-card:has(.edit-count) .card-row:hover .filename {
-    text-decoration: underline;
-  }
-
-  .status-icon {
+  .main-info {
     display: flex;
     align-items: center;
-    color: var(--color-text-secondary);
-    opacity: 0.6;
-    flex-shrink: 0;
-  }
-
-  .content {
+    gap: 10px;
     flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
     min-width: 0;
   }
 
-  .status-text {
-    font-size: 13px;
+  .status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--color-text-secondary);
-    flex-shrink: 0;
-    font-weight: 400;
+    font-size: 12px;
+    font-weight: 500;
   }
 
   .file-pill {
     display: flex;
     align-items: center;
     gap: 6px;
-    background: transparent;
-    padding: 2px 0;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--color-border);
+    padding: 2px 8px;
+    border-radius: 4px;
     max-width: fit-content;
     min-width: 0;
     position: relative;
     overflow: hidden;
     cursor: pointer;
-    transition: opacity 0.2s ease;
+    transition: all 0.2s ease;
   }
 
   .file-pill:hover {
-    opacity: 0.7;
-  }
-
-  .file-pill:hover .filename {
-    text-decoration: underline;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--color-accent);
   }
 
   .file-pill.is-loading {
-    border-color: var(--color-accent-alpha);
+    border-color: var(--color-accent);
+    background: rgba(var(--color-accent-rgb), 0.05);
   }
 
   :global(.spinner-icon) {
@@ -443,14 +475,13 @@
     left: 0;
     right: 0;
     height: 1.5px;
-    background: transparent;
+    background: rgba(255, 255, 255, 0.05);
   }
 
   .pill-progress-fill {
     height: 100%;
     background: var(--color-accent);
     transition: width 0.1s ease-out;
-    box-shadow: 0 0 4px var(--color-accent);
   }
 
   .filename {
@@ -460,58 +491,62 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
   }
 
   .diff-stats {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
-    font-weight: 600; /* Bolder for visibility */
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "JetBrains Mono", monospace;
+    margin-left: 2px;
   }
 
   .stat-added {
-    color: #4ade80; /* Intense vibrant green */
+    color: #4ade80; /* Explicit Bright Green */
   }
 
   .stat-removed {
-    color: #f87171; /* Intense vibrant red */
+    color: #f87171; /* Explicit Soft Red */
   }
 
   .edit-count {
     font-size: 11px;
     color: var(--color-text-secondary);
     opacity: 0.6;
-    font-weight: 400;
   }
 
   .actions {
     display: flex;
     align-items: center;
-    gap: 0;
+    gap: 8px;
+    flex-shrink: 0;
   }
 
   .action-btn-text {
     background: transparent;
+    border: 1px solid var(--color-border);
     color: var(--color-text-secondary);
-    font-size: 12px;
-    padding: 4px 8px;
+    font-size: 11px;
+    padding: 2px 8px;
     border-radius: 4px;
-    transition: all 0.12s ease;
+    transition: all 0.15s ease;
     white-space: nowrap;
+    font-weight: 500;
   }
 
   .action-btn-text:hover {
     color: var(--color-text);
     background: var(--color-hover);
+    border-color: var(--color-text);
   }
 
-  .action-btn-text.diff:hover {
-    color: var(--color-text);
-  }
-
-  .action-btn-text.restore:hover {
-    color: var(--color-green);
+  .action-btn-text.restore {
+    color: var(--color-success);
+    border-color: var(--color-success);
+    background: rgba(var(--color-success-rgb, 78, 201, 176), 0.1);
   }
 
   .action-btn {
@@ -523,23 +558,23 @@
     border-radius: 4px;
     color: var(--color-text-secondary);
     background: transparent;
-    transition: all 0.12s ease;
+    transition: all 0.15s ease;
+    opacity: 0.7;
   }
 
   .action-btn:hover {
     background: var(--color-hover);
     color: var(--color-text);
+    opacity: 1;
   }
 
   .action-btn.revert-icon:hover {
     color: var(--color-warning);
+    background: rgba(var(--color-warning-rgb, 255, 177, 85), 0.1);
   }
 
   .action-btn.expand {
-    width: 20px;
-    height: 20px;
-    transition: transform 0.15s ease;
-    padding: 0;
+    transition: transform 0.2s ease;
   }
 
   .action-btn.expand.expanded {
@@ -548,35 +583,40 @@
 
   /* Expanded list */
   .expanded-list {
-    padding: 2px 0 6px 20px;
+    padding: 0 0 8px 32px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+    border-left: 1px solid var(--color-border);
+    margin-left: 10px;
   }
 
   .sub-item {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 4px;
+    gap: 8px;
+    padding: 4px 8px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--color-text-secondary);
+    background: rgba(255, 255, 255, 0.02);
   }
 
   .sub-item:hover {
     color: var(--color-text);
+    background: rgba(255, 255, 255, 0.04);
   }
+
   .sub-item.reverted {
-    opacity: 0.6;
+    opacity: 0.5;
+    text-decoration: line-through;
   }
 
   .sub-index {
-    color: var(--color-text-secondary);
-    font-family: var(--font-mono, monospace);
+    color: var(--color-text-disabled);
+    font-family: "JetBrains Mono", monospace;
     min-width: 14px;
-    font-size: 10px;
-    opacity: 0.5;
+    font-size: 11px;
   }
 
   .sub-status {
@@ -585,18 +625,18 @@
 
   .sub-actions {
     display: flex;
-    gap: 2px;
+    gap: 4px;
   }
 
   .sub-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     border-radius: 4px;
     color: var(--color-text-secondary);
-    transition: all 0.12s ease;
+    transition: all 0.15s ease;
   }
 
   .sub-btn:hover {
@@ -606,9 +646,13 @@
 
   /* Error row */
   .error-row {
-    padding: 4px 0 8px 20px;
-    font-size: 11px;
-    font-family: var(--font-mono, monospace);
-    color: #f87171;
+    padding: 6px 12px;
+    margin: 4px 0 8px 32px;
+    font-size: 12px;
+    font-family: "JetBrains Mono", monospace;
+    color: var(--color-error);
+    background: rgba(var(--color-error-rgb, 241, 76, 76), 0.05);
+    border-radius: 4px;
+    border-left: 2px solid var(--color-error);
   }
 </style>

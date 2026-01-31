@@ -44,6 +44,7 @@ export type UIIconName =
     | "chevron-left"
     | "arrow-left"
     | "arrow-right"
+    | "arrow-up"
     | "collapse-all"
     | "expand-all"
     // Status
