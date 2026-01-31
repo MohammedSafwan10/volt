@@ -693,6 +693,12 @@ class BrowserStore {
    * Prevents multiple rapid reloads and avoids conflict with native HMR
    */
   private triggerLiveReload(): void {
+    // skip reload in development mode to prevent recursive window reloads
+    if (import.meta.env.DEV) {
+      console.log('[Browser] Skipping live reload in dev mode');
+      return;
+    }
+
     // Clear any pending reload
     if (this.reloadDebounceTimer) {
       clearTimeout(this.reloadDebounceTimer);
