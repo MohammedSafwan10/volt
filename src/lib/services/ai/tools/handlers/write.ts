@@ -22,7 +22,21 @@ import { resolvePath, extractErrorMessage, isSameOrSuffixPath, type ToolResult }
 async function getPostEditDiagnostics(absolutePath: string, relativePath: string): Promise<{
   errorCount: number;
   warningCount: number;
-  errors: string[]; // Detailed errors for AI (not shown to user)
+  fileCount: number;
+  problems: Array<{
+    id: string;
+    file: string;
+    fileName: string;
+    line: number;
+    column: number;
+    endLine: number;
+    endColumn: number;
+    message: string;
+    severity: string;
+    source: string;
+    code?: string;
+    relativePath: string;
+  }>;
 }> {
   try {
     // Notify LSPs of the file change based on file type
@@ -85,30 +99,38 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     const { handleGetDiagnostics } = await import('./diagnostics');
     const result = await handleGetDiagnostics({ paths: [relativePath] });
 
-    if (!result.success || !result.output) {
-      return { errorCount: 0, warningCount: 0, errors: [] };
+    if (!result.success) {
+      return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
     }
 
-    // Parse the diagnostics output
-    const output = result.output;
-    const lines = output.split('\n');
+    const meta = (result.meta ?? {}) as {
+      errorCount?: number;
+      warningCount?: number;
+      fileCount?: number;
+      problems?: Array<{
+        id: string;
+        file: string;
+        fileName: string;
+        line: number;
+        column: number;
+        endLine: number;
+        endColumn: number;
+        message: string;
+        severity: string;
+        source: string;
+        code?: string;
+        relativePath: string;
+      }>;
+    };
 
-    let errorCount = 0;
-    let warningCount = 0;
-    const errors: string[] = [];
-
-    for (const line of lines) {
-      if (line.includes('[error]') || line.includes('Error:')) {
-        errorCount++;
-        errors.push(line.trim());
-      } else if (line.includes('[warning]') || line.includes('Warning:')) {
-        warningCount++;
-      }
-    }
-
-    return { errorCount, warningCount, errors };
+    return {
+      errorCount: meta.errorCount ?? 0,
+      warningCount: meta.warningCount ?? 0,
+      fileCount: meta.fileCount ?? 0,
+      problems: meta.problems ?? [],
+    };
   } catch {
-    return { errorCount: 0, warningCount: 0, errors: [] };
+    return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
   }
 }
 
@@ -213,8 +235,12 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   }
 
   // Add detailed errors for AI (in meta, not visible to user)
-  const aiErrors = diagnostics.errors.length > 0
-    ? `\n\n[ERRORS - fix these]:\n${diagnostics.errors.slice(0, 5).join('\n')}`
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+        .filter((p) => p.severity === 'error')
+        .slice(0, 5)
+        .map((p) => `L${p.line}:${p.column} ${p.message}`)
+        .join('\n')}`
     : '';
 
   return {
@@ -231,7 +257,13 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
         lastChangedLine,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
-      }
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
     }
   };
 }
@@ -285,8 +317,12 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
     output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? 's' : ''}`;
   }
 
-  const aiErrors = diagnostics.errors.length > 0
-    ? `\n\n[ERRORS - fix these]:\n${diagnostics.errors.slice(0, 5).join('\n')}`
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+        .filter((p) => p.severity === 'error')
+        .slice(0, 5)
+        .map((p) => `L${p.line}:${p.column} ${p.message}`)
+        .join('\n')}`
     : '';
 
   return {
@@ -302,7 +338,13 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
         lastChangedLine,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
-      }
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
     }
   };
 }
@@ -402,8 +444,12 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
     output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? 's' : ''}`;
   }
 
-  const aiErrors = diagnostics.errors.length > 0
-    ? `\n\n[ERRORS - fix these]:\n${diagnostics.errors.slice(0, 5).join('\n')}`
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+        .filter((p) => p.severity === 'error')
+        .slice(0, 5)
+        .map((p) => `L${p.line}:${p.column} ${p.message}`)
+        .join('\n')}`
     : '';
 
   return {
@@ -419,7 +465,13 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
         lastChangedLine,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
-      }
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
     }
   };
 }
@@ -622,8 +674,12 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
     output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? 's' : ''}`;
   }
 
-  const aiErrors = diagnostics.errors.length > 0
-    ? `\n\n[ERRORS - fix these]:\n${diagnostics.errors.slice(0, 5).join('\n')}`
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+        .filter((p) => p.severity === 'error')
+        .slice(0, 5)
+        .map((p) => `L${p.line}:${p.column} ${p.message}`)
+        .join('\n')}`
     : '';
 
   return {
@@ -639,7 +695,13 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
         lastChangedLine: startLine + insertedLines - 1,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount
-      }
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
     }
   };
 }
