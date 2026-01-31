@@ -347,9 +347,9 @@
 
   // Update theme when theme store changes
   $effect(() => {
-    const theme = themeStore.resolvedTheme;
+    const themeName = getMonacoThemeName();
     if (editor && monaco) {
-      monaco.editor.setTheme(theme === "dark" ? "volt-dark" : "volt-light");
+      monaco.editor.setTheme(themeName);
     }
   });
 
