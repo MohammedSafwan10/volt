@@ -301,6 +301,14 @@
       },
     },
     {
+      id: "view.theme.darkmodern",
+      label: "Preferences: Color Theme - Dark Modern",
+      category: "View",
+      action: () => {
+        themeStore.setMode("dark-modern");
+      },
+    },
+    {
       id: "view.theme.dark",
       label: "Preferences: Color Theme - Dark",
       category: "View",
@@ -325,18 +333,6 @@
       action: () => {
         themeStore.setMode("light");
         showToast({ message: "Theme set to Light", type: "info" });
-      },
-    },
-    {
-      id: "view.theme.system",
-      label: "Preferences: Color Theme - System",
-      category: "View",
-      action: () => {
-        themeStore.setMode("system");
-        showToast({
-          message: `Theme set to System (${themeStore.resolvedTheme === "dark" ? "Dark" : "Light"})`,
-          type: "info",
-        });
       },
     },
     {
