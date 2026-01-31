@@ -85,24 +85,40 @@
 
   // Auto-scroll effect
   $effect(() => {
-    // Track dependencies
+    // Track dependencies more explicitly for streaming content
     messages.forEach((m) => {
       void m.content;
       void m.thinking;
       void m.isStreaming;
-      void m.contentParts;
+      if (m.contentParts) {
+        m.contentParts.forEach(p => {
+          if (p.type === 'text') void p.text;
+          if (p.type === 'thinking') void p.thinking;
+          if (p.type === 'tool') {
+            void p.toolCall.status;
+            void p.toolCall.output;
+            void p.toolCall.streamingProgress;
+          }
+        });
+      }
     });
     void messages.length;
 
     if (!containerRef) return;
-    const shouldScroll =
-      userNearBottom ||
-      (messages.length > 0 && messages[messages.length - 1].role === "user");
+    
+    // During streaming, we should follow more aggressively if the user hasn't scrolled up significantly
+    const shouldScroll = userNearBottom || 
+      (messages.length > 0 && messages[messages.length - 1].role === "user") ||
+      (isStreaming && userNearBottom);
+
     if (shouldScroll) {
-      // Use set timeout 0 to ensure DOM is fully rendered and browser calculated height
+      // Immediate scroll for responsiveness during streaming
+      scrollToBottom();
+      
+      // Secondary check to ensure it catches layout shifts
       const timer = setTimeout(() => {
         scrollToBottom();
-      }, 0);
+      }, 30);
       return () => clearTimeout(timer);
     }
   });
