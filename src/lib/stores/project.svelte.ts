@@ -309,7 +309,7 @@ class ProjectStore {
           void projectDiagnostics.runDiagnostics(this.rootPath);
         }
         this.diagTimer = null;
-      }, 2000); // 2 second debounce
+      }, 600); // faster debounce for quicker diagnostics
     }
   }
 
