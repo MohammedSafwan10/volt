@@ -181,17 +181,17 @@ function processMarkers(monaco: typeof Monaco): void {
       endColumn: marker.endColumn,
       message: marker.message,
       severity: mapSeverity(monaco, marker.severity),
-      source: marker.source || 'monaco',
+      source: 'monaco',
       code: marker.code?.toString()
     }));
 
-    problemsStore.setProblemsForFile(filePath, problems);
+    problemsStore.setProblemsForFile(filePath, problems, 'monaco');
     currentFiles.delete(filePath);
   }
 
   // Clear problems for non-TS/JS files that no longer have markers
   for (const filePath of currentFiles) {
-    problemsStore.clearProblemsForFile(filePath);
+    problemsStore.clearProblemsForFile(filePath, 'monaco');
   }
 }
 

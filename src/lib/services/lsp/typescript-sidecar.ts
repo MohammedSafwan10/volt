@@ -33,7 +33,7 @@ const openDocuments = new Map<string, { version: number; content: string }>();
 
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const DIAGNOSTIC_DEBOUNCE_MS = 150;
+const DIAGNOSTIC_DEBOUNCE_MS = 75;
 
 // Pending open operations (to prevent race conditions)
 const openingDocuments = new Map<string, Promise<void>>();

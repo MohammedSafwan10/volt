@@ -41,7 +41,7 @@ const openDocuments = new Map<string, { version: number; content: string }>();
 
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const DIAGNOSTIC_DEBOUNCE_MS = 300; // Slightly longer debounce for ESLint (heavier)
+const DIAGNOSTIC_DEBOUNCE_MS = 150; // Faster debounce for full diagnostics mode
 
 /**
  * File extensions that ESLint can lint
