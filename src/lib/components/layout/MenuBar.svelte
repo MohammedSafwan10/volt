@@ -58,6 +58,12 @@
     showToast({ message: "Theme set to Light", type: "info" });
   }
 
+  function handleSetThemeSolarizedDark() {
+    uiStore.closeMenus();
+    themeStore.setMode("solarized-dark");
+    showToast({ message: "Theme set to Solarized Dark", type: "info" });
+  }
+
   function handleSetThemeSystem() {
     uiStore.closeMenus();
     showToast({
@@ -317,6 +323,11 @@
               label: "Light",
               action: handleSetThemeLight,
               checked: themeStore.mode === "light",
+            },
+            {
+              label: "Solarized Dark",
+              action: handleSetThemeSolarizedDark,
+              checked: themeStore.mode === "solarized-dark",
             },
           ],
         },

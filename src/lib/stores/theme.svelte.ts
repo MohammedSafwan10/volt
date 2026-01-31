@@ -8,10 +8,12 @@ import { lightThemeVars, voltLightMonacoTheme } from '$lib/themes/light';
 import { midnightThemeVars, voltMidnightMonacoTheme } from '$lib/themes/midnight';
 import { darkModernThemeVars, voltDarkModernMonacoTheme } from '$lib/themes/dark-modern';
 
+import { solarizedDarkThemeVars, voltSolarizedDarkMonacoTheme } from '$lib/themes/solarized-dark';
+
 const STORAGE_KEY = 'volt.theme';
 
-export type ThemeMode = 'dark' | 'light' | 'midnight' | 'dark-modern';
-export type ResolvedTheme = 'dark' | 'light' | 'midnight' | 'dark-modern';
+export type ThemeMode = 'dark' | 'light' | 'midnight' | 'dark-modern' | 'solarized-dark';
+export type ResolvedTheme = 'dark' | 'light' | 'midnight' | 'dark-modern' | 'solarized-dark';
 
 class ThemeStore {
   /** User's theme preference (dark, light, midnight, or dark-modern) */
@@ -46,10 +48,10 @@ class ThemeStore {
   }
 
   /**
-   * Cycle through themes: dark-modern -> dark -> midnight -> light -> dark-modern
+   * Cycle through themes
    */
   cycle(): void {
-    const order: ThemeMode[] = ['dark-modern', 'dark', 'midnight', 'light'];
+    const order: ThemeMode[] = ['dark-modern', 'dark', 'midnight', 'solarized-dark', 'light'];
     const currentIndex = order.indexOf(this.mode);
     const nextIndex = (currentIndex + 1) % order.length;
     this.setMode(order[nextIndex]);
@@ -91,6 +93,7 @@ class ThemeStore {
       case 'dark-modern': return 'Dark Modern';
       case 'dark': return 'Dark';
       case 'midnight': return 'Midnight';
+      case 'solarized-dark': return 'Solarized Dark';
       case 'light': return 'Light';
     }
   }
@@ -113,6 +116,7 @@ class ThemeStore {
       case 'dark-modern': vars = darkModernThemeVars; break;
       case 'dark': vars = darkThemeVars; break;
       case 'midnight': vars = midnightThemeVars; break;
+      case 'solarized-dark': vars = solarizedDarkThemeVars; break;
       case 'light': vars = lightThemeVars; break;
     }
 
@@ -144,6 +148,7 @@ class ThemeStore {
         case 'dark-modern': themeName = 'volt-dark-modern'; break;
         case 'dark': themeName = 'volt-dark'; break;
         case 'midnight': themeName = 'volt-midnight'; break;
+        case 'solarized-dark': themeName = 'volt-solarized-dark'; break;
         case 'light': themeName = 'volt-light'; break;
       }
 
@@ -152,6 +157,7 @@ class ThemeStore {
         monaco.editor.defineTheme('volt-dark-modern', voltDarkModernMonacoTheme);
         monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
         monaco.editor.defineTheme('volt-midnight', voltMidnightMonacoTheme);
+        monaco.editor.defineTheme('volt-solarized-dark', voltSolarizedDarkMonacoTheme);
         monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
       } catch {
         // Themes may already be defined
@@ -172,7 +178,7 @@ class ThemeStore {
 
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored && ['dark', 'midnight', 'light', 'dark-modern'].includes(stored)) {
+      if (stored && ['dark', 'midnight', 'light', 'dark-modern', 'solarized-dark'].includes(stored)) {
         this.mode = stored as ThemeMode;
       }
     } catch {
@@ -205,6 +211,7 @@ export function getMonacoThemeName(): string {
     case 'dark-modern': return 'volt-dark-modern';
     case 'dark': return 'volt-dark';
     case 'midnight': return 'volt-midnight';
+    case 'solarized-dark': return 'volt-solarized-dark';
     case 'light': return 'volt-light';
   }
 }

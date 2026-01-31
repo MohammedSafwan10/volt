@@ -336,6 +336,15 @@
       },
     },
     {
+      id: "view.theme.solarized-dark",
+      label: "Preferences: Color Theme - Solarized Dark",
+      category: "View",
+      action: () => {
+        themeStore.setMode("solarized-dark");
+        showToast({ message: "Theme set to Solarized Dark", type: "info" });
+      },
+    },
+    {
       id: "view.theme.toggle",
       label: "Preferences: Toggle Color Theme",
       category: "View",
