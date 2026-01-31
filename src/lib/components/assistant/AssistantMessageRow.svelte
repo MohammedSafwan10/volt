@@ -458,7 +458,7 @@
     padding-top: 2px;
   }
   .inline-tool-wrapper {
-    margin: 14px 0;
+    margin: 2px 0;
   }
 
   .msg-content {
@@ -470,13 +470,7 @@
   }
 
   .cursor {
-    display: inline-block;
-    width: 2px;
-    height: 14px;
-    background: var(--color-accent);
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    animation: blink 1s step-end infinite;
+    display: none;
   }
   @keyframes blink {
     0%,
@@ -522,7 +516,7 @@
 
   /* Inline thinking block (Cursor-style - transparent/minimal) */
   .inline-thinking {
-    margin: 12px 0;
+    margin: 6px 0;
   }
   .thinking-header {
     padding: 6px 0;
