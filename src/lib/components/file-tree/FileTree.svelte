@@ -1,20 +1,20 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { dirname, join } from '@tauri-apps/api/path';
-  import { projectStore, type TreeNode } from '$lib/stores/project.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { showToast } from '$lib/stores/toast.svelte';
-  import { ConfirmModal, UIIcon } from '$lib/components/ui';
+  import { onMount } from "svelte";
+  import { dirname, join } from "@tauri-apps/api/path";
+  import { projectStore, type TreeNode } from "$lib/stores/project.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { showToast } from "$lib/stores/toast.svelte";
+  import { ConfirmModal, UIIcon } from "$lib/components/ui";
   import {
     openFolderDialog,
     createFile,
     createDirectory,
     deletePath,
     renamePath,
-    getFileInfo
-  } from '$lib/services/file-system';
-  import { pauseWatching, resumeWatching } from '$lib/services/file-watch';
-  import FileTreeItem from './FileTreeItem.svelte';
+    getFileInfo,
+  } from "$lib/services/file-system";
+  import { pauseWatching, resumeWatching } from "$lib/services/file-watch";
+  import FileTreeItem from "./FileTreeItem.svelte";
 
   interface Props {
     onFileSelect?: (path: string) => void;
@@ -31,9 +31,9 @@
         void revealFileInTree(filePath);
       }
     }
-    
-    window.addEventListener('reveal-file', handleRevealFile);
-    return () => window.removeEventListener('reveal-file', handleRevealFile);
+
+    window.addEventListener("reveal-file", handleRevealFile);
+    return () => window.removeEventListener("reveal-file", handleRevealFile);
   });
 
   /**
@@ -41,34 +41,34 @@
    */
   async function revealFileInTree(filePath: string): Promise<void> {
     if (!projectStore.rootPath) return;
-    
+
     // Normalize paths for comparison
-    const normalizedFilePath = filePath.replace(/\\/g, '/');
-    const normalizedRoot = projectStore.rootPath.replace(/\\/g, '/');
-    
+    const normalizedFilePath = filePath.replace(/\\/g, "/");
+    const normalizedRoot = projectStore.rootPath.replace(/\\/g, "/");
+
     // Check if file is within project
     if (!normalizedFilePath.startsWith(normalizedRoot)) return;
-    
+
     // Get the relative path parts
     const relativePath = normalizedFilePath.slice(normalizedRoot.length);
-    const parts = relativePath.split('/').filter(Boolean);
-    
+    const parts = relativePath.split("/").filter(Boolean);
+
     // Build up the path and expand each folder
     let currentPath = projectStore.rootPath;
-    
+
     for (let i = 0; i < parts.length - 1; i++) {
       // Use proper path joining
       currentPath = await joinPath(currentPath, parts[i]);
       const node = projectStore.findNode(currentPath);
-      
+
       if (node && node.isDir && !node.expanded) {
         await projectStore.toggleFolder(node);
       }
     }
-    
+
     // Select the file
     projectStore.selectItem(filePath);
-    
+
     // Scroll to the selected item after a tick
     setTimeout(() => {
       scrollToSelectedItem();
@@ -77,20 +77,21 @@
 
   function scrollToSelectedItem(): void {
     if (!scrollEl || !projectStore.selectedPath) return;
-    
+
     // Find the index of the selected item in flatNodes
     const selectedIndex = flatNodes.findIndex(
-      item => item.node.path === projectStore.selectedPath
+      (item) => item.node.path === projectStore.selectedPath,
     );
-    
+
     if (selectedIndex >= 0) {
       const targetTop = TOP_PADDING + selectedIndex * ROW_HEIGHT;
       const viewportTop = scrollEl.scrollTop;
       const viewportBottom = viewportTop + scrollEl.clientHeight;
-      
+
       // Scroll if not in view
       if (targetTop < viewportTop || targetTop + ROW_HEIGHT > viewportBottom) {
-        scrollEl.scrollTop = targetTop - scrollEl.clientHeight / 2 + ROW_HEIGHT / 2;
+        scrollEl.scrollTop =
+          targetTop - scrollEl.clientHeight / 2 + ROW_HEIGHT / 2;
       }
     }
   }
@@ -114,12 +115,12 @@
 
   type InlineEditState =
     | {
-        mode: 'rename';
+        mode: "rename";
         targetPath: string;
         value: string;
       }
     | {
-        mode: 'newFile' | 'newFolder';
+        mode: "newFile" | "newFolder";
         parentPath: string;
         draftPath: string;
         value: string;
@@ -130,43 +131,94 @@
   let inlineEditFocusNonce = $state(0);
 
   let confirmOpen = $state(false);
-  let confirmTitle = $state('');
-  let confirmMessage = $state('');
-  let confirmConfirmLabel = $state('Confirm');
+  let confirmTitle = $state("");
+  let confirmMessage = $state("");
+  let confirmConfirmLabel = $state("Confirm");
   let confirmDanger = $state(false);
   let confirmResolver = $state<((ok: boolean) => void) | null>(null);
 
   // Drag and drop state
   let draggedNode = $state<TreeNode | null>(null);
-  let dropTarget = $state<{ path: string; position: 'inside' | 'before' | 'after' } | null>(null);
+  let dropTarget = $state<{
+    path: string;
+    position: "inside" | "before" | "after";
+  } | null>(null);
   let dragScrollInterval: ReturnType<typeof setInterval> | null = null;
   let lastDragY = 0;
-  
+  let lastSelectedIndex = $state(-1);
+
+  function handleItemSelect(
+    node: TreeNode,
+    e: MouseEvent | KeyboardEvent,
+  ): void {
+    const currentIndex = flatNodes.findIndex((n) => n.node.path === node.path);
+
+    if (e.shiftKey && lastSelectedIndex !== -1) {
+      const start = Math.min(lastSelectedIndex, currentIndex);
+      const end = Math.max(lastSelectedIndex, currentIndex);
+      const range = flatNodes
+        .slice(start, end + 1)
+        .filter((n) => !n.node.path.startsWith("__draft__:"))
+        .map((n) => n.node.path);
+      projectStore.selectRange(range);
+    } else if (e.ctrlKey || e.metaKey) {
+      projectStore.toggleSelection(node.path);
+      lastSelectedIndex = currentIndex;
+    } else {
+      projectStore.selectItem(node.path);
+      lastSelectedIndex = currentIndex;
+
+      if (!node.isDir) {
+        onFileSelect?.(node.path);
+      }
+    }
+  }
+
+  function handleGlobalKeydown(e: KeyboardEvent): void {
+    if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+      // Only select all if not currently renaming/creating
+      if (inlineEdit) return;
+
+      e.preventDefault();
+      const allPaths = flatNodes
+        .filter((n) => !n.node.path.startsWith("__draft__:"))
+        .map((n) => n.node.path);
+      projectStore.selectAll(allPaths);
+    }
+  }
+
   // Auto-scroll configuration
   const SCROLL_EDGE_SIZE = 40; // pixels from edge to trigger scroll
   const SCROLL_SPEED = 8; // pixels per frame
 
-  function makeDraftNode(state: Extract<InlineEditState, { mode: 'newFile' | 'newFolder' }>): TreeNode {
+  function makeDraftNode(
+    state: Extract<InlineEditState, { mode: "newFile" | "newFolder" }>,
+  ): TreeNode {
     return {
       name: state.value,
       path: state.draftPath,
-      isDir: state.mode === 'newFolder',
-      isFile: state.mode === 'newFile',
+      isDir: state.mode === "newFolder",
+      isFile: state.mode === "newFile",
       isSymlink: false,
       size: 0,
       modified: null,
-      children: state.mode === 'newFolder' ? null : [],
+      children: state.mode === "newFolder" ? null : [],
       expanded: false,
-      loading: false
+      loading: false,
     };
   }
 
-  function flatten(nodes: TreeNode[], depth = 0, out: FlatNode[] = [], edit: InlineEditState | null): FlatNode[] {
+  function flatten(
+    nodes: TreeNode[],
+    depth = 0,
+    out: FlatNode[] = [],
+    edit: InlineEditState | null,
+  ): FlatNode[] {
     for (const node of nodes) {
       out.push({ node, depth });
 
       if (node.isDir && node.expanded) {
-        if (edit && edit.mode !== 'rename' && edit.parentPath === node.path) {
+        if (edit && edit.mode !== "rename" && edit.parentPath === node.path) {
           out.push({ node: makeDraftNode(edit), depth: depth + 1 });
         }
         if (Array.isArray(node.children) && node.children.length > 0) {
@@ -183,7 +235,7 @@
 
     if (
       edit &&
-      edit.mode !== 'rename' &&
+      edit.mode !== "rename" &&
       projectStore.rootPath &&
       edit.parentPath === projectStore.rootPath
     ) {
@@ -194,16 +246,18 @@
   });
 
   const totalHeight = $derived.by(
-    () => TOP_PADDING + BOTTOM_PADDING + flatNodes.length * ROW_HEIGHT
+    () => TOP_PADDING + BOTTOM_PADDING + flatNodes.length * ROW_HEIGHT,
   );
 
-  const startIndex = $derived.by(() => Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN));
+  const startIndex = $derived.by(() =>
+    Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN),
+  );
   const endIndex = $derived.by(() => {
     // When the panel is first shown, clientHeight can be 0 for a tick.
     const effectiveViewportHeight = Math.max(viewportHeight, 200);
     return Math.min(
       flatNodes.length,
-      Math.ceil((scrollTop + effectiveViewportHeight) / ROW_HEIGHT) + OVERSCAN
+      Math.ceil((scrollTop + effectiveViewportHeight) / ROW_HEIGHT) + OVERSCAN,
     );
   });
   const visibleNodes = $derived.by(() => flatNodes.slice(startIndex, endIndex));
@@ -248,7 +302,7 @@
 
   function handleEmptyContextMenu(e: MouseEvent): void {
     if (!(e.target instanceof HTMLElement)) return;
-    if (e.target.closest('[data-tree-row]')) return;
+    if (e.target.closest("[data-tree-row]")) return;
     if (!projectStore.rootPath) return;
 
     e.preventDefault();
@@ -262,7 +316,10 @@
     if (!projectStore.rootPath) return;
     e.preventDefault();
     e.stopPropagation();
-    projectStore.selectItem(node.path);
+    if (!projectStore.selectedPaths.has(node.path)) {
+      projectStore.selectItem(node.path);
+    }
+
     contextMenuX = e.clientX;
     contextMenuY = e.clientY;
     contextNode = node;
@@ -270,7 +327,7 @@
   }
 
   function cancelInlineEdit(): void {
-    if (inlineEdit && inlineEdit.mode !== 'rename') {
+    if (inlineEdit && inlineEdit.mode !== "rename") {
       // Keep selection sensible if the draft row was selected
       if (projectStore.selectedPath === inlineEdit.draftPath) {
         projectStore.selectItem(inlineEdit.parentPath);
@@ -289,7 +346,7 @@
   }): Promise<boolean> {
     confirmTitle = opts.title;
     confirmMessage = opts.message;
-    confirmConfirmLabel = opts.confirmLabel ?? 'Confirm';
+    confirmConfirmLabel = opts.confirmLabel ?? "Confirm";
     confirmDanger = Boolean(opts.danger);
     confirmOpen = true;
 
@@ -314,12 +371,17 @@
     try {
       return await join(parent, name);
     } catch {
-      const sep = parent.includes('\\') ? '\\' : '/';
-      return parent.endsWith(sep) ? `${parent}${name}` : `${parent}${sep}${name}`;
+      const sep = parent.includes("\\") ? "\\" : "/";
+      return parent.endsWith(sep)
+        ? `${parent}${name}`
+        : `${parent}${sep}${name}`;
     }
   }
 
-  async function beginCreate(mode: 'newFile' | 'newFolder', parentDir: TreeNode | null): Promise<void> {
+  async function beginCreate(
+    mode: "newFile" | "newFolder",
+    parentDir: TreeNode | null,
+  ): Promise<void> {
     closeContextMenu();
     const parentPath = parentDir?.path ?? projectStore.rootPath;
     if (!parentPath) return;
@@ -340,7 +402,7 @@
       mode,
       parentPath,
       draftPath,
-      value: ''
+      value: "",
     };
     projectStore.selectItem(draftPath);
     inlineEditFocusNonce++;
@@ -349,9 +411,9 @@
   function beginRename(node: TreeNode): void {
     closeContextMenu();
     inlineEdit = {
-      mode: 'rename',
+      mode: "rename",
       targetPath: node.path,
-      value: node.name
+      value: node.name,
     };
     projectStore.selectItem(node.path);
     inlineEditFocusNonce++;
@@ -370,7 +432,7 @@
 
     inlineEditCommitting = true;
     try {
-      if (edit.mode === 'rename') {
+      if (edit.mode === "rename") {
         const node = projectStore.findNode(edit.targetPath);
         if (!node) {
           cancelInlineEdit();
@@ -386,8 +448,8 @@
         try {
           parent = await dirname(node.path);
         } catch {
-          const normalized = node.path.replace(/\\/g, '/');
-          parent = normalized.slice(0, normalized.lastIndexOf('/'));
+          const normalized = node.path.replace(/\\/g, "/");
+          parent = normalized.slice(0, normalized.lastIndexOf("/"));
         }
 
         const newPath = await joinPath(parent, name);
@@ -399,14 +461,16 @@
 
         projectStore.updateNodePath(node.path, newPath, name);
         projectStore.selectItem(newPath);
-        showToast({ message: 'Renamed successfully', type: 'success' });
+        showToast({ message: "Renamed successfully", type: "success" });
         inlineEdit = null;
         return;
       }
 
       const newPath = await joinPath(edit.parentPath, name);
       const ok =
-        edit.mode === 'newFile' ? await createFile(newPath) : await createDirectory(newPath);
+        edit.mode === "newFile"
+          ? await createFile(newPath)
+          : await createDirectory(newPath);
       if (!ok) {
         inlineEditFocusNonce++;
         return;
@@ -425,7 +489,7 @@
         isFile: info.isFile,
         isSymlink: info.isSymlink,
         size: info.size,
-        modified: info.modified
+        modified: info.modified,
       };
 
       const parentDir = projectStore.findNode(edit.parentPath);
@@ -458,23 +522,23 @@
     dropTarget = null;
     stopDragScroll();
   }
-  
+
   function handleGlobalDrag(e: DragEvent): void {
     lastDragY = e.clientY;
   }
-  
+
   function startDragScroll(): void {
     if (dragScrollInterval) return;
-    
+
     // Listen globally for drag position - this works even outside the container
-    window.addEventListener('dragover', handleGlobalDrag);
-    
+    window.addEventListener("dragover", handleGlobalDrag);
+
     dragScrollInterval = setInterval(() => {
       if (!scrollEl || !draggedNode) return;
-      
+
       const rect = scrollEl.getBoundingClientRect();
       const relativeY = lastDragY - rect.top;
-      
+
       // Scroll up when near top edge OR above the container
       if (relativeY < SCROLL_EDGE_SIZE) {
         const intensity = relativeY < 0 ? 1 : 1 - relativeY / SCROLL_EDGE_SIZE;
@@ -482,44 +546,48 @@
       }
       // Scroll down when near bottom edge OR below the container
       else if (relativeY > rect.height - SCROLL_EDGE_SIZE) {
-        const intensity = relativeY > rect.height 
-          ? 1 
-          : 1 - (rect.height - relativeY) / SCROLL_EDGE_SIZE;
+        const intensity =
+          relativeY > rect.height
+            ? 1
+            : 1 - (rect.height - relativeY) / SCROLL_EDGE_SIZE;
         scrollEl.scrollTop += SCROLL_SPEED * Math.min(intensity, 1);
       }
     }, 16); // ~60fps
   }
-  
+
   function stopDragScroll(): void {
-    window.removeEventListener('dragover', handleGlobalDrag);
+    window.removeEventListener("dragover", handleGlobalDrag);
     if (dragScrollInterval) {
       clearInterval(dragScrollInterval);
       dragScrollInterval = null;
     }
   }
-  
+
   function handleContainerDragOver(e: DragEvent): void {
     // Track mouse Y position for auto-scroll (backup for when global doesn't fire)
     lastDragY = e.clientY;
   }
 
   function isDescendantOf(childPath: string, parentPath: string): boolean {
-    const normalizedChild = childPath.replace(/\\/g, '/');
-    const normalizedParent = parentPath.replace(/\\/g, '/');
-    return normalizedChild.startsWith(normalizedParent + '/');
+    const normalizedChild = childPath.replace(/\\/g, "/");
+    const normalizedParent = parentPath.replace(/\\/g, "/");
+    return normalizedChild.startsWith(normalizedParent + "/");
   }
 
   function handleDragOver(targetNode: TreeNode, e: DragEvent): void {
     if (!draggedNode) return;
-    
+
     // Can't drop on self
     if (draggedNode.path === targetNode.path) {
       dropTarget = null;
       return;
     }
-    
+
     // Can't drop folder into its own descendant
-    if (draggedNode.isDir && isDescendantOf(targetNode.path, draggedNode.path)) {
+    if (
+      draggedNode.isDir &&
+      isDescendantOf(targetNode.path, draggedNode.path)
+    ) {
       dropTarget = null;
       return;
     }
@@ -531,18 +599,18 @@
     if (targetNode.isDir) {
       // For folders: top 25% = before, middle 50% = inside, bottom 25% = after
       if (y < height * 0.25) {
-        dropTarget = { path: targetNode.path, position: 'before' };
+        dropTarget = { path: targetNode.path, position: "before" };
       } else if (y > height * 0.75) {
-        dropTarget = { path: targetNode.path, position: 'after' };
+        dropTarget = { path: targetNode.path, position: "after" };
       } else {
-        dropTarget = { path: targetNode.path, position: 'inside' };
+        dropTarget = { path: targetNode.path, position: "inside" };
       }
     } else {
       // For files: top 50% = before, bottom 50% = after
       if (y < height * 0.5) {
-        dropTarget = { path: targetNode.path, position: 'before' };
+        dropTarget = { path: targetNode.path, position: "before" };
       } else {
-        dropTarget = { path: targetNode.path, position: 'after' };
+        dropTarget = { path: targetNode.path, position: "after" };
       }
     }
   }
@@ -567,30 +635,30 @@
     const sourceNode = draggedNode;
     const sourcePath = sourceNode.path;
     const target = dropTarget;
-    
+
     // Clear drag state immediately for responsive UI
     handleDragEnd();
 
     // Determine destination folder
     let destFolder: string;
-    if (target.position === 'inside' && targetNode.isDir) {
+    if (target.position === "inside" && targetNode.isDir) {
       destFolder = targetNode.path;
     } else {
       // Move to same parent as target
       try {
         destFolder = await dirname(targetNode.path);
       } catch {
-        const normalized = targetNode.path.replace(/\\/g, '/');
-        destFolder = normalized.slice(0, normalized.lastIndexOf('/'));
+        const normalized = targetNode.path.replace(/\\/g, "/");
+        destFolder = normalized.slice(0, normalized.lastIndexOf("/"));
       }
     }
 
     // Build new path
     const newPath = await joinPath(destFolder, sourceNode.name);
-    
+
     // Check if destination is same as source (no-op)
-    const normalizedNew = newPath.replace(/\\/g, '/');
-    const normalizedSource = sourcePath.replace(/\\/g, '/');
+    const normalizedNew = newPath.replace(/\\/g, "/");
+    const normalizedSource = sourcePath.replace(/\\/g, "/");
     if (normalizedNew === normalizedSource) {
       return; // No-op, same location
     }
@@ -598,7 +666,10 @@
     // Check if destination already exists (and it's not the source itself)
     const existingNode = projectStore.findNode(newPath);
     if (existingNode && existingNode.path !== sourcePath) {
-      showToast({ message: `"${sourceNode.name}" already exists in destination`, type: 'error' });
+      showToast({
+        message: `"${sourceNode.name}" already exists in destination`,
+        type: "error",
+      });
       return;
     }
 
@@ -608,21 +679,21 @@
     if (sourceNode.isDir) {
       // For folders, close all files inside the folder
       for (const f of editorStore.openFiles) {
-        const normalizedFilePath = f.path.replace(/\\/g, '/');
-        if (normalizedFilePath.startsWith(normalizedSource + '/')) {
+        const normalizedFilePath = f.path.replace(/\\/g, "/");
+        if (normalizedFilePath.startsWith(normalizedSource + "/")) {
           filesToClose.push(f.path);
         }
       }
     } else {
       // For single files, check if this exact file is open
       const openFile = editorStore.openFiles.find(
-        f => f.path.replace(/\\/g, '/') === normalizedSource
+        (f) => f.path.replace(/\\/g, "/") === normalizedSource,
       );
       if (openFile) {
         filesToClose.push(openFile.path);
       }
     }
-    
+
     // Close files (force close to avoid unsaved changes prompts during move)
     for (const filePath of filesToClose) {
       editorStore.closeFile(filePath, true);
@@ -630,23 +701,23 @@
 
     // Pause file watcher to release handles on Windows
     await pauseWatching();
-    
+
     // Small delay to let OS release handles
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     // Execute move
     const ok = await renamePath(sourcePath, newPath);
-    
+
     // Resume file watcher
     await resumeWatching();
-    
+
     if (!ok) {
       return; // Error already shown by renamePath
     }
 
     // Remove from old location first
     projectStore.removeNode(sourcePath);
-    
+
     // Refresh destination folder to show the moved item
     // This is safer than manually adding to avoid duplicate key issues
     const destNode = projectStore.findNode(destFolder);
@@ -657,19 +728,19 @@
       await projectStore.refreshTree();
     }
     // If dest folder is collapsed, it will load when expanded
-    
+
     projectStore.selectItem(newPath);
-    showToast({ message: 'Moved successfully', type: 'success' });
+    showToast({ message: "Moved successfully", type: "success" });
   }
 
   async function handleDelete(node: TreeNode): Promise<void> {
     closeContextMenu();
 
     const confirmed = await requestConfirm({
-      title: 'Delete',
+      title: "Delete",
       message: `Delete "${node.name}"?`,
-      confirmLabel: 'Delete',
-      danger: true
+      confirmLabel: "Delete",
+      danger: true,
     });
     if (!confirmed) return;
 
@@ -682,7 +753,13 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="file-tree" role="tree" aria-label="File explorer">
+<div
+  class="file-tree"
+  role="tree"
+  aria-label="File explorer"
+  onkeydown={handleGlobalKeydown}
+  tabindex="0"
+>
   {#if projectStore.loading}
     <div class="loading">
       <span class="loading-icon"><UIIcon name="spinner" size={16} /></span>
@@ -705,7 +782,7 @@
         <button
           class="toolbar-btn"
           title="New File"
-          onclick={() => void beginCreate('newFile', null)}
+          onclick={() => void beginCreate("newFile", null)}
           aria-label="New File"
           type="button"
         >
@@ -714,7 +791,7 @@
         <button
           class="toolbar-btn"
           title="New Folder"
-          onclick={() => void beginCreate('newFolder', null)}
+          onclick={() => void beginCreate("newFolder", null)}
           aria-label="New Folder"
           type="button"
         >
@@ -749,23 +826,21 @@
             <FileTreeItem
               node={item.node}
               depth={item.depth}
-              {onFileSelect}
+              onSelect={handleItemSelect}
               onContextMenu={handleNodeContextMenu}
-              isEditing={
-                Boolean(
-                  inlineEdit &&
-                    ((inlineEdit.mode === 'rename' && inlineEdit.targetPath === item.node.path) ||
-                      (inlineEdit.mode !== 'rename' && inlineEdit.draftPath === item.node.path))
-                )
-              }
-              editValue={inlineEdit?.value ?? ''}
-              editPlaceholder={
-                inlineEdit?.mode === 'newFolder'
-                  ? 'Folder name'
-                  : inlineEdit?.mode === 'newFile'
-                    ? 'File name'
-                    : undefined
-              }
+              isEditing={Boolean(
+                inlineEdit &&
+                  ((inlineEdit.mode === "rename" &&
+                    inlineEdit.targetPath === item.node.path) ||
+                    (inlineEdit.mode !== "rename" &&
+                      inlineEdit.draftPath === item.node.path)),
+              )}
+              editValue={inlineEdit?.value ?? ""}
+              editPlaceholder={inlineEdit?.mode === "newFolder"
+                ? "Folder name"
+                : inlineEdit?.mode === "newFile"
+                  ? "File name"
+                  : undefined}
               editFocusNonce={inlineEditFocusNonce}
               onEditValueChange={(value) => {
                 if (inlineEdit) inlineEdit.value = value;
@@ -773,7 +848,9 @@
               onEditCommit={() => void commitInlineEdit()}
               onEditCancel={cancelInlineEdit}
               isDragging={draggedNode?.path === item.node.path}
-              dropPosition={dropTarget?.path === item.node.path ? dropTarget.position : null}
+              dropPosition={dropTarget?.path === item.node.path
+                ? dropTarget.position
+                : null}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -804,7 +881,7 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void beginCreate('newFile', contextNode)}
+        onclick={() => void beginCreate("newFile", contextNode)}
       >
         <UIIcon name="file-plus" size={16} />
         <span>New File</span>
@@ -813,7 +890,7 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void beginCreate('newFolder', contextNode)}
+        onclick={() => void beginCreate("newFolder", contextNode)}
       >
         <UIIcon name="folder-plus" size={16} />
         <span>New Folder</span>
@@ -824,7 +901,7 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void beginCreate('newFile', null)}
+        onclick={() => void beginCreate("newFile", null)}
       >
         <UIIcon name="file-plus" size={16} />
         <span>New File</span>
@@ -833,7 +910,7 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void beginCreate('newFolder', null)}
+        onclick={() => void beginCreate("newFolder", null)}
       >
         <UIIcon name="folder-plus" size={16} />
         <span>New Folder</span>

@@ -71,8 +71,11 @@ class ProjectStore {
   // Recent projects list
   recentProjects = $state<string[]>([]);
 
-  // Currently selected file path
-  selectedPath = $state<string | null>(null);
+  // Currently selected file paths (Set for O(1) lookups)
+  selectedPaths = $state<Set<string>>(new Set());
+
+  // Helper for single selection (last selected item)
+  selectedPath = $derived([...this.selectedPaths].pop() || null);
 
   // Detected package manager for the project
   packageManager = $state<PackageManager>('npm');
@@ -147,7 +150,7 @@ class ProjectStore {
     }
     this.projectName = this.extractFolderName(path);
     this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
-    this.selectedPath = null;
+    this.selectedPaths.clear();
     this.loading = false;
     this.addToRecentProjects(path);
 
@@ -561,7 +564,7 @@ class ProjectStore {
     }
     this.projectName = '';
     this.tree = [];
-    this.selectedPath = null;
+    this.selectedPaths.clear();
     this.packageManager = 'npm';
   }
 
@@ -614,10 +617,48 @@ class ProjectStore {
   }
 
   /**
-   * Select a file or folder
+   * Select single item (replaces existing selection)
    */
   selectItem(path: string): void {
-    this.selectedPath = path;
+    this.selectedPaths = new Set([path]);
+  }
+
+  /**
+   * Toggle item selection (Ctrl+Click)
+   */
+  toggleSelection(path: string): void {
+    if (this.selectedPaths.has(path)) {
+      this.selectedPaths.delete(path);
+      // Re-assign to trigger reactivity (Set itself isn't deeply tracked by value in $state unless replaced or using specialized patterns)
+      this.selectedPaths = new Set(this.selectedPaths);
+    } else {
+      this.selectedPaths.add(path);
+      this.selectedPaths = new Set(this.selectedPaths);
+    }
+  }
+
+  /**
+   * Add range to selection (Shift+Click)
+   */
+  selectRange(paths: string[]): void {
+    paths.forEach(p => this.selectedPaths.add(p));
+    this.selectedPaths = new Set(this.selectedPaths);
+  }
+
+  /**
+   * Clear all selections
+   */
+  clearSelection(): void {
+    if (this.selectedPaths.size > 0) {
+      this.selectedPaths = new Set();
+    }
+  }
+
+  /**
+   * Select all paths provided
+   */
+  selectAll(paths: string[]): void {
+    this.selectedPaths = new Set(paths);
   }
 
   /**
@@ -704,8 +745,9 @@ class ProjectStore {
 
     this.tree = removeFromArray(this.tree);
 
-    if (this.selectedPath === path) {
-      this.selectedPath = null;
+    if (this.selectedPaths.has(path)) {
+      this.selectedPaths.delete(path);
+      this.selectedPaths = new Set(this.selectedPaths);
     }
   }
 
@@ -723,8 +765,10 @@ class ProjectStore {
         this.updateChildrenPaths(node.children, oldPath, newPath);
       }
 
-      if (this.selectedPath === oldPath) {
-        this.selectedPath = newPath;
+      if (this.selectedPaths.has(oldPath)) {
+        this.selectedPaths.delete(oldPath);
+        this.selectedPaths.add(newPath);
+        this.selectedPaths = new Set(this.selectedPaths);
       }
     }
   }

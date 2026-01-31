@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { projectStore, type TreeNode } from '$lib/stores/project.svelte';
-  import { gitStore } from '$lib/stores/git.svelte';
-  import { UIIcon } from '$lib/components/ui';
-  import FileIcon from './FileIcon.svelte';
+  import { projectStore, type TreeNode } from "$lib/stores/project.svelte";
+  import { gitStore } from "$lib/stores/git.svelte";
+  import { UIIcon } from "$lib/components/ui";
+  import FileIcon from "./FileIcon.svelte";
 
   interface Props {
     node: TreeNode;
     depth: number;
-    onFileSelect?: (path: string) => void;
+    onSelect?: (node: TreeNode, e: MouseEvent | KeyboardEvent) => void;
     onContextMenu?: (node: TreeNode, e: MouseEvent) => void;
     isEditing?: boolean;
     editValue?: string;
@@ -18,7 +18,7 @@
     onEditCancel?: () => void;
     // Drag and drop
     isDragging?: boolean;
-    dropPosition?: 'inside' | 'before' | 'after' | null;
+    dropPosition?: "inside" | "before" | "after" | null;
     onDragStart?: (node: TreeNode, e: DragEvent) => void;
     onDragOver?: (node: TreeNode, e: DragEvent) => void;
     onDragLeave?: (node: TreeNode, e: DragEvent) => void;
@@ -29,7 +29,7 @@
   let {
     node,
     depth,
-    onFileSelect,
+    onSelect,
     onContextMenu,
     isEditing,
     editValue,
@@ -44,69 +44,115 @@
     onDragOver,
     onDragLeave,
     onDrop,
-    onDragEnd
+    onDragEnd,
   }: Props = $props();
 
-  const isSelected = $derived(projectStore.selectedPath === node.path);
+  const isSelected = $derived(projectStore.selectedPaths.has(node.path));
   const indentPx = $derived(depth * 16);
-  const isDraftNode = $derived(node.path.startsWith('__draft__:'));
+  const isDraftNode = $derived(node.path.startsWith("__draft__:"));
 
   // Git status for this file/folder (like VSCode M, U, A indicators)
   type GitIndicator = { letter: string; color: string; title: string } | null;
-  
+
   const gitIndicator = $derived.by((): GitIndicator => {
     if (!gitStore.isRepo || !gitStore.status) return null;
-    
+
     // Get relative path from workspace root
     const rootPath = projectStore.rootPath;
     if (!rootPath) return null;
-    
+
     // Normalize paths for comparison
-    const nodePath = node.path.replace(/\\/g, '/');
-    const normalizedRoot = rootPath.replace(/\\/g, '/');
-    const relativePath = nodePath.startsWith(normalizedRoot) 
-      ? nodePath.slice(normalizedRoot.length + 1) 
+    const nodePath = node.path.replace(/\\/g, "/");
+    const normalizedRoot = rootPath.replace(/\\/g, "/");
+    const relativePath = nodePath.startsWith(normalizedRoot)
+      ? nodePath.slice(normalizedRoot.length + 1)
       : nodePath;
-    
+
     // Check all git status categories
     const { staged, unstaged, untracked, conflicted } = gitStore.status;
-    
+
     // For folders, check if any child has changes
     if (node.isDir) {
-      const folderPath = relativePath + '/';
-      const hasConflict = conflicted.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
-      const hasStaged = staged.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
-      const hasUnstaged = unstaged.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
-      const hasUntracked = untracked.some(f => f.path.startsWith(folderPath) || f.path === relativePath);
-      
-      if (hasConflict) return { letter: '!', color: 'var(--color-error)', title: 'Conflict' };
-      if (hasStaged) return { letter: '●', color: 'var(--color-success)', title: 'Staged changes' };
-      if (hasUnstaged) return { letter: 'M', color: 'var(--color-warning)', title: 'Modified' };
-      if (hasUntracked) return { letter: 'U', color: 'var(--color-success)', title: 'Untracked' };
+      const folderPath = relativePath + "/";
+      const hasConflict = conflicted.some(
+        (f) => f.path.startsWith(folderPath) || f.path === relativePath,
+      );
+      const hasStaged = staged.some(
+        (f) => f.path.startsWith(folderPath) || f.path === relativePath,
+      );
+      const hasUnstaged = unstaged.some(
+        (f) => f.path.startsWith(folderPath) || f.path === relativePath,
+      );
+      const hasUntracked = untracked.some(
+        (f) => f.path.startsWith(folderPath) || f.path === relativePath,
+      );
+
+      if (hasConflict)
+        return { letter: "!", color: "var(--color-error)", title: "Conflict" };
+      if (hasStaged)
+        return {
+          letter: "●",
+          color: "var(--color-success)",
+          title: "Staged changes",
+        };
+      if (hasUnstaged)
+        return {
+          letter: "M",
+          color: "var(--color-warning)",
+          title: "Modified",
+        };
+      if (hasUntracked)
+        return {
+          letter: "U",
+          color: "var(--color-success)",
+          title: "Untracked",
+        };
       return null;
     }
-    
+
     // For files, check exact match
-    const conflict = conflicted.find(f => f.path === relativePath);
-    if (conflict) return { letter: '!', color: 'var(--color-error)', title: 'Conflict' };
-    
-    const stagedFile = staged.find(f => f.path === relativePath);
+    const conflict = conflicted.find((f) => f.path === relativePath);
+    if (conflict)
+      return { letter: "!", color: "var(--color-error)", title: "Conflict" };
+
+    const stagedFile = staged.find((f) => f.path === relativePath);
     if (stagedFile) {
-      if (stagedFile.status === 'Added') return { letter: 'A', color: 'var(--color-success)', title: 'Added (staged)' };
-      if (stagedFile.status === 'Deleted') return { letter: 'D', color: 'var(--color-error)', title: 'Deleted (staged)' };
-      if (stagedFile.status === 'Renamed') return { letter: 'R', color: 'var(--color-accent)', title: 'Renamed (staged)' };
-      return { letter: 'M', color: 'var(--color-success)', title: 'Modified (staged)' };
+      if (stagedFile.status === "Added")
+        return {
+          letter: "A",
+          color: "var(--color-success)",
+          title: "Added (staged)",
+        };
+      if (stagedFile.status === "Deleted")
+        return {
+          letter: "D",
+          color: "var(--color-error)",
+          title: "Deleted (staged)",
+        };
+      if (stagedFile.status === "Renamed")
+        return {
+          letter: "R",
+          color: "var(--color-accent)",
+          title: "Renamed (staged)",
+        };
+      return {
+        letter: "M",
+        color: "var(--color-success)",
+        title: "Modified (staged)",
+      };
     }
-    
-    const unstagedFile = unstaged.find(f => f.path === relativePath);
+
+    const unstagedFile = unstaged.find((f) => f.path === relativePath);
     if (unstagedFile) {
-      if (unstagedFile.status === 'Deleted') return { letter: 'D', color: 'var(--color-error)', title: 'Deleted' };
-      return { letter: 'M', color: 'var(--color-warning)', title: 'Modified' };
+      if (unstagedFile.status === "Deleted")
+        return { letter: "D", color: "var(--color-error)", title: "Deleted" };
+      return { letter: "M", color: "var(--color-warning)", title: "Modified" };
     }
-    
-    const untrackedFile = untracked.find(f => f.path === relativePath);
-    if (untrackedFile) return { letter: 'U', color: 'var(--color-success)', title: 'Untracked' };
-    
+
+    const untrackedFile = untracked.find((f) => f.path === relativePath);
+    if (untrackedFile)
+      return { letter: "U", color: "var(--color-success)", title: "Untracked" };
+
     return null;
   });
 
@@ -119,29 +165,27 @@
     inputEl.select();
   });
 
-  async function handleActivate(): Promise<void> {
-    projectStore.selectItem(node.path);
-    if (node.isDir) {
+  async function handleActivate(e: MouseEvent | KeyboardEvent): Promise<void> {
+    onSelect?.(node, e);
+    if (node.isDir && !(e.ctrlKey || e.metaKey || e.shiftKey)) {
       await projectStore.toggleFolder(node);
-    } else {
-      onFileSelect?.(node.path);
     }
   }
 
   function handleKeydown(e: KeyboardEvent): void {
     if (isEditing) return;
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      void handleActivate();
+      void handleActivate(e);
     }
   }
 
   function handleInputKeydown(e: KeyboardEvent): void {
     e.stopPropagation();
-    if (e.key === 'Enter') {
+    if (e.key === "Enter") {
       e.preventDefault();
       onEditCommit?.();
-    } else if (e.key === 'Escape') {
+    } else if (e.key === "Escape") {
       e.preventDefault();
       onEditCancel?.();
     }
@@ -153,8 +197,8 @@
       return;
     }
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', node.path);
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", node.path);
     }
     onDragStart?.(node, e);
   }
@@ -164,7 +208,7 @@
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
+      e.dataTransfer.dropEffect = "move";
     }
     onDragOver?.(node, e);
   }
@@ -191,18 +235,18 @@
   data-tree-row
   class:selected={isSelected}
   class:dragging={isDragging}
-  class:drop-inside={dropPosition === 'inside'}
-  class:drop-before={dropPosition === 'before'}
-  class:drop-after={dropPosition === 'after'}
+  class:drop-inside={dropPosition === "inside"}
+  class:drop-before={dropPosition === "before"}
+  class:drop-after={dropPosition === "after"}
   style="padding-left: {indentPx + 8}px"
   role="treeitem"
   tabindex="0"
   aria-selected={isSelected}
   aria-expanded={node.isDir ? node.expanded : undefined}
   draggable={!isEditing && !isDraftNode}
-  onclick={() => {
+  onclick={(e) => {
     if (isEditing) return;
-    void handleActivate();
+    void handleActivate(e);
   }}
   onkeydown={handleKeydown}
   oncontextmenu={(e) => {
@@ -222,7 +266,10 @@
           <UIIcon name="spinner" size={14} />
         </span>
       {:else}
-        <UIIcon name={node.expanded ? 'chevron-down' : 'chevron-right'} size={14} />
+        <UIIcon
+          name={node.expanded ? "chevron-down" : "chevron-right"}
+          size={14}
+        />
       {/if}
     </span>
   {:else}
@@ -235,17 +282,19 @@
     <input
       class="inline-input"
       bind:this={inputEl}
-      value={editValue ?? ''}
+      value={editValue ?? ""}
       placeholder={editPlaceholder}
       oninput={(e) => onEditValueChange?.((e.target as HTMLInputElement).value)}
       onkeydown={handleInputKeydown}
       onblur={() => onEditCommit?.()}
     />
   {:else}
-    <span class="name" class:git-modified={gitIndicator} title={node.path}>{node.name}</span>
+    <span class="name" class:git-modified={gitIndicator} title={node.path}
+      >{node.name}</span
+    >
     {#if gitIndicator}
-      <span 
-        class="git-indicator" 
+      <span
+        class="git-indicator"
         style="color: {gitIndicator.color}"
         title={gitIndicator.title}
       >
@@ -361,13 +410,15 @@
     font-size: 13px;
     color: var(--color-text);
     background: color-mix(in srgb, var(--color-bg) 70%, transparent);
-    border: 1px solid color-mix(in srgb, var(--color-accent) 70%, var(--color-border));
+    border: 1px solid
+      color-mix(in srgb, var(--color-accent) 70%, var(--color-border));
     border-radius: 4px;
     outline: none;
   }
 
   .inline-input:focus {
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 25%, transparent);
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--color-accent) 25%, transparent);
   }
 </style>
