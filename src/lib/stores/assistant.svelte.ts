@@ -1482,10 +1482,24 @@ class AssistantStore {
 
   private async restoreLastConversation(id: string): Promise<void> {
     try {
-      // Use Tauri command to get the full conversation by ID
-      const conversation = await invoke('chat_get_conversation', { id }) as any;
-      if (conversation) {
-        this.loadConversation(conversation);
+      const lastConvId = localStorage.getItem(CURRENT_CONV_ID_KEY);
+      if (lastConvId && lastConvId !== "undefined") {
+        try {
+          const conv = await invoke<Conversation>("chat_get_conversation", {
+            conversationId: lastConvId,
+          });
+          if (conv) {
+            this.currentConversation = {
+              id: conv.id,
+              createdAt: conv.createdAt || Date.now(),
+              messages: conv.messages
+            };
+            this.messages = conv.messages;
+          }
+        } catch (err) {
+          console.warn("[AssistantStore] Failed to restore last conversation:", err);
+          localStorage.removeItem(CURRENT_CONV_ID_KEY);
+        }
       }
     } catch (err) {
       console.warn('[AssistantStore] Failed to restore last conversation:', err);
