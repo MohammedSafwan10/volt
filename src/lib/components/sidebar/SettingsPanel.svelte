@@ -12,10 +12,10 @@
   function handleThemeChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value as ThemeMode;
     if (
+      value === "dark-modern" ||
       value === "dark" ||
       value === "light" ||
-      value === "midnight" ||
-      value === "system"
+      value === "midnight"
     ) {
       themeStore.setMode(value);
     }
@@ -41,7 +41,7 @@
     const ok = confirm("Reset all settings to defaults?");
     if (!ok) return;
     settingsStore.resetToDefaults();
-    themeStore.setMode("system");
+    themeStore.setMode("dark-modern");
   }
 
   const previewText = `function hello(name) {
@@ -70,7 +70,7 @@
       <div class="setting-label">
         <div class="name">Color theme</div>
         <div class="description">
-          Choose Dark, Midnight, Light, or follow System.
+          Choose Dark Modern, Dark, Midnight, Light, or follow System.
         </div>
       </div>
       <div class="setting-control">
@@ -80,7 +80,7 @@
           onchange={handleThemeChange}
           aria-label="Color theme"
         >
-          <option value="system">System</option>
+          <option value="dark-modern">Dark Modern</option>
           <option value="dark">Dark</option>
           <option value="midnight">Midnight</option>
           <option value="light">Light</option>
