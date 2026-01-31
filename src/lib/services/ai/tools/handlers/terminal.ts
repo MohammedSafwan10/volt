@@ -11,6 +11,8 @@
  */
 
 import { terminalStore } from '$lib/stores/terminal.svelte';
+import { projectStore } from '$lib/stores/project.svelte';
+import { projectDiagnostics } from '$lib/services/project-diagnostics';
 import { uiStore } from '$lib/stores/ui.svelte';
 import { logOutput } from '$lib/stores/output.svelte';
 import type { TerminalSession } from '$lib/services/terminal-client';
@@ -178,6 +180,8 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
     // Switch to this terminal in the UI
     terminalStore.setActive(session.id);
 
+    console.log(`[TerminalTool] Executing command: "${command}" in cwd: "${cwd || session.cwd || session.info.cwd}"`);
+
     // If a different CWD is requested, cd there first
     const currentCwd = session.cwd || session.info.cwd;
     if (cwd && currentCwd !== cwd) {
@@ -275,6 +279,10 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
         command,
         output: finalOutput
       };
+    }
+
+    if (projectStore.rootPath) {
+      void projectDiagnostics.runDiagnostics(projectStore.rootPath);
     }
 
     return toolResult;
