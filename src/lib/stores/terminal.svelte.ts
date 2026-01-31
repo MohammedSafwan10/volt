@@ -45,6 +45,13 @@ class TerminalStore {
 		this.createPromise = (async () => {
 			// Use project root as default cwd
 			const { projectStore } = await import('./project.svelte');
+
+			// Wait for project restoration to finish if it's currently loading
+			// and no explicit cwd was provided.
+			if (!cwd) {
+				await projectStore.initialized;
+			}
+
 			const workingDir = cwd ?? projectStore.rootPath ?? undefined;
 			console.log('[TerminalStore] Creating terminal in:', workingDir || '(default)');
 

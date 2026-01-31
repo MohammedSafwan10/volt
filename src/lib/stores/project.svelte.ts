@@ -93,6 +93,12 @@ class ProjectStore {
   // File change handler cleanup
   private unsubscribeFileChange: (() => void) | null = null;
 
+  // Initialization promise to coordinate other stores
+  private resolveInitialized: (() => void) | null = null;
+  public initialized = new Promise<void>((resolve) => {
+    this.resolveInitialized = resolve;
+  });
+
   constructor() {
     this.loadRecentProjects();
     // Init must be called manually by the app root to avoid HMR loops
@@ -102,18 +108,25 @@ class ProjectStore {
    * Initialize the store and restore state
    */
   public async init(): Promise<void> {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {
+      this.resolveInitialized?.();
+      return;
+    }
 
-    const lastProject = localStorage.getItem(CURRENT_PROJECT_KEY);
-    if (lastProject) {
-      console.log('[ProjectStore] Restoring last project:', lastProject);
-      // We check if the directory still exists before opening
-      const exists = await invoke('get_file_info', { path: lastProject }).then(() => true).catch(() => false);
-      if (exists) {
-        await this.openProject(lastProject);
-      } else {
-        localStorage.removeItem(CURRENT_PROJECT_KEY);
+    try {
+      const lastProject = localStorage.getItem(CURRENT_PROJECT_KEY);
+      if (lastProject) {
+        console.log('[ProjectStore] Restoring last project:', lastProject);
+        // We check if the directory still exists before opening
+        const exists = await invoke('get_file_info', { path: lastProject }).then(() => true).catch(() => false);
+        if (exists) {
+          await this.openProject(lastProject);
+        } else {
+          localStorage.removeItem(CURRENT_PROJECT_KEY);
+        }
       }
+    } finally {
+      this.resolveInitialized?.();
     }
   }
 
