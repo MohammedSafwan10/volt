@@ -445,6 +445,38 @@ class AssistantStore {
         }
       }
 
+      // SELF-HEALING: Reconstruct contentParts if missing (fixes disappearing tools/thinking in history)
+      if (!base.contentParts || base.contentParts.length === 0) {
+        const parts: any[] = []; // Use any to avoid strict typing issues during manual construction
+
+        // 1. Restore thinking
+        if (base.thinking) {
+          parts.push({
+            type: 'thinking',
+            thinking: base.thinking,
+            startTime: base.timestamp,
+            isActive: false, // History items are never active
+            title: 'Thought'
+          });
+        }
+
+        // 2. Restore text content
+        if (base.content) {
+          parts.push({ type: 'text', text: base.content });
+        }
+
+        // 3. Restore inline tool calls
+        if (base.inlineToolCalls && base.inlineToolCalls.length > 0) {
+          base.inlineToolCalls.forEach(tc => {
+            parts.push({ type: 'tool', toolCall: tc });
+          });
+        }
+
+        if (parts.length > 0) {
+          base.contentParts = parts as ContentPart[];
+        }
+      }
+
       return base;
     });
 
