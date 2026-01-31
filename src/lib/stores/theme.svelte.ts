@@ -6,26 +6,23 @@
 import { darkThemeVars, voltDarkMonacoTheme } from '$lib/themes/dark';
 import { lightThemeVars, voltLightMonacoTheme } from '$lib/themes/light';
 import { midnightThemeVars, voltMidnightMonacoTheme } from '$lib/themes/midnight';
+import { darkModernThemeVars, voltDarkModernMonacoTheme } from '$lib/themes/dark-modern';
 
 const STORAGE_KEY = 'volt.theme';
 
-export type ThemeMode = 'dark' | 'light' | 'midnight' | 'system';
-export type ResolvedTheme = 'dark' | 'light' | 'midnight';
+export type ThemeMode = 'dark' | 'light' | 'midnight' | 'dark-modern';
+export type ResolvedTheme = 'dark' | 'light' | 'midnight' | 'dark-modern';
 
 class ThemeStore {
-  /** User's theme preference (dark, light, midnight, or system) */
-  mode = $state<ThemeMode>('system');
+  /** User's theme preference (dark, light, midnight, or dark-modern) */
+  mode = $state<ThemeMode>('dark-modern');
 
-  /** The actual resolved theme based on mode and system preference */
-  resolvedTheme = $state<ResolvedTheme>('dark');
-
-  /** Media query for system preference detection */
-  private mediaQuery: MediaQueryList | null = null;
+  /** The actual resolved theme based on mode */
+  resolvedTheme = $state<ResolvedTheme>('dark-modern');
 
   constructor() {
     if (typeof window !== 'undefined') {
       this.loadFromStorage();
-      this.setupSystemPreferenceListener();
       this.updateResolvedTheme();
       this.applyTheme();
     }
@@ -49,13 +46,20 @@ class ThemeStore {
   }
 
   /**
-   * Cycle through themes: dark -> midnight -> light -> system -> dark
+   * Cycle through themes: dark-modern -> dark -> midnight -> light -> dark-modern
    */
   cycle(): void {
-    const order: ThemeMode[] = ['dark', 'midnight', 'light', 'system'];
+    const order: ThemeMode[] = ['dark-modern', 'dark', 'midnight', 'light'];
     const currentIndex = order.indexOf(this.mode);
     const nextIndex = (currentIndex + 1) % order.length;
     this.setMode(order[nextIndex]);
+  }
+
+  /**
+   * Check if dark modern mode is active
+   */
+  get isDarkModern(): boolean {
+    return this.resolvedTheme === 'dark-modern';
   }
 
   /**
@@ -80,61 +84,22 @@ class ThemeStore {
   }
 
   /**
-   * Check if using system preference
-   */
-  get isSystem(): boolean {
-    return this.mode === 'system';
-  }
-
-  /**
    * Get display name for current theme mode
    */
   get displayName(): string {
     switch (this.mode) {
+      case 'dark-modern': return 'Dark Modern';
       case 'dark': return 'Dark';
       case 'midnight': return 'Midnight';
       case 'light': return 'Light';
-      case 'system': return `System (${this.resolvedTheme.charAt(0).toUpperCase() + this.resolvedTheme.slice(1)})`;
     }
   }
 
   /**
-   * Update resolved theme based on mode and system preference
+   * Update resolved theme based on mode
    */
   private updateResolvedTheme(): void {
-    if (this.mode === 'system') {
-      this.resolvedTheme = this.getSystemPreference();
-    } else {
-      this.resolvedTheme = this.mode;
-    }
-  }
-
-  /**
-   * Get system color scheme preference
-   * Defaults to 'dark' (Anysphere) as the primary dark mode
-   */
-  private getSystemPreference(): ResolvedTheme {
-    if (typeof window === 'undefined') return 'dark';
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-
-  /**
-   * Setup listener for system preference changes
-   */
-  private setupSystemPreferenceListener(): void {
-    if (typeof window === 'undefined') return;
-
-    this.mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-    const handleChange = () => {
-      if (this.mode === 'system') {
-        this.updateResolvedTheme();
-        this.applyTheme();
-      }
-    };
-
-    // Use addEventListener for modern browsers
-    this.mediaQuery.addEventListener('change', handleChange);
+    this.resolvedTheme = this.mode;
   }
 
   /**
@@ -145,6 +110,7 @@ class ThemeStore {
 
     let vars: Record<string, string>;
     switch (this.resolvedTheme) {
+      case 'dark-modern': vars = darkModernThemeVars; break;
       case 'dark': vars = darkThemeVars; break;
       case 'midnight': vars = midnightThemeVars; break;
       case 'light': vars = lightThemeVars; break;
@@ -175,6 +141,7 @@ class ThemeStore {
 
       let themeName;
       switch (this.resolvedTheme) {
+        case 'dark-modern': themeName = 'volt-dark-modern'; break;
         case 'dark': themeName = 'volt-dark'; break;
         case 'midnight': themeName = 'volt-midnight'; break;
         case 'light': themeName = 'volt-light'; break;
@@ -182,6 +149,7 @@ class ThemeStore {
 
       // Define themes if not already defined
       try {
+        monaco.editor.defineTheme('volt-dark-modern', voltDarkModernMonacoTheme);
         monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
         monaco.editor.defineTheme('volt-midnight', voltMidnightMonacoTheme);
         monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
@@ -204,7 +172,7 @@ class ThemeStore {
 
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored && ['dark', 'midnight', 'light', 'system'].includes(stored)) {
+      if (stored && ['dark', 'midnight', 'light', 'dark-modern'].includes(stored)) {
         this.mode = stored as ThemeMode;
       }
     } catch {
@@ -234,6 +202,7 @@ export const themeStore = new ThemeStore();
  */
 export function getMonacoThemeName(): string {
   switch (themeStore.resolvedTheme) {
+    case 'dark-modern': return 'volt-dark-modern';
     case 'dark': return 'volt-dark';
     case 'midnight': return 'volt-midnight';
     case 'light': return 'volt-light';
