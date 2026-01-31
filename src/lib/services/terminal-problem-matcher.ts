@@ -1,5 +1,5 @@
 import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
-import { onTerminalData } from './terminal-client';
+import { onTerminalData, onTerminalExit } from './terminal-client';
 
 /**
  * TerminalProblemMatcher - Parses terminal output for errors and warnings
@@ -7,7 +7,11 @@ import { onTerminalData } from './terminal-client';
  */
 class TerminalProblemMatcher {
     private unlisten: (() => void) | null = null;
+    private unlistenExit: (() => void) | null = null;
     private buffer = new Map<string, string>(); // terminalId -> partial line buffer
+    private bufferFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private problemsByKey = new Map<string, { filePath: string; source: string; problems: Problem[] }>();
+    private static readonly BUFFER_FLUSH_MS = 100;
 
     // Common error patterns
     private patterns = [
@@ -60,8 +64,16 @@ class TerminalProblemMatcher {
             this.handleData(event.terminalId, event.data);
         });
 
+        const unlistenExitFn = await onTerminalExit((event) => {
+            this.flushBuffer(event.terminalId);
+            this.clearBuffer(event.terminalId);
+        });
+
         this.unlisten = () => {
             unlistenFn();
+        };
+        this.unlistenExit = () => {
+            unlistenExitFn();
         };
     }
 
@@ -72,6 +84,10 @@ class TerminalProblemMatcher {
         if (this.unlisten) {
             this.unlisten();
             this.unlisten = null;
+        }
+        if (this.unlistenExit) {
+            this.unlistenExit();
+            this.unlistenExit = null;
         }
     }
 
@@ -85,8 +101,9 @@ class TerminalProblemMatcher {
         // Keep the last partial line in the buffer
         if (!data.endsWith('\n') && !data.endsWith('\r')) {
             this.buffer.set(terminalId, lines.pop() || '');
+            this.scheduleBufferFlush(terminalId);
         } else {
-            this.buffer.delete(terminalId);
+            this.clearBuffer(terminalId);
         }
 
         // Process completed lines
@@ -95,7 +112,7 @@ class TerminalProblemMatcher {
         }
     }
 
-    private async processLine(line: string): Promise<void> {
+    private async processLine(line: string): Promise<boolean> {
         // Strip ANSI escape codes
         const cleanLine = line.replace(/\x1B\[[0-9;]*[mK]/g, '');
 
@@ -104,9 +121,38 @@ class TerminalProblemMatcher {
             if (match) {
                 const info = pattern.map(match);
                 await this.addProblem(info, pattern.source);
-                break;
+                return true;
             }
         }
+
+        return false;
+    }
+
+    private scheduleBufferFlush(terminalId: string): void {
+        const existing = this.bufferFlushTimers.get(terminalId);
+        if (existing) clearTimeout(existing);
+
+        const timer = setTimeout(() => {
+            void this.flushBuffer(terminalId);
+        }, TerminalProblemMatcher.BUFFER_FLUSH_MS);
+
+        this.bufferFlushTimers.set(terminalId, timer);
+    }
+
+    private async flushBuffer(terminalId: string): Promise<void> {
+        const buffered = this.buffer.get(terminalId);
+        if (!buffered) return;
+        const matched = await this.processLine(buffered.trim());
+        if (matched) {
+            this.clearBuffer(terminalId);
+        }
+    }
+
+    private clearBuffer(terminalId: string): void {
+        this.buffer.delete(terminalId);
+        const timer = this.bufferFlushTimers.get(terminalId);
+        if (timer) clearTimeout(timer);
+        this.bufferFlushTimers.delete(terminalId);
     }
 
     private async addProblem(info: any, source: string): Promise<void> {
@@ -137,25 +183,29 @@ class TerminalProblemMatcher {
             code: info.code
         };
 
-        // Add to problems store
-        // We accumulate terminal problems rather than replacing the whole file's problems
-        // because multiple terminal commands might report different errors.
-        // However, this might lead to duplicates if the same command runs twice.
-        // For now, we'll replace but with a unique source per terminal run?
-        // Actually, let's just use the source name.
-        problemsStore.setProblemsForFile(filePath, [problem], source);
+        const key = `${source}::${filePath}`;
+        const existing = this.problemsByKey.get(key) || { filePath, source, problems: [] };
+
+        if (!existing.problems.some((p) => p.id === problem.id)) {
+            existing.problems = [...existing.problems, problem];
+            this.problemsByKey.set(key, existing);
+            problemsStore.setProblemsForFile(filePath, existing.problems, source);
+        }
     }
     /**
      * Clear all tracked problems and buffers
      */
     clear(): void {
         this.buffer.clear();
-        // Clear all problems from terminal sources in the store
-        for (const file of problemsStore.filesWithProblems) {
-            problemsStore.clearProblemsForFile(file, 'flutter');
-            problemsStore.clearProblemsForFile(file, 'dart');
-            problemsStore.clearProblemsForFile(file, 'npm');
+        for (const timer of this.bufferFlushTimers.values()) {
+            clearTimeout(timer);
         }
+        this.bufferFlushTimers.clear();
+
+        for (const entry of this.problemsByKey.values()) {
+            problemsStore.clearProblemsForFile(entry.filePath, entry.source);
+        }
+        this.problemsByKey.clear();
     }
 }
 

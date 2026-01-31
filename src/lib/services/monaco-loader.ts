@@ -6,6 +6,8 @@
 import type * as Monaco from 'monaco-editor';
 import { voltDarkMonacoTheme } from '$lib/themes/dark';
 import { voltLightMonacoTheme } from '$lib/themes/light';
+import { voltMidnightMonacoTheme } from '$lib/themes/midnight';
+import { voltDarkModernMonacoTheme } from '$lib/themes/dark-modern';
 import { registerDartLanguage } from './monaco-dart-language';
 
 // Singleton instance - null until first load
@@ -101,6 +103,8 @@ export async function loadMonaco(): Promise<typeof Monaco> {
 
     // Define custom themes
     monaco.editor.defineTheme('volt-dark', voltDarkMonacoTheme);
+    monaco.editor.defineTheme('volt-dark-modern', voltDarkModernMonacoTheme);
+    monaco.editor.defineTheme('volt-midnight', voltMidnightMonacoTheme);
     monaco.editor.defineTheme('volt-light', voltLightMonacoTheme);
 
     // Cache the instance
