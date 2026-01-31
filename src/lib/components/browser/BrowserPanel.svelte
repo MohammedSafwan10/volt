@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { UIIcon } from '$lib/components/ui';
   import { browserStore } from '$lib/stores/browser.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { browserDevToolsStore } from '$lib/stores/browser-devtools.svelte';
   import BrowserToolbar from './BrowserToolbar.svelte';
   import ElementInspector from './ElementInspector.svelte';
@@ -57,12 +58,14 @@
       return null; // Don't create webview yet
     }
     
+    const zoomFactor = Math.max(0.5, Math.min(2.0, uiStore.zoomPercent / 100));
+
     // Round to avoid subpixel issues
     const bounds = { 
-      x: Math.round(rect.left), 
-      y: Math.round(rect.top), 
-      width: Math.round(rect.width), 
-      height: Math.round(rect.height) 
+      x: Math.round(rect.left * zoomFactor), 
+      y: Math.round(rect.top * zoomFactor), 
+      width: Math.round(rect.width * zoomFactor), 
+      height: Math.round(rect.height * zoomFactor) 
     };
     
     return bounds;
@@ -183,6 +186,15 @@
     void browserStore.selectedElement;
     if (containerRef && mounted) {
       // Force recalculate when inspector toggles
+      setTimeout(forceUpdateBounds, 50);
+      setTimeout(forceUpdateBounds, 150);
+    }
+  });
+
+  // Recalculate bounds when UI zoom changes
+  $effect(() => {
+    void uiStore.zoomPercent;
+    if (containerRef && mounted) {
       setTimeout(forceUpdateBounds, 50);
       setTimeout(forceUpdateBounds, 150);
     }
