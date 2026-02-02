@@ -10,23 +10,27 @@ import { activityStore } from './activity.svelte';
 import {
   isTsJsFile,
   notifyDocumentClosed as notifyTsDocumentClosed,
-  notifyDocumentSaved as notifyTsDocumentSaved
+  notifyDocumentSaved as notifyTsDocumentSaved,
+  notifyDocumentChanged as notifyTsDocumentChanged
 } from '$lib/services/lsp/typescript-sidecar';
 import { detectLanguage } from '$lib/services/monaco-loader';
 import {
   isTailwindFile,
   notifyTailwindDocumentClosed,
-  notifyTailwindDocumentSaved
+  notifyTailwindDocumentSaved,
+  notifyTailwindDocumentChanged
 } from '$lib/services/lsp/tailwind-sidecar';
 import {
   isEslintFile,
   notifyEslintDocumentClosed,
-  notifyEslintDocumentSaved
+  notifyEslintDocumentSaved,
+  notifyEslintDocumentChanged
 } from '$lib/services/lsp/eslint-sidecar';
 import {
   isSvelteFile,
   notifySvelteDocumentClosed,
-  notifySvelteDocumentSaved
+  notifySvelteDocumentSaved,
+  notifySvelteDocumentChanged
 } from '$lib/services/lsp/svelte-sidecar';
 
 export interface OpenFile {
@@ -464,16 +468,27 @@ class EditorStore {
    */
   async reloadFile(path: string): Promise<boolean> {
     const normalizedPath = normalizePath(path);
-    const file = this.openFiles.find(f => f.path === normalizedPath);
-    if (!file) return false;
+    const fileIndex = this.openFiles.findIndex(f => f.path === normalizedPath);
+    if (fileIndex === -1) return false;
 
     // Use original path for file system access
     try {
       const content = await readFile(path);
       if (content === null) return false;
 
-      file.content = content;
-      file.originalContent = content;
+      // Create updated file object and replace in array to trigger Svelte reactivity
+      const updatedFile = {
+        ...this.openFiles[fileIndex],
+        content,
+        originalContent: content
+      };
+      
+      // Replace the array to trigger reactivity
+      this.openFiles = [
+        ...this.openFiles.slice(0, fileIndex),
+        updatedFile,
+        ...this.openFiles.slice(fileIndex + 1)
+      ];
 
       // Also update the Monaco model so the editor shows the new content
       const { setModelValue, clearReviewHighlight } = await import('$lib/services/monaco-models');
@@ -481,6 +496,20 @@ class EditorStore {
 
       // Clear any AI edit highlights (the green blocks) on reload
       clearReviewHighlight(normalizedPath);
+
+      // Notify LSP servers about the content change to trigger diagnostics
+      if (isTsJsFile(normalizedPath)) {
+        notifyTsDocumentChanged(normalizedPath, content);
+      }
+      if (isTailwindFile(normalizedPath)) {
+        notifyTailwindDocumentChanged(normalizedPath, content);
+      }
+      if (isEslintFile(normalizedPath)) {
+        notifyEslintDocumentChanged(normalizedPath, content);
+      }
+      if (isSvelteFile(normalizedPath)) {
+        notifySvelteDocumentChanged(normalizedPath, content);
+      }
 
       return true;
     } catch (e) {
@@ -525,6 +554,53 @@ class EditorStore {
   }): Promise<void> {
     const { setSelection } = await import('$lib/services/monaco-models');
     setSelection(path, range);
+  }
+
+  /**
+   * Update file content in memory without reading from disk
+   * Used for Accept/Discard in diff view and other in-memory updates
+   * Triggers Svelte reactivity properly
+   */
+  async updateFileContent(path: string, content: string): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    const fileIndex = this.openFiles.findIndex(f => f.path === normalizedPath);
+    
+    if (fileIndex === -1) return false;
+
+    // Create updated file object and replace in array to trigger Svelte reactivity
+    const updatedFile = {
+      ...this.openFiles[fileIndex],
+      content,
+      originalContent: content
+    };
+    
+    // Replace the array to trigger reactivity
+    this.openFiles = [
+      ...this.openFiles.slice(0, fileIndex),
+      updatedFile,
+      ...this.openFiles.slice(fileIndex + 1)
+    ];
+
+    // Also update the Monaco model
+    const { setModelValue, clearReviewHighlight } = await import('$lib/services/monaco-models');
+    setModelValue(normalizedPath, content);
+    clearReviewHighlight(normalizedPath);
+
+    // Notify LSP servers about the content change to trigger diagnostics
+    if (isTsJsFile(normalizedPath)) {
+      notifyTsDocumentChanged(normalizedPath, content);
+    }
+    if (isTailwindFile(normalizedPath)) {
+      notifyTailwindDocumentChanged(normalizedPath, content);
+    }
+    if (isEslintFile(normalizedPath)) {
+      notifyEslintDocumentChanged(normalizedPath, content);
+    }
+    if (isSvelteFile(normalizedPath)) {
+      notifySvelteDocumentChanged(normalizedPath, content);
+    }
+
+    return true;
   }
 }
 
