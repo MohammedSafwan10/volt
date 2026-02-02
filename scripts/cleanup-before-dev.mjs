@@ -8,28 +8,26 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-const PROCESSES_TO_KILL = [
-  'node-x86_64-pc-windows-msvc.exe',
-  'volt.exe',
-];
-
-async function killProcess(name) {
+async function killByPattern(pattern) {
   try {
-    // PowerShell command that works silently
+    // PowerShell: find and kill processes matching path pattern
     await execAsync(
-      `powershell -Command "Get-Process -Name '${name.replace('.exe', '')}' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"`,
+      `powershell -Command "Get-Process | Where-Object { $_.Path -like '*${pattern}*' } | Stop-Process -Force -ErrorAction SilentlyContinue"`,
       { windowsHide: true }
     );
-    console.log(`[cleanup] Killed ${name}`);
+    console.log(`[cleanup] Killed processes matching: ${pattern}`);
   } catch {
-    // Process not running - that's fine
+    // No matching processes - that's fine
   }
 }
 
 async function main() {
   console.log('[cleanup] Killing stale processes before dev...');
   
-  await Promise.all(PROCESSES_TO_KILL.map(killProcess));
+  // Kill processes by path patterns (catches node.exe in target folder, volt.exe, sidecars)
+  await killByPattern('volt\\\\src-tauri\\\\target');  // Any process from target folder
+  await killByPattern('volt\\\\src-tauri\\\\binaries'); // Any sidecar
+  await killByPattern('volt.exe');                     // Main app
   
   // Small delay to ensure file handles are released
   await new Promise(r => setTimeout(r, 500));
