@@ -1944,6 +1944,14 @@ Start implementing now. Work through each step carefully.`;
 
   // Get attachment previews for display
   const attachmentPreviews = $derived(assistantStore.getAttachmentPreviews());
+
+  // Derive current chat title to avoid inline .find() re-running on every update
+  const currentChatTitle = $derived.by(() => {
+    const activeId = chatHistoryStore.activeConversationId;
+    if (!activeId) return "New Chat";
+    const conv = chatHistoryStore.conversations.find(c => c.id === activeId);
+    return conv?.title || "New Chat";
+  });
 </script>
 
 <aside class="assistant-panel" aria-label="AI Assistant">
@@ -1955,13 +1963,9 @@ Start implementing now. Work through each step carefully.`;
       </div>
       <span
         class="header-title"
-        title={chatHistoryStore.conversations.find(
-          (c) => c.id === chatHistoryStore.activeConversationId,
-        )?.title || "New Chat"}
+        title={currentChatTitle}
       >
-        {chatHistoryStore.conversations.find(
-          (c) => c.id === chatHistoryStore.activeConversationId,
-        )?.title || "New Chat"}
+        {currentChatTitle}
       </span>
     </div>
     <div class="header-actions">
