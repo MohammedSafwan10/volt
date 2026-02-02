@@ -128,4 +128,8 @@ export type UIIconName =
     | "markdown"
     | "css"
     | "html"
-    | "android";
+    | "android"
+    // Diff
+    | "diff"
+    | "diff-added"
+    | "diff-removed";

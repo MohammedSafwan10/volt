@@ -85,6 +85,48 @@ html, body {
    margin-left: 0;
  }
 
+/* Monaco DiffEditor - Enhanced styling for better visibility */
+/* Deleted lines (original/left side) - RED */
+.monaco-diff-editor .line-delete,
+.monaco-diff-editor .char-delete {
+  background: rgba(255, 0, 0, 0.2) !important;
+}
+
+.monaco-diff-editor .diagonal-fill {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 0, 0, 0.1),
+    rgba(255, 0, 0, 0.1) 2px,
+    transparent 2px,
+    transparent 6px
+  ) !important;
+}
+
+/* Inserted lines (modified/right side) - GREEN */
+.monaco-diff-editor .line-insert,
+.monaco-diff-editor .char-insert {
+  background: rgba(0, 255, 0, 0.15) !important;
+}
+
+/* Inline diff mode - deleted text */
+.monaco-diff-editor .view-overlays .inline-deleted-margin-view-zone {
+  background: rgba(255, 0, 0, 0.15) !important;
+}
+
+/* Gutter indicators */
+.monaco-diff-editor .gutter-insert {
+  background: #28a745 !important;
+}
+
+.monaco-diff-editor .gutter-delete {
+  background: #dc3545 !important;
+}
+
+/* Make diff more visible in dark themes */
+.monaco-diff-editor .view-overlays .current-line {
+  border: none !important;
+}
+
 /* Prevent text selection on UI elements */
 .no-select {
   user-select: none;

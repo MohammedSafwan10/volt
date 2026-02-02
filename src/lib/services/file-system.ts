@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { showToast } from '$lib/stores/toast.svelte';
 import { logOutput } from '$lib/stores/output.svelte';
+import { fileService } from './file-service';
 import {
   type FileEntry,
   type FileInfo,
@@ -94,9 +95,14 @@ function handleError(
 export async function readFile(path: string): Promise<string | null> {
   try {
     logOutput('File System', `Reading file: ${path}`);
-    const content = await invoke<string>('read_file', { path });
-    logOutput('File System', `Read ${content.length} bytes from ${path}`);
-    return content;
+    // Use fileService for consistent file access
+    const doc = await fileService.read(path);
+    if (!doc) {
+      logOutput('File System', `File not found: ${path}`);
+      return null;
+    }
+    logOutput('File System', `Read ${doc.content.length} bytes from ${path}`);
+    return doc.content;
   } catch (error) {
     logOutput('File System', `Error reading file: ${path}`);
     return handleError(error, 'Read file');
@@ -112,7 +118,13 @@ export async function writeFile(
 ): Promise<boolean> {
   try {
     logOutput('File System', `Writing file: ${path}`);
-    await invoke('write_file', { path, content });
+    // Use fileService for consistent file writes
+    const result = await fileService.write(path, content, { source: 'editor' });
+    if (!result.success) {
+      logOutput('File System', `Error writing file: ${path} - ${result.error}`);
+      showToast({ message: result.error || 'Write failed', type: 'error' });
+      return false;
+    }
     logOutput('File System', `Wrote ${content.length} bytes to ${path}`);
     return true;
   } catch (error) {
@@ -237,8 +249,9 @@ export async function getFileInfo(path: string): Promise<FileInfo | null> {
  */
 export async function readFileQuiet(path: string): Promise<string | null> {
   try {
-    const content = await invoke<string>('read_file', { path });
-    return content;
+    // Use fileService for consistent file access
+    const doc = await fileService.read(path);
+    return doc?.content ?? null;
   } catch (error) {
     if (isFileError(error) && error.type === 'NotFound') {
       return null;

@@ -3,8 +3,14 @@
   import ToastContainer from "$lib/components/ui/ToastContainer.svelte";
   import { onMount } from 'svelte';
   import { open } from '@tauri-apps/plugin-shell';
+  import { initializeFileService } from '$lib/services/file-service';
   
   let { children } = $props();
+
+  // Initialize unified file service with LSP integration
+  onMount(() => {
+    void initializeFileService();
+  });
 
   // Global handler for external links - opens in system browser instead of Tauri webview
   // EXCEPT for links marked with data-external-link="true" which open in built-in browser

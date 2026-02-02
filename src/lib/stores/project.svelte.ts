@@ -30,6 +30,7 @@ import {
   type FileChangeBatchEvent,
 } from '$lib/services/file-watch';
 import { projectDiagnostics } from '$lib/services/project-diagnostics';
+import { tscWatcher } from '$lib/services/tsc-watcher';
 import { problemsStore } from './problems.svelte';
 import { mcpStore } from './mcp.svelte';
 import { editorStore } from './editor.svelte';
@@ -84,6 +85,7 @@ class ProjectStore {
   private unwatch: UnwatchFn | null = null;
   private unwatchLockFiles: UnwatchFn | null = null;
   private diagTimer: any = null;
+  private treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
   private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -192,6 +194,9 @@ class ProjectStore {
     // Run project-wide diagnostics (tsc, eslint) in background
     void projectDiagnostics.runDiagnostics(path);
 
+    // Start tsc --watch for real-time error streaming (VS Code-like behavior)
+    void tscWatcher.start(path);
+
     // Auto-start Dart LSP for Flutter/Dart projects to enable project-wide diagnostics immediately
     void (async () => {
       const pubspecInfo = await getFileInfoQuiet(`${path}/pubspec.yaml`);
@@ -244,6 +249,15 @@ class ProjectStore {
     if (!handledIncrementally && this.rootPath) {
       // Large burst (git checkout / install): fall back to a full re-index.
       void indexProject(this.rootPath, false);
+
+      // Also refresh the file tree after a short debounce so new files appear.
+      if (this.treeRefreshTimer) clearTimeout(this.treeRefreshTimer);
+      this.treeRefreshTimer = setTimeout(() => {
+        if (this.rootPath) {
+          void this.refreshTree();
+        }
+        this.treeRefreshTimer = null;
+      }, 500);
     }
 
     // Update the file tree for visible changes
@@ -351,14 +365,19 @@ class ProjectStore {
       : this.findNode(parentAbsPath);
 
     // Only update if parent is visible (root or expanded)
-    if (parentAbsPath === this.rootPath || (parentNode && parentNode.expanded && parentNode.children)) {
-      // Refresh the parent folder to get the new file
-      if (parentNode) {
-        void this.refreshFolder(parentNode);
-      } else {
-        // Root level - refresh tree
-        void this.refreshTree();
-      }
+    if (parentAbsPath === this.rootPath) {
+      void this.refreshTree();
+      return;
+    }
+
+    if (!parentNode) {
+      // Parent not in tree yet (e.g., freshly scaffolded folder). Refresh root tree.
+      void this.refreshTree();
+      return;
+    }
+
+    if (parentNode.expanded && parentNode.children) {
+      void this.refreshFolder(parentNode);
     }
   }
 
@@ -548,6 +567,9 @@ class ProjectStore {
     // Stop watching lock files
     await this.stopWatchingLockFiles();
 
+    // Stop tsc-watch streaming
+    await tscWatcher.stop();
+
     // Stop all LSP servers when closing project
     await this.stopLspServers();
 
@@ -694,7 +716,13 @@ class ProjectStore {
    */
   async refreshTree(): Promise<void> {
     if (!this.rootPath) return;
-    await this.openProject(this.rootPath);
+
+    this.loading = true;
+    const entries = await listDirectory(this.rootPath);
+    this.loading = false;
+
+    if (entries === null) return;
+    this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
   }
 
   /**

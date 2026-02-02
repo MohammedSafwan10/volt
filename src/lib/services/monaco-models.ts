@@ -1,6 +1,6 @@
 import type * as Monaco from 'monaco-editor';
 
-import { loadMonaco } from '$lib/services/monaco-loader';
+import { loadMonaco, getMonaco } from '$lib/services/monaco-loader';
 
 // ============================================================================
 // LRU Cache for Monaco Models
@@ -93,7 +93,11 @@ export function getModel(path: string): Monaco.editor.ITextModel | null {
 
 export function getModelValue(path: string): string | null {
   const model = models.get(path);
-  return model ? model.getValue() : null;
+  if (!model || model.isDisposed()) {
+    if (model?.isDisposed()) models.delete(path);
+    return null;
+  }
+  return model.getValue();
 }
 
 /**
@@ -122,7 +126,30 @@ export function setModelValue(path: string, value: string): boolean {
     }
   }
 
-  if (!model) return false;
+  if (!model) {
+    // Model doesn't exist - create it if we have Monaco available
+    const monaco = getMonaco();
+    if (!monaco) return false;
+    
+    const uri = monaco.Uri.file(path);
+    model = monaco.editor.createModel(value, undefined, uri);
+    models.set(path, model);
+    console.log('[monaco-models] Created new model for:', path);
+    return true;
+  }
+
+  // Handle disposed models - recreate them
+  if (model.isDisposed()) {
+    models.delete(path);
+    const monaco = getMonaco();
+    if (!monaco) return false;
+    
+    const uri = monaco.Uri.file(path);
+    model = monaco.editor.createModel(value, undefined, uri);
+    models.set(path, model);
+    console.log('[monaco-models] Recreated disposed model for:', path);
+    return true;
+  }
 
   // Use pushEditOperations to preserve undo history
   const fullRange = model.getFullModelRange();
@@ -200,7 +227,11 @@ export async function runEditorAction(actionId: string): Promise<boolean> {
  */
 export function getModelLineCount(path: string): number {
   const model = models.get(path);
-  return model ? model.getLineCount() : 0;
+  if (!model || model.isDisposed()) {
+    if (model?.isDisposed()) models.delete(path);
+    return 0;
+  }
+  return model.getLineCount();
 }
 
 /**
@@ -208,7 +239,10 @@ export function getModelLineCount(path: string): number {
  */
 export function revealLine(path: string, line: number): void {
   const model = models.get(path);
-  if (!model || !activeEditor) return;
+  if (!model || model.isDisposed() || !activeEditor) {
+    if (model?.isDisposed()) models.delete(path);
+    return;
+  }
 
   // Ensure line is within bounds
   const maxLine = model.getLineCount();
@@ -230,7 +264,10 @@ export function setSelection(path: string, range: {
   endColumn: number;
 }): void {
   const model = models.get(path);
-  if (!model || !activeEditor) return;
+  if (!model || model.isDisposed() || !activeEditor) {
+    if (model?.isDisposed()) models.delete(path);
+    return;
+  }
 
   const maxLine = model.getLineCount();
   const startLine = Math.max(1, Math.min(range.startLine, maxLine));
@@ -276,10 +313,11 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
     }
   }
 
-  if (!model) {
+  if (!model || model.isDisposed()) {
+    if (model?.isDisposed()) models.delete(actualPath);
     // Debug: log available models when highlight fails
     const availableModels = Array.from(models.keys());
-    console.warn('[setReviewHighlight] Model not found for path:', path, 'Available models:', availableModels);
+    console.warn('[setReviewHighlight] Model not found or disposed for path:', path, 'Available models:', availableModels);
     return false;
   }
 
@@ -356,7 +394,7 @@ export function getEditorSelection(): {
   if (!selection || selection.isEmpty()) return null;
 
   const model = activeEditor.getModel();
-  if (!model) return null;
+  if (!model || model.isDisposed()) return null;
 
   const text = model.getValueInRange(selection);
 

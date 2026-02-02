@@ -135,6 +135,10 @@
     css: "vscode-icons:file-type-css",
     html: "vscode-icons:file-type-html",
     android: "vscode-icons:file-type-android",
+    // Diff
+    diff: "codicon:diff",
+    "diff-added": "codicon:diff-added",
+    "diff-removed": "codicon:diff-removed",
   };
 
   interface Props {

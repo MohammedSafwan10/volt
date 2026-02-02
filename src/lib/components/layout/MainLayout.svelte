@@ -9,6 +9,7 @@
   import { WelcomeScreen } from "$lib/components/welcome";
   import {
     MonacoEditor,
+    MonacoDiffEditor,
     Breadcrumb,
     EmptyState,
     GoToLineDialog,
@@ -36,6 +37,7 @@
   import { settingsStore } from "$lib/stores/settings.svelte";
   import { assistantStore } from "$lib/stores/assistant.svelte";
   import { browserStore } from "$lib/stores/browser.svelte";
+  import { diffStore } from "$lib/stores/diff.svelte";
   import { openFolderDialog, writeFile } from "$lib/services/file-system";
   import {
     initAutoSave,
@@ -357,6 +359,11 @@
       if (assistantStore.isStreaming) {
         assistantStore.stopStreaming();
       }
+      // Close diff view if active
+      if (diffStore.isActive) {
+        diffStore.closeDiff();
+        return;
+      }
       return;
     }
 
@@ -577,6 +584,14 @@
               />
             {:else if children}
               {@render children()}
+            {:else if diffStore.isActive}
+              <!-- Diff Editor Mode -->
+              <MonacoDiffEditor
+                originalContent={diffStore.state.originalContent}
+                modifiedContent={diffStore.state.modifiedContent}
+                language={diffStore.state.language}
+                title={diffStore.state.title}
+              />
             {:else if editorStore.activeFile}
               {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
                 <div

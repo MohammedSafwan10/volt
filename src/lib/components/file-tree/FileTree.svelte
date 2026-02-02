@@ -146,11 +146,15 @@
   let dragScrollInterval: ReturnType<typeof setInterval> | null = null;
   let lastDragY = 0;
   let lastSelectedIndex = $state(-1);
+  let treeRef: HTMLDivElement | null = $state(null);
+  let treeFocused = $state(false);
 
   function handleItemSelect(
     node: TreeNode,
     e: MouseEvent | KeyboardEvent,
   ): void {
+    treeFocused = true;
+    treeRef?.focus();
     const currentIndex = flatNodes.findIndex((n) => n.node.path === node.path);
 
     if (e.shiftKey && lastSelectedIndex !== -1) {
@@ -178,6 +182,22 @@
     if ((e.ctrlKey || e.metaKey) && e.key === "a") {
       // Only select all if not currently renaming/creating
       if (inlineEdit) return;
+
+      e.preventDefault();
+      const allPaths = flatNodes
+        .filter((n) => !n.node.path.startsWith("__draft__:"))
+        .map((n) => n.node.path);
+      projectStore.selectAll(allPaths);
+    }
+  }
+
+  function handleWindowKeydown(e: KeyboardEvent): void {
+    if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+      if (inlineEdit) return;
+
+      const active = document.activeElement as HTMLElement | null;
+      const isInTree = !!(active && treeRef && treeRef.contains(active));
+      if (!treeFocused && !isInTree) return;
 
       e.preventDefault();
       const allPaths = flatNodes
@@ -298,6 +318,28 @@
 
   function handleWindowClick(): void {
     if (contextOpen) closeContextMenu();
+
+    const active = document.activeElement as HTMLElement | null;
+    const isInTree = !!(active && treeRef && treeRef.contains(active));
+    if (!isInTree) {
+      treeFocused = false;
+    }
+  }
+
+  function handleTreePointerDown(): void {
+    treeFocused = true;
+    treeRef?.focus();
+  }
+
+  function handleTreeFocusIn(): void {
+    treeFocused = true;
+  }
+
+  function handleTreeFocusOut(e: FocusEvent): void {
+    const related = e.relatedTarget as HTMLElement | null;
+    if (!related || !treeRef?.contains(related)) {
+      treeFocused = false;
+    }
   }
 
   function handleEmptyContextMenu(e: MouseEvent): void {
@@ -744,9 +786,39 @@
     });
     if (!confirmed) return;
 
-    const ok = await deletePath(node.path);
-    if (ok) {
-      projectStore.removeNode(node.path);
+    // Close any open files under this node to release Windows file handles
+    const normalizedTarget = node.path.replace(/\\/g, "/");
+    const filesToClose: string[] = [];
+    if (node.isDir) {
+      for (const f of editorStore.openFiles) {
+        const normalizedFilePath = f.path.replace(/\\/g, "/");
+        if (normalizedFilePath.startsWith(normalizedTarget + "/")) {
+          filesToClose.push(f.path);
+        }
+      }
+    } else {
+      for (const f of editorStore.openFiles) {
+        if (f.path.replace(/\\/g, "/") === normalizedTarget) {
+          filesToClose.push(f.path);
+        }
+      }
+    }
+
+    for (const path of filesToClose) {
+      editorStore.closeFile(path, true);
+    }
+
+    // Pause file watcher to release handles on Windows
+    await pauseWatching();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    try {
+      const ok = await deletePath(node.path);
+      if (ok) {
+        projectStore.removeNode(node.path);
+      }
+    } finally {
+      await resumeWatching();
     }
   }
 
@@ -770,24 +842,48 @@
     });
     if (!confirmed) return;
 
-    for (const path of selected) {
-      const ok = await deletePath(path);
-      if (ok) {
-        projectStore.removeNode(path);
+    // Close any open files under selected paths to release Windows file handles
+    const filesToClose: string[] = [];
+    const normalizedSelections = selected.map((p) => p.replace(/\\/g, "/"));
+    for (const f of editorStore.openFiles) {
+      const normalizedFilePath = f.path.replace(/\\/g, "/");
+      if (normalizedSelections.some((sel) => normalizedFilePath === sel || normalizedFilePath.startsWith(sel + "/"))) {
+        filesToClose.push(f.path);
       }
+    }
+    for (const path of filesToClose) {
+      editorStore.closeFile(path, true);
+    }
+
+    await pauseWatching();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    try {
+      for (const path of selected) {
+        const ok = await deletePath(path);
+        if (ok) {
+          projectStore.removeNode(path);
+        }
+      }
+    } finally {
+      await resumeWatching();
     }
 
     projectStore.clearSelection();
   }
 </script>
 
-<svelte:window onclick={handleWindowClick} />
+<svelte:window onclick={handleWindowClick} onkeydown={handleWindowKeydown} />
 
 <div
   class="file-tree"
   role="tree"
   aria-label="File explorer"
   onkeydown={handleGlobalKeydown}
+  onpointerdown={handleTreePointerDown}
+  onfocusin={handleTreeFocusIn}
+  onfocusout={handleTreeFocusOut}
+  bind:this={treeRef}
   tabindex="0"
 >
   {#if projectStore.loading}

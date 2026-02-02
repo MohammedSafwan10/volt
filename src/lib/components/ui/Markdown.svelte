@@ -23,6 +23,35 @@
   // Custom renderer for code blocks with copy button support
   const renderer = new marked.Renderer();
 
+  renderer.table = ({ header, rows }) => {
+    let headerHtml = "";
+    header.forEach((cell) => {
+      const align = cell.align ? ` style="text-align: ${cell.align}"` : "";
+      const content = marked.parseInline(cell.text) as string;
+      headerHtml += `<th${align}>${content}</th>`;
+    });
+
+    let bodyHtml = "";
+    rows.forEach((row) => {
+      bodyHtml += "<tr>";
+      row.forEach((cell) => {
+        const align = cell.align ? ` style="text-align: ${cell.align}"` : "";
+        const content = marked.parseInline(cell.text) as string;
+        bodyHtml += `<td${align}>${content}</td>`;
+      });
+      bodyHtml += "</tr>";
+    });
+
+    return `
+      <div class="table-wrapper">
+        <table>
+          <thead><tr>${headerHtml}</tr></thead>
+          <tbody>${bodyHtml}</tbody>
+        </table>
+      </div>
+    `;
+  };
+
   renderer.code = ({ text, lang }) => {
     const language = lang || "text";
     const escaped = text
@@ -33,10 +62,13 @@
     return `<div class="code-block" data-lang="${language}">
       <div class="code-header">
         <span class="code-lang">${language}</span>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block').querySelector('code').textContent)" title="Copy code">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="copy-btn" title="Copy code">
+          <svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: none;">
+            <polyline points="20 6 9 17 4 12"></polyline>
           </svg>
         </button>
       </div>
@@ -107,13 +139,51 @@
     return out;
   }
 
-  const html = $derived.by(() =>
-    postProcessHtml(marked.parse(preProcessContent(content)) as string),
-  );
+  const html = $derived.by(() => {
+    try {
+      return postProcessHtml(marked.parse(preProcessContent(content)) as string);
+    } catch (err) {
+      console.error("[Markdown] Error rendering content:", err);
+      // Fallback to raw content if parsing fails
+      return `<pre class="error-markdown">${content.replace(/</g, "&lt;")}</pre>`;
+    }
+  });
 
   // Handle link clicks - open in built-in browser
   function handleClick(e: MouseEvent): void {
     const target = e.target as HTMLElement;
+
+    // Detect copy button click
+    const copyBtn = target.closest(".copy-btn") as HTMLButtonElement | null;
+    if (copyBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const codeBlock = copyBtn.closest(".code-block");
+      const code = codeBlock?.querySelector("code")?.textContent;
+
+      if (code) {
+        navigator.clipboard.writeText(code).then(() => {
+          // Animate transition
+          copyBtn.classList.add("copied");
+          const copyIcon = copyBtn.querySelector(".copy-icon") as HTMLElement;
+          const checkIcon = copyBtn.querySelector(".check-icon") as HTMLElement;
+
+          if (copyIcon && checkIcon) {
+            copyIcon.style.display = "none";
+            checkIcon.style.display = "block";
+
+            setTimeout(() => {
+              copyBtn.classList.remove("copied");
+              copyIcon.style.display = "block";
+              checkIcon.style.display = "none";
+            }, 2000);
+          }
+        });
+      }
+      return;
+    }
+
     const link = target.closest(
       'a[data-external-link="true"]',
     ) as HTMLAnchorElement | null;
@@ -262,6 +332,39 @@
     border-bottom: 1px solid var(--color-border);
   }
 
+  .markdown :global(.copy-btn) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .markdown :global(.copy-btn:hover) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .markdown :global(.copy-btn.copied) {
+    color: #4ade80 !important; /* Green */
+    background: rgba(74, 222, 128, 0.1);
+  }
+
+  .markdown :global(.copy-icon),
+  .markdown :global(.check-icon) {
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+
+  .markdown :global(.copy-btn.copied .check-icon) {
+    transform: scale(1.1);
+  }
+
   .markdown :global(.code-lang) {
     font-size: 11px;
     font-weight: 500;
@@ -283,24 +386,54 @@
     color: #cccccc;
   }
 
-  /* Tables */
-  .markdown :global(table) {
+  /* Professional Tables - with horizontal scroll support */
+  .markdown :global(.table-wrapper) {
     margin: 16px 0 !important;
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    background: rgba(255, 255, 255, 0.01);
+  }
+
+  .markdown :global(table) {
+    width: 100%;
+    min-width: max-content; /* Don't squash columns */
     border-collapse: collapse;
     font-size: 13px;
-    width: 100%;
+    line-height: 1.5;
   }
 
   .markdown :global(th),
   .markdown :global(td) {
-    padding: 8px 12px;
+    padding: 10px 14px;
     border: 1px solid var(--color-border);
     text-align: left;
+    white-space: normal;
+    word-break: normal; /* Preserve whole words in tables */
   }
 
   .markdown :global(th) {
-    background: rgba(255, 255, 255, 0.03);
+    background: #252526;
     font-weight: 600;
     color: #ffffff;
+    font-size: 12.5px;
+    letter-spacing: 0.01em;
+  }
+
+  /* Zebra striping */
+  .markdown :global(tbody tr:nth-child(even)) {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .markdown :global(tbody tr:hover) {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  /* Support for emojis and icons in tables */
+  .markdown :global(td img),
+  .markdown :global(td svg) {
+    display: inline-block;
+    vertical-align: text-bottom;
+    margin-right: 4px;
   }
 </style>
