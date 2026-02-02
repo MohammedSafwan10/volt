@@ -448,7 +448,10 @@ class AssistantStore {
           if (meta.attachments) base.attachments = meta.attachments;
           if (meta.toolCalls) base.toolCalls = meta.toolCalls;
           if (meta.inlineToolCalls) base.inlineToolCalls = meta.inlineToolCalls;
-          if (meta.contentParts) base.contentParts = meta.contentParts;
+          // Only restore contentParts if it's a non-empty array
+          if (meta.contentParts && Array.isArray(meta.contentParts) && meta.contentParts.length > 0) {
+            base.contentParts = meta.contentParts;
+          }
           if (meta.thinking) base.thinking = meta.thinking;
           if (meta.smartContextBlock) base.smartContextBlock = meta.smartContextBlock;
           if (meta.contextMentions) base.contextMentions = meta.contextMentions;
@@ -457,17 +460,17 @@ class AssistantStore {
         }
       }
 
-      // Ensure text content is present in contentParts when metadata exists
+      // If contentParts was restored from metadata, use it directly (already has correct order)
+      // Only call normalizeContentParts if we need to ensure text exists
       if (base.contentParts && base.contentParts.length > 0) {
-        base.contentParts = this.normalizeContentParts(
-          base.contentParts,
-          base.content,
-        ) as ContentPart[];
-      }
-
-      // SELF-HEALING: Reconstruct contentParts if missing (fixes disappearing tools/thinking in history)
-      // This is a fallback for old data that didn't save contentParts
-      if (!base.contentParts || base.contentParts.length === 0) {
+        // Already have properly ordered contentParts - don't normalize, just ensure text is included
+        const hasTextPart = base.contentParts.some(p => p.type === 'text');
+        if (!hasTextPart && base.content) {
+          // Prepend text part if missing
+          base.contentParts = [{ type: 'text', text: base.content }, ...base.contentParts];
+        }
+      } else {
+        // SELF-HEALING: Reconstruct contentParts if missing (fallback for old data)
         const parts: any[] = [];
 
         // 1. Restore thinking first (always at the start)
