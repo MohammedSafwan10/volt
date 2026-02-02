@@ -5662,6 +5662,7 @@ dependencies = [
  "keyring",
  "notify 7.0.0",
  "notify-debouncer-mini",
+ "once_cell",
  "portable-pty",
  "regex",
  "reqwest",
