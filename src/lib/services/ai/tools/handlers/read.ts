@@ -8,6 +8,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { fileService } from '$lib/services/file-service';
 import { resolvePath, truncateOutput, formatWithLineNumbers, type ToolResult } from '../utils';
 
 /**
@@ -165,7 +166,12 @@ export async function handleReadFile(args: Record<string, unknown>): Promise<Too
   
   let content: string;
   try {
-    content = await invoke<string>('read_file', { path });
+    // Use fileService for consistent file access - always get fresh from disk for AI reads
+    const doc = await fileService.read(path, true);
+    if (!doc) {
+      return { success: false, error: `File not found: ${relativePath}` };
+    }
+    content = doc.content;
   } catch (err) {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -239,7 +245,13 @@ export async function handleReadFiles(args: Record<string, unknown>): Promise<To
   for (const relativePath of paths) {
     const path = resolvePath(relativePath);
     try {
-      const content = await invoke<string>('read_file', { path });
+      // Use fileService for consistent file access - always get fresh from disk
+      const doc = await fileService.read(path, true);
+      if (!doc) {
+        results.push(`── ${relativePath} ──\n[Error: File not found]`);
+        continue;
+      }
+      const content = doc.content;
       const lines = content.split('\n').length;
       totalLines += lines;
       
@@ -589,7 +601,11 @@ export async function handleReadCode(args: Record<string, unknown>): Promise<Too
   
   let content: string;
   try {
-    content = await invoke<string>('read_file', { path });
+    const doc = await fileService.read(path, true);
+    if (!doc) {
+      return { success: false, error: `File not found: ${relativePath}` };
+    }
+    content = doc.content;
   } catch (err) {
     return { success: false, error: `File not found: ${relativePath}` };
   }

@@ -25,6 +25,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { fileService } from '$lib/services/file-service';
 import { projectStore } from '$lib/stores/project.svelte';
 import { resolvePath, extractErrorMessage, type ToolResult } from '../utils';
 
@@ -107,7 +108,7 @@ import {
   notifyEslintDocumentOpened,
   type CodeAction,
   type WorkspaceEdit as EslintWorkspaceEdit,
-  type TextEdit as EslintTextEdit
+  type TextEdit
 } from '$lib/services/lsp/eslint-sidecar';
 
 // Tailwind LSP (hover only for CSS utilities)
@@ -123,90 +124,40 @@ import {
   isYamlFile,
   isYamlLspRunning,
   getHover as getYamlHover,
-  getCompletions as getYamlCompletions,
-  formatDocument as formatYamlDocument,
   notifyDocumentOpened as notifyYamlDocumentOpened
 } from '$lib/services/lsp/yaml-sidecar';
 
-// XML LSP (LemMinX)
+// XML LSP
 import {
   isXmlFile,
   isXmlLspRunning,
   getHover as getXmlHover,
-  getCompletions as getXmlCompletions,
-  formatDocument as formatXmlDocument,
   notifyDocumentOpened as notifyXmlDocumentOpened
 } from '$lib/services/lsp/xml-sidecar';
 
-// Re-export Location type for other modules
-export type { Location };
-
-/**
- * Convert file path to URI (for LSP)
- */
-function pathToUri(filepath: string): string {
-  let normalizedPath = filepath.replace(/\\/g, '/');
-  // Normalize drive letter to lowercase for consistency
-  if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
-  }
-  const encodedPath = encodeURI(normalizedPath);
-  if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${encodedPath}`;
-  }
-  return `file://${encodedPath}`;
+function normalizeLocations(result: Location | Location[] | null | undefined): Location[] | null {
+  if (!result) return null;
+  return Array.isArray(result) ? result : [result];
 }
 
-/**
- * Convert URI to file path
- */
 function uriToPath(uri: string): string {
-  if (!uri.startsWith('file://')) {
-    return uri; // Return as is for package:, dart:, etc. relativePath and read_file will handle it
-  }
   let path = uri.replace('file://', '');
   if (path.match(/^\/[a-zA-Z]:/)) {
     path = path.slice(1);
   }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  return decodeURIComponent(path).replace(/\\/g, '/');
+  return decodeURIComponent(path);
 }
 
-/**
- * Normalize LSP location results to an array
- */
-function normalizeLocations(result: any): Location[] {
-  if (!result) return [];
-  if (Array.isArray(result)) {
-    // Handle Location[] or LocationLink[]
-    return result.map(loc => {
-      if ('uri' in loc) return loc as Location;
-      if ('targetUri' in loc) return { uri: (loc as any).targetUri, range: (loc as any).targetRange } as Location;
-      return loc as Location;
-    });
-  }
-  // Handle single Location
-  return [result as Location];
-}
-
-/**
- * Execute a promise with a timeout
- */
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
-  let timeoutId: any;
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+    timeoutId = setTimeout(() => reject(new Error(message)), ms);
   });
+
   try {
-    const result = await Promise.race([promise, timeoutPromise]);
-    clearTimeout(timeoutId);
-    return result;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
+    return (await Promise.race([promise, timeoutPromise])) as T;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
@@ -294,7 +245,10 @@ async function ensureLspForFile(filepath: string): Promise<LspType> {
  */
 async function ensureDocumentOpen(filepath: string, lspType: LspType): Promise<string | null> {
   try {
-    const content = await invoke<string>('read_file', { path: filepath });
+    // Use fileService for consistent file access
+    const doc = await fileService.read(filepath, true);
+    if (!doc) return null;
+    const content = doc.content;
 
     if (lspType === 'typescript') {
       await notifyTsDocumentOpened(filepath, content);
@@ -428,7 +382,9 @@ function formatLocation(loc: Location): string {
  */
 async function findSymbolInFile(filepath: string, symbolName: string): Promise<{ line: number; column: number } | null> {
   try {
-    const content = await invoke<string>('read_file', { path: filepath });
+    const doc = await fileService.read(filepath, true);
+    if (!doc) return null;
+    const content = doc.content;
     const lines = content.split('\n');
 
     // Create regex that matches the symbol as a whole word
@@ -532,7 +488,9 @@ export async function handleLspGoToDefinition(args: Record<string, unknown>): Pr
 
     // Try to read the definition context (show 3 lines)
     try {
-      const content = await invoke<string>('read_file', { path: defPath });
+      const doc = await fileService.read(defPath, true);
+      if (!doc) continue;
+      const content = doc.content;
       const fileLines = content.split('\n');
       const startLine = Math.max(0, def.range.start.line - 1);
       const endLine = Math.min(fileLines.length - 1, def.range.start.line + 2);
@@ -641,8 +599,10 @@ export async function handleLspFindReferences(args: Record<string, unknown>): Pr
     // Read file to show context
     let fileLines: string[] = [];
     try {
-      const content = await invoke<string>('read_file', { path: filePath });
-      fileLines = content.split('\n');
+      const doc = await fileService.read(filePath, true);
+      if (doc) {
+        fileLines = doc.content.split('\n');
+      }
     } catch {
       // Continue without context
     }
@@ -824,8 +784,12 @@ export async function handleLspRenameSymbol(args: Record<string, unknown>): Prom
     for (const [uri, edits] of Object.entries(changes)) {
       const filePath = uriToPath(uri);
       try {
-        const content = await invoke<string>('read_file', { path: filePath });
-        const lines = content.split('\n');
+        const doc = await fileService.read(filePath, true);
+        if (!doc) {
+          errors.push(`Failed to read ${filePath}`);
+          continue;
+        }
+        const lines = doc.content.split('\n');
 
         // Sort edits in reverse order (bottom to top) to preserve line numbers
         const sortedEdits = [...edits].sort((a, b) => {
@@ -854,7 +818,11 @@ export async function handleLspRenameSymbol(args: Record<string, unknown>): Prom
         }
 
         const newContent = lines.join('\n');
-        await invoke('write_file', { path: filePath, contents: newContent });
+        const result = await fileService.write(filePath, newContent, { source: 'lsp' });
+        if (!result.success) {
+          errors.push(`Failed to write ${filePath}: ${result.error}`);
+          continue;
+        }
         appliedFiles.push(getRelativePath(filePath));
       } catch (e) {
         errors.push(`Failed to update ${filePath}: ${extractErrorMessage(e)}`);
@@ -924,8 +892,12 @@ export async function handleLspRenameSymbol(args: Record<string, unknown>): Prom
 
     try {
       // Read current content
-      const content = await invoke<string>('read_file', { path: filePath });
-      const lines = content.split('\n');
+      const doc = await fileService.read(filePath, true);
+      if (!doc) {
+        errors.push(`Failed to read ${getRelativePath(filePath)}`);
+        continue;
+      }
+      const lines = doc.content.split('\n');
 
       // Sort edits in reverse order (bottom to top) to preserve line numbers
       const sortedEdits = [...edits].sort((a, b) => {
@@ -957,7 +929,11 @@ export async function handleLspRenameSymbol(args: Record<string, unknown>): Prom
 
       // Write back
       const newContent = lines.join('\n');
-      await invoke('write_file', { path: filePath, content: newContent });
+      const result = await fileService.write(filePath, newContent, { source: 'lsp' });
+      if (!result.success) {
+        errors.push(`Failed to write ${getRelativePath(filePath)}: ${result.error}`);
+        continue;
+      }
       appliedFiles.push(getRelativePath(filePath));
 
     } catch (err) {
@@ -1101,8 +1077,11 @@ export async function handleLspGetCodeActions(args: Record<string, unknown>): Pr
   // Handle ESLint code actions
   // Open document in ESLint LSP
   try {
-    const content = await invoke<string>('read_file', { path: absolutePath });
-    await notifyEslintDocumentOpened(absolutePath, content);
+    const doc = await fileService.read(absolutePath, true);
+    if (!doc) {
+      return { success: false, error: `Failed to read file: ${relativePath}` };
+    }
+    await notifyEslintDocumentOpened(absolutePath, doc.content);
 
     // Small delay to let ESLint analyze the file
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -1239,8 +1218,11 @@ export async function handleLspApplyCodeAction(args: Record<string, unknown>): P
   // Handle ESLint
   // Open document
   try {
-    const content = await invoke<string>('read_file', { path: absolutePath });
-    await notifyEslintDocumentOpened(absolutePath, content);
+    const doc = await fileService.read(absolutePath, true);
+    if (!doc) {
+      return { success: false, error: `Failed to read file` };
+    }
+    await notifyEslintDocumentOpened(absolutePath, doc.content);
     await new Promise(resolve => setTimeout(resolve, 500));
   } catch (err) {
     return { success: false, error: `Failed to read file: ${extractErrorMessage(err)}` };
@@ -1314,7 +1296,7 @@ async function applyWorkspaceEdit(edit: any): Promise<number> {
 /**
  * Apply text edits to a file by URI
  */
-async function applyTextEditsToUri(uri: string, edits: EslintTextEdit[]): Promise<void> {
+async function applyTextEditsToUri(uri: string, edits: TextEdit[]): Promise<void> {
   // Convert URI to file path
   let filePath = uri.replace('file://', '');
   if (filePath.match(/^\/[a-zA-Z]:/)) {
@@ -1322,9 +1304,12 @@ async function applyTextEditsToUri(uri: string, edits: EslintTextEdit[]): Promis
   }
   filePath = filePath.replace(/%20/g, ' ');
 
-  // Read current content
-  const content = await invoke<string>('read_file', { path: filePath });
-  const lines = content.split('\n');
+  // Read current content via fileService
+  const doc = await fileService.read(filePath, true);
+  if (!doc) {
+    throw new Error(`Failed to read file: ${filePath}`);
+  }
+  const lines = doc.content.split('\n');
 
   // Sort edits in reverse order (bottom to top) to preserve line numbers
   const sortedEdits = [...edits].sort((a, b) => {
@@ -1354,7 +1339,10 @@ async function applyTextEditsToUri(uri: string, edits: EslintTextEdit[]): Promis
     }
   }
 
-  // Write back
+  // Write back via fileService
   const newContent = lines.join('\n');
-  await invoke('write_file', { path: filePath, content: newContent });
+  const result = await fileService.write(filePath, newContent, { source: 'lsp' });
+  if (!result.success) {
+    throw new Error(`Failed to write file: ${result.error}`);
+  }
 }

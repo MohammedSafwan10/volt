@@ -1,18 +1,75 @@
 /**
  * File write tool handlers - write_file, append_file, str_replace, create_dir, delete_file, rename_path
  * 
- * Kiro-style improvements:
- * - Auto-diagnostics after edits (shows error count to user, sends details to AI)
- * - Includes ESLint issues alongside TypeScript/Svelte errors
- * - No pre-validation (trusts AI, lets LSP catch errors)
- * - Better fuzzy matching for str_replace
- * - Line-based edits with replace_lines
+ * SaaS-Ready Architecture:
+ * - Uses UnifiedFileService as single source of truth
+ * - Version-based conflict detection (optimistic locking)
+ * - Event-driven updates to all components
+ * - Auto-diagnostics after edits
+ * - Zero desync between components
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from '$lib/stores/editor.svelte';
+import { fileService } from '$lib/services/file-service';
 import { resolvePath, extractErrorMessage, isSameOrSuffixPath, calculateDiffStats, type ToolResult } from '../utils';
+
+/**
+ * Read file using unified file service
+ * Ensures we always get the latest content from single source of truth
+ */
+async function readFileFresh(path: string): Promise<string> {
+  const doc = await fileService.read(path, true);  // Force refresh from disk
+  if (!doc) {
+    throw new Error(`File not found: ${path}`);
+  }
+  return doc.content;
+}
+
+/**
+ * Write file using unified file service with verification
+ * Returns result with version tracking
+ */
+async function writeFileWithSync(path: string, content: string, expectedVersion?: number): Promise<{ success: boolean; error?: string; newVersion?: number }> {
+  const result = await fileService.write(path, content, {
+    expectedVersion,
+    source: 'ai',
+    force: expectedVersion === undefined  // Force if no version check requested
+  });
+  
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+  
+  return { success: true, newVersion: result.newVersion };
+}
+
+/**
+ * Sync editor with file service (lightweight - file service handles the heavy lifting)
+ */
+async function syncEditorWithDisk(path: string, normalizedPath: string, content: string): Promise<void> {
+  try {
+    // Update Monaco model directly (handles disposed models)
+    const { setModelValue } = await import('$lib/services/monaco-models');
+    setModelValue(normalizedPath, content);
+    
+    // Reload in editor store
+    const existing = editorStore.openFiles.find(f =>
+      f.path === path || f.path === normalizedPath ||
+      f.path.endsWith('/' + path.split(/[/\\]/).pop()) ||
+      f.path.endsWith('\\' + path.split(/[/\\]/).pop())
+    );
+    
+    if (existing) {
+      existing.content = content;
+      existing.originalContent = content;
+      await editorStore.reloadFile(existing.path);
+    }
+  } catch (err) {
+    console.error('[write] Error syncing editor:', err);
+  }
+}
 
 /**
  * Get diagnostics for a file after edit
@@ -42,58 +99,120 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // Notify LSPs of the file change based on file type
     const ext = absolutePath.split('.').pop()?.toLowerCase() || '';
 
-    // Notify ESLint for JS/TS files
+    // 1. Notify TypeScript/JavaScript/ESLint
     if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
       try {
-        const content = await invoke<string>('read_file', { path: absolutePath });
-        const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
-        await notifyEslintDocumentChanged(absolutePath, content);
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          // TypeScript
+          const { notifyDocumentChanged } = await import('$lib/services/lsp/typescript-sidecar');
+          await notifyDocumentChanged(absolutePath, doc.content);
+
+          // ESLint
+          const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
+          await notifyEslintDocumentChanged(absolutePath, doc.content);
+        }
       } catch {
-        // ESLint notification failed, continue anyway
+        // Continue anyway
       }
     }
 
-    // Notify Dart LSP for Dart files and pubspec.yaml
+    // 2. Notify Svelte
+    if (ext === 'svelte') {
+      try {
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifySvelteDocumentChanged } = await import('$lib/services/lsp/svelte-sidecar');
+          await notifySvelteDocumentChanged(absolutePath, doc.content);
+        }
+      } catch { }
+    }
+
+    // 3. Notify HTML
+    if (['html', 'htm'].includes(ext)) {
+      try {
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyHtmlDocumentChanged } = await import('$lib/services/lsp/html-sidecar');
+          await notifyHtmlDocumentChanged(absolutePath, doc.content);
+        }
+      } catch { }
+    }
+
+    // 4. Notify CSS/SCSS/LESS
+    if (['css', 'scss', 'less', 'sass'].includes(ext)) {
+      try {
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyCssDocumentChanged } = await import('$lib/services/lsp/css-sidecar');
+          await notifyCssDocumentChanged(absolutePath, doc.content);
+        }
+      } catch { }
+    }
+
+    // 5. Notify JSON
+    if (ext === 'json') {
+      try {
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyJsonDocumentChanged } = await import('$lib/services/lsp/json-sidecar');
+          await notifyJsonDocumentChanged(absolutePath, doc.content);
+        }
+      } catch { }
+    }
+
+    // 6. Notify Dart LSP for Dart files and pubspec.yaml
     if (ext === 'dart' || absolutePath.toLowerCase().endsWith('pubspec.yaml') || absolutePath.toLowerCase().endsWith('analysis_options.yaml')) {
       try {
-        const content = await invoke<string>('read_file', { path: absolutePath });
-        const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
-        if (isDartLspRunning()) {
-          await notifyDocumentChanged(absolutePath, content);
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
+          if (isDartLspRunning()) {
+            await notifyDocumentChanged(absolutePath, doc.content);
+          }
         }
-      } catch {
-        // Dart notification failed, continue anyway
-      }
+      } catch { }
     }
 
-    // Notify YAML LSP for YAML files
+    // 7. Notify YAML LSP for YAML files
     if (['yaml', 'yml'].includes(ext)) {
       try {
-        const content = await invoke<string>('read_file', { path: absolutePath });
-        const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
-        if (isYamlLspRunning()) {
-          await notifyDocumentChanged(absolutePath, content);
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
+          if (isYamlLspRunning()) {
+            await notifyDocumentChanged(absolutePath, doc.content);
+          }
         }
-      } catch {
-        // YAML notification failed, continue anyway
-      }
+      } catch { }
     }
 
-    // Notify XML LSP for XML and plist files
+    // 8. Notify XML LSP for XML and plist files
     if (['xml', 'plist', 'xsd', 'xsl', 'xslt', 'svg'].includes(ext)) {
       try {
-        const content = await invoke<string>('read_file', { path: absolutePath });
-        const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
-        if (isXmlLspRunning()) {
-          await notifyDocumentChanged(absolutePath, content);
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
+          if (isXmlLspRunning()) {
+            await notifyDocumentChanged(absolutePath, doc.content);
+          }
         }
-      } catch {
-        // XML notification failed, continue anyway
-      }
+      } catch { }
     }
 
-    // Wait for LSPs to process (ESLint/Dart need a bit more time)
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // 9. Notify Tailwind
+    try {
+      const { notifyTailwindDocumentChanged, isTailwindLspConnected } = await import('$lib/services/lsp/tailwind-sidecar');
+      if (isTailwindLspConnected()) {
+        const doc = await fileService.read(absolutePath);
+        if (doc) {
+          await notifyTailwindDocumentChanged(absolutePath, doc.content);
+        }
+      }
+    } catch { }
+
+    // Wait for LSPs to process (increased from 300ms to 500ms for more reliable diagnostics)
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Import diagnostics handler dynamically to avoid circular deps
     const { handleGetDiagnostics } = await import('./diagnostics');
@@ -160,19 +279,23 @@ function fixEscapedNewlines(text: string): string {
 export async function handleWriteFile(args: Record<string, unknown>): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
   const rawContent = String(args.text ?? args.content ?? '');
   const content = fixEscapedNewlines(rawContent);
+  const force = args.force === true;
 
-  // Check if file exists
+  // ALWAYS read fresh from disk to avoid stale cache issues
   let before = '';
   let isNewFile = false;
   try {
-    before = await invoke<string>('read_file', { path });
+    before = await readFileFresh(path);
   } catch {
     isNewFile = true;
   }
 
-  if (!isNewFile && before === content) {
+  // Skip write if content is identical (unless force is set)
+  // This uses disk content, not Monaco model, to avoid false positives
+  if (!isNewFile && !force && before === content) {
     return {
       success: true,
       output: `No changes: ${relativePath}`,
@@ -190,11 +313,10 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
     };
   }
 
-  // Write to disk
-  try {
-    await invoke('write_file', { path, content });
-  } catch (err) {
-    return { success: false, error: `Failed to write: ${extractErrorMessage(err)}` };
+  // Write with verification and retry logic
+  const writeResult = await writeFileWithSync(path, content);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
   // Refresh tree if new file
@@ -202,15 +324,16 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
     try { await projectStore.refreshTree(); } catch { }
   }
 
-  // Open/reload in editor
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, content);
+
+  // If file wasn't open, open it now
   try {
     const existing = editorStore.openFiles.find(f =>
-      f.path === path || f.path === relativePath ||
+      f.path === path || f.path === normalizedPath ||
       f.path.endsWith('/' + relativePath) || f.path.endsWith('\\' + relativePath)
     );
-    if (existing) {
-      await editorStore.reloadFile(existing.path);
-    } else {
+    if (!existing) {
       await editorStore.openFile(path);
     }
   } catch { }
@@ -238,10 +361,10 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   // Add detailed errors for AI (in meta, not visible to user)
   const aiErrors = diagnostics.problems.length > 0
     ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
-        .filter((p) => p.severity === 'error')
-        .slice(0, 5)
-        .map((p) => `L${p.line}:${p.column} ${p.message}`)
-        .join('\n')}`
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
     : '';
 
   return {
@@ -277,13 +400,14 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
 export async function handleAppendFile(args: Record<string, unknown>): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
   const rawText = String(args.text ?? args.content ?? '');
   const textToAppend = fixEscapedNewlines(rawText);
 
-  // Read existing
+  // ALWAYS read fresh from disk
   let existing = '';
   try {
-    existing = await invoke<string>('read_file', { path });
+    existing = await readFileFresh(path);
   } catch {
     return { success: false, error: `File not found: ${relativePath}. Use write_file to create.` };
   }
@@ -292,22 +416,14 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
   const needsNewline = existing.length > 0 && !existing.endsWith('\n');
   const newContent = existing + (needsNewline ? '\n' : '') + textToAppend;
 
-  // Write
-  try {
-    await invoke('write_file', { path, content: newContent });
-  } catch (err) {
-    return { success: false, error: `Failed to append: ${extractErrorMessage(err)}` };
+  // Write with verification
+  const writeResult = await writeFileWithSync(path, newContent);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to append: ${writeResult.error}` };
   }
 
-  // Reload in editor
-  try {
-    const existingFile = editorStore.openFiles.find(f =>
-      f.path === path || f.path.endsWith('/' + relativePath)
-    );
-    if (existingFile) {
-      await editorStore.reloadFile(existingFile.path);
-    }
-  } catch { }
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, newContent);
 
   const addedLines = textToAppend.split('\n').length;
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(existing, newContent);
@@ -323,10 +439,10 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
 
   const aiErrors = diagnostics.problems.length > 0
     ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
-        .filter((p) => p.severity === 'error')
-        .slice(0, 5)
-        .map((p) => `L${p.line}:${p.column} ${p.message}`)
-        .join('\n')}`
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
     : '';
 
   return {
@@ -361,15 +477,17 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
 export async function handleStrReplace(args: Record<string, unknown>): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
   const rawOldStr = String(args.oldStr ?? args.original_snippet ?? '');
   const rawNewStr = String(args.newStr ?? args.new_snippet ?? '');
   const oldStr = fixEscapedNewlines(rawOldStr);
   const newStr = fixEscapedNewlines(rawNewStr);
+  const force = args.force === true;
 
-  // Read file
+  // ALWAYS read fresh from disk
   let content = '';
   try {
-    content = await invoke<string>('read_file', { path });
+    content = await readFileFresh(path);
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -395,7 +513,7 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
 
   // Apply replacement
   const newContent = content.slice(0, match.index) + newStr + content.slice(match.index + match.length);
-  if (newContent === content) {
+  if (!force && newContent === content) {
     return {
       success: true,
       output: `No changes: ${relativePath}`,
@@ -418,22 +536,14 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
     return { success: false, error: syntaxError };
   }
 
-  // Write
-  try {
-    await invoke('write_file', { path, content: newContent });
-  } catch (err) {
-    return { success: false, error: `Failed to write: ${extractErrorMessage(err)}` };
+  // Write with verification
+  const writeResult = await writeFileWithSync(path, newContent);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
-  // Reload in editor
-  try {
-    const existing = editorStore.openFiles.find(f =>
-      f.path === path || f.path.endsWith('/' + relativePath)
-    );
-    if (existing) {
-      await editorStore.reloadFile(existing.path);
-    }
-  } catch { }
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, newContent);
 
   const oldLines = oldStr.split('\n').length;
   const newLines = newStr.split('\n').length;
@@ -453,10 +563,10 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
 
   const aiErrors = diagnostics.problems.length > 0
     ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
-        .filter((p) => p.severity === 'error')
-        .slice(0, 5)
-        .map((p) => `L${p.line}:${p.column} ${p.message}`)
-        .join('\n')}`
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
     : '';
 
   return {
@@ -514,7 +624,9 @@ export async function handleDeleteFile(args: Record<string, unknown>): Promise<T
   let beforeContent: string | null = null;
   let isDirectory = false;
   try {
-    beforeContent = await invoke<string>('read_file', { path });
+    const doc = await fileService.read(path);
+    beforeContent = doc?.content ?? null;
+    if (!doc) isDirectory = true;
   } catch {
     isDirectory = true;
   }
@@ -604,20 +716,22 @@ export async function handleRenamePath(args: Record<string, unknown>): Promise<T
 export async function handleReplaceLines(args: Record<string, unknown>): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
   const startLine = Number(args.start_line);
   const endLine = Number(args.end_line);
   const rawContent = String(args.content ?? '');
   const newContent = fixEscapedNewlines(rawContent);
+  const force = args.force === true;
 
   // Validate line numbers
   if (isNaN(startLine) || isNaN(endLine) || startLine < 1 || endLine < startLine) {
     return { success: false, error: `Invalid line range: ${startLine}-${endLine}` };
   }
 
-  // Read file
+  // ALWAYS read fresh from disk
   let content = '';
   try {
-    content = await invoke<string>('read_file', { path });
+    content = await readFileFresh(path);
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -638,7 +752,7 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   const newLines = newContent.split('\n');
 
   const resultContent = [...before, ...newLines, ...after].join('\n');
-  if (resultContent === content) {
+  if (!force && resultContent === content) {
     return {
       success: true,
       output: `No changes: ${relativePath}`,
@@ -655,22 +769,14 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
     };
   }
 
-  // Write
-  try {
-    await invoke('write_file', { path, content: resultContent });
-  } catch (err) {
-    return { success: false, error: `Failed to write: ${extractErrorMessage(err)}` };
+  // Write with verification
+  const writeResult = await writeFileWithSync(path, resultContent);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
-  // Reload in editor
-  try {
-    const existing = editorStore.openFiles.find(f =>
-      f.path === path || f.path.endsWith('/' + relativePath)
-    );
-    if (existing) {
-      await editorStore.reloadFile(existing.path);
-    }
-  } catch { }
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, resultContent);
 
   const replacedLines = actualEndLine - startLine + 1;
   const insertedLines = newLines.length;
@@ -686,10 +792,10 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
 
   const aiErrors = diagnostics.problems.length > 0
     ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
-        .filter((p) => p.severity === 'error')
-        .slice(0, 5)
-        .map((p) => `L${p.line}:${p.column} ${p.message}`)
-        .join('\n')}`
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
     : '';
 
   return {
@@ -868,7 +974,10 @@ export async function handleWritePlanFile(args: Record<string, unknown>): Promis
 
   // Write the plan file
   try {
-    await invoke('write_file', { path, content });
+    const result = await fileService.write(path, content, { source: 'ai', createIfMissing: true });
+    if (!result.success) {
+      return { success: false, error: `Failed to write plan: ${result.error}` };
+    }
   } catch (err) {
     return { success: false, error: `Failed to write plan: ${extractErrorMessage(err)}` };
   }
@@ -1000,7 +1109,11 @@ export async function handleFormatFile(args: Record<string, unknown>): Promise<T
   // Read current content
   let content: string;
   try {
-    content = await invoke<string>('read_file', { path: absolutePath });
+    const doc = await fileService.read(absolutePath, true);
+    if (!doc) {
+      return { success: false, error: `File not found: ${relativePath}` };
+    }
+    content = doc.content;
   } catch (err) {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -1022,7 +1135,10 @@ export async function handleFormatFile(args: Record<string, unknown>): Promise<T
 
   // Write formatted content
   try {
-    await invoke('write_file', { path: absolutePath, content: formatted });
+    const result = await fileService.write(absolutePath, formatted, { source: 'ai' });
+    if (!result.success) {
+      return { success: false, error: `Failed to write: ${result.error}` };
+    }
 
     // Update editor if file is open
     const openFiles = editorStore.openFiles.filter(f =>

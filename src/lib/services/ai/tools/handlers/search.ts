@@ -9,6 +9,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { fileService } from '$lib/services/file-service';
 import { projectStore } from '$lib/stores/project.svelte';
 import { truncateOutput, resolvePath, type ToolResult } from '../utils';
 import { getWorkspaceSymbols as getTsWorkspaceSymbols, isTsLspConnected, ensureTsLspStarted } from '$lib/services/lsp/typescript-sidecar';
@@ -109,8 +110,10 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
       let fileLines: string[] = [];
       if (file.matches.length <= 10) {
         try {
-          const content = await invoke<string>('read_file', { path: file.path });
-          fileLines = content.split('\n');
+          const doc = await fileService.read(file.path, true);
+          if (doc) {
+            fileLines = doc.content.split('\n');
+          }
         } catch {
           // Continue without context
         }

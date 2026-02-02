@@ -21,6 +21,18 @@ import { truncateOutput, extractErrorMessage, type ToolResult } from '../utils';
 let aiCommandQueue: Promise<ToolResult> = Promise.resolve({ success: true, output: '' });
 const recentAiCommands = new Map<string, { command: string; timestamp: number }>();
 
+function isLikelyDevServer(command: string): boolean {
+  const cmd = command.trim().toLowerCase();
+  if (!cmd) return false;
+
+  const npmRun = /\b(npm|pnpm|yarn)\s+(run\s+)?(dev|serve|start|preview|watch)\b/i;
+  const common = /\b(vite|next\s+dev|nuxt\s+dev|astro\s+dev|svelte-kit\s+dev|react-scripts\s+start|ng\s+serve|nx\s+serve|bun\s+run\s+dev|deno\s+task\s+dev)\b/i;
+  const avoid = /\b(npm|pnpm|yarn)\s+install\b/i;
+
+  if (avoid.test(cmd)) return false;
+  return npmRun.test(cmd) || common.test(cmd);
+}
+
 /**
  * Get or create a dedicated terminal for a background process.
  */
@@ -168,10 +180,22 @@ const processes = {
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command).trim();
   const cwd = args.cwd ? String(args.cwd) : undefined;
-  const timeout = Number(args.timeout) || 300000;
+  const timeout = typeof args.timeout === 'number' ? args.timeout : 300000;
+  const waitForExit = args.waitForExit === true;
+  const allowDetach = args.detached !== false;
+  const isDevServer = isLikelyDevServer(command);
 
   const run = async (): Promise<ToolResult> => {
     try {
+      if (isDevServer && allowDetach && !waitForExit) {
+        const result = await handleStartProcess({ command, cwd });
+        if (result.success) {
+          result.output = `Detected long-running server command. Started as background process.\n\n${result.output}`;
+          result.meta = { ...(result.meta ?? {}), autoDetached: true };
+        }
+        return result;
+      }
+
       // Ensure terminal panel is open so user sees progress
       uiStore.openBottomPanelTab('terminal');
 
@@ -221,7 +245,6 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
       }
 
       // Heuristic: Warn if running a command that looks like a dev server in run_command
-      const isDevServer = /\b(dev|serve|start|watch)\b/i.test(command) && command.includes('npm') || command.includes('yarn');
       if (isDevServer) {
         logOutput('Volt', `Warning: Running potential long-running command "${command}" in run_command. If this is a server, use start_process instead.`);
       }
@@ -300,6 +323,12 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
           toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
         }
       }
+
+		// If the command detached (likely a long-running server) or timed out,
+		// detach the AI terminal so the next command gets a fresh shell.
+		if (isDetached || toolResult.meta.timedOut) {
+			terminalStore.detachAiTerminal(session.id, isDetached ? 'Volt AI (running)' : 'Volt AI (busy)');
+		}
 
       // Notify store of errors for the "Fix with AI" feature
       if (!toolResult.success && !isDetached) {

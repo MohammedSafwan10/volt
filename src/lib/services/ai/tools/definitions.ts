@@ -189,12 +189,13 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
   {
     name: 'write_file',
-    description: 'Create or overwrite a file.',
+    description: 'Create or overwrite a file. Set force to true to overwrite even if content appears identical.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path, e.g. "src/utils.ts"' },
-        text: { type: 'string', description: 'File contents' }
+        text: { type: 'string', description: 'File contents' },
+        force: { type: 'boolean', description: 'Force overwrite even if identical to current content (useful if file is corrupted/broken)' }
       },
       required: ['path', 'text']
     },
@@ -220,6 +221,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   {
     name: 'str_replace',
     description: `Replace text in a file. oldStr must match EXACTLY.
+Set force to true to overwrite even if content appears identical.
 
 To delete code: set newStr to ""
 If match fails: use read_file to get exact content first.`,
@@ -228,7 +230,8 @@ If match fails: use read_file to get exact content first.`,
       properties: {
         path: { type: 'string', description: 'File path' },
         oldStr: { type: 'string', description: 'Exact text to find' },
-        newStr: { type: 'string', description: 'Replacement text' }
+        newStr: { type: 'string', description: 'Replacement text' },
+        force: { type: 'boolean', description: 'Force overwrite even if identical (rarely needed for this tool)' }
       },
       required: ['path', 'oldStr', 'newStr']
     },
@@ -239,6 +242,7 @@ If match fails: use read_file to get exact content first.`,
   {
     name: 'replace_lines',
     description: `Replace lines in a file by line numbers. Use when str_replace fails or for large edits.
+Set force to true to overwrite even if content appears identical.
 
 Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with new content.`,
     parameters: {
@@ -247,7 +251,8 @@ Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with ne
         path: { type: 'string', description: 'File path' },
         start_line: { type: 'number', description: 'First line to replace (1-based)' },
         end_line: { type: 'number', description: 'Last line to replace (inclusive)' },
-        content: { type: 'string', description: 'New content to insert' }
+        content: { type: 'string', description: 'New content to insert' },
+        force: { type: 'boolean', description: 'Force overwrite even if identical' }
       },
       required: ['path', 'start_line', 'end_line', 'content']
     },

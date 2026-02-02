@@ -18,6 +18,7 @@ import type { AIMode } from '$lib/stores/ai.svelte';
 // Timeout for tool operations (30 seconds default)
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max
+const TERMINAL_TOOL_DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
 
 /**
  * Tool execution options
@@ -254,7 +255,9 @@ export async function executeToolCall(
     return normalizeToolResult(toolName, result);
   }
 
-  const requestedTimeout = typeof args.timeout === 'number' ? args.timeout : DEFAULT_TIMEOUT_MS;
+  const isTerminalTool = toolName === 'run_command' || toolName === 'start_process' || toolName === 'stop_process' || toolName === 'get_process_output' || toolName === 'list_processes' || toolName === 'read_terminal';
+  const defaultTimeout = isTerminalTool ? TERMINAL_TOOL_DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const requestedTimeout = typeof args.timeout === 'number' ? args.timeout : defaultTimeout;
   const timeoutMs = Math.min(Math.max(0, requestedTimeout), MAX_TIMEOUT_MS);
 
   const handler = toolHandlers[toolName];
@@ -268,11 +271,13 @@ export async function executeToolCall(
 
   while (attempt < maxAttempts) {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<ToolResult>((resolve) => {
-      timeoutId = setTimeout(() => {
-        resolve({ success: false, error: 'Tool execution timed out' });
-      }, timeoutMs);
-    });
+    const timeoutPromise = timeoutMs === 0
+      ? new Promise<ToolResult>(() => undefined)
+      : new Promise<ToolResult>((resolve) => {
+          timeoutId = setTimeout(() => {
+            resolve({ success: false, error: 'Tool execution timed out' });
+          }, timeoutMs);
+        });
 
     let abortHandler: (() => void) | undefined;
     const abortPromise = new Promise<ToolResult>((resolve) => {
