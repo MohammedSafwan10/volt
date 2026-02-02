@@ -167,13 +167,20 @@ class ChatHistoryStore {
     async deleteConversation(conversationId: string): Promise<void> {
         await invoke('chat_delete_conversation', { conversationId });
 
+        // Check if we're deleting the active conversation BEFORE clearing state
+        const deletingActive = this.activeConversationId === conversationId;
+
         // Remove from local state
         this.conversations = this.conversations.filter(c => c.id !== conversationId);
         this.selectedIds.delete(conversationId);
 
-        // If we deleted the active conversation, clear it
-        if (this.activeConversationId === conversationId) {
+        // If we deleted the active conversation, clear it from both stores
+        if (deletingActive) {
             this.activeConversationId = null;
+            // Clear the assistant store's current chat via dynamic import to avoid circular deps
+            import('./assistant.svelte').then(({ assistantStore }) => {
+                assistantStore.clearConversation();
+            });
         }
 
         if (this.selectedIds.size === 0) {
@@ -187,6 +194,9 @@ class ChatHistoryStore {
     async deleteMultiple(ids: string[]): Promise<void> {
         this.isLoading = true;
         try {
+            // Check if we're deleting the active conversation BEFORE clearing state
+            const deletingActive = ids.includes(this.activeConversationId || '');
+
             // Sequential deletion for safety with SQLite, or we could add a backend command for batch
             for (const id of ids) {
                 await invoke('chat_delete_conversation', { conversationId: id });
@@ -196,8 +206,12 @@ class ChatHistoryStore {
             this.conversations = this.conversations.filter(c => !ids.includes(c.id));
             ids.forEach(id => this.selectedIds.delete(id));
 
-            if (ids.includes(this.activeConversationId || '')) {
+            if (deletingActive) {
                 this.activeConversationId = null;
+                // Clear the assistant store's current chat
+                import('./assistant.svelte').then(({ assistantStore }) => {
+                    assistantStore.clearConversation();
+                });
             }
 
             if (this.selectedIds.size === 0) {
