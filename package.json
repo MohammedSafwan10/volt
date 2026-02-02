@@ -6,11 +6,10 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "cleanup": "node scripts/cleanup-before-dev.mjs",
     "sidecars:node": "node scripts/prepare-node-sidecar.mjs",
-    "kill-sidecars": "taskkill /F /IM node-x86_64-pc-windows-msvc.exe 2>nul || exit /b 0",
-    "dev:with-sidecars": "npm run sidecars:node && vite dev",
+    "dev:with-sidecars": "npm run cleanup && npm run sidecars:node && vite dev",
     "build:with-sidecars": "npm run sidecars:node && vite build",
-    "tauri:clean": "npm run kill-sidecars && npm run tauri dev",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
