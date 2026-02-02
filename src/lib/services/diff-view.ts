@@ -1,10 +1,15 @@
 /**
- * Diff View Service - Highlights changed lines in the editor (Kiro-style)
- * Opens the actual file and highlights the changed area with green background
+ * Diff View Service - Monaco DiffEditor integration
+ * 
+ * Two modes:
+ * 1. openDiffView() - Quick highlight mode (green background on changed lines)
+ * 2. openFullDiffView() - Full Monaco DiffEditor with red/green inline diff (VS Code style)
  */
 
 import { editorStore } from '$lib/stores/editor.svelte';
+import { diffStore } from '$lib/stores/diff.svelte';
 import { setReviewHighlight, clearReviewHighlight, revealLine, getActiveEditor } from '$lib/services/monaco-models';
+import { detectLanguage } from '$lib/services/monaco-loader';
 
 export interface DiffViewOptions {
   /** File path (absolute or relative) */
@@ -21,8 +26,64 @@ export interface DiffViewOptions {
   toolCallIds?: string[];
 }
 
+export interface FullDiffViewOptions {
+  /** File path for title and language detection */
+  filePath: string;
+  /** Original content (before changes) - shows as RED */
+  originalContent: string;
+  /** Modified content (after changes) - shows as GREEN */
+  modifiedContent: string;
+  /** Optional language override */
+  language?: string;
+  /** Optional title override */
+  title?: string;
+  /** Tool call ID for tracking */
+  toolCallId?: string;
+  /** Whether to start in inline mode (default: true) */
+  inlineMode?: boolean;
+}
+
 // Track which tool calls have active highlights
 const activeHighlights = new Map<string, string>(); // toolCallId -> filePath
+
+/**
+ * Open full Monaco DiffEditor with proper red/green inline diff
+ * This is the VS Code Copilot style diff view
+ * 
+ * - Deleted lines show in RED
+ * - Added lines show in GREEN
+ * - Supports inline and side-by-side modes
+ * - Navigation between changes
+ * - Accept/Reject buttons
+ */
+export function openFullDiffView(options: FullDiffViewOptions): void {
+  const fileName = options.filePath.split(/[/\\]/).pop() || 'file';
+  const language = options.language || detectLanguage(options.filePath);
+  
+  diffStore.openDiff({
+    filePath: options.filePath,
+    originalContent: options.originalContent,
+    modifiedContent: options.modifiedContent,
+    language,
+    title: options.title || `Changes: ${fileName}`,
+    toolCallId: options.toolCallId,
+    inlineMode: options.inlineMode ?? true,
+  });
+}
+
+/**
+ * Close the full diff view and return to normal editor
+ */
+export function closeFullDiffView(): void {
+  diffStore.closeDiff();
+}
+
+/**
+ * Check if full diff view is active
+ */
+export function isFullDiffViewActive(): boolean {
+  return diffStore.isActive;
+}
 
 /**
  * Open a file and highlight the changed lines (Kiro-style diff view)

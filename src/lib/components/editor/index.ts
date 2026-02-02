@@ -1,4 +1,5 @@
 export { default as MonacoEditor } from './MonacoEditor.svelte';
+export { default as MonacoDiffEditor } from './MonacoDiffEditor.svelte';
 export { default as EditorPlaceholder } from './EditorPlaceholder.svelte';
 export { default as Breadcrumb } from './Breadcrumb.svelte';
 export { default as EmptyState } from './EmptyState.svelte';
