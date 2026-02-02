@@ -466,37 +466,66 @@ class AssistantStore {
       }
 
       // SELF-HEALING: Reconstruct contentParts if missing (fixes disappearing tools/thinking in history)
+      // This is a fallback for old data that didn't save contentParts
       if (!base.contentParts || base.contentParts.length === 0) {
-        const parts: any[] = []; // Use any to avoid strict typing issues during manual construction
+        const parts: any[] = [];
 
-        // 1. Restore thinking
+        // 1. Restore thinking first (always at the start)
         if (base.thinking) {
           parts.push({
             type: 'thinking',
             thinking: base.thinking,
             startTime: base.timestamp,
-            isActive: false, // History items are never active
+            isActive: false,
             title: 'Thought'
           });
         }
 
-        // 2. Restore text content
-        if (base.content) {
+        // 2. Interleave text and tool calls using textOffset
+        if (base.inlineToolCalls && base.inlineToolCalls.length > 0 && base.content) {
+          // Sort tool calls by textOffset to get proper interleaving
+          const sortedCalls = [...base.inlineToolCalls].sort((a, b) => {
+            const offsetA = (a.meta as any)?.textOffset ?? Infinity;
+            const offsetB = (b.meta as any)?.textOffset ?? Infinity;
+            return offsetA - offsetB;
+          });
+          
+          let lastOffset = 0;
+          for (const tc of sortedCalls) {
+            const offset = (tc.meta as any)?.textOffset ?? base.content.length;
+            
+            // Add text segment before this tool
+            if (offset > lastOffset) {
+              const textSegment = base.content.slice(lastOffset, offset);
+              if (textSegment) {
+                parts.push({ type: 'text', text: textSegment });
+              }
+            }
+            
+            // Add tool call
+            parts.push({ type: 'tool', toolCall: tc });
+            lastOffset = offset;
+          }
+          
+          // Add remaining text after last tool
+          if (lastOffset < base.content.length) {
+            const remainingText = base.content.slice(lastOffset);
+            if (remainingText) {
+              parts.push({ type: 'text', text: remainingText });
+            }
+          }
+        } else if (base.content) {
+          // No tool calls, just add text
           parts.push({ type: 'text', text: base.content });
-        }
-
-        // 3. Restore inline tool calls
-        if (base.inlineToolCalls && base.inlineToolCalls.length > 0) {
+        } else if (base.inlineToolCalls && base.inlineToolCalls.length > 0) {
+          // Only tool calls, no text
           base.inlineToolCalls.forEach(tc => {
             parts.push({ type: 'tool', toolCall: tc });
           });
         }
 
         if (parts.length > 0) {
-          base.contentParts = this.normalizeContentParts(
-            parts as ContentPart[],
-            base.content,
-          ) as ContentPart[];
+          base.contentParts = parts as ContentPart[];
         }
       }
 
@@ -1689,20 +1718,21 @@ class AssistantStore {
     content: string,
   ): ContentPart[] | undefined {
     if (!content && (!parts || parts.length === 0)) return parts;
+    
+    // If parts already has text, preserve the existing order (critical for history restore)
+    // Only aggregate text from all text parts and update the first one
+    const hasText = parts?.some(p => p.type === 'text');
+    if (hasText && parts && parts.length > 0) {
+      // Update existing text parts to match the content (in case content differs)
+      // but preserve the interleaved order
+      return parts;
+    }
+    
+    // No text parts exist - need to add one
     const normalized = [...(parts || [])];
-
     if (content) {
-      const textIndex = normalized.findIndex((p) => p.type === 'text');
-      if (textIndex === -1) {
-        // Insert text before the first tool part if possible, otherwise append
-        const insertAt = normalized.findIndex((p) => p.type === 'tool');
-        normalized.splice(insertAt === -1 ? normalized.length : insertAt, 0, {
-          type: 'text',
-          text: content,
-        });
-      } else {
-        normalized[textIndex] = { type: 'text', text: content };
-      }
+      // Insert text at the beginning (before tools) for new content
+      normalized.unshift({ type: 'text', text: content });
     }
 
     return normalized.length > 0 ? normalized : parts;
