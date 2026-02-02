@@ -5,6 +5,7 @@ import {
 	TerminalSession
 } from '$lib/services/terminal-client';
 import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
+import { registerCleanup } from '$lib/services/hmr-cleanup';
 
 /**
  * Terminal store for managing terminal sessions
@@ -151,6 +152,19 @@ class TerminalStore {
 	}
 
 	/**
+	 * Detach the AI terminal so the next AI command uses a fresh terminal.
+	 * Keeps the existing session alive for inspection/cleanup.
+	 */
+	detachAiTerminal(terminalId: string, label?: string): void {
+		if (this.aiTerminalId === terminalId) {
+			this.aiTerminalId = null;
+		}
+		if (label) {
+			this.setSessionLabel(terminalId, label);
+		}
+	}
+
+	/**
 	 * Set the active terminal
 	 */
 	setActive(terminalId: string): void {
@@ -222,3 +236,10 @@ class TerminalStore {
 }
 
 export const terminalStore = new TerminalStore();
+
+// Register HMR cleanup to dispose terminal sessions
+registerCleanup('terminal-store', async () => {
+	for (const session of terminalStore.sessions) {
+		session.dispose();
+	}
+});

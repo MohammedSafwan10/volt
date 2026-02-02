@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { logOutput } from '$lib/stores/output.svelte';
 import { indexUpdateTick } from './file-index';
+import { registerCleanup } from '$lib/services/hmr-cleanup';
 
 export interface FileChangeEvent {
   /** Type of change: "create", "delete", "rename", "modify" */
@@ -38,6 +39,9 @@ let pausedWorkspace: string | null = null;
 // Callbacks for external consumers
 type ChangeHandler = (batch: FileChangeBatchEvent) => void;
 const changeHandlers: Set<ChangeHandler> = new Set();
+
+// Register HMR cleanup to prevent orphaned event listeners
+registerCleanup('file-watch', () => stopWatching());
 
 /**
  * Register a handler for file change events

@@ -9,6 +9,7 @@ import { homeDir, join } from '@tauri-apps/api/path';
 import { readTextFile, watchImmediate } from '@tauri-apps/plugin-fs';
 import { showToast } from './toast.svelte';
 import { logOutput } from './output.svelte';
+import { registerCleanup } from '$lib/services/hmr-cleanup';
 
 // Types matching Rust structs
 export interface McpServerConfig {
@@ -48,6 +49,12 @@ class McpStore {
 
   // All available tools (server_id, tool)
   tools = $state<Array<{ serverId: string; tool: McpTool }>>([]);
+
+  // Retry tracking for failed servers
+  private retryAttempts = new Map<string, number>();
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly MAX_RETRY_ATTEMPTS = 3;
+  private static readonly RETRY_DELAY_MS = 30000; // 30 seconds
 
   // Config
   userConfig = $state<McpConfig | null>(null);
@@ -309,6 +316,14 @@ class McpStore {
       this.servers = new Map(this.servers);
       this.updateTools();
 
+      // Clear retry state on successful connection
+      this.retryAttempts.delete(serverId);
+      const existingTimer = this.retryTimers.get(serverId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        this.retryTimers.delete(serverId);
+      }
+
       logOutput('MCP', `Server '${serverId}' connected with ${state.tools.length} tools`);
       for (const tool of state.tools) {
         logOutput('MCP', `  - ${tool.name}${tool.description ? `: ${tool.description.slice(0, 60)}...` : ''}`);
@@ -316,8 +331,15 @@ class McpStore {
 
     } catch (error) {
       const errorMsg = String(error);
+      const isTimeout = errorMsg.includes('timed out') || errorMsg.includes('timeout');
+      const attempt = (this.retryAttempts.get(serverId) || 0) + 1;
+      
       logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${errorMsg}`);
-      console.error(`[MCP] Failed to start server '${serverId}':`, error);
+      
+      // Only show error in console, not spam user
+      if (attempt === 1) {
+        console.error(`[MCP] Failed to start server '${serverId}':`, error);
+      }
 
       // Update state to show error
       this.servers.set(serverId, {
@@ -325,11 +347,37 @@ class McpStore {
         name: serverId,
         status: 'error',
         tools: [],
-        error: errorMsg,
+        error: isTimeout ? `Connection timeout (attempt ${attempt}/${McpStore.MAX_RETRY_ATTEMPTS})` : errorMsg,
       });
       this.servers = new Map(this.servers);
 
-      showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
+      // Schedule retry for timeout errors (network issues, slow servers)
+      if (isTimeout && attempt < McpStore.MAX_RETRY_ATTEMPTS) {
+        this.retryAttempts.set(serverId, attempt);
+        
+        // Clear any existing retry timer
+        const existingTimer = this.retryTimers.get(serverId);
+        if (existingTimer) clearTimeout(existingTimer);
+        
+        logOutput('MCP', `  Will retry in ${McpStore.RETRY_DELAY_MS / 1000}s (attempt ${attempt + 1}/${McpStore.MAX_RETRY_ATTEMPTS})`);
+        
+        const timer = setTimeout(() => {
+          this.retryTimers.delete(serverId);
+          logOutput('MCP', `Retrying connection to '${serverId}'...`);
+          this.startServer(serverId).catch(() => {
+            // Error already handled in startServer
+          });
+        }, McpStore.RETRY_DELAY_MS);
+        
+        this.retryTimers.set(serverId, timer);
+      } else if (attempt >= McpStore.MAX_RETRY_ATTEMPTS) {
+        // Max retries reached - show toast once
+        this.retryAttempts.delete(serverId);
+        showToast({ message: `${serverId} failed after ${attempt} attempts. Check connection.`, type: 'error' });
+      } else {
+        // Non-timeout error - show immediately
+        showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
+      }
     }
   }
 
@@ -517,3 +565,6 @@ class McpStore {
 
 // Singleton instance
 export const mcpStore = new McpStore();
+
+// Register HMR cleanup to prevent orphaned event listeners
+registerCleanup('mcp-store', () => mcpStore.cleanup());

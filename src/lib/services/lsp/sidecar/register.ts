@@ -13,6 +13,7 @@ import type { LspServerType, HealthConfig, HealthStatus } from './types';
 import { isExternalServerType } from './types';
 import { detectYamlLsp } from '../yaml-sdk';
 import { getLemminxCommand } from '../xml-sdk';
+import { registerCleanup } from '$lib/services/hmr-cleanup';
 
 /** Sidecar configuration for each LSP type (bundled servers) */
 interface SidecarConfig {
@@ -325,6 +326,14 @@ let registryInstance: LspRegistry | null = null;
 export function getLspRegistry(): LspRegistry {
   if (!registryInstance) {
     registryInstance = new LspRegistry();
+    
+    // Register HMR cleanup to prevent orphaned event listeners
+    registerCleanup('lsp-registry', async () => {
+      if (registryInstance) {
+        await registryInstance.stopAll();
+        registryInstance = null;
+      }
+    });
   }
   return registryInstance;
 }
