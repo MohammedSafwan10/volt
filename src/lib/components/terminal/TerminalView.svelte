@@ -29,13 +29,18 @@
 	let webLinksAddon: WebLinksAddon | null = $state(null);
 
 	let resizeObserver: ResizeObserver | null = null;
-	let writeBuffer: string[] = [];
+	let writeQueue: string[] = [];
+	let queuedChars = 0;
 	let flushScheduled = false;
+	let isFlushing = false;
+	const MAX_QUEUE_CHARS = 250_000;
+	const MAX_CHUNK_SIZE = 8192;
 	let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastSentCols = 0;
 	let lastSentRows = 0;
 	let pendingCols = 0;
 	let pendingRows = 0;
+	let dataHandlerAttached = false;
 
 	function applyTheme(term: Terminal): void {
 		const theme = getTerminalTheme();
@@ -59,23 +64,55 @@
 	 * Batch writes to xterm for performance
 	 */
 	function scheduleFlush(): void {
-		if (flushScheduled || !terminal) return;
+		if (flushScheduled || !terminal || isFlushing) return;
 		flushScheduled = true;
 		requestAnimationFrame(() => {
-			if (terminal && writeBuffer.length > 0) {
-				terminal.write(writeBuffer.join(""));
-				writeBuffer = [];
-			}
 			flushScheduled = false;
+			void flushQueue();
 		});
 	}
 
-	/**
-	 * Write data to terminal with batching
-	 */
-	function writeToTerminal(data: string): void {
-		writeBuffer.push(data);
+	function enqueueWrite(data: string): void {
+		if (!data) return;
+		if (data.length <= MAX_CHUNK_SIZE) {
+			writeQueue.push(data);
+			queuedChars += data.length;
+		} else {
+			for (let i = 0; i < data.length; i += MAX_CHUNK_SIZE) {
+				const chunk = data.slice(i, i + MAX_CHUNK_SIZE);
+				writeQueue.push(chunk);
+				queuedChars += chunk.length;
+			}
+		}
+
+		while (queuedChars > MAX_QUEUE_CHARS && writeQueue.length > 0) {
+			const removed = writeQueue.shift();
+			queuedChars -= removed?.length ?? 0;
+		}
+
 		scheduleFlush();
+	}
+
+	async function flushQueue(): Promise<void> {
+		if (!terminal || isFlushing) return;
+		if (!active) return;
+		isFlushing = true;
+		try {
+			while (terminal && writeQueue.length > 0) {
+				const chunk = writeQueue.shift();
+				queuedChars -= chunk?.length ?? 0;
+				if (!chunk) continue;
+				await new Promise<void>((resolve) => {
+					terminal!.write(chunk, () => resolve());
+				});
+				// Yield to keep UI responsive on large bursts
+				if (writeQueue.length > 0) {
+					await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				}
+			}
+		} finally {
+			isFlushing = false;
+		}
 	}
 
 	/**
@@ -165,11 +202,8 @@
 		});
 		resizeObserver.observe(containerRef);
 
-		// Now set up data handler from backend AFTER terminal is ready
-		// This ensures buffered data is written to a fully initialized terminal
-		session.onData((data) => {
-			writeToTerminal(data);
-		});
+		// Attach data handler after terminal is ready
+		updateDataHandler();
 
 		// Wait for backend readiness (or first output) before nudging prompt/resize.
 		// This avoids racing prompt kicks against PTY/shell startup.
@@ -236,6 +270,9 @@
 		}
 		// Detach the UI consumer (session will buffer output while hidden/unmounted).
 		session.onData(null);
+		dataHandlerAttached = false;
+		writeQueue = [];
+		queuedChars = 0;
 		resizeObserver?.disconnect();
 		terminal?.dispose();
 	});
@@ -254,6 +291,14 @@
 		}
 	});
 
+	function updateDataHandler(): void {
+		if (!initialized || !terminal) return;
+		if (!dataHandlerAttached) {
+			session.onData((data) => enqueueWrite(data));
+			dataHandlerAttached = true;
+		}
+	}
+
 	// Keep terminal theme in sync with app theme.
 	$effect(() => {
 		themeStore.resolvedTheme;
@@ -265,6 +310,15 @@
 	$effect(() => {
 		if (active && fitAddon && initialized) {
 			void fitTerminal();
+		}
+	});
+
+	// Pause rendering when inactive to reduce lag; resume when active
+	$effect(() => {
+		if (!initialized || !terminal) return;
+		updateDataHandler();
+		if (active) {
+			scheduleFlush();
 		}
 	});
 </script>

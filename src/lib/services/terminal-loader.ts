@@ -106,6 +106,8 @@ export function createTerminal(options?: ConstructorParameters<typeof Terminal>[
 		cursorStyle: 'bar',
 		fontSize: 13,
 		fontFamily: 'Consolas, "Courier New", monospace',
+		scrollback: 10000,
+		convertEol: true,
 		theme: getTerminalTheme(),
 		allowProposedApi: true,
 		...options

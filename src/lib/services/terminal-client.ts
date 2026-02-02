@@ -315,7 +315,7 @@ export class TerminalSession {
 			for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
 		}
 
-		const displayData = cleanData || payload.data;
+		const displayData = cleanData;
 		const filteredDisplay = displayData
 			.replace(/__VOLT_EXIT_CODE_\d+__/g, '')
 			.replace(/__VOLT_DONE_[A-Za-z0-9]+__/g, '')
@@ -478,12 +478,15 @@ export class TerminalSession {
 		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(command, timeoutMs);
 		return new Promise((resolve) => {
 			const startOffset = this.cleanOutputHistoryChars;
-			const tid = setTimeout(() => {
-				this.commandCompletionCallbacks = this.commandCompletionCallbacks.filter(c => c.resolve !== resolve);
-				resolve({ exitCode: -1, output: this.getCleanOutputSince(startOffset), cwd: this.currentCwd ?? undefined, timedOut: true });
-			}, timeoutMs);
+			let tid: ReturnType<typeof setTimeout> | null = null;
+			if (timeoutMs > 0) {
+				tid = setTimeout(() => {
+					this.commandCompletionCallbacks = this.commandCompletionCallbacks.filter(c => c.resolve !== resolve);
+					resolve({ exitCode: -1, output: this.getCleanOutputSince(startOffset), cwd: this.currentCwd ?? undefined, timedOut: true });
+				}, timeoutMs);
+			}
 			this.commandCompletionCallbacks.push({
-				resolve: (res) => { clearTimeout(tid); resolve(res); },
+				resolve: (res) => { if (tid) clearTimeout(tid); resolve(res); },
 				startTime: Date.now(),
 				outputBuffer: [],
 				startOffset
@@ -499,7 +502,8 @@ export class TerminalSession {
 		await this.write(`${command}; ${capture}; echo "__VOLT_EXIT_CODE_$voltExit__"; echo "__VOLT_DONE_${sentinel}__"\r`);
 
 		try {
-			const raw = await this.waitForOutput(t => t.includes(`__VOLT_DONE_${sentinel}__`), timeoutMs, startOffset);
+			const effectiveTimeout = timeoutMs > 0 ? timeoutMs : Number.POSITIVE_INFINITY;
+			const raw = await this.waitForOutput(t => t.includes(`__VOLT_DONE_${sentinel}__`), effectiveTimeout, startOffset);
 			const exitMatch = raw.match(/__VOLT_EXIT_CODE_(\d+)__/);
 			const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
 			const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
