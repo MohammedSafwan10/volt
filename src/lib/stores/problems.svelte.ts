@@ -1,9 +1,16 @@
 /**
  * Problems store using Svelte 5 runes
- * Manages diagnostic problems from Monaco Editor (TypeScript, etc.)
+ * SaaS-Ready real-time diagnostics management
+ * 
+ * Features:
+ * ✅ Real-time updates from multiple LSP sources
+ * ✅ Severity filtering and search
+ * ✅ Live activity indicator
+ * ✅ Source-aware merging (no overwrites between sources)
  */
 
 export type ProblemSeverity = 'error' | 'warning' | 'info' | 'hint';
+export type SeverityFilter = ProblemSeverity | 'all';
 
 export interface Problem {
   /** Unique identifier */
@@ -28,6 +35,8 @@ export interface Problem {
   source: string;
   /** Error code if available */
   code?: string;
+  /** Timestamp when problem was added */
+  timestamp?: number;
 }
 
 export interface ProblemsByFile {
@@ -37,30 +46,97 @@ export interface ProblemsByFile {
 class ProblemsStore {
   /** All problems grouped by file */
   problemsByFile = $state<ProblemsByFile>({});
+  
+  /** Current severity filter */
+  severityFilter = $state<SeverityFilter>('all');
+  
+  /** Search query for filtering problems */
+  searchQuery = $state('');
+  
+  /** Is currently receiving updates (for activity indicator) */
+  isUpdating = $state(false);
+  
+  /** Last update timestamp */
+  lastUpdate = $state(0);
+  
+  /** Update timeout for activity indicator */
+  private updateTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  /** Get all problems as a flat array */
+  /** Get all problems as a flat array (with filters applied) */
   get allProblems(): Problem[] {
+    let problems = Object.values(this.problemsByFile).flat();
+    
+    // Apply severity filter
+    if (this.severityFilter !== 'all') {
+      problems = problems.filter(p => p.severity === this.severityFilter);
+    }
+    
+    // Apply search filter
+    if (this.searchQuery) {
+      const query = this.searchQuery.toLowerCase();
+      problems = problems.filter(p => 
+        p.message.toLowerCase().includes(query) ||
+        p.file.toLowerCase().includes(query) ||
+        p.source.toLowerCase().includes(query) ||
+        (p.code && p.code.toLowerCase().includes(query))
+      );
+    }
+    
+    return problems;
+  }
+  
+  /** Get all problems WITHOUT filters (for counts) */
+  get allProblemsUnfiltered(): Problem[] {
     return Object.values(this.problemsByFile).flat();
   }
 
-  /** Get error count */
+  /** Get error count (unfiltered for badge) */
   get errorCount(): number {
-    return this.allProblems.filter(p => p.severity === 'error').length;
+    return this.allProblemsUnfiltered.filter(p => p.severity === 'error').length;
   }
 
-  /** Get warning count */
+  /** Get warning count (unfiltered for badge) */
   get warningCount(): number {
-    return this.allProblems.filter(p => p.severity === 'warning').length;
+    return this.allProblemsUnfiltered.filter(p => p.severity === 'warning').length;
   }
 
-  /** Get info count */
+  /** Get info count (unfiltered for badge) */
   get infoCount(): number {
-    return this.allProblems.filter(p => p.severity === 'info' || p.severity === 'hint').length;
+    return this.allProblemsUnfiltered.filter(p => p.severity === 'info' || p.severity === 'hint').length;
   }
 
-  /** Get total problem count */
+  /** Get total problem count (filtered) */
   get totalCount(): number {
     return this.allProblems.length;
+  }
+  
+  /** Get total unfiltered count */
+  get totalUnfilteredCount(): number {
+    return this.allProblemsUnfiltered.length;
+  }
+  
+  /** Set severity filter */
+  setSeverityFilter(filter: SeverityFilter): void {
+    this.severityFilter = filter;
+  }
+  
+  /** Set search query */
+  setSearchQuery(query: string): void {
+    this.searchQuery = query;
+  }
+  
+  /** Mark as updating (shows activity indicator) */
+  private markUpdating(): void {
+    this.isUpdating = true;
+    this.lastUpdate = Date.now();
+    
+    // Auto-clear after 500ms of no updates
+    if (this.updateTimeout) {
+      clearTimeout(this.updateTimeout);
+    }
+    this.updateTimeout = setTimeout(() => {
+      this.isUpdating = false;
+    }, 500);
   }
 
   /**
@@ -69,12 +145,19 @@ class ProblemsStore {
    * Otherwise replaces all existing problems for that file
    */
   setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
-    console.log(`[ProblemsStore] Setting ${problems.length} problems for ${filePath} from source: ${source || 'unknown'}`);
+    this.markUpdating();
+    
+    // Add timestamp to new problems
+    const timestampedProblems = problems.map(p => ({
+      ...p,
+      timestamp: Date.now()
+    }));
+    
     if (source) {
       // Merge with existing problems from other sources
       const existingProblems = this.problemsByFile[filePath] || [];
       const otherSourceProblems = existingProblems.filter(p => p.source !== source);
-      const mergedProblems = [...otherSourceProblems, ...problems];
+      const mergedProblems = [...otherSourceProblems, ...timestampedProblems];
 
       if (mergedProblems.length === 0) {
         const { [filePath]: _, ...rest } = this.problemsByFile;
@@ -87,13 +170,13 @@ class ProblemsStore {
       }
     } else {
       // Replace all problems for the file
-      if (problems.length === 0) {
+      if (timestampedProblems.length === 0) {
         const { [filePath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;
       } else {
         this.problemsByFile = {
           ...this.problemsByFile,
-          [filePath]: problems
+          [filePath]: timestampedProblems
         };
       }
     }

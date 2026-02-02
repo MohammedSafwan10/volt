@@ -164,15 +164,98 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       warnings: problems.filter((p) => p.severity === "warning").length,
     };
   }
+  
+  // Handle filter change
+  function handleFilterChange(filter: 'all' | 'error' | 'warning' | 'info'): void {
+    problemsStore.setSeverityFilter(filter);
+  }
+  
+  // Handle search
+  function handleSearch(event: Event): void {
+    const target = event.target as HTMLInputElement;
+    problemsStore.setSearchQuery(target.value);
+  }
+  
+  // Check if a filter is active
+  function isFilterActive(filter: string): boolean {
+    return problemsStore.severityFilter === filter;
+  }
 </script>
 
 <div class="problems-view">
-  {#if problemsStore.totalCount === 0}
+  <!-- Toolbar with filters and search -->
+  <div class="problems-toolbar">
+    <div class="filter-buttons">
+      <button 
+        class="filter-btn" 
+        class:active={isFilterActive('all')}
+        onclick={() => handleFilterChange('all')}
+        title="Show all"
+      >
+        All ({problemsStore.totalUnfilteredCount})
+      </button>
+      <button 
+        class="filter-btn error" 
+        class:active={isFilterActive('error')}
+        onclick={() => handleFilterChange('error')}
+        title="Show errors only"
+      >
+        <UIIcon name="error" size={12} /> {problemsStore.errorCount}
+      </button>
+      <button 
+        class="filter-btn warning" 
+        class:active={isFilterActive('warning')}
+        onclick={() => handleFilterChange('warning')}
+        title="Show warnings only"
+      >
+        <UIIcon name="warning" size={12} /> {problemsStore.warningCount}
+      </button>
+      <button 
+        class="filter-btn info" 
+        class:active={isFilterActive('info')}
+        onclick={() => handleFilterChange('info')}
+        title="Show info only"
+      >
+        <UIIcon name="info" size={12} /> {problemsStore.infoCount}
+      </button>
+    </div>
+    
+    <div class="search-box">
+      <UIIcon name="search" size={14} />
+      <input 
+        type="text" 
+        placeholder="Filter problems..." 
+        value={problemsStore.searchQuery}
+        oninput={handleSearch}
+      />
+      {#if problemsStore.searchQuery}
+        <button class="clear-search" onclick={() => problemsStore.setSearchQuery('')}>
+          <UIIcon name="close" size={12} />
+        </button>
+      {/if}
+    </div>
+    
+    {#if problemsStore.isUpdating}
+      <div class="activity-indicator" title="Analyzing...">
+        <div class="spinner"></div>
+      </div>
+    {/if}
+  </div>
+
+  {#if problemsStore.totalCount === 0 && problemsStore.totalUnfilteredCount === 0}
     <div class="empty-state">
       <div class="empty-icon"><UIIcon name="check" size={22} /></div>
       <p class="empty-title">No Problems</p>
       <p class="empty-description">
         No errors or warnings detected in the workspace
+      </p>
+    </div>
+  {:else if problemsStore.totalCount === 0}
+    <div class="empty-state">
+      <div class="empty-icon"><UIIcon name="filter" size={22} /></div>
+      <p class="empty-title">No Matching Problems</p>
+      <p class="empty-description">
+        {problemsStore.totalUnfilteredCount} problems hidden by filters
       </p>
     </div>
   {:else}
@@ -289,6 +372,131 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     height: 100%;
     background: var(--color-bg);
     overflow: hidden;
+  }
+  
+  /* Toolbar with filters and search */
+  .problems-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-header);
+  }
+  
+  .filter-buttons {
+    display: flex;
+    gap: 4px;
+  }
+  
+  .filter-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .filter-btn:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+  
+  .filter-btn.active {
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  
+  .filter-btn.error.active {
+    background: rgba(255, 85, 85, 0.15);
+    color: var(--color-error);
+    border-color: var(--color-error);
+  }
+  
+  .filter-btn.warning.active {
+    background: rgba(255, 180, 80, 0.15);
+    color: var(--color-warning);
+    border-color: var(--color-warning);
+  }
+  
+  .filter-btn.info.active {
+    background: rgba(100, 180, 255, 0.15);
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  
+  .search-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    max-width: 300px;
+    padding: 4px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-bg);
+    color: var(--color-text-secondary);
+  }
+  
+  .search-box:focus-within {
+    border-color: var(--color-accent);
+  }
+  
+  .search-box input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--color-text);
+    font-size: 12px;
+    outline: none;
+  }
+  
+  .search-box input::placeholder {
+    color: var(--color-text-secondary);
+  }
+  
+  .clear-search {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+  }
+  
+  .clear-search:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+  
+  .activity-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+  }
+  
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   .empty-state {

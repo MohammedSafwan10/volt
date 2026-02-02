@@ -21,6 +21,11 @@ async function getSystemInfo(): Promise<SystemCapabilities> {
  */
 export class ProjectDiagnostics {
     private isWindows = false;
+    private isRunning = false;
+    private lastRun = 0;
+    private pendingRoot: string | null = null;
+    private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly MIN_INTERVAL_MS = 15000;
 
     constructor() {
         this.checkPlatform();
@@ -39,19 +44,59 @@ export class ProjectDiagnostics {
      * Run diagnostics for a project
      */
     async runDiagnostics(rootPath: string): Promise<void> {
+        const now = Date.now();
+
+        // If already running, queue the latest request and exit
+        if (this.isRunning) {
+            this.pendingRoot = rootPath;
+            return;
+        }
+
+        // Throttle: if called too soon, schedule a deferred run
+        const elapsed = now - this.lastRun;
+        if (elapsed < this.MIN_INTERVAL_MS) {
+            this.pendingRoot = rootPath;
+            if (this.scheduledTimer) return;
+            const delay = this.MIN_INTERVAL_MS - elapsed;
+            this.scheduledTimer = setTimeout(() => {
+                this.scheduledTimer = null;
+                const pending = this.pendingRoot;
+                this.pendingRoot = null;
+                if (pending) {
+                    void this.runDiagnostics(pending);
+                }
+            }, delay);
+            return;
+        }
+
         // Ensure platform detection is finished
         await this.checkPlatform();
 
         console.log('[ProjectDiagnostics] Starting project-wide analysis...');
 
-        // Run detections in parallel
-        await Promise.allSettled([
-            this.runTscDiagnostics(rootPath),
-            this.runEslintDiagnostics(rootPath),
-            this.runLspDiagnostics(rootPath)
-        ]);
+        this.isRunning = true;
 
-        console.log('[ProjectDiagnostics] Analysis complete.');
+        // Run detections in parallel
+        // NOTE: We skip runTscDiagnostics here because tsc-watcher.ts handles
+        // real-time TypeScript errors via `tsc --watch`. Running both would cause duplicates.
+        try {
+            await Promise.allSettled([
+                // this.runTscDiagnostics(rootPath), // Handled by tsc-watcher.ts
+                this.runEslintDiagnostics(rootPath),
+                this.runLspDiagnostics(rootPath)
+            ]);
+        } finally {
+            this.lastRun = Date.now();
+            this.isRunning = false;
+            console.log('[ProjectDiagnostics] Analysis complete.');
+
+            // If another request came in while running, schedule next run
+            if (this.pendingRoot) {
+                const pending = this.pendingRoot;
+                this.pendingRoot = null;
+                void this.runDiagnostics(pending);
+            }
+        }
     }
 
     /**
@@ -60,7 +105,7 @@ export class ProjectDiagnostics {
      */
     private async runLspDiagnostics(rootPath: string): Promise<void> {
         try {
-            const { indexProject, isIndexReady, isIndexing, getIndexedRoot, getAllFiles } = await import('$lib/services/file-index');
+            const { indexProject, isIndexReady, isIndexing, getIndexedRoot, getAllFiles, clearIndex } = await import('$lib/services/file-index');
 
             // Ensure index is ready for THIS root path
             const currentIndexedRoot = getIndexedRoot();
@@ -69,15 +114,25 @@ export class ProjectDiagnostics {
                 await indexProject(rootPath);
             }
 
-            const allFiles = getAllFiles();
+            let allFiles = getAllFiles();
             console.log(`[ProjectDiagnostics] Index ready. Found ${allFiles.length} files in ${rootPath}`);
+
+            // If index returned 0 files but project exists, force re-index without cache
+            if (allFiles.length === 0 && rootPath) {
+                console.log('[ProjectDiagnostics] Index returned 0 files - forcing re-index without cache...');
+                await clearIndex(true); // Clear backend cache
+                await indexProject(rootPath, false); // Re-index without using cache
+                allFiles = getAllFiles();
+                console.log(`[ProjectDiagnostics] Re-index complete. Found ${allFiles.length} files`);
+            }
 
             // Use dynamic imports to avoid circular dependencies
             const { startProjectWideAnalysis: startCssAnalysis } = await import('./lsp/css-sidecar');
             const { startProjectWideAnalysis: startHtmlAnalysis } = await import('./lsp/html-sidecar');
             const { startProjectWideAnalysis: startTsAnalysis } = await import('./lsp/typescript-sidecar');
             const { startProjectWideAnalysis: startSvelteAnalysis } = await import('./lsp/svelte-sidecar');
-            const { startDartLsp } = await import('./lsp/dart-sidecar');
+            const { startProjectWideAnalysis: startEslintAnalysis } = await import('./lsp/eslint-sidecar');
+            const { startDartLsp, startProjectWideAnalysis: startDartAnalysis } = await import('./lsp/dart-sidecar');
 
             console.log('[ProjectDiagnostics] Starting background LSP analysis discovery...');
 
@@ -85,13 +140,16 @@ export class ProjectDiagnostics {
                 startCssAnalysis(),
                 startHtmlAnalysis(),
                 startTsAnalysis(),
-                startSvelteAnalysis()
+                startSvelteAnalysis(),
+                startEslintAnalysis()
             ];
 
-            // Specific check for Dart projects to start LSP (replaces old CLI runFlutterDiagnostics)
+            // Specific check for Dart projects to start LSP and run analysis
             if (await this.fileExists(rootPath, 'pubspec.yaml')) {
                 console.log('[ProjectDiagnostics] Detected Dart/Flutter project. Starting Dart LSP...');
-                analysisPromises.push(startDartLsp(rootPath));
+                analysisPromises.push(
+                    startDartLsp(rootPath).then(() => startDartAnalysis())
+                );
             }
 
             // Start discovery loops
@@ -129,7 +187,14 @@ export class ProjectDiagnostics {
                 cwd: rootPath
             });
 
-            this.parseTscOutput(result.stdout, rootPath);
+            // Parse both stdout and stderr (tsc can output to either)
+            const fullOutput = result.stdout + '\n' + result.stderr;
+            this.parseTscOutput(fullOutput, rootPath);
+            
+            // Log for debugging
+            if (result.exit_code !== 0) {
+                console.log('[ProjectDiagnostics] tsc exited with code:', result.exit_code);
+            }
 
         } catch (e) {
             console.warn('[ProjectDiagnostics] Failed to run tsc:', e);
@@ -148,9 +213,11 @@ export class ProjectDiagnostics {
         // Example: src/index.ts(1,5): error TS2322: Type '...'
         const regex = /^(.+?)\((\d+),(\d+)\): (error|warning|info) (TS\d+): (.+)$/;
 
+        let matchCount = 0;
         for (const line of lines) {
             const match = line.trim().match(regex);
             if (match) {
+                matchCount++;
                 const [_, relativePath, lineStr, colStr, severityStr, code, message] = match;
 
                 const path = this.resolvePath(rootPath, relativePath);
@@ -177,6 +244,10 @@ export class ProjectDiagnostics {
                 problemsByFile[path].push(problem);
             }
         }
+
+        // Log results
+        const totalProblems = Object.values(problemsByFile).reduce((sum, p) => sum + p.length, 0);
+        console.log(`[ProjectDiagnostics] Parsed ${matchCount} tsc errors from ${lines.length} lines`);
 
         // Update store
         for (const [path, problems] of Object.entries(problemsByFile)) {
@@ -278,13 +349,23 @@ export class ProjectDiagnostics {
     }
 
     private resolvePath(root: string, path: string): string {
+        let result: string;
+        
         // If already absolute, just normalize separators
         if (path.startsWith('/') || /^[a-zA-Z]:/.test(path)) {
-            return path.replace(/\\/g, '/');
+            result = path.replace(/\\/g, '/');
+        } else {
+            const sep = this.isWindows ? '\\' : '/';
+            const abs = `${root}${sep}${path.replace(/\//g, sep)}`;
+            result = abs.replace(/\\/g, '/');
         }
-        const sep = this.isWindows ? '\\' : '/';
-        const abs = `${root}${sep}${path.replace(/\//g, sep)}`;
-        return abs.replace(/\\/g, '/');
+        
+        // Lowercase drive letter for Windows path consistency with Monaco
+        if (result.match(/^[A-Z]:/)) {
+            result = result[0].toLowerCase() + result.slice(1);
+        }
+        
+        return result;
     }
 }
 
