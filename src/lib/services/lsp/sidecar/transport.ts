@@ -342,6 +342,7 @@ export class LspTransport {
     } catch (error) {
       const failures = this.healthStatus.consecutiveFailures + 1;
       const isUnhealthy = failures >= this.healthConfig.failureThreshold;
+      const wasHealthy = this.healthStatus.healthy;
 
       this.updateHealthStatus({
         healthy: !isUnhealthy,
@@ -352,77 +353,59 @@ export class LspTransport {
           : `Warning: ${failures}/${this.healthConfig.failureThreshold} failures`,
       });
 
-      console.warn(`[LSP Health] ${this.serverId} health check failed (${failures}/${this.healthConfig.failureThreshold}):`, error);
+      // Only log on state transition (healthy → unhealthy) to reduce noise
+      if (wasHealthy && isUnhealthy) {
+        console.warn(`[LSP Health] ${this.serverId} became unhealthy after ${failures} failures`);
+      }
 
-      // Auto-restart if configured and unhealthy
-      if (isUnhealthy && this.healthConfig.autoRestart) {
-        console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
-        this.notifyError(`Server unhealthy, attempting restart...`);
-        // Note: Actual restart logic would need to be implemented by the registry
-        // We just notify handlers here, let them decide what to do
+      // Stop monitoring once threshold is reached (no infinite loop)
+      if (isUnhealthy) {
+        console.log(`[LSP Health] Stopping monitoring for ${this.serverId} (unhealthy)`);
+        this.stopHealthMonitoring();
+
+        // Auto-restart if configured
+        if (this.healthConfig.autoRestart) {
+          console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
+          this.notifyError(`Server unhealthy, attempting restart...`);
+        }
       }
     }
   }
 
   /**
    * Send a health ping to the server
-   * Uses shutdown request with immediate cancel - this is a lightweight way to check if server responds
+   * Uses $/cancelRequest with a fake ID - this is fast and doesn't trigger warnings
    */
   private async sendHealthPing(): Promise<void> {
-    // Create a simple request that should return quickly
-    // We'll use a custom timeout but ensure it's at least 5000ms to avoid false positives on busy servers
-    const timeoutMs = Math.max(this.healthConfig.timeoutMs, 5000);
+    const timeoutMs = this.healthConfig.timeoutMs;
 
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         reject(new Error('Health check timeout'));
       }, timeoutMs);
 
-      // Send a $/cancelRequest which most servers handle quickly
-      // Even if they return an error, it proves the server is responsive
-      const id = this.nextRequestId++;
-      // Set up one-time response handler
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        this.pendingRequests.delete(id);
-      };
-
-      this.pendingRequests.set(id, {
-        resolve: () => {
-          cleanup();
-          resolve();
-        },
-        reject: (error) => {
-          cleanup();
-          // For health checks, even an error response means server is alive
-          // Only timeout means server is unresponsive
-          resolve();
-        },
-        method: 'textDocument/hover',
-        timestamp: Date.now(),
-      });
-
-      // Send the request
-      // We use textDocument/hover on a non-existent file to force a quick "null" or "error" response
-      // This is more reliable than $/cancelRequest which some servers ignore
-      const request: JsonRpcRequest = {
+      // Use $/cancelRequest with a non-existent ID
+      // This is a notification (no response expected), so we just check if send succeeds
+      // The server will ignore it (no such request to cancel) but we confirm communication works
+      const notification: JsonRpcNotification = {
         jsonrpc: '2.0',
-        id,
-        method: 'textDocument/hover',
-        params: {
-          textDocument: { uri: 'file:///health-check-ping' },
-          position: { line: 0, character: 0 }
-        },
+        method: '$/cancelRequest',
+        params: { id: -9999 }, // Non-existent ID
       };
 
-      const message = JSON.stringify(request);
+      const message = JSON.stringify(notification);
       invoke('lsp_send_message', {
         serverId: this.serverId,
         message,
-      }).catch((e) => {
-        cleanup();
-        reject(e);
-      });
+      })
+        .then(() => {
+          clearTimeout(timeoutId);
+          resolve();
+        })
+        .catch((e) => {
+          clearTimeout(timeoutId);
+          reject(e);
+        });
     });
   }
 

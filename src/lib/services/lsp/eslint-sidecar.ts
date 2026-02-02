@@ -731,3 +731,42 @@ export async function pushEslintConfig(): Promise<void> {
     console.error('[ESLint LSP] Failed to push config:', error);
   }
 }
+
+/**
+ * Perform background analysis of all JS/TS files in the project
+ * Opens files in the LSP to trigger diagnostics for the entire project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+
+  // Use dynamic import for fileIndex to avoid circular deps
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const eslintFiles = allFiles.filter(f => isEslintFile(f.path));
+
+  if (eslintFiles.length === 0) {
+    console.log('[ESLint LSP] No JS/TS files found for background analysis.');
+    return;
+  }
+
+  console.log(`[ESLint LSP] Starting project-wide analysis of ${eslintFiles.length} files...`);
+
+  // Process files with delay to avoid overwhelming the server
+  for (const file of eslintFiles) {
+    const normalizedPath = normalizeFilePath(file.path);
+
+    // Skip if already open
+    if (openDocuments.has(normalizedPath)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      await notifyEslintDocumentOpened(normalizedPath, content);
+      // Small delay to let server process
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  console.log('[ESLint LSP] Project-wide analysis complete.');
+}

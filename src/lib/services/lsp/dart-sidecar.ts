@@ -755,3 +755,46 @@ export async function notifyFileChanges(events: Array<{ kind: 'create' | 'change
 export function getDartTransport(): LspTransport | null {
   return dartServerTransport;
 }
+
+/**
+ * Perform background analysis of all Dart files in the project
+ * Opens files in the LSP to trigger diagnostics for the entire project
+ */
+export async function startProjectWideAnalysis(): Promise<void> {
+  if (!projectStore.rootPath) return;
+  if (!dartServerTransport || !dartServerInitialized) {
+    console.log('[Dart LSP] Server not initialized, skipping project-wide analysis');
+    return;
+  }
+
+  // Use dynamic import for fileIndex to avoid circular deps
+  const { getAllFiles } = await import('$lib/services/file-index');
+  const { readFileQuiet } = await import('$lib/services/file-system');
+
+  const allFiles = getAllFiles();
+  const dartFiles = allFiles.filter(f => isDartLspFile(f.path));
+
+  if (dartFiles.length === 0) {
+    console.log('[Dart LSP] No Dart files found for background analysis.');
+    return;
+  }
+
+  console.log(`[Dart LSP] Starting project-wide analysis of ${dartFiles.length} files...`);
+
+  // Process files with delay to avoid overwhelming the server
+  for (const file of dartFiles) {
+    const normalizedPath = file.path.replace(/\\/g, '/');
+
+    // Skip if already open
+    if (openDocuments.has(normalizedPath)) continue;
+
+    const content = await readFileQuiet(file.path);
+    if (content) {
+      await notifyDocumentOpened(normalizedPath, content);
+      // Small delay to let server process
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  console.log('[Dart LSP] Project-wide analysis complete.');
+}

@@ -141,8 +141,8 @@ export interface HealthConfig {
 /** Default health configuration */
 export const DEFAULT_HEALTH_CONFIG: Required<HealthConfig> = {
   enabled: true,
-  intervalMs: 30000, // 30 seconds
-  timeoutMs: 15000,  // 15 seconds (increased from 5s to avoid false positives during load)
+  intervalMs: 60000, // 60 seconds (reduced frequency for less overhead)
+  timeoutMs: 10000,  // 10 seconds
   failureThreshold: 3,
   autoRestart: false,
 };
