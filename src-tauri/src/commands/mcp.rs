@@ -261,25 +261,38 @@ pub async fn start_mcp_server(
         child, stdin_tx: tx.clone(), tools: vec![], pending: pending.clone(),
     });
 
-    // Initialize
+    // Initialize - use longer timeout for remote/slow servers
     if let Err(e) = send_req(&tx, &pending, "initialize", Some(json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {"tools": {}},
         "clientInfo": {"name": "volt", "version": "1.0.0"}
-    })), 60).await {
-        set_error(&app, &mcp, &server_id, &e).await;
+    })), 120).await {
+        let error_msg = if e == "Timeout" {
+            format!("Server '{}' timed out during initialization (120s). Check network or server status.", server_id)
+        } else {
+            e
+        };
+        set_error(&app, &mcp, &server_id, &error_msg).await;
         let _ = stop_mcp_server(app.clone(), server_id.clone()).await;
-        return Err(e);
+        return Err(error_msg);
     }
 
     let _ = send_notif(&tx, "notifications/initialized", None).await;
 
-    // Get tools
-    let tools: Vec<McpTool> = match send_req(&tx, &pending, "tools/list", None, 30).await {
+    // Get tools - use longer timeout for remote servers
+    let tools: Vec<McpTool> = match send_req(&tx, &pending, "tools/list", None, 60).await {
         Ok(r) => r.get("tools").and_then(|t| t.as_array())
             .map(|arr| arr.iter().filter_map(|t| serde_json::from_value::<McpTool>(t.clone()).ok()).collect())
             .unwrap_or_default(),
-        Err(e) => { set_error(&app, &mcp, &server_id, &e).await; return Err(e); }
+        Err(e) => {
+            let error_msg = if e == "Timeout" {
+                format!("Server '{}' timed out listing tools (60s). Check network or server status.", server_id)
+            } else {
+                e
+            };
+            set_error(&app, &mcp, &server_id, &error_msg).await;
+            return Err(error_msg);
+        }
     };
 
     // Final state

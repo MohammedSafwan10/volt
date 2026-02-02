@@ -1,5 +1,12 @@
 use serde::Serialize;
 use sysinfo::System;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+use tauri::{AppHandle, Emitter};
+
+// Track running watch processes
+static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// System information returned to the frontend
 #[derive(Debug, Serialize)]
@@ -92,4 +99,135 @@ pub async fn run_command(
 #[tauri::command]
 pub fn get_env_var(name: String) -> Option<String> {
     std::env::var(name).ok()
+}
+
+/// Start a watch command that streams output via events
+/// Used for `tsc --watch` and similar long-running processes
+#[tauri::command]
+pub async fn start_watch_command(
+    app: AppHandle,
+    watch_id: String,
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::io::{BufRead, BufReader};
+    use std::thread;
+
+    // Stop any existing watch with this ID
+    {
+        let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
+        if let Some(mut child) = processes.remove(&watch_id) {
+            let _ = child.kill();
+        }
+    }
+
+    // Build command
+    let mut cmd = if cfg!(windows) {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(&command);
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        c
+    } else {
+        Command::new(&command)
+    };
+
+    if let Some(path) = cwd {
+        cmd.current_dir(path);
+    }
+
+    cmd.args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Failed to spawn watch command: {}", e))?;
+
+    let stdout = child.stdout.take()
+        .ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take()
+        .ok_or("Failed to capture stderr")?;
+
+    // Store child process
+    {
+        let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
+        processes.insert(watch_id.clone(), child);
+    }
+
+    let watch_id_clone = watch_id.clone();
+    let app_clone = app.clone();
+
+    // Stream stdout
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let _ = app_clone.emit(&format!("watch://{}//stdout", watch_id_clone), line);
+            }
+        }
+    });
+
+    let watch_id_clone2 = watch_id.clone();
+    let app_clone2 = app.clone();
+
+    // Stream stderr
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let _ = app_clone2.emit(&format!("watch://{}//stderr", watch_id_clone2), line);
+            }
+        }
+    });
+
+    // Monitor for process exit
+    let watch_id_exit = watch_id.clone();
+    thread::spawn(move || {
+        loop {
+            thread::sleep(std::time::Duration::from_millis(500));
+            let mut processes = match WATCH_PROCESSES.lock() {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            if let Some(child) = processes.get_mut(&watch_id_exit) {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let _ = app.emit(&format!("watch://{}//exit", watch_id_exit), status.code().unwrap_or(-1));
+                        processes.remove(&watch_id_exit);
+                        return;
+                    }
+                    Ok(None) => {} // Still running
+                    Err(_) => {
+                        processes.remove(&watch_id_exit);
+                        return;
+                    }
+                }
+            } else {
+                return; // Process removed (stopped externally)
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Stop a running watch command
+#[tauri::command]
+pub fn stop_watch_command(watch_id: String) -> Result<(), String> {
+    let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = processes.remove(&watch_id) {
+        let _ = child.kill();
+        Ok(())
+    } else {
+        Err(format!("Watch '{}' not found", watch_id))
+    }
+}
+
+/// List active watch commands
+#[tauri::command]
+pub fn list_watch_commands() -> Vec<String> {
+    WATCH_PROCESSES.lock()
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default()
 }

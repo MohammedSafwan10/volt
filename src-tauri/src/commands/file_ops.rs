@@ -371,6 +371,7 @@ pub async fn delete_path(path: String) -> Result<(), FileError> {
         use std::time::Duration;
 
         let mut last_error = None;
+        let mut last_error_kind = None;
         for attempt in 0..5 {
             if attempt > 0 {
                 // Exponential backoff: 50ms, 100ms, 200ms, 400ms
@@ -386,6 +387,7 @@ pub async fn delete_path(path: String) -> Result<(), FileError> {
             match result {
                 Ok(_) => return Ok(()),
                 Err(e) => {
+                    last_error_kind = Some(e.kind());
                     // If it's permission denied, it might be a readonly file or a locked file
                     if e.kind() == std::io::ErrorKind::PermissionDenied {
                         // Try to clear readonly attributes recursively if it's a directory
@@ -403,6 +405,13 @@ pub async fn delete_path(path: String) -> Result<(), FileError> {
                     }
                     last_error = Some(e);
                 }
+            }
+        }
+
+        // Final Windows fallback: try native shell delete for stubborn paths (node_modules).
+        if let Some(std::io::ErrorKind::PermissionDenied) = last_error_kind {
+            if try_native_delete_windows(&path_buf) {
+                return Ok(());
             }
         }
 
@@ -436,6 +445,58 @@ fn clear_readonly_recursively(path: &std::path::Path) -> std::io::Result<()> {
         fs::set_permissions(path, permissions)?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn try_native_delete_windows(path: &std::path::Path) -> bool {
+    use std::process::Command;
+
+    let path_str = path.to_string_lossy().to_string();
+    if path_str.is_empty() {
+        return false;
+    }
+
+    // Prefer PowerShell with -LiteralPath to handle special characters safely.
+    let escaped = path_str.replace("'", "''");
+    let ps_cmd = if path.is_dir() {
+        format!(
+            "Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue",
+            escaped
+        )
+    } else {
+        format!(
+            "Remove-Item -LiteralPath '{}' -Force -ErrorAction SilentlyContinue",
+            escaped
+        )
+    };
+
+    let ps_status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &ps_cmd,
+        ])
+        .status();
+
+    if ps_status.map(|s| s.success()).unwrap_or(false) && !path.exists() {
+        return true;
+    }
+
+    // Fallback to cmd.exe for compatibility
+    let cmd_status = if path.is_dir() {
+        Command::new("cmd")
+            .args(["/C", "rmdir", "/S", "/Q", &path_str])
+            .status()
+    } else {
+        Command::new("cmd")
+            .args(["/C", "del", "/F", "/Q", &path_str])
+            .status()
+    };
+
+    cmd_status.map(|s| s.success()).unwrap_or(false) && !path.exists()
 }
 
 

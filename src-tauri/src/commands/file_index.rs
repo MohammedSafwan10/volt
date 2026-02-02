@@ -225,7 +225,8 @@ fn load_disk_cache_stream(
         Err(_) => return Ok(None),
     };
 
-    if meta.version != DISK_CACHE_VERSION || meta.root_path != root_path {
+    // Skip if version mismatch, path mismatch, or empty cache (likely corrupted)
+    if meta.version != DISK_CACHE_VERSION || meta.root_path != root_path || meta.count == 0 {
         return Ok(None);
     }
 
@@ -385,7 +386,8 @@ pub async fn index_workspace_stream(
         let cache_guard = state.cache.lock().unwrap();
         if let Some(cached) = cache_guard.get(&root_path) {
             let now = current_timestamp();
-            if now - cached.timestamp < CACHE_VALIDITY_SECS && cached.root_path == root_path {
+            // Skip empty caches (likely corrupted or from interrupted indexing)
+            if now - cached.timestamp < CACHE_VALIDITY_SECS && cached.root_path == root_path && !cached.files.is_empty() {
                 // Send cached results immediately
                 let files = cached.files.clone();
                 drop(cache_guard);

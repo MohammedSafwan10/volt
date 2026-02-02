@@ -60,7 +60,7 @@ use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
 };
-use commands::system::{get_env_var, get_system_info, run_command};
+use commands::system::{get_env_var, get_system_info, run_command, start_watch_command, stop_watch_command, list_watch_commands};
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_kill_all, terminal_list, terminal_resize,
     terminal_write,
@@ -214,6 +214,9 @@ pub fn run() {
             get_system_info,
             run_command,
             get_env_var,
+            start_watch_command,
+            stop_watch_command,
+            list_watch_commands,
             // Git
             get_git_branch,
             is_git_repo,
