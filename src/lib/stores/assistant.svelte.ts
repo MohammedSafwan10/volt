@@ -13,6 +13,7 @@ import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/d
 import { getModelConfig } from '$lib/services/ai/models';
 import { countTokens, countConversationTokens, type ContentType } from '$lib/services/token-counter';
 import { invoke } from '@tauri-apps/api/core';
+import { fileService } from '$lib/services/file-service';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool';
@@ -85,6 +86,10 @@ export interface AssistantMessage {
 export interface Conversation {
   id: string;
   createdAt: number;
+  title?: string;
+  updatedAt?: number;
+  isPinned?: boolean;
+  mode?: string;
   messages: AssistantMessage[];
 }
 
@@ -385,12 +390,19 @@ class AssistantStore {
     this.currentMode = 'agent';
 
     // Initialize fresh conversation
+    const newId = crypto.randomUUID();
     this.currentConversation = {
-      id: crypto.randomUUID(),
+      id: newId,
       createdAt: Date.now(),
       messages: []
     };
     this.saveCurrentConversationId();
+    
+    // Immediately notify chat history store of the new active ID
+    // The conversation will be persisted when the first message is sent
+    import('./chat-history.svelte').then(({ chatHistoryStore }) => {
+      chatHistoryStore.activeConversationId = newId;
+    });
   }
 
   /**
@@ -445,6 +457,14 @@ class AssistantStore {
         }
       }
 
+      // Ensure text content is present in contentParts when metadata exists
+      if (base.contentParts && base.contentParts.length > 0) {
+        base.contentParts = this.normalizeContentParts(
+          base.contentParts,
+          base.content,
+        ) as ContentPart[];
+      }
+
       // SELF-HEALING: Reconstruct contentParts if missing (fixes disappearing tools/thinking in history)
       if (!base.contentParts || base.contentParts.length === 0) {
         const parts: any[] = []; // Use any to avoid strict typing issues during manual construction
@@ -473,7 +493,10 @@ class AssistantStore {
         }
 
         if (parts.length > 0) {
-          base.contentParts = parts as ContentPart[];
+          base.contentParts = this.normalizeContentParts(
+            parts as ContentPart[],
+            base.content,
+          ) as ContentPart[];
         }
       }
 
@@ -701,7 +724,8 @@ class AssistantStore {
       if (msg.id !== id) return msg;
       // Set endTime when streaming ends
       const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
-      return { ...msg, content, isStreaming, endTime };
+      const contentParts = this.normalizeContentParts(msg.contentParts, content);
+      return { ...msg, content, isStreaming, endTime, contentParts };
     });
 
     // Also update in currentConversation
@@ -711,7 +735,8 @@ class AssistantStore {
         messages: this.currentConversation.messages.map(msg => {
           if (msg.id !== id) return msg;
           const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
-          return { ...msg, content, isStreaming, endTime };
+          const contentParts = this.normalizeContentParts(msg.contentParts, content);
+          return { ...msg, content, isStreaming, endTime, contentParts };
         })
       };
     }
@@ -776,9 +801,19 @@ class AssistantStore {
   addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
     this.messages = this.messages.map(msg => {
       if (msg.id !== messageId) return msg;
-      const inlineToolCalls = [...(msg.inlineToolCalls || []), toolCall];
+      const ensuredToolCall: ToolCall = {
+        ...toolCall,
+        meta: {
+          ...(toolCall.meta || {}),
+          textOffset:
+            typeof (toolCall.meta as any)?.textOffset === 'number'
+              ? (toolCall.meta as any).textOffset
+              : (msg.content?.length ?? 0),
+        },
+      };
+      const inlineToolCalls = [...(msg.inlineToolCalls || []), ensuredToolCall];
       const contentParts = [...(msg.contentParts || [])];
-      contentParts.push({ type: "tool", toolCall });
+      contentParts.push({ type: "tool", toolCall: ensuredToolCall });
       return { ...msg, inlineToolCalls, contentParts };
     });
 
@@ -788,9 +823,19 @@ class AssistantStore {
         ...this.currentConversation,
         messages: this.currentConversation.messages.map(msg => {
           if (msg.id !== messageId) return msg;
-          const inlineToolCalls = [...(msg.inlineToolCalls || []), toolCall];
+          const ensuredToolCall: ToolCall = {
+            ...toolCall,
+            meta: {
+              ...(toolCall.meta || {}),
+              textOffset:
+                typeof (toolCall.meta as any)?.textOffset === 'number'
+                  ? (toolCall.meta as any).textOffset
+                  : (msg.content?.length ?? 0),
+            },
+          };
+          const inlineToolCalls = [...(msg.inlineToolCalls || []), ensuredToolCall];
           const contentParts = [...(msg.contentParts || [])];
-          contentParts.push({ type: "tool", toolCall });
+          contentParts.push({ type: "tool", toolCall: ensuredToolCall });
           return { ...msg, inlineToolCalls, contentParts };
         }),
       };
@@ -1619,12 +1664,15 @@ class AssistantStore {
             conversationId: lastConvId,
           });
           if (conv) {
-            this.currentConversation = {
+            this.loadConversation({
               id: conv.id,
+              title: conv.title ?? "",
               createdAt: conv.createdAt || Date.now(),
-              messages: conv.messages
-            };
-            this.messages = conv.messages;
+              updatedAt: conv.updatedAt || conv.createdAt || Date.now(),
+              isPinned: conv.isPinned ?? false,
+              mode: conv.mode ?? "agent",
+              messages: conv.messages,
+            });
           }
         } catch (err) {
           console.warn("[AssistantStore] Failed to restore last conversation:", err);
@@ -1634,6 +1682,30 @@ class AssistantStore {
     } catch (err) {
       console.warn('[AssistantStore] Failed to restore last conversation:', err);
     }
+  }
+
+  private normalizeContentParts(
+    parts: ContentPart[] | undefined,
+    content: string,
+  ): ContentPart[] | undefined {
+    if (!content && (!parts || parts.length === 0)) return parts;
+    const normalized = [...(parts || [])];
+
+    if (content) {
+      const textIndex = normalized.findIndex((p) => p.type === 'text');
+      if (textIndex === -1) {
+        // Insert text before the first tool part if possible, otherwise append
+        const insertAt = normalized.findIndex((p) => p.type === 'tool');
+        normalized.splice(insertAt === -1 ? normalized.length : insertAt, 0, {
+          type: 'text',
+          text: content,
+        });
+      } else {
+        normalized[textIndex] = { type: 'text', text: content };
+      }
+    }
+
+    return normalized.length > 0 ? normalized : parts;
   }
 
   /**
@@ -1819,7 +1891,11 @@ class AssistantStore {
           if (content === null) {
             await invoke('delete_path', { path });
           } else {
-            await invoke('write_file', { path, content });
+            // Use fileService for consistent writes
+            const result = await fileService.write(path, content, { source: 'ai', force: true });
+            if (!result.success) {
+              console.error(`[Revert] Failed for ${path}:`, result.error);
+            }
           }
         } catch (e) {
           console.error(`[Revert] Failed for ${path}:`, e);

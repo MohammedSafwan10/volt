@@ -311,10 +311,16 @@ class ChatHistoryStore {
      */
     toggleSidebar(): void {
         this.sidebarOpen = !this.sidebarOpen;
+        // Refresh list when opening
+        if (this.sidebarOpen) {
+            this.loadConversations();
+        }
     }
 
     openSidebar(): void {
         this.sidebarOpen = true;
+        // Refresh list when opening
+        this.loadConversations();
     }
 
     closeSidebar(): void {

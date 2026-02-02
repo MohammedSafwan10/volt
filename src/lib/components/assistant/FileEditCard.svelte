@@ -12,6 +12,7 @@
     toolCall: ToolCall;
     groupedToolCalls?: ToolCall[];
     onViewDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
+    onFullDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
     onRevert?: (tc: ToolCall) => void;
     onUndoRevert?: (tc: ToolCall) => void;
     isReverted?: boolean;
@@ -22,6 +23,7 @@
     toolCall,
     groupedToolCalls = [],
     onViewDiff,
+    onFullDiff,
     onRevert,
     onUndoRevert,
     isReverted = false,
@@ -310,8 +312,22 @@
                 e.stopPropagation();
                 onViewDiff(toolCall, isGrouped ? allToolCalls : undefined);
               }}
+              title="Highlight changes in editor"
             >
               Open diff
+            </button>
+          {/if}
+          {#if canViewDiffAny && onFullDiff}
+            <button
+              class="action-btn-text full-diff"
+              onclick={(e) => {
+                e.stopPropagation();
+                onFullDiff(toolCall, isGrouped ? allToolCalls : undefined);
+              }}
+              title="Show full diff with red/green (VS Code style)"
+            >
+              <UIIcon name="diff" size={12} />
+              Full Diff
             </button>
           {/if}
           {#if canRevert && onRevert}
@@ -541,6 +557,21 @@
     color: var(--color-text);
     background: var(--color-hover);
     border-color: var(--color-text);
+  }
+
+  .action-btn-text.full-diff {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #4ec9b0;
+    border-color: #4ec9b0;
+    background: rgba(78, 201, 176, 0.08);
+  }
+
+  .action-btn-text.full-diff:hover {
+    background: rgba(78, 201, 176, 0.18);
+    color: #6dd5c0;
+    border-color: #6dd5c0;
   }
 
   .action-btn-text.restore {

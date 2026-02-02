@@ -9,7 +9,7 @@
   } from "$lib/stores/assistant.svelte";
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
-  import { openDiffView } from "$lib/services/diff-view";
+  import { openDiffView, openFullDiffView } from "$lib/services/diff-view";
   import { writeFile } from "$lib/services/file-system";
   import { showToast } from "$lib/stores/toast.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
@@ -101,7 +101,47 @@
     return path ? path.replace(/\\/g, "/") : null;
   }
 
+  function getToolTextOffset(tc: ToolCall): number | null {
+    const offset = (tc.meta as any)?.textOffset;
+    return typeof offset === "number" && offset >= 0 ? offset : null;
+  }
+
+  function buildContentPartsFromOffsets(
+    msg: AssistantMessage,
+  ): ContentPart[] | null {
+    if (!msg.content || !msg.inlineToolCalls?.length) return null;
+
+    const toolCallsWithOffsets = msg.inlineToolCalls
+      .map((tc) => ({ tc, offset: getToolTextOffset(tc) }))
+      .filter((item): item is { tc: ToolCall; offset: number } =>
+        typeof item.offset === "number",
+      )
+      .sort((a, b) => a.offset - b.offset);
+
+    if (toolCallsWithOffsets.length === 0) return null;
+
+    const parts: ContentPart[] = [];
+    let cursor = 0;
+
+    for (const { tc, offset } of toolCallsWithOffsets) {
+      const safeOffset = Math.min(Math.max(offset, 0), msg.content.length);
+      const textChunk = msg.content.slice(cursor, safeOffset).trimEnd();
+      if (textChunk.trim()) {
+        parts.push({ type: "text", text: textChunk });
+      }
+      parts.push({ type: "tool", toolCall: tc });
+      cursor = safeOffset;
+    }
+
+    const tail = msg.content.slice(cursor).trim();
+    if (tail) parts.push({ type: "text", text: tail });
+
+    return parts.length > 0 ? parts : null;
+  }
+
   function getContentParts(msg: AssistantMessage): ContentPart[] {
+    const rebuilt = buildContentPartsFromOffsets(msg);
+    if (rebuilt) return rebuilt;
     if (msg.contentParts?.length) return msg.contentParts;
     if (msg.content) return [{ type: "text", text: msg.content }];
     return [];
@@ -234,6 +274,53 @@
       { path, absolutePath, firstChangedLine, lastChangedLine },
       toolCall.id,
     );
+  }
+
+  /**
+   * Open full Monaco DiffEditor with proper red/green inline diff
+   * This shows deleted lines in RED and added lines in GREEN
+   */
+  function handleFullDiff(toolCall: ToolCall, allToolCalls?: ToolCall[]): void {
+    // Get content for diff
+    let originalContent: string | undefined;
+    let modifiedContent: string | undefined;
+    let filePath: string = '';
+
+    if (allToolCalls && allToolCalls.length > 1) {
+      // Grouped edits - use first beforeContent and last afterContent
+      const firstMeta = allToolCalls[0].meta as Record<string, unknown> | undefined;
+      const firstFileEdit = firstMeta?.fileEdit as Record<string, unknown> | undefined;
+      originalContent = firstFileEdit?.beforeContent as string | undefined;
+      
+      const lastMeta = allToolCalls[allToolCalls.length - 1].meta as Record<string, unknown> | undefined;
+      const lastFileEdit = lastMeta?.fileEdit as Record<string, unknown> | undefined;
+      modifiedContent = lastFileEdit?.afterContent as string | undefined;
+      
+      filePath = (firstFileEdit?.absolutePath as string) || 
+                 (toolCall.arguments.path as string) || 
+                 (firstFileEdit?.relativePath as string) || '';
+    } else {
+      // Single edit
+      const meta = toolCall.meta as Record<string, unknown> | undefined;
+      const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+      originalContent = fileEdit?.beforeContent as string | undefined;
+      modifiedContent = fileEdit?.afterContent as string | undefined;
+      filePath = (fileEdit?.absolutePath as string) || 
+                 (toolCall.arguments.path as string) || 
+                 (fileEdit?.relativePath as string) || '';
+    }
+
+    if (typeof originalContent !== 'string' || typeof modifiedContent !== 'string') {
+      showToast({ message: 'Cannot show diff: content not available', type: 'error' });
+      return;
+    }
+
+    openFullDiffView({
+      filePath,
+      originalContent,
+      modifiedContent,
+      toolCallId: toolCall.id,
+    });
   }
 
   async function handleRevert(toolCall: ToolCall): Promise<void> {
@@ -413,6 +500,7 @@
                       toolCall={part.toolCall}
                       groupedToolCalls={group?.grouped ?? []}
                       onViewDiff={handleViewDiff}
+                      onFullDiff={handleFullDiff}
                       onRevert={handleRevert}
                       onUndoRevert={handleUndoRevert}
                       isReverted={revertedIds.has(part.toolCall.id)}
