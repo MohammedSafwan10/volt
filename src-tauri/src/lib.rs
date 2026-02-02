@@ -3,6 +3,8 @@ mod chat_history;
 mod commands;
 mod lsp;
 
+use tauri::Manager;
+
 use cdp::commands::{
     cdp_attach_to_page, cdp_clear_console, cdp_clear_errors, cdp_clear_network, cdp_click,
     cdp_connect, cdp_disable_element_picker, cdp_disconnect, cdp_discover_url, cdp_emulate_device,
@@ -256,10 +258,12 @@ pub fn run() {
                 
                 // Stop all LSP servers
                 let app = window.app_handle().clone();
-                let lsp_state = app.state::<LspManagerState<tauri::Wry>>();
-                let _ = lsp_state.0.lock().map(|manager| {
-                    let _ = manager.stop_all();
-                });
+                let lsp_state: tauri::State<'_, LspManagerState<tauri::Wry>> = app.state();
+                if let Ok(guard) = lsp_state.0.lock() {
+                    if let Some(ref manager) = *guard {
+                        let _ = manager.stop_all();
+                    }
+                }
                 
                 // Stop all MCP servers (spawn async task)
                 let mcp_app = window.app_handle().clone();
