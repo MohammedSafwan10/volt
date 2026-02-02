@@ -249,10 +249,23 @@ pub fn run() {
             stop_all_file_watches,
             is_watching,
         ])
-        .on_window_event(|_window, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 // Kill all terminals when window closes
                 let _ = terminal_kill_all();
+                
+                // Stop all LSP servers
+                let app = window.app_handle().clone();
+                let lsp_state = app.state::<LspManagerState<tauri::Wry>>();
+                let _ = lsp_state.0.lock().map(|manager| {
+                    let _ = manager.stop_all();
+                });
+                
+                // Stop all MCP servers (spawn async task)
+                let mcp_app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = stop_all_mcp_servers(mcp_app).await;
+                });
             }
         })
         .run(tauri::generate_context!())
