@@ -86,10 +86,13 @@ export function validateToolCall(
 
   // Validate path is within workspace (if path param exists)
   const workspaceRoot = projectStore.rootPath;
-  if (args.path && typeof args.path === 'string' && workspaceRoot) {
-    const pathValidation = validatePathInWorkspace(args.path, workspaceRoot);
-    if (!pathValidation.valid) {
-      return { valid: false, error: pathValidation.error, requiresApproval: false };
+  if (workspaceRoot) {
+    const pathsToValidate = collectPaths(args);
+    for (const path of pathsToValidate) {
+      const pathValidation = validatePathInWorkspace(path, workspaceRoot);
+      if (!pathValidation.valid) {
+        return { valid: false, error: pathValidation.error, requiresApproval: false };
+      }
     }
   }
 
@@ -97,6 +100,27 @@ export function validateToolCall(
     valid: true, 
     requiresApproval: tool.requiresApproval 
   };
+}
+
+function collectPaths(args: Record<string, unknown>): string[] {
+  const paths: string[] = [];
+  const addPath = (value: unknown): void => {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      paths.push(value);
+    }
+  };
+
+  addPath(args.path);
+  addPath(args.oldPath);
+  addPath(args.newPath);
+
+  if (Array.isArray(args.paths)) {
+    for (const value of args.paths) {
+      addPath(value);
+    }
+  }
+
+  return paths;
 }
 
 /**

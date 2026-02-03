@@ -469,6 +469,48 @@ class AssistantStore {
           // Prepend text part if missing
           base.contentParts = [{ type: 'text', text: base.content }, ...base.contentParts];
         }
+
+        // Ensure inline tool calls have stable text offsets for future rebuilds
+        if (base.inlineToolCalls && base.inlineToolCalls.length > 0) {
+          let textOffset = 0;
+          const offsets = new Map<string, number>();
+          for (const part of base.contentParts) {
+            if (part.type === 'text') {
+              textOffset += part.text.length;
+            } else if (part.type === 'tool') {
+              offsets.set(part.toolCall.id, textOffset);
+            }
+          }
+
+          base.inlineToolCalls = base.inlineToolCalls.map(tc => ({
+            ...tc,
+            meta: {
+              ...(tc.meta || {}),
+              textOffset:
+                typeof (tc.meta as any)?.textOffset === 'number'
+                  ? (tc.meta as any).textOffset
+                  : (offsets.get(tc.id) ?? (base.content?.length ?? 0))
+            }
+          }));
+
+          base.contentParts = base.contentParts.map(part => {
+            if (part.type !== 'tool') return part;
+            const existingOffset = (part.toolCall.meta as any)?.textOffset;
+            const computedOffset = offsets.get(part.toolCall.id);
+            if (typeof existingOffset === 'number') return part;
+            if (typeof computedOffset !== 'number') return part;
+            return {
+              ...part,
+              toolCall: {
+                ...part.toolCall,
+                meta: {
+                  ...(part.toolCall.meta || {}),
+                  textOffset: computedOffset
+                }
+              }
+            };
+          });
+        }
       } else {
         // SELF-HEALING: Reconstruct contentParts if missing (fallback for old data)
         const parts: any[] = [];
@@ -885,14 +927,40 @@ class AssistantStore {
       if (msg.id !== messageId) return msg;
 
       const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
-        tc.id === toolCallId ? { ...tc, ...updates } : tc,
+        tc.id === toolCallId ? {
+          ...tc,
+          ...updates,
+          meta: updates.meta
+            ? {
+              ...(tc.meta || {}),
+              ...updates.meta,
+              textOffset:
+                typeof (updates.meta as any)?.textOffset === 'number'
+                  ? (updates.meta as any).textOffset
+                  : (tc.meta as any)?.textOffset
+            }
+            : tc.meta
+        } : tc,
       );
 
       const contentParts = (msg.contentParts || []).map(part => {
         if (part.type === "tool" && part.toolCall.id === toolCallId) {
           return {
             ...part,
-            toolCall: { ...part.toolCall, ...updates },
+            toolCall: {
+              ...part.toolCall,
+              ...updates,
+              meta: updates.meta
+                ? {
+                  ...(part.toolCall.meta || {}),
+                  ...updates.meta,
+                  textOffset:
+                    typeof (updates.meta as any)?.textOffset === 'number'
+                      ? (updates.meta as any).textOffset
+                      : (part.toolCall.meta as any)?.textOffset
+                }
+                : part.toolCall.meta
+            },
           };
         }
         return part;
@@ -908,13 +976,39 @@ class AssistantStore {
         messages: this.currentConversation.messages.map(msg => {
           if (msg.id !== messageId) return msg;
           const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
-            tc.id === toolCallId ? { ...tc, ...updates } : tc,
+            tc.id === toolCallId ? {
+              ...tc,
+              ...updates,
+              meta: updates.meta
+                ? {
+                  ...(tc.meta || {}),
+                  ...updates.meta,
+                  textOffset:
+                    typeof (updates.meta as any)?.textOffset === 'number'
+                      ? (updates.meta as any).textOffset
+                      : (tc.meta as any)?.textOffset
+                }
+                : tc.meta
+            } : tc,
           );
           const contentParts = (msg.contentParts || []).map(part => {
             if (part.type === "tool" && part.toolCall.id === toolCallId) {
               return {
                 ...part,
-                toolCall: { ...part.toolCall, ...updates },
+                toolCall: {
+                  ...part.toolCall,
+                  ...updates,
+                  meta: updates.meta
+                    ? {
+                      ...(part.toolCall.meta || {}),
+                      ...updates.meta,
+                      textOffset:
+                        typeof (updates.meta as any)?.textOffset === 'number'
+                          ? (updates.meta as any).textOffset
+                          : (part.toolCall.meta as any)?.textOffset
+                    }
+                    : part.toolCall.meta
+                },
               };
             }
             return part;
@@ -993,6 +1087,63 @@ class AssistantStore {
     });
 
     // Persist to database immediately
+    this.persistMessageToHistory(messageId);
+  }
+
+  /**
+   * Prefix the first text part in a message (used for Intent/Result labeling)
+   */
+  prefixFirstTextPart(messageId: string, prefix: string): void {
+    if (!prefix) return;
+
+    const applyPrefix = (msg: AssistantMessage): AssistantMessage => {
+      const parts = msg.contentParts ?? [];
+      if (parts.length === 0) {
+        const newParts: ContentPart[] = [{ type: 'text' as const, text: prefix }];
+        return { ...msg, contentParts: newParts, content: prefix };
+      }
+
+      const firstTextIndex = parts.findIndex(p => p.type === 'text');
+      if (firstTextIndex === -1) {
+        const newParts = [{ type: 'text' as const, text: prefix }, ...parts];
+        const fullContent = newParts
+          .filter(p => p.type === 'text')
+          .map(p => (p as { type: 'text'; text: string }).text)
+          .join('');
+        return { ...msg, contentParts: newParts, content: fullContent };
+      }
+
+      const firstText = parts[firstTextIndex] as { type: 'text'; text: string };
+      if (firstText.text.startsWith(prefix)) {
+        return msg;
+      }
+
+      const updatedText = prefix + firstText.text;
+      const newParts = parts.map((p, i) =>
+        i === firstTextIndex ? { type: 'text' as const, text: updatedText } : p
+      );
+
+      const fullContent = newParts
+        .filter(p => p.type === 'text')
+        .map(p => (p as { type: 'text'; text: string }).text)
+        .join('');
+
+      return { ...msg, contentParts: newParts, content: fullContent };
+    };
+
+    this.messages = this.messages.map(msg =>
+      msg.id === messageId ? applyPrefix(msg) : msg
+    );
+
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(msg =>
+          msg.id === messageId ? applyPrefix(msg) : msg
+        ),
+      };
+    }
+
     this.persistMessageToHistory(messageId);
   }
 

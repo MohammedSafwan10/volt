@@ -8,7 +8,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { access, constants } from 'fs/promises';
+import { access, constants, readdir, rm, stat } from 'fs/promises';
 import { join } from 'path';
 
 const execAsync = promisify(exec);
@@ -16,6 +16,8 @@ const execAsync = promisify(exec);
 const SIDECAR_PATH = join(process.cwd(), 'src-tauri', 'binaries', 'node-x86_64-pc-windows-msvc.exe');
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 500;
+const BUILD_DIR = join(process.cwd(), 'src-tauri', 'target', 'debug', 'build');
+const TARGET_DIR = join(process.cwd(), 'src-tauri', 'target');
 
 async function killByPattern(pattern) {
   try {
@@ -49,6 +51,38 @@ async function canAccessSidecar() {
   }
 }
 
+async function safeRemoveDir(path) {
+  try {
+    await rm(path, { recursive: true, force: true });
+    console.log(`[cleanup] Removed: ${path}`);
+  } catch (err) {
+    console.log(`[cleanup] Failed to remove ${path}: ${err?.message ?? err}`);
+  }
+}
+
+async function cleanupBuildArtifacts() {
+  // Only run when explicitly requested to avoid full rebuilds every time.
+  if (process.env.VOLT_CLEAN_TARGET !== '1') return;
+
+  // Remove build output folders that commonly get locked on Windows
+  await safeRemoveDir(BUILD_DIR);
+
+  // Remove per-crate build artifacts under target/debug/build/volt-*
+  try {
+    const entries = await readdir(BUILD_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.startsWith('volt-')) {
+        await safeRemoveDir(join(BUILD_DIR, entry.name));
+      }
+    }
+  } catch {
+    // Ignore if directory doesn't exist or cannot be read
+  }
+
+  // Optional: if target is very broken, allow full cleanup via env var
+  await safeRemoveDir(TARGET_DIR);
+}
+
 async function main() {
   console.log('[cleanup] Killing stale dev processes...');
   
@@ -63,6 +97,9 @@ async function main() {
   
   // Wait for file handles to be released
   await new Promise(r => setTimeout(r, 300));
+
+  // Cleanup build artifacts that can remain locked on Windows
+  await cleanupBuildArtifacts();
   
   // Verify sidecar is accessible with retries
   for (let i = 0; i < MAX_RETRIES; i++) {

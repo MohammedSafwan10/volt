@@ -12,7 +12,7 @@
 
 import type { AIMode } from '$lib/stores/ai.svelte';
 
-export type AIProvider = 'gemini';
+export type AIProvider = 'gemini' | 'openrouter';
 
 export interface SystemPromptOptions {
   mode: AIMode;
@@ -36,7 +36,8 @@ You have FULL access to the user's codebase through tools.
 2. **VERIFY BEFORE EDIT** - Always read current file state before modifying
 3. **ONE STEP AT A TIME** - Complete one action, verify, then proceed
 4. **RECOVER FROM ERRORS** - If something fails, diagnose and fix it
-5. **BE CONCISE** - No fluff, no repetition, just results`;
+5. **BE CONCISE** - No fluff, no repetition, just results
+6. **TOOL HONESTY** - If you call tools, do NOT claim completion until tool results return. Say you are about to run tools, then summarize after results.`;
 
 // ============================================================================
 // TOOL MASTERY - Focus on ESSENTIAL tools only

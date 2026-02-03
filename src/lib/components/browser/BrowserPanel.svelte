@@ -51,21 +51,18 @@
     // Ensure we have valid dimensions
     if (rect.width < 10 || rect.height < 10) return null;
     
-    // The Y position should account for toolbar height (~45px) plus any other UI
-    // If Y is too small, the toolbar hasn't rendered yet
-    // Minimum expected Y: activity bar height + toolbar height (~45 + 45 = 90)
-    if (rect.top < 60) {
+    // The Y position should account for toolbar height (~45px) plus any other UI.
+    // Only block creation when the browser is not open yet; allow updates when open.
+    if (!browserStore.isOpen && rect.top < 60) {
       return null; // Don't create webview yet
     }
     
-    const zoomFactor = Math.max(0.5, Math.min(2.0, uiStore.zoomPercent / 100));
-
     // Round to avoid subpixel issues
     const bounds = { 
-      x: Math.round(rect.left * zoomFactor), 
-      y: Math.round(rect.top * zoomFactor), 
-      width: Math.round(rect.width * zoomFactor), 
-      height: Math.round(rect.height * zoomFactor) 
+      x: Math.round(rect.left), 
+      y: Math.max(0, Math.round(rect.top)), 
+      width: Math.round(rect.width), 
+      height: Math.round(rect.height) 
     };
     
     return bounds;

@@ -6,6 +6,7 @@ node_modules
 
 # Tauri (Rust)
 /src-tauri/target/
+/\.cargo-target/
 /src-tauri/gen/schemas/
 
 # Sidecar binaries are generated/downloaded per-platform

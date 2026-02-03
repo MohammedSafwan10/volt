@@ -140,9 +140,15 @@
   }
 
   function getContentParts(msg: AssistantMessage): ContentPart[] {
+    // PRIORITY: Use saved contentParts (has correct order from streaming/history)
+    // Only rebuild from offsets as a fallback for legacy messages without contentParts
+    if (msg.contentParts?.length) return msg.contentParts;
+    
+    // Fallback: try to rebuild from offsets (for old messages without contentParts)
     const rebuilt = buildContentPartsFromOffsets(msg);
     if (rebuilt) return rebuilt;
-    if (msg.contentParts?.length) return msg.contentParts;
+    
+    // Last resort: just the text content
     if (msg.content) return [{ type: "text", text: msg.content }];
     return [];
   }

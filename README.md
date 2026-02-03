@@ -1,25 +1,24 @@
 # Volt — local-first IDE (Tauri + Svelte)
 
-Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **SvelteKit + TypeScript** frontend.
+Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **SvelteKit + TypeScript** frontend. It is **agent-first**, local, and optimized for native performance with on-demand language intelligence.
 
-## Goal
-
-An agent-first, local IDE focused on delivering fast, native performance and on-demand language intelligence.
-
-## What works today (high level)
+## What Works Today (High Level)
 
 - Workspace: open folder, file tree, rename/create/delete
-- Editor: Monaco editor, tabs, formatting hooks
-- Quick Open / Command Palette: fuzzy file search with index
+- Editor: Monaco editor, tabs, formatting hooks, diff view
+- Command Palette / Quick Open: fuzzy file search + symbol picker
 - Search: workspace search + replace with streaming results
 - Terminal: integrated PTY terminal sessions
 - Git (MVP): status/stage/commit/branches/diff/discard with cancellation
-- LSPs (on-demand): TypeScript/JavaScript, Svelte, HTML, CSS, JSON, Tailwind, ESLint, plus Dart, YAML, and XML support
+- LSPs (on-demand): TS/JS, Svelte, HTML, CSS, JSON, Tailwind, ESLint, plus Dart, YAML, XML
+- Assistant: tool-driven agent (read/search/write/terminal/lsp/browser) with approvals and chat history
+- Built-in Browser: native webview panel with devtools, element picker, and CDP automation (Windows)
+- MCP: external tool servers integrated into the agent tool system
 
-## Supported Languages & LSPs (summary)
+## Supported Languages & LSPs (Summary)
 
-- **Dart / Flutter** — Dart Analysis Server (`dart language-server`) — diagnostics, go-to-def, hover, completions, rename, code actions, formatting (requires Dart/Flutter SDK)
-- **YAML** — `yaml-language-server` — schema validation, completions, formatting (pubspec.yaml and other workflows/configs)
+- **Dart / Flutter** — Dart Analysis Server (`dart language-server`) — diagnostics, go-to-def, hover, completions, rename, formatting (requires Dart/Flutter SDK)
+- **YAML** — `yaml-language-server` — schema validation, completions, formatting
 - **XML** — LemMinX (native binary or JAR via Java) — validation and completions for AndroidManifest.xml, Info.plist, XSD, etc.
 - **TypeScript / JavaScript** — TypeScript Language Server (full TS/JS features)
 - **Svelte** — Svelte Language Server
@@ -27,11 +26,11 @@ An agent-first, local IDE focused on delivering fast, native performance and on-
 
 > LSP servers start on-demand when you open files that need them; this keeps Volt lightweight and responsive.
 
-## Repo layout
+## Repo Layout
 
 - `src/` — SvelteKit + TypeScript frontend
-- `src-tauri/` — Tauri v2 Rust backend (commands, PTY, git, indexing, sidecars)
-- `scripts/` — build helpers (sidecars)
+- `src-tauri/` — Tauri v2 Rust backend (commands, PTY, git, indexing, sidecars, browser)
+- `scripts/` — build helpers (sidecars, cleanup)
 - `docs/` — developer notes and specs
 
 ## Prerequisites
@@ -41,26 +40,24 @@ An agent-first, local IDE focused on delivering fast, native performance and on-
 - Tauri prerequisites for your OS (Windows requires WebView2)
 - **Dart / Flutter SDK** — required to enable Dart LSP for Flutter projects (install Flutter to get Dart)
 - **yaml-language-server** — install via npm if you want YAML LSP support: `npm install -g yaml-language-server`
-- **Java 11+** (optional) or LemMinX native binary — required if you want XML LSP via the LemMinX JAR; Volt also attempts to detect native LemMinX binaries
+- **Java 11+** (optional) or LemMinX native binary — required if you want XML LSP via the LemMinX JAR
 
 If a required SDK is missing (for example, Dart SDK), Volt logs guidance and can display notifications (configurable) to help users install it.
 
-## Run (desktop development)
+## Run (Desktop Development)
 
 ```bash
 npm install
-npm run sidecars:node
 npm run tauri dev
 ```
 
-## Frontend checks
+## Frontend Checks
 
 ```bash
-# Typecheck and Svelte checks
 npm run check
 ```
 
-## Backend (Rust) checks
+## Backend (Rust) Checks
 
 ```bash
 cd src-tauri
@@ -70,11 +67,19 @@ cargo check
 ## Build
 
 ```bash
-npm run sidecars:node
 npm run tauri build
 ```
 
-## How LSP sidecars work
+## Cargo Target Dir (Windows Fix)
+
+To avoid build lock contention on Windows, Volt uses a dedicated Cargo target directory:
+
+- Config: `src-tauri/.cargo/config.toml`
+- Target dir: `.cargo-target/`
+
+This prevents rust-analyzer and Cargo from locking the same `target/` folder.
+
+## How LSP Sidecars Work
 
 Volt runs language servers as either bundled sidecars or external processes from the user's system:
 
@@ -84,53 +89,17 @@ Volt runs language servers as either bundled sidecars or external processes from
 
 This separation keeps the UI process isolated from LSP processes and reduces memory/CPU overhead compared to embedding LSPs inside a single Node/Electron process.
 
-## Contributing and development notes
+## Where to Look Next
 
-- Repo layout: `src/` (frontend), `src-tauri/` (backend), `scripts/` (helpers), `docs/` (notes)
-- Add new LSPs by extending the sidecar registry and adding detection logic in `src/lib/services/lsp/sidecar/`.
-- Follow existing patterns for on-demand server start and diagnostic mapping to the problems panel.
+- LSP manager (Rust): `src-tauri/src/lsp/manager.rs`
+- LSP sidecar frontend: `src/lib/services/lsp/sidecar/`
+- Dart LSP integration: `src/lib/services/lsp/dart-sidecar.ts`
+- Assistant tool router: `src/lib/services/ai/tools/router.ts`
+- Assistant panel UI: `src/lib/components/assistant/AssistantPanel.svelte`
+- Browser panel: `src/lib/components/browser/BrowserPanel.svelte`
 
 ## License / Distribution
 
 This repository is **private** and not open-source. Do **not** add an open-source license file (MIT/Apache). The project is intended for private/internal use only.
 
 If the distribution model changes later, update this section accordingly.
-
-## Where to look next
-
-- LSP manager (Rust): `src-tauri/src/lsp/manager.rs`
-- LSP sidecar frontend: `src/lib/services/lsp/sidecar/`
-- Dart LSP integration: `src/lib/services/lsp/dart-sidecar.ts`
-
-If you'd like, I can also:
-
-- Add a short UI notification when an SDK (e.g., Dart) is missing
-- Add quick install instructions for common LSP servers
-- Add screenshots or GIFs to the README
-
----
-
-# backend compile check
-cd src-tauri
-cargo check
-```
-
-## Build
-
-```bash
-npm run sidecars:node
-npm run tauri build
-```
-
-## LSP sidecars (how it works)
-
-Volt runs language servers as **Tauri sidecars**.
-
-- A Node runtime is prepared as a sidecar (see `npm run sidecars:node`).
-- Language servers are started by the Rust backend and connected to the editor over an internal transport.
-- Platform launchers live under `src-tauri/binaries/` (Windows uses `.cmd` wrappers).
-
-## Notes
-
-- This project is under active development; behavior may change as tasks in the spec evolve.
-- The implementation plan lives in the task spec at .kiro/specs/volt/tasks.md.

@@ -34,7 +34,9 @@
     getAllToolsForMode,
     validateToolCall as validateTool,
     executeToolCall,
+    type ToolResult,
   } from "$lib/services/ai/tools";
+  import { resolvePath } from "$lib/services/ai/tools/utils";
   import MessageList from "./MessageList.svelte";
   import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
@@ -128,6 +130,36 @@
     }
     console.warn("[applyReviewHighlight] No line info in meta:", meta);
     return null;
+  }
+
+  function normalizeQueueKey(path: string): string {
+    if (!path) return path;
+    const resolved = resolvePath(path);
+    const normalized = resolved.replace(/\\/g, "/");
+    if (/^[A-Za-z]:/.test(normalized)) {
+      return normalized.toLowerCase();
+    }
+    return normalized;
+  }
+
+  function hasToolResultMessage(toolCallId: string): boolean {
+    return assistantStore.messages.some(
+      (msg) =>
+        msg.role === "tool" &&
+        msg.toolCalls?.some((tc) => tc.id === toolCallId),
+    );
+  }
+
+  function recordToolResult(toolCall: ToolCall, result: ToolResult): void {
+    if (hasToolResultMessage(toolCall.id)) return;
+    assistantStore.addToolMessage({
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      status: result.success ? "completed" : "failed",
+      output: result.output,
+      error: result.error,
+    });
   }
 
   function toProviderMessages(
@@ -301,7 +333,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
     let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
-      provider: "gemini",
+      provider: aiSettingsStore.selectedProvider,
       model: selectedModel,
       workspaceRoot: projectStore.rootPath ?? undefined,
       mcpTools: mcpToolsInfo.length > 0 ? mcpToolsInfo : undefined,
@@ -407,6 +439,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     const msgId = assistantStore.addAssistantMessage("", true);
     let fullContent = "";
     let iteration = 0;
+    let hasToolsInConversation = false;
+    let intentPrefixed = false;
+    let intentPrefixPending = false;
+    let readyForResult = false;
+    let resultPrefixAdded = false;
 
     // Kiro-style: Track consecutive empty responses to detect stuck model
     let consecutiveEmptyResponses = 0;
@@ -415,6 +452,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     // Streaming safety guards
     let lastChunk = "";
     let repeatedChunkCount = 0;
+    const strictDelayTextForTools = false;
 
     const shouldAbortForLeak = (text: string): boolean => {
       const lower = text.toLowerCase();
@@ -542,6 +580,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
         // REMOVED: sawToolCallInThisTurn suppression - let text flow naturally after tool calls
         let suppressFurtherTextInThisTurn = false;
+        let toolCallSeenThisIteration = false;
         let warnedAboutLooping = false;
         // REMOVED: visibleCharBudget - show full responses like Kiro
 
@@ -604,9 +643,33 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               continue;
             }
 
-            iterationContent += chunk.content;
             // End any active thinking part before adding text
             assistantStore.endThinkingPart(msgId);
+
+            // If tools were called earlier but no intent prefix yet, apply it now.
+            if (hasToolsInConversation && !readyForResult && !intentPrefixed) {
+              const prefix = "Intent:\n";
+              const textToAppend = prefix + chunk.content;
+              iterationContent += textToAppend;
+              assistantStore.appendTextToMessage(msgId, textToAppend, true);
+              intentPrefixed = true;
+              intentPrefixPending = false;
+              continue;
+            }
+
+            if (readyForResult && !resultPrefixAdded) {
+              const prefix = fullContent.trim().length > 0
+                ? "\n\nResult:\n"
+                : "Result:\n";
+              const textToAppend = prefix + chunk.content;
+              iterationContent += textToAppend;
+              assistantStore.appendTextToMessage(msgId, textToAppend, true);
+              resultPrefixAdded = true;
+              readyForResult = false;
+              continue;
+            }
+
+            iterationContent += chunk.content;
             // Stream ALL content to UI immediately (no truncation)
             assistantStore.appendTextToMessage(msgId, chunk.content, true);
           }
@@ -621,6 +684,21 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           if (chunk.type === "tool_call" && chunk.toolCall) {
             // End any active thinking part before adding tool call
             assistantStore.endThinkingPart(msgId);
+            toolCallSeenThisIteration = true;
+            hasToolsInConversation = true;
+            if (!intentPrefixed && fullContent.trim().length === 0) {
+              const currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+              if (currentMsg?.content?.trim()) {
+                assistantStore.prefixFirstTextPart(msgId, "Intent:\n");
+                iterationContent = "Intent:\n" + iterationContent;
+                intentPrefixed = true;
+              } else {
+                intentPrefixPending = true;
+              }
+            } else if (!intentPrefixed) {
+              intentPrefixPending = true;
+            }
+            // Keep streaming text for intent if it arrives after tool call.
             // REMOVED: sawToolCallInThisTurn = true - don't suppress text after tool calls
             const toolCallArgs = chunk.toolCall.arguments;
             const toolCallName = chunk.toolCall.name;
@@ -768,8 +846,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               const TERMINAL_TOOLS = ["run_command", "start_process"];
               const isFileEdit = FILE_EDIT_TOOLS.includes(toolCallName);
               const isTerminalCommand = TERMINAL_TOOLS.includes(toolCallName);
-              const filePath = isFileEdit
+              const rawFilePath = isFileEdit
                 ? String(toolCallArgs.path || "")
+                : "";
+              const filePath = isFileEdit && rawFilePath
+                ? normalizeQueueKey(rawFilePath)
                 : null;
 
               // Group file edits by path for sequential execution
@@ -1151,6 +1232,14 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 (t) => t.id === tc.id,
               );
 
+              if (
+                currentToolCall?.status === "completed" ||
+                currentToolCall?.status === "failed"
+              ) {
+                // Already executed inline; skip re-execution to avoid duplicates.
+                continue;
+              }
+
               if (currentToolCall?.status === "cancelled") {
                 toolResults.push({
                   id: tc.id,
@@ -1222,6 +1311,21 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           // Wait for approval → execute → wait for next approval → execute...
           let previousTerminalFailed = false;
           for (const tc of terminalTools) {
+            const currentMsg = assistantStore.messages.find(
+              (m) => m.id === msgId,
+            );
+            const currentToolCall = currentMsg?.inlineToolCalls?.find(
+              (t) => t.id === tc.id,
+            );
+
+            if (
+              currentToolCall?.status === "completed" ||
+              currentToolCall?.status === "failed"
+            ) {
+              // Already executed inline; skip re-execution.
+              continue;
+            }
+
             // If previous terminal command failed, skip remaining
             if (previousTerminalFailed) {
               assistantStore.updateToolCallInMessage(msgId, tc.id, {
@@ -1243,13 +1347,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             // Wait for THIS specific tool's approval
             await waitForToolApprovals(msgId, [tc.id], controller.signal);
             if (controller.signal.aborted) return;
-
-            const currentMsg = assistantStore.messages.find(
-              (m) => m.id === msgId,
-            );
-            const currentToolCall = currentMsg?.inlineToolCalls?.find(
-              (t) => t.id === tc.id,
-            );
 
             if (currentToolCall?.status === "cancelled") {
               toolResults.push({
@@ -1310,6 +1407,14 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
         justProcessedToolResults = true;
+        if (hasToolsInConversation) {
+          readyForResult = true;
+          if (!intentPrefixed) {
+            // If tools happened but no intent text was shown, keep intent unset.
+            // The next content will be labeled as Result.
+            intentPrefixed = false;
+          }
+        }
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1458,7 +1563,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
   async function executeToolAndUpdate(
     toolCall: ToolCall,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ToolResult> {
     assistantStore.updateToolCall(toolCall.id, {
       status: "running",
       startTime: Date.now(),
@@ -1506,6 +1611,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           streamingProgress: undefined,
         });
       }
+      return result;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
       assistantStore.updateToolCall(toolCall.id, {
@@ -1514,6 +1620,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         endTime: Date.now(),
         streamingProgress: undefined,
       });
+      return { success: false, error: errorMsg };
     }
   }
 
@@ -1788,10 +1895,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     }
 
     // Execute the approved tool
-    await executeToolAndUpdate(
+    const result = await executeToolAndUpdate(
       toolCall,
       assistantStore.abortController?.signal,
     );
+    recordToolResult(toolCall, result);
   }
 
   function handleToolDeny(toolCall: ToolCall): void {
@@ -1890,6 +1998,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           }
         }
       }
+      recordToolResult(toolCall, result);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
@@ -1897,6 +2006,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         error,
         endTime: Date.now(),
       });
+      recordToolResult(toolCall, { success: false, error });
     }
   }
 
