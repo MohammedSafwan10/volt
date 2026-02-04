@@ -33,6 +33,61 @@ function isLikelyDevServer(command: string): boolean {
   return npmRun.test(cmd) || common.test(cmd);
 }
 
+function normalizeCommand(command: string): string {
+  return command.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function extractPort(command: string): number | null {
+  const direct = command.match(/(?:--port|-p)\s*=?\s*(\d{2,5})/i);
+  if (direct) return Number(direct[1]);
+  const env = command.match(/\bPORT\s*=\s*(\d{2,5})/i);
+  if (env) return Number(env[1]);
+  return null;
+}
+
+function findRunningDevServer(command: string, cwd?: string): BackgroundProcess | null {
+  const normalized = normalizeCommand(command);
+  const desiredPort = extractPort(command);
+  for (const proc of processes.values()) {
+    if (proc.status !== 'running') continue;
+    if (normalizeCommand(proc.command) !== normalized) continue;
+    if (cwd && proc.cwd && proc.cwd !== cwd) continue;
+    if (desiredPort && proc.port && proc.port !== desiredPort) continue;
+    if (!proc.terminalId) continue;
+    const session = terminalStore.sessions.find(s => s.id === proc.terminalId);
+    if (!session) continue;
+    return proc;
+  }
+  return null;
+}
+
+function trackDetachedProcess(command: string, cwd: string | undefined, terminalId: string): BackgroundProcess {
+  const processId = processStore.nextProcessId();
+  const proc: BackgroundProcess = {
+    processId,
+    command,
+    cwd,
+    startTime: Date.now(),
+    status: 'running',
+    terminalId,
+    port: extractPort(command) ?? undefined
+  };
+  processes.set(processId, proc);
+
+  const session = terminalStore.sessions.find(s => s.id === terminalId);
+  if (session) {
+    session.onExit(() => {
+      const p = processStore.get(processId);
+      if (p) {
+        p.status = 'stopped';
+        processStore.set(processId, p);
+      }
+    });
+  }
+
+  return proc;
+}
+
 /**
  * Get or create a dedicated terminal for a background process.
  */
@@ -70,6 +125,7 @@ interface BackgroundProcess {
   startTime: number;
   status: 'running' | 'stopped' | 'unknown';
   terminalId?: string;
+  port?: number;
 }
 
 const STORAGE_KEY = 'volt.ai.processes';
@@ -187,6 +243,18 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
 
   const run = async (): Promise<ToolResult> => {
     try {
+      if (isDevServer) {
+        const running = findRunningDevServer(command, cwd);
+        if (running?.terminalId) {
+          terminalStore.setActive(running.terminalId);
+          return {
+            success: true,
+            output: `Dev server already running (process ${running.processId}) in terminal ${running.terminalId}. Reusing existing server.`,
+            meta: { reused: true, processId: running.processId, terminalId: running.terminalId }
+          };
+        }
+      }
+
       if (isDevServer && allowDetach && !waitForExit) {
         const result = await handleStartProcess({ command, cwd });
         if (result.success) {
@@ -302,7 +370,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
 
       const { text, truncated } = truncateOutput(finalOutput);
 
-      const toolResult = {
+      const toolResult: ToolResult = {
         success,
         output: text.trim() || (success ? '[Success - no output]' : '[Failed - no output]'),
         truncated,
@@ -317,7 +385,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
       };
 
       // Improve timeout message for humans/AI
-      if (toolResult.meta.timedOut) {
+      if (toolResult.meta?.timedOut) {
         toolResult.output = `Command timed out after ${timeout}ms. Output so far:\n\n${toolResult.output}`;
         if (isDevServer) {
           toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
@@ -326,9 +394,15 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
 
 		// If the command detached (likely a long-running server) or timed out,
 		// detach the AI terminal so the next command gets a fresh shell.
-		if (isDetached || toolResult.meta.timedOut) {
+		if (isDetached || toolResult.meta?.timedOut) {
 			terminalStore.detachAiTerminal(session.id, isDetached ? 'Volt AI (running)' : 'Volt AI (busy)');
 		}
+
+      if (isDetached) {
+        const proc = trackDetachedProcess(command, cwd, session.id);
+        toolResult.meta = { ...(toolResult.meta ?? {}), processId: proc.processId };
+        toolResult.output = `${toolResult.output}\n\n[Volt]: Tracking background process ${proc.processId} in terminal ${session.id}.`;
+      }
 
       // Notify store of errors for the "Fix with AI" feature
       if (!toolResult.success && !isDetached) {
@@ -362,6 +436,18 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
   const processId = processStore.nextProcessId();
 
   try {
+    if (isLikelyDevServer(command)) {
+      const running = findRunningDevServer(command, cwd);
+      if (running?.terminalId) {
+        terminalStore.setActive(running.terminalId);
+        return {
+          success: true,
+          output: `Dev server already running (process ${running.processId}) in terminal ${running.terminalId}. Reusing existing server.`,
+          meta: { reused: true, processId: running.processId, terminalId: running.terminalId }
+        };
+      }
+    }
+
     // Ensure terminal panel is open
     uiStore.openBottomPanelTab('terminal');
 
@@ -376,7 +462,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
       cwd,
       startTime: Date.now(),
       status: 'running',
-      terminalId
+      terminalId,
+      port: extractPort(command) ?? undefined
     });
 
     // Handle process exit

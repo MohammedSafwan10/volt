@@ -102,6 +102,19 @@ export async function listTerminals(): Promise<TerminalInfo[]> {
 	}
 }
 
+/**
+ * Kill all terminals via Tauri invoke
+ */
+export async function killAllTerminals(): Promise<boolean> {
+	try {
+		await invoke('terminal_kill_all');
+		return true;
+	} catch (error) {
+		console.error('Terminal kill all error:', error);
+		return false;
+	}
+}
+
 // Global event dispatcher to prevent race conditions
 const sessionRegistry = new Map<string, TerminalSession>();
 const pendingEvents = new Map<string, Array<{ type: string; payload: any }>>();

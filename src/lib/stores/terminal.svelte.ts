@@ -1,6 +1,7 @@
 import {
 	createTerminalSession,
 	listTerminals,
+	killAllTerminals,
 	type TerminalInfo,
 	TerminalSession
 } from '$lib/services/terminal-client';
@@ -210,10 +211,16 @@ class TerminalStore {
 	 * Kill all terminals
 	 */
 	async killAll(): Promise<void> {
-		const promises = this.sessions.map(async (session) => {
-			await session.kill();
-		});
-		await Promise.all(promises);
+		const didKillAll = await killAllTerminals();
+		if (!didKillAll) {
+			const promises = this.sessions.map(async (session) => {
+				await session.kill();
+			});
+			await Promise.all(promises);
+		}
+		for (const session of this.sessions) {
+			session.dispose();
+		}
 		this.sessions = [];
 		this.activeTerminalId = null;
 	}
