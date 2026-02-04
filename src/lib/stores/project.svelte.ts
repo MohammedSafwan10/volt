@@ -9,6 +9,7 @@
  */
 
 import { listDirectory, getFileInfoQuiet } from '$lib/services/file-system';
+import { dirname } from '@tauri-apps/api/path';
 import { initLspRegistry, disposeLspRegistry } from '$lib/services/lsp/sidecar';
 import { stopTsLsp } from '$lib/services/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$lib/services/lsp/tailwind-sidecar';
@@ -23,6 +24,7 @@ import {
 } from '$lib/services/file-index';
 import { notifyFileChanges as notifyDartFileChanges, startDartLsp } from '$lib/services/lsp/dart-sidecar';
 import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
+import { fileService } from '$lib/services/file-service';
 import {
   startWatching as startFileWatching,
   stopWatching as stopFileWatching,
@@ -75,6 +77,9 @@ class ProjectStore {
   // Currently selected file paths (Set for O(1) lookups)
   selectedPaths = $state<Set<string>>(new Set());
 
+  // Expanded folder paths (normalized)
+  expandedPaths = $state<Set<string>>(new Set());
+
   // Helper for single selection (last selected item)
   selectedPath = $derived([...this.selectedPaths].pop() || null);
 
@@ -86,6 +91,8 @@ class ProjectStore {
   private unwatchLockFiles: UnwatchFn | null = null;
   private diagTimer: any = null;
   private treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private fileServiceUnsubscribe: (() => void) | null = null;
+  private pendingFolderRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
   private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -130,6 +137,29 @@ class ProjectStore {
     } finally {
       this.resolveInitialized?.();
     }
+
+    // Subscribe once to fileService changes to keep tree in sync even if file watching lags.
+    if (!this.fileServiceUnsubscribe) {
+      this.fileServiceUnsubscribe = fileService.subscribeAll((event) => {
+        if (!this.rootPath) return;
+
+        const normalizedRoot = this.normalizePath(this.rootPath);
+        const normalizedPath = this.normalizePath(event.path);
+        if (!normalizedPath.startsWith(normalizedRoot)) return;
+
+        // If tree is empty for any reason, self-heal with a refresh.
+        if (this.tree.length === 0) {
+          this.scheduleTreeRefresh();
+          return;
+        }
+
+        // If the node isn't present yet (new file), refresh the parent folder.
+        const existing = this.findNode(event.path);
+        if (!existing) {
+          void this.refreshParentFolder(normalizedPath);
+        }
+      });
+    }
   }
 
   /**
@@ -166,6 +196,7 @@ class ProjectStore {
     this.projectName = this.extractFolderName(path);
     this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
     this.selectedPaths.clear();
+    this.expandedPaths = new Set();
     this.loading = false;
     this.addToRecentProjects(path);
 
@@ -600,7 +631,13 @@ class ProjectStore {
     this.projectName = '';
     this.tree = [];
     this.selectedPaths.clear();
+    this.expandedPaths = new Set();
     this.packageManager = 'npm';
+
+    if (this.fileServiceUnsubscribe) {
+      this.fileServiceUnsubscribe();
+      this.fileServiceUnsubscribe = null;
+    }
   }
 
   /**
@@ -631,6 +668,8 @@ class ProjectStore {
 
     if (node.expanded) {
       node.expanded = false;
+      this.expandedPaths.delete(this.normalizePath(node.path));
+      this.expandedPaths = new Set(this.expandedPaths);
       return;
     }
 
@@ -649,6 +688,8 @@ class ProjectStore {
     }
 
     node.expanded = true;
+    this.expandedPaths.add(this.normalizePath(node.path));
+    this.expandedPaths = new Set(this.expandedPaths);
   }
 
   /**
@@ -709,6 +750,7 @@ class ProjectStore {
     if (entries === null) return;
 
     node.children = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
+    await this.restoreExpandedState(node.children);
   }
 
   /**
@@ -723,6 +765,7 @@ class ProjectStore {
 
     if (entries === null) return;
     this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
+    await this.restoreExpandedState(this.tree);
   }
 
   /**
@@ -790,6 +833,20 @@ class ProjectStore {
       this.selectedPaths.delete(path);
       this.selectedPaths = new Set(this.selectedPaths);
     }
+
+    const normalizedPath = this.normalizePath(path);
+    let changed = false;
+    const next = new Set<string>();
+    for (const p of this.expandedPaths) {
+      if (p === normalizedPath || p.startsWith(normalizedPath + "/")) {
+        changed = true;
+        continue;
+      }
+      next.add(p);
+    }
+    if (changed) {
+      this.expandedPaths = next;
+    }
   }
 
   /**
@@ -812,15 +869,146 @@ class ProjectStore {
         this.selectedPaths = new Set(this.selectedPaths);
       }
     }
+
+    const normalizedOld = this.normalizePath(oldPath);
+    const normalizedNew = this.normalizePath(newPath);
+    let updated = false;
+    const next = new Set<string>();
+    for (const p of this.expandedPaths) {
+      if (p === normalizedOld) {
+        next.add(normalizedNew);
+        updated = true;
+      } else if (p.startsWith(normalizedOld + "/")) {
+        next.add(normalizedNew + p.slice(normalizedOld.length));
+        updated = true;
+      } else {
+        next.add(p);
+      }
+    }
+    if (updated) {
+      this.expandedPaths = next;
+    }
   }
 
   // Private helpers
 
+  /**
+   * Collapse all folders in the tree
+   */
+  collapseAllFolders(): void {
+    const collapse = (nodes: TreeNode[]): void => {
+      for (const node of nodes) {
+        if (node.isDir) {
+          node.expanded = false;
+          if (node.children) collapse(node.children);
+        }
+      }
+    };
+    collapse(this.tree);
+    this.expandedPaths = new Set();
+  }
+
+  /**
+   * Expand folders up to a max depth (default 2) to avoid huge workspace lag.
+   */
+  async expandAllFolders(maxDepth = 2): Promise<void> {
+    const expand = async (nodes: TreeNode[], depth: number): Promise<void> => {
+      for (const node of nodes) {
+        if (!node.isDir) continue;
+        node.expanded = true;
+        this.expandedPaths.add(this.normalizePath(node.path));
+
+        if (node.children === null && depth < maxDepth) {
+          node.loading = true;
+          const entries = await listDirectory(node.path);
+          node.loading = false;
+          if (entries !== null) {
+            node.children = this.sortEntries(entries).map((entry) =>
+              this.createTreeNode(entry),
+            );
+          }
+        }
+
+        if (Array.isArray(node.children) && node.children.length > 0 && depth < maxDepth) {
+          await expand(node.children, depth + 1);
+        }
+      }
+    };
+
+    await expand(this.tree, 0);
+    this.expandedPaths = new Set(this.expandedPaths);
+  }
+
+  /**
+   * Expand a single folder up to a max depth (default 2)
+   */
+  async expandFolder(node: TreeNode, maxDepth = 2): Promise<void> {
+    if (!node.isDir) return;
+
+    const expand = async (current: TreeNode, depth: number): Promise<void> => {
+      if (!current.isDir) return;
+      current.expanded = true;
+      this.expandedPaths.add(this.normalizePath(current.path));
+
+      if (current.children === null && depth < maxDepth) {
+        current.loading = true;
+        const entries = await listDirectory(current.path);
+        current.loading = false;
+        if (entries !== null) {
+          current.children = this.sortEntries(entries).map((entry) =>
+            this.createTreeNode(entry),
+          );
+        }
+      }
+
+      if (Array.isArray(current.children) && current.children.length > 0 && depth < maxDepth) {
+        for (const child of current.children) {
+          await expand(child, depth + 1);
+        }
+      }
+    };
+
+    await expand(node, 0);
+    this.expandedPaths = new Set(this.expandedPaths);
+  }
+
+  private normalizePath(filePath: string): string {
+    let normalized = filePath.replace(/\\/g, '/');
+    if (normalized.match(/^[a-zA-Z]:/)) {
+      normalized = normalized[0].toLowerCase() + normalized.slice(1);
+    }
+    return normalized;
+  }
+
+  private async restoreExpandedState(nodes: TreeNode[]): Promise<void> {
+    for (const node of nodes) {
+      if (!node.isDir) continue;
+      const normalized = this.normalizePath(node.path);
+      if (this.expandedPaths.has(normalized)) {
+        node.expanded = true;
+        if (node.children === null) {
+          node.loading = true;
+          const entries = await listDirectory(node.path);
+          node.loading = false;
+          if (entries !== null) {
+            node.children = this.sortEntries(entries).map((entry) =>
+              this.createTreeNode(entry),
+            );
+          }
+        }
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          await this.restoreExpandedState(node.children);
+        }
+      }
+    }
+  }
+
   private createTreeNode(entry: FileEntry): TreeNode {
+    const normalized = this.normalizePath(entry.path);
     return {
       ...entry,
       children: entry.isDir ? null : [],
-      expanded: false,
+      expanded: entry.isDir ? this.expandedPaths.has(normalized) : false,
       loading: false
     };
   }
@@ -889,6 +1077,50 @@ class ProjectStore {
   removeFromRecentProjects(path: string): void {
     this.recentProjects = this.recentProjects.filter((p) => p !== path);
     this.saveRecentProjects();
+  }
+
+  private scheduleTreeRefresh(): void {
+    if (this.treeRefreshTimer) clearTimeout(this.treeRefreshTimer);
+    this.treeRefreshTimer = setTimeout(() => {
+      if (this.rootPath) {
+        void this.refreshTree();
+      }
+      this.treeRefreshTimer = null;
+    }, 200);
+  }
+
+  private scheduleFolderRefresh(folderPath: string): void {
+    const normalized = this.normalizePath(folderPath);
+    const existing = this.pendingFolderRefreshes.get(normalized);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingFolderRefreshes.delete(normalized);
+      const node = this.findNode(normalized);
+      if (node && node.isDir && node.expanded) {
+        void this.refreshFolder(node);
+      } else if (normalized === this.normalizePath(this.rootPath ?? '')) {
+        void this.refreshTree();
+      } else {
+        // Folder isn't visible; do nothing to avoid flicker.
+      }
+    }, 150);
+    this.pendingFolderRefreshes.set(normalized, timer);
+  }
+
+  private async refreshParentFolder(absolutePath: string): Promise<void> {
+    if (!this.rootPath) return;
+    try {
+      const parent = await dirname(absolutePath);
+      const normalizedRoot = this.normalizePath(this.rootPath);
+      const normalizedParent = this.normalizePath(parent);
+      if (!normalizedParent.startsWith(normalizedRoot)) {
+        this.scheduleTreeRefresh();
+        return;
+      }
+      this.scheduleFolderRefresh(normalizedParent);
+    } catch {
+      this.scheduleTreeRefresh();
+    }
   }
 }
 

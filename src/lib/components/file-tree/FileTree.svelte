@@ -311,6 +311,18 @@
     await projectStore.refreshTree();
   }
 
+  function handleCollapseAll(): void {
+    projectStore.collapseAllFolders();
+  }
+
+  async function handleExpandAll(): Promise<void> {
+    await projectStore.expandAllFolders(2);
+  }
+
+  async function handleExpandFolder(node: TreeNode): Promise<void> {
+    await projectStore.expandFolder(node, 2);
+  }
+
   function closeContextMenu(): void {
     contextOpen = false;
     contextNode = null;
@@ -932,6 +944,15 @@
         >
           <UIIcon name="refresh" size={16} />
         </button>
+        <button
+          class="toolbar-btn"
+          title="Collapse All"
+          onclick={handleCollapseAll}
+          aria-label="Collapse All"
+          type="button"
+        >
+          <UIIcon name="collapse-all" size={16} />
+        </button>
       </div>
     </div>
 
@@ -1020,6 +1041,15 @@
       >
         <UIIcon name="folder-plus" size={16} />
         <span>New Folder</span>
+      </button>
+      <button
+        class="context-item"
+        role="menuitem"
+        type="button"
+        onclick={() => void handleExpandFolder(contextNode)}
+      >
+        <UIIcon name="expand-all" size={16} />
+        <span>Expand (Level 2)</span>
       </button>
       <div class="context-divider"></div>
     {:else if contextNode === null}
