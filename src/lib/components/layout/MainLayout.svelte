@@ -154,11 +154,13 @@
     // We do this here instead of in the store constructor to avoid HMR loops
     void projectStore.init();
 
-    // Handle window beforeunload to clean up LSP servers
+    // Handle window beforeunload to clean up services
     const handleBeforeUnload = () => {
-      // Synchronously trigger cleanup - browser may not wait for async
+      // Best-effort cleanup - browser may not wait for async
+      void terminalStore.killAll();
       void disposeLspRegistry();
       void mcpStore.cleanup();
+      void browserStore.cleanup();
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
 
@@ -586,12 +588,14 @@
               {@render children()}
             {:else if diffStore.isActive}
               <!-- Diff Editor Mode -->
-              <MonacoDiffEditor
-                originalContent={diffStore.state.originalContent}
-                modifiedContent={diffStore.state.modifiedContent}
-                language={diffStore.state.language}
-                title={diffStore.state.title}
-              />
+              {#key diffStore.state.sessionId}
+                <MonacoDiffEditor
+                  originalContent={diffStore.state.originalContent}
+                  modifiedContent={diffStore.state.modifiedContent}
+                  language={diffStore.state.language}
+                  title={diffStore.state.title}
+                />
+              {/key}
             {:else if editorStore.activeFile}
               {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
                 <div

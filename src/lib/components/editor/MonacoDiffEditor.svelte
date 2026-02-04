@@ -48,6 +48,7 @@
   let monaco: typeof Monaco | null = $state(null);
   let originalModel: Monaco.editor.ITextModel | null = $state(null);
   let modifiedModel: Monaco.editor.ITextModel | null = $state(null);
+  let hasRevealedFirstChange = $state(false);
 
   // Computed stats
   let diffStats = $state({ added: 0, removed: 0, changed: 0 });
@@ -95,6 +96,25 @@
   function goToPrevDiff(): void {
     if (!diffEditor) return;
     diffEditor.goToDiff('previous');
+  }
+
+  // Reveal the first change in the modified editor
+  function revealFirstChange(): void {
+    if (!diffEditor) return;
+    const changes = diffEditor.getLineChanges();
+    if (!changes || changes.length === 0) return;
+
+    const first = changes[0];
+    const targetLine =
+      first.modifiedStartLineNumber > 0
+        ? first.modifiedStartLineNumber
+        : first.originalStartLineNumber > 0
+          ? first.originalStartLineNumber
+          : 1;
+
+    const editor = diffEditor.getModifiedEditor();
+    editor.revealLineInCenter(targetLine);
+    editor.setPosition({ lineNumber: targetLine, column: 1 });
   }
 
   // Toggle between inline and side-by-side
@@ -153,6 +173,8 @@
           fontLigatures: true,
           readOnly: true, // Diff view is read-only
           renderSideBySide: !diffStore.state.inlineMode,
+          renderSideBySideInlineBreakpoint: 0,
+          useInlineViewWhenSpaceIsLimited: false,
           enableSplitViewResizing: true,
           scrollBeyondLastLine: false,
           smoothScrolling: true,
@@ -180,7 +202,13 @@
         setTimeout(calculateDiffStats, 100);
 
         // Listen for diff updates
-        diffEditor.onDidUpdateDiff(calculateDiffStats);
+        diffEditor.onDidUpdateDiff(() => {
+          calculateDiffStats();
+          if (!hasRevealedFirstChange) {
+            revealFirstChange();
+            hasRevealedFirstChange = true;
+          }
+        });
 
         loading = false;
       } catch (err) {
@@ -215,7 +243,10 @@
     if (diffEditor) {
       diffEditor.updateOptions({
         renderSideBySide: !inlineMode,
+        renderSideBySideInlineBreakpoint: 0,
+        useInlineViewWhenSpaceIsLimited: false,
       });
+      diffEditor.layout();
     }
   });
 

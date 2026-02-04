@@ -6,6 +6,8 @@
 export interface DiffState {
   /** Whether diff view is active */
   active: boolean;
+  /** Monotonic session id to force remounts when reopening diff */
+  sessionId: number;
   /** File path being diffed */
   filePath: string;
   /** Original content (before changes) */
@@ -26,6 +28,7 @@ class DiffStore {
   /** Current diff state */
   state = $state<DiffState>({
     active: false,
+    sessionId: 0,
     filePath: '',
     originalContent: '',
     modifiedContent: '',
@@ -58,16 +61,18 @@ class DiffStore {
     inlineMode?: boolean;
   }): void {
     const fileName = options.filePath.split(/[/\\]/).pop() || 'file';
-    
+    const nextSessionId = this.state.sessionId + 1;
+
     this.state = {
       active: true,
+      sessionId: nextSessionId,
       filePath: options.filePath,
       originalContent: options.originalContent,
       modifiedContent: options.modifiedContent,
       language: options.language || this.detectLanguage(options.filePath),
       title: options.title || `Diff: ${fileName}`,
       toolCallId: options.toolCallId,
-      inlineMode: options.inlineMode ?? true,
+      inlineMode: options.inlineMode ?? this.state.inlineMode ?? true,
     };
   }
 
@@ -77,6 +82,7 @@ class DiffStore {
   closeDiff(): void {
     this.state = {
       active: false,
+      sessionId: this.state.sessionId,
       filePath: '',
       originalContent: '',
       modifiedContent: '',
@@ -91,14 +97,14 @@ class DiffStore {
    * Toggle between inline and side-by-side mode
    */
   toggleInlineMode(): void {
-    this.state.inlineMode = !this.state.inlineMode;
+    this.state = { ...this.state, inlineMode: !this.state.inlineMode };
   }
 
   /**
    * Set inline mode explicitly
    */
   setInlineMode(inline: boolean): void {
-    this.state.inlineMode = inline;
+    this.state = { ...this.state, inlineMode: inline };
   }
 
   /**
@@ -114,6 +120,10 @@ class DiffStore {
     if (filePath && modifiedContent) {
       try {
         const { editorStore } = await import('./editor.svelte');
+        const { writeFile } = await import('$lib/services/file-system');
+        
+        // Write modified content back to disk
+        await writeFile(filePath, modifiedContent);
         await editorStore.updateFileContent(filePath, modifiedContent);
       } catch (err) {
         console.error('[diffStore] Failed to sync accepted changes:', err);
