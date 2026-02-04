@@ -1,2 +1,2 @@
 [build]
-target-dir = "C:/Users/User/.cargo/volt-target"
+target-dir = "../../.cargo-target"

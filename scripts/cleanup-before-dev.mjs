@@ -16,7 +16,7 @@ const execAsync = promisify(exec);
 const SIDECAR_PATH = join(process.cwd(), 'src-tauri', 'binaries', 'node-x86_64-pc-windows-msvc.exe');
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 500;
-const CARGO_TARGET_DIR = 'C:/Users/User/.cargo/volt-target';
+const CARGO_TARGET_DIR = join(process.cwd(), '.cargo-target');
 const BUILD_DIR = join(CARGO_TARGET_DIR, 'debug', 'build');
 
 async function killByPattern(pattern) {
@@ -46,7 +46,11 @@ async function canAccessSidecar() {
   try {
     await access(SIDECAR_PATH, constants.W_OK);
     return true;
-  } catch {
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      // File doesn't exist, so it's not locked.
+      return true;
+    }
     return false;
   }
 }
@@ -87,32 +91,33 @@ async function cleanupBuildArtifacts() {
 
 async function main() {
   console.log('[cleanup] Killing stale dev processes...');
-  
+
   // Kill processes by path patterns
+  await killByPattern('.cargo-target');
   await killByPattern('volt\\\\src-tauri\\\\target');
   await killByPattern('volt\\\\src-tauri\\\\binaries');
   await killByPattern('volt.exe');
-  
+
   // Also kill any orphaned esbuild/vite processes from previous dev sessions
   // These can hold file handles open
   await killByName('esbuild');
-  
+
   // Wait for file handles to be released
   await new Promise(r => setTimeout(r, 300));
 
   // Cleanup build artifacts that can remain locked on Windows
   await cleanupBuildArtifacts();
-  
+
   // Verify sidecar is accessible with retries
   for (let i = 0; i < MAX_RETRIES; i++) {
     if (await canAccessSidecar()) {
       console.log('[cleanup] Sidecar is accessible');
       break;
     }
-    
+
     if (i < MAX_RETRIES - 1) {
       console.log(`[cleanup] Sidecar still locked, retrying (${i + 1}/${MAX_RETRIES})...`);
-      
+
       // More aggressive kill on retry
       await killByPattern('node');
       await new Promise(r => setTimeout(r, RETRY_DELAY));
@@ -120,7 +125,7 @@ async function main() {
       console.log('[cleanup] Warning: Sidecar may still be locked');
     }
   }
-  
+
   console.log('[cleanup] Done');
 }
 

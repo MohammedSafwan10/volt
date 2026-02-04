@@ -859,7 +859,13 @@
     const normalizedSelections = selected.map((p) => p.replace(/\\/g, "/"));
     for (const f of editorStore.openFiles) {
       const normalizedFilePath = f.path.replace(/\\/g, "/");
-      if (normalizedSelections.some((sel) => normalizedFilePath === sel || normalizedFilePath.startsWith(sel + "/"))) {
+      if (
+        normalizedSelections.some(
+          (sel) =>
+            normalizedFilePath === sel ||
+            normalizedFilePath.startsWith(sel + "/"),
+        )
+      ) {
         filesToClose.push(f.path);
       }
     }
@@ -1046,7 +1052,7 @@
         class="context-item"
         role="menuitem"
         type="button"
-        onclick={() => void handleExpandFolder(contextNode)}
+        onclick={() => contextNode && void handleExpandFolder(contextNode)}
       >
         <UIIcon name="expand-all" size={16} />
         <span>Expand (Level 2)</span>

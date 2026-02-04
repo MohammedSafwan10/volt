@@ -473,11 +473,19 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
     // Get MCP tools info for system prompt
     const { mcpStore } = await import("$lib/stores/mcp.svelte");
-    const mcpToolsInfo = mcpStore.tools.map(({ serverId, tool }) => ({
-      serverId,
-      toolName: tool.name,
-      description: tool.description,
-    }));
+    const mcpToolsInfo = mcpStore.tools.map(({ serverId, tool }) => {
+      const required = (tool.inputSchema as any)?.required || [];
+      const description = tool.description || `MCP tool from ${serverId}`;
+      const fullDesc =
+        required.length > 0
+          ? `${description} (Required: ${required.join(", ")})`
+          : description;
+      return {
+        serverId,
+        toolName: tool.name,
+        description: fullDesc,
+      };
+    });
 
     let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
@@ -705,15 +713,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         result: { success: boolean; output?: string; error?: string };
       }>[] = [];
       // Queue for sequential file edits - edits to the same file run one after another
-        const fileEditQueues = new Map<
-          string,
-          Array<{
-            id: string;
-            name: string;
-            args: Record<string, unknown>;
-            queueIndex: number;
-          }>
-        >();
+      const fileEditQueues = new Map<
+        string,
+        Array<{
+          id: string;
+          name: string;
+          args: Record<string, unknown>;
+          queueIndex: number;
+        }>
+      >();
       // If the model emits an invalid tool call (e.g. missing required args/meta),
       // we must NOT leave it in a pending state (can deadlock approvals).
       const immediateResults: Array<{
@@ -1105,7 +1113,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             const results: Array<{
               id: string;
               name: string;
-              result: { success: boolean; output?: string; error?: string; meta?: any };
+              result: {
+                success: boolean;
+                output?: string;
+                error?: string;
+                meta?: any;
+              };
             }> = [];
 
             for (const edit of edits) {
@@ -1163,7 +1176,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                     const highlightPath = applyReviewHighlight(metaAny);
                     if (highlightPath) {
                       assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                        meta: { ...metaAny, reviewHighlightPath: highlightPath },
+                        meta: {
+                          ...metaAny,
+                          reviewHighlightPath: highlightPath,
+                        },
                       });
                     }
                   }

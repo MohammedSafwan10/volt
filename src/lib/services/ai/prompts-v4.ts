@@ -695,10 +695,13 @@ function buildMcpSection(mcpTools: Array<{ serverId: string; toolName: string; d
     byServer.set(tool.serverId, existing);
   }
 
-  let section = `# MCP TOOLS\n\n${mcpTools.length} external tools:\n\n`;
+  let section = `# MCP TOOLS\n\nYou have access to ${mcpTools.length} external tools from MCP servers. These tools MUST be called with their exact required parameters.\n\n`;
   for (const [serverId, tools] of byServer) {
-    section += `**${serverId}:** `;
-    section += tools.map(t => `mcp_${serverId}_${t.toolName}`).join(', ');
+    section += `### Server: ${serverId}\n`;
+    for (const t of tools) {
+      const toolFullName = `mcp_${serverId}_${t.toolName.replace(/-/g, '_')}`;
+      section += `- **${toolFullName}**: ${t.description || 'No description provided.'}\n`;
+    }
     section += '\n';
   }
   return section;
