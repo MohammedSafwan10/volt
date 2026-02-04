@@ -59,13 +59,14 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       supportsStreaming: true,
       supportsTools: true,
       supportsJsonSchema: true,
-      maxContextHint: 128000
+      maxContextHint: 256000
     },
     models: [
       // Best free models with function calling support
       'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
       'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
-      'mistralai/devstral-2512:free'       // Devstral - coding focused
+      'mistralai/devstral-2512:free',      // Devstral - coding focused
+      'stepfun/step-3.5-flash:free'        // StepFun 3.5 Flash - 256K context
     ],
     defaultModel: 'qwen/qwen3-coder:free'
   }

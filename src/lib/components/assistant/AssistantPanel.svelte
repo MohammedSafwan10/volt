@@ -20,6 +20,7 @@
   import { showToast } from "$lib/stores/toast.svelte";
   import { aiSettingsStore, type AIMode } from "$lib/stores/ai.svelte";
   import {
+    sendChat,
     streamChat,
     type ChatMessage,
     type ContentPart,
@@ -53,10 +54,151 @@
   let confirmRevertOpen = $state(false);
   let revertMetadata = $state<any[]>([]);
   let pendingRevertId = $state<string | null>(null);
-  let selectedImage = $state<{ data: string; label: string } | null>(null);
+  let selectedImage = $state<{
+    data: string;
+    label: string;
+    mimeType: "image/png" | "image/jpeg" | "image/webp";
+  } | null>(null);
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
+
+  const CONTEXT_WARN_PCT = 80;
+  const CONTEXT_SUMMARY_PCT = 90;
+  const SUMMARY_KEEP_MESSAGES = 12;
+  const SUMMARY_MAX_TOKENS = 1200;
+  const SUMMARY_TEMPERATURE = 0.2;
+
+  let hasContextWarned = $state(false);
+  let isAutoSummarizing = $state(false);
+  let lastConversationId: string | null = null;
+
+  $effect(() => {
+    const currentId = assistantStore.currentConversation?.id ?? null;
+    if (currentId && currentId !== lastConversationId) {
+      hasContextWarned = false;
+      lastConversationId = currentId;
+    }
+  });
+
+  function formatMessageForSummary(
+    msg: (typeof assistantStore.messages)[number],
+  ): string {
+    if (msg.role === "system") {
+      return `SYSTEM: ${msg.content}`;
+    }
+    if (msg.role === "tool") {
+      const toolLines = (msg.toolCalls || []).map((tc) => {
+        const output = tc.output ?? tc.error ?? "No output";
+        return `TOOL ${tc.name} (${tc.status}): ${output}`;
+      });
+      return toolLines.join("\n");
+    }
+    if (msg.role === "assistant") {
+      return `ASSISTANT: ${msg.content || ""}`.trim();
+    }
+    return `USER: ${msg.content || ""}`.trim();
+  }
+
+  function buildSummaryInput(
+    messages: (typeof assistantStore.messages)[number][],
+    existingSummary?: string,
+  ): string {
+    const transcript = messages
+      .map((m) => formatMessageForSummary(m))
+      .filter(Boolean)
+      .join("\n");
+
+    const summaryHeader = existingSummary
+      ? `Existing summary (update it, do NOT repeat verbatim):\n${existingSummary}\n\n`
+      : "";
+
+    return (
+      `${summaryHeader}Summarize the conversation segment below in a structured, factual format.\n\n` +
+      `Format:\n` +
+      `Goals:\n- ...\n` +
+      `Key Decisions:\n- ...\n` +
+      `Files Changed:\n- path — what/why\n` +
+      `Open TODOs:\n- ...\n` +
+      `Constraints/Preferences:\n- ...\n` +
+      `Risks/Unknowns:\n- ...\n\n` +
+      `Rules:\n- Use facts only. If uncertain, write "Unknown".\n` +
+      `- Include file paths and tool outputs when relevant.\n` +
+      `- Keep it compact and precise.\n\n` +
+      `Conversation segment:\n${transcript}`
+    );
+  }
+
+  async function autoSummarizeIfNeeded(
+    selectedModel: string,
+    controller: AbortController,
+  ): Promise<void> {
+    if (isAutoSummarizing) return;
+
+    const usage = assistantStore.getContextUsage(selectedModel);
+
+    if (
+      usage.percentage >= CONTEXT_WARN_PCT &&
+      usage.percentage < CONTEXT_SUMMARY_PCT
+    ) {
+      if (!hasContextWarned) {
+        hasContextWarned = true;
+        showToast({
+          message: "Context nearing limit — auto-summary will run soon.",
+          type: "warning",
+        });
+      }
+      return;
+    }
+
+    if (usage.percentage < CONTEXT_SUMMARY_PCT) return;
+
+    const summaryMsg = assistantStore.messages.find(
+      (m) => m.role === "system" && m.isSummary,
+    );
+
+    const nonSystem = assistantStore.messages.filter(
+      (m) => m.role !== "system",
+    );
+    if (nonSystem.length <= SUMMARY_KEEP_MESSAGES) return;
+
+    const toSummarize = nonSystem.slice(0, -SUMMARY_KEEP_MESSAGES);
+    if (toSummarize.length < 4) return;
+
+    isAutoSummarizing = true;
+    showToast({ message: "Compressing older context…", type: "info" });
+
+    try {
+      const summaryInput = buildSummaryInput(toSummarize, summaryMsg?.content);
+
+      const response = await sendChat(
+        {
+          messages: [{ role: "user", content: summaryInput }],
+          temperature: SUMMARY_TEMPERATURE,
+          maxTokens: SUMMARY_MAX_TOKENS,
+        },
+        assistantStore.currentMode,
+        controller.signal,
+      );
+
+      const summaryText = response.content?.trim();
+      if (!summaryText) {
+        showToast({
+          message: "Auto-summary failed (empty result).",
+          type: "error",
+        });
+        return;
+      }
+
+      assistantStore.summarizeConversation(summaryText, SUMMARY_KEEP_MESSAGES);
+      showToast({ message: "Summary updated.", type: "success" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast({ message: `Auto-summary failed: ${msg}`, type: "error" });
+    } finally {
+      isAutoSummarizing = false;
+    }
+  }
 
   $effect(() => {
     if (assistantStore.panelOpen && inputRef) {
@@ -168,6 +310,10 @@
     const out: ChatMessage[] = [];
 
     for (const msg of messages) {
+      if (msg.role === "system") {
+        out.push({ role: "system", content: msg.content });
+        continue;
+      }
       // Handle tool messages - convert to function response
       // These are the results of tool executions that need to go back to the model
       if (msg.role === "tool" && msg.toolCalls && msg.toolCalls.length > 0) {
@@ -300,7 +446,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     if (!content && assistantStore.pendingAttachments.length === 0) return;
 
     // Add to input history for Up/Down arrow navigation
-    assistantStore.addToHistory(content);
+    assistantStore.addToHistory(content, [
+      ...assistantStore.pendingAttachments,
+    ]);
 
     // Cancel any existing stream (cancel-by-default policy)
     if (assistantStore.isStreaming) {
@@ -350,6 +498,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     // Get tools for current mode (includes MCP tools in agent mode)
     const tools = getAllToolsForMode(assistantStore.currentMode);
 
+    // Auto-summary check (warn at 80%, summarize at 90%)
+    await autoSummarizeIfNeeded(selectedModel, controller);
+
     // Tool loop: keep streaming until model finishes without tool calls
     try {
       await runToolLoop(systemPrompt, tools, controller);
@@ -396,7 +547,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           contentParts: msg.contentParts,
           thinking: msg.thinking,
           smartContextBlock: msg.smartContextBlock,
-          contextMentions: msg.contextMentions
+          contextMentions: msg.contextMentions,
+          isSummary: msg.isSummary,
         });
 
         try {
@@ -553,14 +705,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         result: { success: boolean; output?: string; error?: string };
       }>[] = [];
       // Queue for sequential file edits - edits to the same file run one after another
-      const fileEditQueues = new Map<
-        string,
-        Array<{
-          id: string;
-          name: string;
-          args: Record<string, unknown>;
-        }>
-      >();
+        const fileEditQueues = new Map<
+          string,
+          Array<{
+            id: string;
+            name: string;
+            args: Record<string, unknown>;
+            queueIndex: number;
+          }>
+        >();
       // If the model emits an invalid tool call (e.g. missing required args/meta),
       // we must NOT leave it in a pending state (can deadlock approvals).
       const immediateResults: Array<{
@@ -658,9 +811,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             }
 
             if (readyForResult && !resultPrefixAdded) {
-              const prefix = fullContent.trim().length > 0
-                ? "\n\nResult:\n"
-                : "Result:\n";
+              const prefix =
+                fullContent.trim().length > 0 ? "\n\nResult:\n" : "Result:\n";
               const textToAppend = prefix + chunk.content;
               iterationContent += textToAppend;
               assistantStore.appendTextToMessage(msgId, textToAppend, true);
@@ -687,7 +839,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             toolCallSeenThisIteration = true;
             hasToolsInConversation = true;
             if (!intentPrefixed && fullContent.trim().length === 0) {
-              const currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+              const currentMsg = assistantStore.messages.find(
+                (m) => m.id === msgId,
+              );
               if (currentMsg?.content?.trim()) {
                 assistantStore.prefixFirstTextPart(msgId, "Intent:\n");
                 iterationContent = "Intent:\n" + iterationContent;
@@ -849,19 +1003,26 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               const rawFilePath = isFileEdit
                 ? String(toolCallArgs.path || "")
                 : "";
-              const filePath = isFileEdit && rawFilePath
-                ? normalizeQueueKey(rawFilePath)
-                : null;
+              const filePath =
+                isFileEdit && rawFilePath
+                  ? normalizeQueueKey(rawFilePath)
+                  : null;
 
               // Group file edits by path for sequential execution
               if (isFileEdit && filePath) {
                 if (!fileEditQueues.has(filePath)) {
                   fileEditQueues.set(filePath, []);
                 }
-                fileEditQueues.get(filePath)!.push({
+                const queue = fileEditQueues.get(filePath)!;
+                const queueIndex = queue.length + 1;
+                queue.push({
                   id: toolCallId,
                   name: toolCallName,
                   args: toolCallArgs,
+                  queueIndex,
+                });
+                assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                  meta: { editPhase: "queued", queueIndex },
                 });
               } else if (isTerminalCommand) {
                 // Terminal commands are handled by the approval flow (toolsNeedingApproval)
@@ -938,96 +1099,104 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Execute file edits SEQUENTIALLY per file path
         // This prevents race conditions where multiple str_replace calls to the same file
         // fail because the file content changed between reads
-        const fileEditResults: Array<{
-          id: string;
-          name: string;
-          result: {
-            success: boolean;
-            output?: string;
-            error?: string;
-            meta?: any;
-          };
-        }> = [];
+        const fileEditPromises = Array.from(fileEditQueues.entries()).map(
+          async ([filePath, edits]) => {
+            let previousFailed = false;
+            const results: Array<{
+              id: string;
+              name: string;
+              result: { success: boolean; output?: string; error?: string; meta?: any };
+            }> = [];
 
-        for (const [filePath, edits] of fileEditQueues) {
-          let previousFailed = false;
-
-          for (const edit of edits) {
-            // If a previous edit to this file failed, skip remaining edits
-            if (previousFailed) {
-              assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                status: "failed",
-                error: "Skipped: A previous edit to this file failed.",
-                endTime: Date.now(),
-              });
-              fileEditResults.push({
-                id: edit.id,
-                name: edit.name,
-                result: {
-                  success: false,
+            for (const edit of edits) {
+              // If a previous edit to this file failed, skip remaining edits
+              if (previousFailed) {
+                assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                  status: "failed",
                   error: "Skipped: A previous edit to this file failed.",
-                },
-              });
-              continue;
-            }
+                  endTime: Date.now(),
+                  meta: { editPhase: "failed", queueIndex: edit.queueIndex },
+                });
+                results.push({
+                  id: edit.id,
+                  name: edit.name,
+                  result: {
+                    success: false,
+                    error: "Skipped: A previous edit to this file failed.",
+                  },
+                });
+                continue;
+              }
 
-            // Update UI to show running
-            assistantStore.updateToolCallInMessage(msgId, edit.id, {
-              status: "running" as const,
-              startTime: Date.now(),
-            });
-
-            try {
-              const result = await executeToolCall(edit.name, edit.args, {
-                signal: controller.signal,
-              });
-
+              // Update UI to show writing in progress
               assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                status: result.success ? "completed" : "failed",
-                output: result.output,
-                error: result.error,
-                meta: result.meta,
-                data: result.data,
-                endTime: Date.now(),
+                status: "running" as const,
+                startTime: Date.now(),
+                meta: { editPhase: "writing", queueIndex: edit.queueIndex },
               });
 
-              // Apply review highlight if we have line info
-              if (result.success && result.meta) {
-                const metaAny: any = result.meta;
-                if (
-                  metaAny?.fileEdit &&
-                  typeof metaAny?.fileEdit?.firstChangedLine === "number"
-                ) {
-                  const highlightPath = applyReviewHighlight(metaAny);
-                  if (highlightPath) {
-                    assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                      meta: { ...metaAny, reviewHighlightPath: highlightPath },
-                    });
+              try {
+                const result = await executeToolCall(edit.name, edit.args, {
+                  signal: controller.signal,
+                });
+
+                assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                  status: result.success ? "completed" : "failed",
+                  output: result.output,
+                  error: result.error,
+                  meta: {
+                    ...(result.meta || {}),
+                    editPhase: result.success ? "done" : "failed",
+                    queueIndex: edit.queueIndex,
+                  },
+                  data: result.data,
+                  endTime: Date.now(),
+                });
+
+                // Apply review highlight if we have line info
+                if (result.success && result.meta) {
+                  const metaAny: any = result.meta;
+                  if (
+                    metaAny?.fileEdit &&
+                    typeof metaAny?.fileEdit?.firstChangedLine === "number"
+                  ) {
+                    const highlightPath = applyReviewHighlight(metaAny);
+                    if (highlightPath) {
+                      assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                        meta: { ...metaAny, reviewHighlightPath: highlightPath },
+                      });
+                    }
                   }
                 }
-              }
 
-              fileEditResults.push({ id: edit.id, name: edit.name, result });
+                results.push({ id: edit.id, name: edit.name, result });
 
-              if (!result.success) {
+                if (!result.success) {
+                  previousFailed = true;
+                }
+              } catch (err) {
+                const error = err instanceof Error ? err.message : String(err);
+                assistantStore.updateToolCallInMessage(msgId, edit.id, {
+                  status: "failed",
+                  error,
+                  endTime: Date.now(),
+                  meta: { editPhase: "failed", queueIndex: edit.queueIndex },
+                });
+                results.push({
+                  id: edit.id,
+                  name: edit.name,
+                  result: { success: false, error },
+                });
                 previousFailed = true;
               }
-            } catch (err) {
-              const error = err instanceof Error ? err.message : String(err);
-              assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                status: "failed",
-                error,
-                endTime: Date.now(),
-              });
-              fileEditResults.push({
-                id: edit.id,
-                name: edit.name,
-                result: { success: false, error },
-              });
-              previousFailed = true;
             }
-          }
-        }
+
+            return results;
+          },
+        );
+
+        const fileEditResultsNested = await Promise.all(fileEditPromises);
+        const fileEditResults = fileEditResultsNested.flat();
 
         // Combine all results
         const allEagerResults = [...eagerResults, ...fileEditResults];
@@ -2059,7 +2228,7 @@ Start implementing now. Work through each step carefully.`;
   const currentChatTitle = $derived.by(() => {
     const activeId = chatHistoryStore.activeConversationId;
     if (!activeId) return "New Chat";
-    const conv = chatHistoryStore.conversations.find(c => c.id === activeId);
+    const conv = chatHistoryStore.conversations.find((c) => c.id === activeId);
     return conv?.title || "New Chat";
   });
 </script>
@@ -2071,10 +2240,7 @@ Start implementing now. Work through each step carefully.`;
       <div class="header-icon">
         <UIIcon name="comment" size={14} />
       </div>
-      <span
-        class="header-title"
-        title={currentChatTitle}
-      >
+      <span class="header-title" title={currentChatTitle}>
         {currentChatTitle}
       </span>
     </div>
@@ -2141,13 +2307,15 @@ Start implementing now. Work through each step carefully.`;
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <img
-                src="data:image/png;base64,{preview.thumbnailData}"
+                src="data:{preview.mimeType ??
+                  'image/png'};base64,{preview.thumbnailData}"
                 alt={preview.label}
                 class="attachment-thumbnail"
                 onclick={() =>
                   (selectedImage = {
                     data: preview.thumbnailData!,
                     label: preview.label,
+                    mimeType: preview.mimeType ?? "image/png",
                   })}
                 style="cursor: pointer;"
               />
@@ -2215,7 +2383,12 @@ Start implementing now. Work through each step carefully.`;
       value={assistantStore.inputValue}
       isStreaming={assistantStore.isStreaming}
       currentMode={assistantStore.currentMode}
-      onInput={(v) => assistantStore.setInputValue(v)}
+      onInput={(v, source, attachments) => {
+        assistantStore.setInputValue(v, source);
+        if (attachments) {
+          assistantStore.setPendingAttachments(attachments);
+        }
+      }}
       onSend={handleSend}
       onStop={handleStop}
       onModeChange={handleModeChange}
@@ -2258,7 +2431,7 @@ Start implementing now. Work through each step carefully.`;
         <UIIcon name="close" size={20} />
       </button>
       <img
-        src="data:image/png;base64,{selectedImage.data}"
+        src="data:{selectedImage.mimeType};base64,{selectedImage.data}"
         alt={selectedImage.label}
         class="image-modal-img"
       />

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { UIIcon } from "$lib/components/ui";
   import type {
     AssistantMessage,
@@ -8,6 +9,7 @@
     FolderAttachment,
     SelectionAttachment,
   } from "$lib/stores/assistant.svelte";
+  import { showToast } from "$lib/stores/toast.svelte";
 
   interface Props {
     message: AssistantMessage;
@@ -24,6 +26,9 @@
     onImageClick,
     onRevert,
   }: Props = $props();
+
+  let copyStatus = $state<"idle" | "copied">("idle");
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const images = $derived(
     (message.attachments ?? []).filter(
@@ -57,11 +62,38 @@
 
   const isLong = $derived(message.content.length > 500);
 
+  onDestroy(() => {
+    if (copyTimeout) {
+      clearTimeout(copyTimeout);
+    }
+  });
+
   function formatTime(ts: number): string {
     return new Date(ts).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  async function handleCopyMessage(): Promise<void> {
+    const text = message.content?.trim() || "";
+    if (!text) {
+      showToast({ message: "Nothing to copy", type: "warning" });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      copyStatus = "copied";
+      if (copyTimeout) clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(() => {
+        copyStatus = "idle";
+      }, 1500);
+    } catch (err) {
+      showToast({
+        message: err instanceof Error ? err.message : "Failed to copy",
+        type: "error",
+      });
+    }
   }
 </script>
 
@@ -150,19 +182,30 @@
       {/if}
     {/if}
 
-    <div class="bubble-footer">
-      <span class="bubble-time">{formatTime(message.timestamp)}</span>
-      {#if onRevert}
+    <div class="message-meta">
+      <span class="meta-time">{formatTime(message.timestamp)}</span>
+      <div class="meta-actions">
         <button
-          class="revert-btn"
-          onclick={() => onRevert(message.id)}
-          title="Revert to this message (undoes all subsequent AI changes)"
+          class="copy-btn"
+          onclick={handleCopyMessage}
+          title="Copy message"
           type="button"
-          aria-label="Revert"
+          aria-label="Copy message"
         >
-          <UIIcon name="undo" size={14} />
+          <UIIcon name={copyStatus === "copied" ? "check" : "copy"} size={14} />
         </button>
-      {/if}
+        {#if onRevert}
+          <button
+            class="revert-btn"
+            onclick={() => onRevert(message.id)}
+            title="Revert to this message (undoes all subsequent AI changes)"
+            type="button"
+            aria-label="Revert"
+          >
+            <UIIcon name="undo" size={14} />
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 </div>
@@ -204,18 +247,42 @@
     letter-spacing: -0.01em;
   }
 
-  .bubble-time {
+  .message-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 6px;
+    gap: 10px;
+  }
+
+  .meta-time {
     font-size: 10px;
     color: var(--color-text-secondary);
     opacity: 0.6;
   }
 
-  .bubble-footer {
+  .meta-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0.9;
+    transition: opacity 0.15s ease;
+  }
+
+  .copy-btn {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    margin-top: 4px;
-    gap: 8px;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 2px;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0.9;
+    margin-right: -4px;
+    margin-bottom: -2px;
   }
 
   .revert-btn {
@@ -229,15 +296,12 @@
     color: inherit;
     cursor: pointer;
     transition: all 0.15s ease;
-    opacity: 0;
+    opacity: 0.9;
     margin-right: -4px;
     margin-bottom: -2px;
   }
 
-  .user-bubble:hover .revert-btn {
-    opacity: 0.8;
-  }
-
+  .copy-btn:hover,
   .revert-btn:hover {
     opacity: 1 !important;
     background: rgba(0, 0, 0, 0.2);

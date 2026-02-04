@@ -13,6 +13,7 @@
   import EmptyState from "./EmptyState.svelte";
   import UserMessage from "./UserMessage.svelte";
   import AssistantMessageRow from "./AssistantMessageRow.svelte";
+  import SystemMessage from "./SystemMessage.svelte";
   import ImagePreviewModal from "./ImagePreviewModal.svelte";
 
   interface Props {
@@ -233,6 +234,8 @@
             {onToolDeny}
             elapsedTime={getMessageElapsedTime(message, msgIdx)}
           />
+        {:else if message.role === "system"}
+          <SystemMessage {message} />
         {/if}
       {/each}
     {/if}

@@ -15,7 +15,11 @@
     value: string;
     isStreaming: boolean;
     currentMode: AIMode;
-    onInput: (value: string) => void;
+    onInput: (
+      value: string,
+      source?: "user" | "history",
+      attachments?: typeof assistantStore.pendingAttachments,
+    ) => void;
     onSend: () => void;
     onStop: () => void;
     onModeChange: (mode: AIMode) => void;
@@ -151,10 +155,14 @@
       // Only navigate history if at the beginning of the textarea or if single line
       const isAtStart = inputRef ? inputRef.selectionStart === 0 : true;
       if (isAtStart) {
-        const historyValue = assistantStore.navigateHistory("up");
-        if (historyValue !== null) {
+        const historyEntry = assistantStore.navigateHistory("up");
+        if (historyEntry !== null) {
           e.preventDefault();
-          onInput(historyValue);
+          onInput(
+            historyEntry.content,
+            "history",
+            historyEntry.attachments,
+          );
           // Wait for DOM to update then move cursor to end
           setTimeout(() => {
             if (inputRef) {
@@ -172,10 +180,20 @@
         ? inputRef.selectionEnd === inputRef.value.length
         : true;
       if (isAtEnd) {
-        const historyValue = assistantStore.navigateHistory("down");
-        if (historyValue !== null) {
+        const historyEntry = assistantStore.navigateHistory("down");
+        if (historyEntry !== null) {
           e.preventDefault();
-          onInput(historyValue);
+          onInput(
+            historyEntry.content,
+            "history",
+            historyEntry.attachments,
+          );
+          setTimeout(() => {
+            if (inputRef) {
+              const len = inputRef.value.length;
+              inputRef.setSelectionRange(len, len);
+            }
+          }, 0);
         }
       }
     }
@@ -205,7 +223,7 @@
   function handleInput(e: Event): void {
     const target = e.target as HTMLTextAreaElement;
     const newValue = target.value;
-    onInput(newValue);
+    onInput(newValue, "user");
     autoResize(target);
 
     // Detect @ mentions

@@ -16,7 +16,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$lib/services/file-service';
 
 // Message roles
-export type MessageRole = 'user' | 'assistant' | 'tool';
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
 // Tool call status
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -76,6 +76,8 @@ export interface AssistantMessage {
   inlineToolCalls?: ToolCall[];
   // Ordered content parts for interleaved text + tool rendering (like Kiro)
   contentParts?: ContentPart[];
+  // System summary marker (for auto-summary)
+  isSummary?: boolean;
   // Reference context block (hidden from UI, sent to provider)
   smartContextBlock?: string;
   // User-selected mentions from @ menu (shown as chips)
@@ -343,9 +345,10 @@ class AssistantStore {
   // Input state
   inputValue = $state("");
   attachedContext = $state<AttachedContext[]>([]);
-  inputHistory = $state<string[]>([]);
+  inputHistory = $state<Array<{ content: string; attachments: MessageAttachment[] }>>([]);
   historyIndex = $state(-1); // -1 means current draft
   draftValue = $state(""); // Stores what the user was typing before navigating history
+  draftAttachments = $state<MessageAttachment[]>([]);
 
   // New attachment model
   pendingAttachments = $state<MessageAttachment[]>([]);
@@ -397,7 +400,7 @@ class AssistantStore {
       messages: []
     };
     this.saveCurrentConversationId();
-    
+
     // Immediately notify chat history store of the new active ID
     // The conversation will be persisted when the first message is sent
     import('./chat-history.svelte').then(({ chatHistoryStore }) => {
@@ -448,6 +451,7 @@ class AssistantStore {
           if (meta.attachments) base.attachments = meta.attachments;
           if (meta.toolCalls) base.toolCalls = meta.toolCalls;
           if (meta.inlineToolCalls) base.inlineToolCalls = meta.inlineToolCalls;
+          if (meta.isSummary) base.isSummary = true;
           // Only restore contentParts if it's a non-empty array
           if (meta.contentParts && Array.isArray(meta.contentParts) && meta.contentParts.length > 0) {
             base.contentParts = meta.contentParts;
@@ -534,11 +538,11 @@ class AssistantStore {
             const offsetB = (b.meta as any)?.textOffset ?? Infinity;
             return offsetA - offsetB;
           });
-          
+
           let lastOffset = 0;
           for (const tc of sortedCalls) {
             const offset = (tc.meta as any)?.textOffset ?? base.content.length;
-            
+
             // Add text segment before this tool
             if (offset > lastOffset) {
               const textSegment = base.content.slice(lastOffset, offset);
@@ -546,12 +550,12 @@ class AssistantStore {
                 parts.push({ type: 'text', text: textSegment });
               }
             }
-            
+
             // Add tool call
             parts.push({ type: 'tool', toolCall: tc });
             lastOffset = offset;
           }
-          
+
           // Add remaining text after last tool
           if (lastOffset < base.content.length) {
             const remainingText = base.content.slice(lastOffset);
@@ -677,38 +681,48 @@ class AssistantStore {
   }
 
   // History management
-  addToHistory(value: string): void {
+  addToHistory(value: string, attachments: MessageAttachment[] = []): void {
     if (!value.trim()) return;
-    // Don't add duplicate consecutive entries
-    if (this.inputHistory[this.inputHistory.length - 1] === value) return;
-    this.inputHistory = [...this.inputHistory, value];
+    // Don't add duplicate consecutive entries by content
+    if (this.inputHistory[this.inputHistory.length - 1]?.content === value) return;
+    this.inputHistory = [
+      ...this.inputHistory,
+      { content: value, attachments: [...attachments] },
+    ];
     this.historyIndex = -1;
     this.draftValue = "";
+    this.draftAttachments = [];
   }
 
-  navigateHistory(direction: "up" | "down"): string | null {
+  navigateHistory(
+    direction: "up" | "down",
+  ): { content: string; attachments: MessageAttachment[] } | null {
     if (this.inputHistory.length === 0) return null;
 
     if (direction === "up") {
       // First time pressing up, save the current draft
       if (this.historyIndex === -1) {
         this.draftValue = this.inputValue;
+        this.draftAttachments = [...this.pendingAttachments];
         this.historyIndex = this.inputHistory.length - 1;
       } else if (this.historyIndex > 0) {
         this.historyIndex--;
       }
-      return this.inputHistory[this.historyIndex];
+      return this.inputHistory[this.historyIndex] ?? null;
     } else {
       // Down
       if (this.historyIndex === -1) return null;
 
       if (this.historyIndex < this.inputHistory.length - 1) {
         this.historyIndex++;
-        return this.inputHistory[this.historyIndex];
+        return this.inputHistory[this.historyIndex] ?? null;
       } else {
         // Returned to draft
         this.historyIndex = -1;
-        return this.draftValue;
+        return {
+          content: this.draftValue,
+          attachments: [...this.draftAttachments],
+        };
       }
     }
   }
@@ -767,6 +781,62 @@ class AssistantStore {
     this.saveCurrentConversationId();
 
     return id;
+  }
+
+  /**
+   * Add a system message (used for conversation summaries)
+   */
+  addSystemMessage(content: string, isSummary = false): string {
+    const id = crypto.randomUUID();
+    const msg: AssistantMessage = {
+      id,
+      role: 'system',
+      content,
+      timestamp: Date.now(),
+      isSummary
+    };
+
+    if (isSummary) {
+      this.messages = [msg, ...this.messages];
+    } else {
+      this.messages = [...this.messages, msg];
+    }
+
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
+
+    return id;
+  }
+
+  /**
+   * Create or update the conversation summary message
+   */
+  upsertSummaryMessage(content: string): string {
+    const existing = this.messages.find(m => m.role === 'system' && m.isSummary);
+    if (existing) {
+      const updated = { ...existing, content, timestamp: Date.now(), isSummary: true };
+      this.messages = this.messages.map(m => m.id === existing.id ? updated : m);
+      if (this.currentConversation) {
+        this.currentConversation.messages = this.messages;
+      }
+      return existing.id;
+    }
+    return this.addSystemMessage(content, true);
+  }
+
+  /**
+   * Replace older messages with a summary + keep last N messages
+   */
+  summarizeConversation(summaryContent: string, keepLastMessages: number): void {
+    const summaryId = this.upsertSummaryMessage(summaryContent);
+    const summaryMsg = this.messages.find(m => m.id === summaryId);
+    const nonSystem = this.messages.filter(m => m.role !== 'system');
+    const keep = nonSystem.slice(-keepLastMessages);
+    this.messages = summaryMsg ? [summaryMsg, ...keep] : keep;
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
   }
 
   addAssistantMessage(content: string, isStreaming = false): string {
@@ -1218,7 +1288,14 @@ class AssistantStore {
             const lines = thinking.split('\n').filter(l => l.trim());
             if (lines.length > 0) {
               // Take first line, limit to 60 chars
-              title = lines[0].slice(0, 60);
+              title = lines[0]
+                .replace(/^\s*[-*•]+\s*/, '')
+                .replace(/^\s*#+\s*/, '')
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+                .trim()
+                .slice(0, 60);
               if (lines[0].length > 60) title += '...';
             }
 
@@ -1522,6 +1599,7 @@ class AssistantStore {
     dimensions?: string;
     isImage: boolean;
     thumbnailData?: string;
+    mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   }> {
     return this.pendingAttachments.map(a => {
       const base = {
@@ -1537,7 +1615,8 @@ class AssistantStore {
           ...base,
           size: `${(img.byteSize / 1024).toFixed(1)}KB`,
           dimensions: img.dimensions ? `${img.dimensions.width}×${img.dimensions.height}` : undefined,
-          thumbnailData: img.data // For preview
+          thumbnailData: img.data, // For preview
+          mimeType: img.mimeType
         };
       }
 
@@ -1745,8 +1824,18 @@ class AssistantStore {
   }
 
   // Input management
-  setInputValue(value: string): void {
+  setInputValue(value: string, source: 'user' | 'history' = 'user'): void {
     this.inputValue = value;
+    if (source === 'user' && this.historyIndex !== -1) {
+      // User started typing while browsing history - reset navigation
+      this.historyIndex = -1;
+      this.draftValue = value;
+      this.draftAttachments = [...this.pendingAttachments];
+    }
+  }
+
+  setPendingAttachments(attachments: MessageAttachment[]): void {
+    this.pendingAttachments = [...attachments];
   }
 
   // Helper to format message with context
@@ -1872,7 +1961,7 @@ class AssistantStore {
     content: string,
   ): ContentPart[] | undefined {
     if (!content && (!parts || parts.length === 0)) return parts;
-    
+
     // If parts already has text, preserve the existing order (critical for history restore)
     // Only aggregate text from all text parts and update the first one
     const hasText = parts?.some(p => p.type === 'text');
@@ -1881,7 +1970,7 @@ class AssistantStore {
       // but preserve the interleaved order
       return parts;
     }
-    
+
     // No text parts exist - need to add one
     const normalized = [...(parts || [])];
     if (content) {

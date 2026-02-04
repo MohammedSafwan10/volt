@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { UIIcon, Markdown } from "$lib/components/ui";
   import type {
     AssistantMessage,
@@ -9,7 +9,7 @@
   } from "$lib/stores/assistant.svelte";
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
-  import { openDiffView, openFullDiffView } from "$lib/services/diff-view";
+  import { openFullDiffView } from "$lib/services/diff-view";
   import { writeFile } from "$lib/services/file-system";
   import { showToast } from "$lib/stores/toast.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
@@ -28,6 +28,8 @@
 
   // Track reverted tool calls
   let revertedIds = $state<Set<string>>(new Set());
+  let copyStatus = $state<"idle" | "copied">("idle");
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Live timer for active thinking - updates every second
   let now = $state(Date.now());
@@ -58,6 +60,9 @@
   onDestroy(() => {
     if (timerInterval) {
       clearInterval(timerInterval);
+    }
+    if (copyTimeout) {
+      clearTimeout(copyTimeout);
     }
   });
 
@@ -170,6 +175,13 @@
     return `${minutes}m ${remainingSeconds}s`;
   }
 
+  function formatTime(ts: number): string {
+    return new Date(ts).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
   function groupFileEdits(
     parts: ContentPart[],
   ): Map<string, { primary: ToolCall; grouped: ToolCall[] }> {
@@ -222,9 +234,8 @@
     toolCall: ToolCall,
     allToolCalls?: ToolCall[],
   ): Promise<void> {
-    // If multiple tool calls provided (grouped edits), show combined diff
+    // Always prefer full diff (red/green). If content is missing, show a clear error.
     if (allToolCalls && allToolCalls.length > 1) {
-      // Get the first tool call's beforeContent as the original
       const firstMeta = allToolCalls[0].meta as
         | Record<string, unknown>
         | undefined;
@@ -235,12 +246,14 @@
         | string
         | undefined;
 
-      // Get the last tool call's afterContent as the final result
       const lastMeta = allToolCalls[allToolCalls.length - 1].meta as
         | Record<string, unknown>
         | undefined;
       const lastFileEdit = lastMeta?.fileEdit as
         | Record<string, unknown>
+        | undefined;
+      const modifiedContent = lastFileEdit?.afterContent as
+        | string
         | undefined;
 
       const path =
@@ -249,23 +262,26 @@
         "";
       const absolutePath = firstFileEdit?.absolutePath as string | undefined;
 
-      if (!path && !absolutePath) return;
+      if (
+        typeof originalContent !== "string" ||
+        typeof modifiedContent !== "string"
+      ) {
+        showToast({
+          message: "Cannot show diff: content not available",
+          type: "error",
+        });
+        return;
+      }
 
-      // Pass combined info - the diff view will show original vs final
-      await openDiffView(
-        {
-          path,
-          absolutePath,
-          originalContent,
-          // Use a combined ID for the grouped diff
-          toolCallIds: allToolCalls.map((tc) => tc.id),
-        },
-        `grouped-${allToolCalls.map((tc) => tc.id).join("-")}`,
-      );
+      openFullDiffView({
+        filePath: absolutePath || path,
+        originalContent,
+        modifiedContent,
+        toolCallId: `grouped-${allToolCalls.map((tc) => tc.id).join("-")}`,
+      });
       return;
     }
 
-    // Single tool call - show individual diff
     const meta = toolCall.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     const path =
@@ -273,13 +289,23 @@
       (fileEdit?.relativePath as string) ||
       "";
     const absolutePath = fileEdit?.absolutePath as string | undefined;
-    const firstChangedLine = fileEdit?.firstChangedLine as number | undefined;
-    const lastChangedLine = fileEdit?.lastChangedLine as number | undefined;
-    if (!path && !absolutePath) return;
-    await openDiffView(
-      { path, absolutePath, firstChangedLine, lastChangedLine },
-      toolCall.id,
-    );
+    const originalContent = fileEdit?.beforeContent as string | undefined;
+    const modifiedContent = fileEdit?.afterContent as string | undefined;
+
+    if (
+      typeof originalContent !== "string" ||
+      typeof modifiedContent !== "string"
+    ) {
+      showToast({ message: "Cannot show diff: content not available", type: "error" });
+      return;
+    }
+
+    openFullDiffView({
+      filePath: absolutePath || path,
+      originalContent,
+      modifiedContent,
+      toolCallId: toolCall.id,
+    });
   }
 
   /**
@@ -416,15 +442,86 @@
   }
 
   const contentParts = $derived(getContentParts(message));
+  function isTextPart(part: ContentPart): part is Extract<ContentPart, { type: "text" }> {
+    return part.type === "text";
+  }
+
+  const copyableText = $derived.by(() => {
+    const textChunks = contentParts
+      .filter(isTextPart)
+      .map((p) => p.text.trim())
+      .filter(Boolean);
+    if (textChunks.length > 0) return textChunks.join("\n\n");
+    return message.content?.trim() || "";
+  });
   const fileEditGroups = $derived(groupFileEdits(contentParts));
   const firstPendingTerminalId = $derived(getFirstPendingTerminalId());
 
   // Track manual toggle state for thinking blocks to avoid auto-reopening during streaming
-  let manualThinkingStates = $state<Record<number, boolean>>({});
+  let manualThinkingStates = $state<Record<string, boolean>>({});
+  let autoExpandThinking = $state(true);
 
-  function handleThinkingToggle(idx: number, event: Event) {
+  onMount(() => {
+    try {
+      const stored = localStorage.getItem("assistant.thinking.autoExpand");
+      if (stored === "false") autoExpandThinking = false;
+    } catch {
+      // ignore
+    }
+  });
+
+  function getThinkingKey(part: ContentPart, idx: number): string {
+    if (part.type !== "thinking") return `text-${idx}`;
+    const title = part.title ?? "";
+    const end = typeof part.endTime === "number" ? part.endTime : "active";
+    return `thinking:${part.startTime}:${end}:${title}`;
+  }
+
+  function handleThinkingToggle(key: string, event: Event) {
     const details = event.currentTarget as HTMLDetailsElement;
-    manualThinkingStates[idx] = details.open;
+    manualThinkingStates[key] = details.open;
+    autoExpandThinking = details.open;
+    try {
+      localStorage.setItem(
+        "assistant.thinking.autoExpand",
+        autoExpandThinking ? "true" : "false",
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  $effect(() => {
+    // Auto-close finished thinking blocks
+    const parts = getContentParts(message);
+    parts.forEach((part, i) => {
+      if (part.type === "thinking" && !part.isActive) {
+        const key = getThinkingKey(part, i);
+        if (manualThinkingStates[key] === undefined) {
+          manualThinkingStates[key] = false;
+        }
+      }
+    });
+  });
+
+  async function handleCopyMessage(): Promise<void> {
+    if (!copyableText) {
+      showToast({ message: "Nothing to copy", type: "warning" });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(copyableText);
+      copyStatus = "copied";
+      if (copyTimeout) clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(() => {
+        copyStatus = "idle";
+      }, 1500);
+    } catch (err) {
+      showToast({
+        message: err instanceof Error ? err.message : "Failed to copy",
+        type: "error",
+      });
+    }
   }
 </script>
 
@@ -433,17 +530,19 @@
     <div class="activity-thread">
       <div class="activity-spine"></div>
       <div class="activity-content">
-        {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? `thinking-${i}` : `text-${i}`)}
+        {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? getThinkingKey(part, i) : `text-${i}`)}
           <div class="activity-item">
             {#if part.type === "thinking"}
+              {@const thinkingKey = getThinkingKey(part, i)}
               <!-- Inline thinking block (Cursor-style - minimal) -->
               <details
                 class="inline-thinking"
-                open={manualThinkingStates[i] ?? part.isActive}
-                ontoggle={(e) => handleThinkingToggle(i, e)}
+                open={manualThinkingStates[thinkingKey] ??
+                  (autoExpandThinking ? part.isActive : false)}
+                ontoggle={(e) => handleThinkingToggle(thinkingKey, e)}
               >
                 <summary class="thinking-header">
-                  <div class="thinking-header-content">
+                  <div class="thinking-header-content" class:active={part.isActive}>
                     <span class="thinking-icon" class:active={part.isActive}>
                       <svg
                         width="12"
@@ -505,7 +604,6 @@
                     <FileEditCard
                       toolCall={part.toolCall}
                       groupedToolCalls={group?.grouped ?? []}
-                      onViewDiff={handleViewDiff}
                       onFullDiff={handleFullDiff}
                       onRevert={handleRevert}
                       onUndoRevert={handleUndoRevert}
@@ -556,13 +654,37 @@
       />
     {/if}
 
-    {#if !message.isStreaming && message.content}
-      {#if elapsedTime}
-        <div class="elapsed-time" title="Generation time">
-          <UIIcon name="clock" size={12} />
-          <span>{elapsedTime}</span>
+    {#if !message.isStreaming}
+      <div class="message-meta">
+        <div class="meta-left">
+          <span class="meta-time">{formatTime(message.timestamp)}</span>
+          {#if elapsedTime}
+            <span class="meta-pill" title="Generation time">
+              <UIIcon name="clock" size={12} />
+              <span>{elapsedTime}</span>
+            </span>
+          {/if}
         </div>
-      {/if}
+        {#if copyableText}
+          <div class="meta-actions">
+            <button
+              class="copy-btn"
+              onclick={handleCopyMessage}
+              title="Copy assistant text (excludes tool cards)"
+              type="button"
+              aria-label="Copy assistant text"
+            >
+              <UIIcon
+                name={copyStatus === "copied" ? "check" : "copy"}
+                size={12}
+              />
+              <span class="copy-label"
+                >{copyStatus === "copied" ? "Copied" : "Copy"}</span
+              >
+            </button>
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 </article>
@@ -664,15 +786,35 @@
     }
   }
 
-  .elapsed-time {
+  .message-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+    gap: 12px;
+  }
+
+  .meta-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 22px;
+  }
+
+  .meta-time {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    opacity: 0.7;
+  }
+
+  .meta-pill {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-top: 12px;
-    padding: 3px 10px;
+    padding: 2px 8px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--color-border);
-    border-radius: 20px;
+    border-radius: 12px;
     font-size: 11px;
     color: var(--color-text-secondary);
     opacity: 0.8;
@@ -680,12 +822,49 @@
     user-select: none;
   }
 
-  .elapsed-time:hover {
+  .meta-pill:hover {
     opacity: 1;
     background: rgba(255, 255, 255, 0.06);
     border-color: var(--color-accent);
     color: var(--color-text);
   }
+
+  .meta-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .message-row.assistant:hover .meta-actions {
+    opacity: 1;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .copy-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+
+  .copy-label {
+    line-height: 1;
+  }
+
 
   /* Inline thinking block (Cursor-style - transparent/minimal) */
   .inline-thinking {
@@ -708,6 +887,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .thinking-header-content.active .thinking-label {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.35) 0%,
+      rgba(255, 255, 255, 0.9) 45%,
+      rgba(255, 255, 255, 0.35) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: thinking-shimmer 1.6s linear infinite;
   }
   .thinking-icon {
     display: flex;
@@ -753,6 +945,14 @@
       content: "...";
     }
   }
+  @keyframes thinking-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
   @keyframes pulse {
     0%,
     100% {
@@ -770,6 +970,14 @@
     font-size: 11px;
     opacity: 0.6;
     font-weight: 400;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .thinking-header-content.active .thinking-label {
+      animation: none;
+      color: var(--color-text);
+      background: none;
+    }
   }
   .thinking-body {
     padding-left: 14px;

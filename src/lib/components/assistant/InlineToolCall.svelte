@@ -339,6 +339,8 @@
   );
   const isComplete = $derived(toolCall.status === "completed");
   const isFailed = $derived(toolCall.status === "failed");
+  const reuseMeta = $derived(toolCall.meta as Record<string, unknown> | undefined);
+  const reusedTerminal = $derived(Boolean(reuseMeta?.reused));
 
   // Check if this is a terminal command tool
   const isTerminalTool = $derived(
@@ -506,20 +508,30 @@
 
         <div class="terminal-meta">
           {#if isRunning}
-            <span class="status-pill running icon-only" title="Running">
+            <span class="status-pill running" title="Running">
               <span class="pulse-dot"></span>
+              <span class="status-text">Running</span>
             </span>
           {:else if isComplete}
-            <span class="status-pill success icon-only" title="Completed">
+            <span class="status-pill success" title="Completed">
               <UIIcon name="check" size={12} />
+              <span class="status-text">Done</span>
             </span>
           {:else if isFailed}
-            <span class="status-pill error icon-only" title="Failed">
+            <span class="status-pill error" title="Failed">
               <UIIcon name="error" size={12} />
+              <span class="status-text">Failed</span>
             </span>
           {:else if isPending}
-            <span class="status-pill pending icon-only" title="Approval Needed">
+            <span class="status-pill pending" title="Approval Needed">
               <UIIcon name="clock" size={12} />
+              <span class="status-text">Pending</span>
+            </span>
+          {/if}
+          {#if reusedTerminal}
+            <span class="status-pill reused" title="Reused running terminal">
+              <UIIcon name="refresh" size={12} />
+              <span class="status-text">Reused</span>
             </span>
           {/if}
           <span class="expand-caret" class:rotated={expanded}>
@@ -745,6 +757,13 @@
           </div>
         {/if}
 
+        {#if reusedTerminal}
+          <div class="detail-row">
+            <span class="detail-label">Status:</span>
+            <span class="detail-value">Reused existing running terminal</span>
+          </div>
+        {/if}
+
         {#if toolCall.output}
           <div class="detail-section">
             <span class="detail-label">Output:</span>
@@ -863,11 +882,9 @@
     font-weight: 500;
   }
 
-  .status-pill.icon-only {
-    padding: 0;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%; /* Circular for valid UI */
+  .status-text {
+    font-size: 11px;
+    line-height: 1;
   }
 
   .status-pill.running {
@@ -888,6 +905,11 @@
   .status-pill.pending {
     background: rgba(251, 191, 36, 0.15);
     color: #fbbf24;
+  }
+
+  .status-pill.reused {
+    background: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
   }
 
   .pulse-dot {
