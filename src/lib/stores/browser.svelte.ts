@@ -113,6 +113,10 @@ class BrowserStore {
   private boundsTimer: ReturnType<typeof setTimeout> | null = null;
   private lastBounds: BrowserBounds | null = null;
   private pendingBounds: BrowserBounds | null = null;
+  private webviewCreated = false;
+  private isCreatingWebview = false;
+  private lastSelectAt = 0;
+  private lastPickerToastAt = 0;
 
   private static STORAGE_KEY = 'volt-browser-url';
   private static BOOKMARKS_KEY = 'volt-browser-bookmarks';
@@ -194,6 +198,7 @@ class BrowserStore {
     this.findIndex = -1;
     this.responsiveMode = null;
     this.extractedContent = null;
+    this.webviewCreated = false;
 
     try {
       if (!this.initialized) {
@@ -243,6 +248,7 @@ class BrowserStore {
     this.findCount = 0;
     this.responsiveMode = null;
     this.extractedContent = null;
+    this.webviewCreated = false;
   }
 
   async setVisible(visible: boolean): Promise<void> {
@@ -576,12 +582,7 @@ class BrowserStore {
         }
       } else {
         // Disable element picker
-        try {
-          await invoke('cdp_disable_element_picker');
-        } catch { /* ignore */ }
-        try {
-          await invoke('browser_set_select_mode', { enabled: false });
-        } catch { /* ignore */ }
+        await this.disableSelectModeAfterPick();
         this.mode = 'normal';
         // DO NOT clear selectedElement here, so it stays visible in the panel
       }
@@ -603,6 +604,16 @@ class BrowserStore {
     this.selectedElement = null;
     // Clear the highlight in the browser
     this.clearSelectionHighlight();
+  }
+
+  private async disableSelectModeAfterPick(): Promise<void> {
+    if (!this.isOpen) return;
+    try {
+      await invoke('cdp_disable_element_picker');
+    } catch { /* ignore */ }
+    try {
+      await invoke('browser_set_select_mode', { enabled: false });
+    } catch { /* ignore */ }
   }
 
   /** Clear the selection highlight in the browser (without clearing selectedElement state) */
@@ -770,11 +781,13 @@ class BrowserStore {
       if (b.width < 50 || b.height < 50) return;
 
       try {
-        const state = await invoke<BrowserInfo>('browser_get_state');
-        
-        if (!state.is_open) {
+        if (!this.webviewCreated) {
+          if (this.isCreatingWebview) return;
+          this.isCreatingWebview = true;
           await invoke('browser_create', { url: this.url, bounds: b });
           this.status = 'ready';
+          this.webviewCreated = true;
+          this.isCreatingWebview = false;
         } else {
           await invoke('browser_set_bounds', { bounds: b });
         }
@@ -782,6 +795,8 @@ class BrowserStore {
         console.error('[Browser] Set bounds failed:', err);
         this.status = 'error';
         this.error = err instanceof Error ? err.message : String(err);
+        this.webviewCreated = false;
+        this.isCreatingWebview = false;
       }
     }, 30);
   }
@@ -800,8 +815,20 @@ class BrowserStore {
 
   private async setupListeners(): Promise<void> {
     const unlistenSelect = await listen<SelectedElement>('browser://element-selected', (event) => {
+      const now = Date.now();
+      if (now - this.lastSelectAt < 200) return;
+      this.lastSelectAt = now;
+      const wasSelecting = this.mode === 'select';
       this.selectedElement = event.payload;
       this.mode = 'normal'; // Auto-exit select mode when element is picked
+      void this.disableSelectModeAfterPick();
+      if (wasSelecting && now - this.lastPickerToastAt > 1200) {
+        this.lastPickerToastAt = now;
+        void (async () => {
+          const { showToast } = await import('./toast.svelte');
+          showToast({ message: 'Picker off', type: 'info' });
+        })();
+      }
     });
     this.unlisteners.push(unlistenSelect);
 
@@ -853,6 +880,7 @@ class BrowserStore {
     const unlistenClosed = await listen('browser://closed', () => {
       this.isOpen = false;
       this.status = 'idle';
+      this.webviewCreated = false;
     });
     this.unlisteners.push(unlistenClosed);
 

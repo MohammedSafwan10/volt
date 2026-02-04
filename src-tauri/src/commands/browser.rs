@@ -892,8 +892,11 @@ pub async fn browser_generate_code<R: Runtime>(
 #[tauri::command]
 pub async fn browser_element_selected<R: Runtime>(
     app: AppHandle<R>,
+    state: tauri::State<'_, BrowserState>,
     element: SelectedElement,
 ) -> Result<(), String> {
+    *state.select_mode.lock().unwrap() = false;
+    let _ = app.emit("browser://select-mode", false);
     let _ = app.emit("browser://element-selected", &element);
     Ok(())
 }

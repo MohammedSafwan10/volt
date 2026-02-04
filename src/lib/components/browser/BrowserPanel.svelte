@@ -25,6 +25,8 @@
   let updateScheduled = false;
   let mounted = false;
   let lastBoundsStr = '';
+  let boundsUpdateCounts = $state<Record<string, number>>({});
+  let boundsProfileTimer: ReturnType<typeof setTimeout> | null = null;
   
   // DevTools panel state
   let showDevTools = $state(false);
@@ -47,6 +49,7 @@
     containerRef.offsetHeight;
     
     const rect = containerRef.getBoundingClientRect();
+    const scaleFactor = Math.max(0.5, Math.min(2.0, uiStore.zoomPercent / 100));
     
     // Ensure we have valid dimensions
     if (rect.width < 10 || rect.height < 10) return null;
@@ -57,13 +60,17 @@
       return null; // Don't create webview yet
     }
     
-    // Round to avoid subpixel issues
-    const bounds = { 
-      x: Math.round(rect.left), 
-      y: Math.max(0, Math.round(rect.top)), 
-      width: Math.round(rect.width), 
-      height: Math.round(rect.height) 
-    };
+    // Round to avoid subpixel issues and clamp to viewport
+    const viewportWidth = window.innerWidth * scaleFactor;
+    const viewportHeight = window.innerHeight * scaleFactor;
+    let x = Math.max(0, Math.round(rect.left * scaleFactor));
+    let y = Math.max(0, Math.round(rect.top * scaleFactor));
+    let width = Math.round(rect.width * scaleFactor);
+    let height = Math.round(rect.height * scaleFactor);
+    if (x + width > viewportWidth) width = Math.max(0, viewportWidth - x);
+    if (y + height > viewportHeight) height = Math.max(0, viewportHeight - y);
+    
+    const bounds = { x, y, width, height };
     
     return bounds;
   }
@@ -88,12 +95,28 @@
 
   // Throttled bounds update using RAF
   function scheduleUpdateBounds(): void {
+    if (!browserStore.isOpen || !browserStore.isVisible) return;
     if (updateScheduled) return;
     updateScheduled = true;
     requestAnimationFrame(() => {
       updateBounds();
       updateScheduled = false;
     });
+  }
+
+  function trackBoundsSource(source: string): void {
+    if (typeof localStorage === 'undefined') return;
+    if (localStorage.getItem('voltBrowserDebug') !== 'true') return;
+    boundsUpdateCounts[source] = (boundsUpdateCounts[source] || 0) + 1;
+    if (boundsProfileTimer) return;
+    boundsProfileTimer = setTimeout(() => {
+      const entries = Object.entries(boundsUpdateCounts).sort((a, b) => b[1] - a[1]);
+      if (entries.length > 0) {
+        console.log('[Browser] Bounds update sources (last 5s):', Object.fromEntries(entries));
+      }
+      boundsUpdateCounts = {};
+      boundsProfileTimer = null;
+    }, 5000);
   }
 
   // Force immediate bounds update
@@ -111,6 +134,7 @@
     // Setup resize observer for container size changes
     if (containerRef) {
       resizeObserver = new ResizeObserver(() => {
+        trackBoundsSource('resizeObserver');
         scheduleUpdateBounds();
       });
       resizeObserver.observe(containerRef);
@@ -125,6 +149,7 @@
 
     // Setup mutation observer for DOM changes that might affect layout
     mutationObserver = new MutationObserver(() => {
+      trackBoundsSource('mutationObserver');
       scheduleUpdateBounds();
     });
     mutationObserver.observe(document.body, {
@@ -141,6 +166,7 @@
     // Periodic bounds check (catches edge cases)
     const intervalId = setInterval(() => {
       if (browserStore.isOpen && browserStore.isVisible && mounted) {
+        trackBoundsSource('interval');
         scheduleUpdateBounds();
       }
     }, 500);
@@ -158,6 +184,10 @@
       mutationObserver?.disconnect();
       window.removeEventListener('resize', forceUpdateBounds);
       window.removeEventListener('scroll', scheduleUpdateBounds, true);
+      if (boundsProfileTimer) {
+        clearTimeout(boundsProfileTimer);
+        boundsProfileTimer = null;
+      }
     };
   });
 
@@ -169,6 +199,7 @@
       lastBoundsStr = '';
       // Wait for next frame to ensure layout is complete
       requestAnimationFrame(() => {
+        trackBoundsSource('visibility');
         forceUpdateBounds();
         setTimeout(forceUpdateBounds, 100);
         setTimeout(forceUpdateBounds, 300);
@@ -183,6 +214,18 @@
     void browserStore.selectedElement;
     if (containerRef && mounted) {
       // Force recalculate when inspector toggles
+      trackBoundsSource('inspector');
+      setTimeout(forceUpdateBounds, 50);
+      setTimeout(forceUpdateBounds, 150);
+    }
+  });
+
+  // Recalculate bounds when devtools panel toggles or resizes
+  $effect(() => {
+    void showDevTools;
+    void devToolsHeight;
+    if (containerRef && mounted) {
+      trackBoundsSource('devtools');
       setTimeout(forceUpdateBounds, 50);
       setTimeout(forceUpdateBounds, 150);
     }
@@ -192,6 +235,7 @@
   $effect(() => {
     void uiStore.zoomPercent;
     if (containerRef && mounted) {
+      trackBoundsSource('uiZoom');
       setTimeout(forceUpdateBounds, 50);
       setTimeout(forceUpdateBounds, 150);
     }
@@ -320,6 +364,12 @@
             <ConsolePanel {onAskAI} />
           {:else if activeDevToolsTab === 'element'}
             {#if browserStore.selectedElement}
+              <div class="element-actions">
+                <button class="btn subtle" onclick={() => browserStore.clearSelection()}>
+                  <UIIcon name="close" size={12} />
+                  <span>Clear selection</span>
+                </button>
+              </div>
               <ElementInspectorPanel element={browserStore.selectedElement} />
             {:else}
               <div class="placeholder">
@@ -612,6 +662,29 @@
   .devtools-content {
     flex: 1;
     overflow: hidden;
+  }
+
+  .element-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 8px 0 8px;
+  }
+
+  .btn.subtle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    background: var(--color-surface0);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+  }
+
+  .btn.subtle:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
   }
 
   .placeholder {
