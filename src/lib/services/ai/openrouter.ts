@@ -113,23 +113,23 @@ interface OpenRouterResponse {
  */
 function toOpenRouterMessages(messages: ChatMessage[], systemPrompt?: string): OpenRouterMessage[] {
   const result: OpenRouterMessage[] = [];
-  
+
   // Add system prompt first if provided
   if (systemPrompt) {
     result.push({ role: 'system', content: systemPrompt });
   }
-  
+
   for (const m of messages) {
     if (m.role === 'system') {
       result.push({ role: 'system', content: m.content || '' });
       continue;
     }
-    
+
     // Handle multimodal parts
     if (m.parts && m.parts.length > 0) {
       const contentParts: OpenRouterContentPart[] = [];
       const toolCalls: OpenRouterToolCall[] = [];
-      
+
       for (const part of m.parts) {
         if (part.type === 'text') {
           contentParts.push({ type: 'text', text: part.text });
@@ -161,7 +161,7 @@ function toOpenRouterMessages(messages: ChatMessage[], systemPrompt?: string): O
           continue;
         }
       }
-      
+
       if (m.role === 'assistant' && toolCalls.length > 0) {
         // Assistant message with tool calls
         result.push({
@@ -172,8 +172,8 @@ function toOpenRouterMessages(messages: ChatMessage[], systemPrompt?: string): O
       } else if (contentParts.length > 0) {
         result.push({
           role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: contentParts.length === 1 && contentParts[0].type === 'text' 
-            ? contentParts[0].text! 
+          content: contentParts.length === 1 && contentParts[0].type === 'text'
+            ? contentParts[0].text!
             : contentParts
         });
       }
@@ -184,7 +184,7 @@ function toOpenRouterMessages(messages: ChatMessage[], systemPrompt?: string): O
       });
     }
   }
-  
+
   return result;
 }
 
@@ -208,7 +208,7 @@ function toOpenRouterTools(tools: ToolDefinition[]): OpenRouterTool[] {
 function extractToolCalls(choice: OpenRouterChoice): ToolCall[] {
   const calls: ToolCall[] = [];
   const toolCalls = choice.message?.tool_calls || [];
-  
+
   for (const tc of toolCalls) {
     try {
       calls.push({
@@ -221,7 +221,7 @@ function extractToolCalls(choice: OpenRouterChoice): ToolCall[] {
       console.warn('[OpenRouter] Failed to parse tool call arguments:', tc.function.arguments);
     }
   }
-  
+
   return calls;
 }
 
@@ -230,10 +230,10 @@ function extractToolCalls(choice: OpenRouterChoice): ToolCall[] {
  */
 function mapOpenRouterError(error: OpenRouterResponse['error']): string {
   if (!error) return 'Unknown error';
-  
+
   const code = error.code;
   const message = error.message;
-  
+
   if (code === 401 || message.includes('Unauthorized')) {
     return 'Invalid API key. Please check your OpenRouter API key.';
   }
@@ -246,7 +246,7 @@ function mapOpenRouterError(error: OpenRouterResponse['error']): string {
   if (code === 503 || message.includes('unavailable')) {
     return 'Model is temporarily unavailable. Please try again later.';
   }
-  
+
   // Redact potential sensitive data
   const safeMessage = message.replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
   return `OpenRouter error: ${safeMessage}`;
@@ -266,14 +266,14 @@ export async function validateOpenRouterKey(apiKey: string): Promise<{ success: 
         'X-Title': 'Volt IDE'
       }
     });
-    
+
     if (!response.ok) {
       if (response.status === 401) {
         return { success: false, error: 'Invalid API key' };
       }
       return { success: false, error: `HTTP ${response.status}` };
     }
-    
+
     return { success: true };
   } catch (err) {
     if (err instanceof TypeError && err.message.includes('fetch')) {
@@ -299,23 +299,23 @@ export const openRouterProvider: AIProvider = {
 
   async sendChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): Promise<ChatResponse> {
     const url = `${OPENROUTER_API_BASE}/chat/completions`;
-    
+
     // Get model-specific max output, fallback to 8192
     const modelConfig = getModelConfig(request.model);
     const safeMaxTokens = request.maxTokens ?? Math.min(modelConfig?.maxOutput ?? 8192, 8192);
-    
+
     const openRouterRequest: OpenRouterRequest = {
       model: request.model,
       messages: toOpenRouterMessages(request.messages, request.systemPrompt),
       max_tokens: safeMaxTokens,
       temperature: request.temperature
     };
-    
+
     if (request.tools && request.tools.length > 0) {
       openRouterRequest.tools = toOpenRouterTools(request.tools);
       openRouterRequest.tool_choice = 'auto';
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -327,28 +327,28 @@ export const openRouterProvider: AIProvider = {
       body: JSON.stringify(openRouterRequest),
       signal
     });
-    
+
     const data = await response.json() as OpenRouterResponse;
-    
+
     if (!response.ok || data.error) {
       throw new Error(mapOpenRouterError(data.error));
     }
-    
+
     if (!data.choices || data.choices.length === 0) {
       throw new Error('No response from OpenRouter');
     }
-    
+
     const choice = data.choices[0];
     const toolCalls = extractToolCalls(choice);
     const content = choice.message?.content || '';
-    
+
     let finishReason: ChatResponse['finishReason'] = 'stop';
     if (toolCalls.length > 0) {
       finishReason = 'tool_calls';
     } else if (choice.finish_reason === 'length') {
       finishReason = 'length';
     }
-    
+
     return {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -363,13 +363,13 @@ export const openRouterProvider: AIProvider = {
 
   async *streamChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const url = `${OPENROUTER_API_BASE}/chat/completions`;
-    
+
     // Get model-specific limits - use conservative max for streaming
     const modelConfig = getModelConfig(request.model);
     const maxOutput = modelConfig?.maxOutput ?? 8192;
     // For streaming, use smaller of model max or 16K to avoid context overflow
     const safeMaxTokens = request.maxTokens ?? Math.min(maxOutput, 16384);
-    
+
     const openRouterRequest: OpenRouterRequest = {
       model: request.model,
       messages: toOpenRouterMessages(request.messages, request.systemPrompt),
@@ -377,12 +377,12 @@ export const openRouterProvider: AIProvider = {
       max_tokens: safeMaxTokens,
       temperature: request.temperature
     };
-    
+
     if (request.tools && request.tools.length > 0) {
       openRouterRequest.tools = toOpenRouterTools(request.tools);
       openRouterRequest.tool_choice = 'auto';
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -394,7 +394,7 @@ export const openRouterProvider: AIProvider = {
       body: JSON.stringify(openRouterRequest),
       signal
     });
-    
+
     if (!response.ok) {
       try {
         const data = await response.json() as OpenRouterResponse;
@@ -404,23 +404,23 @@ export const openRouterProvider: AIProvider = {
       }
       return;
     }
-    
+
     if (!response.body) {
       yield { type: 'error', error: 'No response body' };
       return;
     }
-    
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    
+
     // Track tool calls being built up across chunks
     const pendingToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
-    
+
     try {
       while (true) {
         const { done, value } = await reader.read();
-        
+
         if (done) {
           // Emit any pending tool calls
           for (const [, tc] of pendingToolCalls) {
@@ -440,41 +440,41 @@ export const openRouterProvider: AIProvider = {
           yield { type: 'done' };
           break;
         }
-        
+
         buffer += decoder.decode(value, { stream: true });
-        
+
         // Process SSE lines
         let newlineIndex: number;
         while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, newlineIndex).trim();
           buffer = buffer.slice(newlineIndex + 1);
-          
+
           if (!line || !line.startsWith('data:')) continue;
-          
+
           const jsonStr = line.slice(5).trim();
           if (!jsonStr || jsonStr === '[DONE]') continue;
-          
+
           try {
             const data = JSON.parse(jsonStr) as OpenRouterResponse;
-            
+
             if (data.error) {
               yield { type: 'error', error: mapOpenRouterError(data.error) };
               return;
             }
-            
+
             if (data.choices && data.choices.length > 0) {
               const choice = data.choices[0];
               const delta = choice.delta;
-              
+
               if (delta?.content) {
                 yield { type: 'content', content: delta.content };
               }
-              
+
               // Handle streaming tool calls
               if (delta?.tool_calls) {
                 for (const tc of delta.tool_calls) {
                   const idx = tc.index;
-                  
+
                   if (!pendingToolCalls.has(idx)) {
                     pendingToolCalls.set(idx, {
                       id: tc.id || `call_${Date.now()}_${idx}`,
@@ -482,7 +482,7 @@ export const openRouterProvider: AIProvider = {
                       arguments: ''
                     });
                   }
-                  
+
                   const pending = pendingToolCalls.get(idx)!;
                   if (tc.function?.name) pending.name = tc.function.name;
                   if (tc.function?.arguments) pending.arguments += tc.function.arguments;

@@ -100,6 +100,15 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     maxOutput: 96000,
     supportsTools: true,
     free: true
+  },
+  'stepfun/step-3.5-flash:free': {
+    id: 'stepfun/step-3.5-flash:free',
+    name: 'Step 3.5 Flash',
+    provider: 'openrouter',
+    contextWindow: 256000,
+    maxOutput: 256000,
+    supportsTools: true,
+    free: true
   }
 };
 
