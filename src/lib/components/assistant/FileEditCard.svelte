@@ -6,12 +6,12 @@
   import { UIIcon } from "$lib/components/ui";
   import { editorStore } from "$lib/stores/editor.svelte";
   import { projectStore } from "$lib/stores/project.svelte";
+  import { uiStore } from "$lib/stores/ui.svelte";
   import type { ToolCall } from "$lib/stores/assistant.svelte";
 
   interface Props {
     toolCall: ToolCall;
     groupedToolCalls?: ToolCall[];
-    onViewDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
     onFullDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
     onRevert?: (tc: ToolCall) => void;
     onUndoRevert?: (tc: ToolCall) => void;
@@ -22,7 +22,6 @@
   let {
     toolCall,
     groupedToolCalls = [],
-    onViewDiff,
     onFullDiff,
     onRevert,
     onUndoRevert,
@@ -43,6 +42,12 @@
   const runningCount = $derived(
     allToolCalls.filter((tc) => tc.status === "running").length,
   );
+  const queuedCount = $derived(
+    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "queued").length,
+  );
+  const writingCount = $derived(
+    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "writing").length,
+  );
   const totalCount = $derived(allToolCalls.length);
 
   const filename = $derived.by(() => {
@@ -54,6 +59,16 @@
   });
 
   const fileExt = $derived(filename.split(".").pop()?.toLowerCase() || "");
+
+  const editMode = $derived.by(() => {
+    const name = toolCall.name;
+    if (name === "write_file" || name === "create_file") return "Write";
+    if (name === "append_file") return "Append";
+    if (name === "replace_lines") return "Lines";
+    // apply_edit is alias of str_replace
+    if (name === "str_replace" || name === "apply_edit") return "Replace";
+    return "Edit";
+  });
 
   function getFileIcon(ext: string): any {
     switch (ext) {
@@ -172,9 +187,7 @@
   }
 
   const canRevert = $derived(allToolCalls.some((tc) => canRevertEdit(tc)));
-  const canViewDiffAny = $derived(
-    allToolCalls.some((tc) => canViewDiffEdit(tc)),
-  );
+  const canViewDiffAny = $derived(allToolCalls.some((tc) => canViewDiffEdit(tc)));
   const hasAnyComplete = $derived(successCount > 0);
   const isAllRunning = $derived(
     runningCount > 0 && successCount === 0 && failedCount === 0,
@@ -195,6 +208,8 @@
 
   function getStatusText(): string {
     if (isReverted) return "Reverted";
+    if (queuedCount > 0 && writingCount === 0 && runningCount === 0) return "Queued";
+    if (writingCount > 0) return "Writing";
     if (isAllRunning) return "Editing";
     if (isAllFailed) return "Failed";
 
@@ -214,6 +229,82 @@
     allToolCalls.find((tc) => tc.status === "running" && tc.streamingProgress),
   );
   const progress = $derived(activeStreamingTC?.streamingProgress);
+
+  const diagnosticsSummary = $derived.by(() => {
+    let errorCount = 0;
+    let warningCount = 0;
+    let hasDiagnostics = false;
+    const problems: Array<{
+      file?: string;
+      relativePath?: string;
+      fileName?: string;
+      line?: number;
+      column?: number;
+      message?: string;
+      severity?: string;
+    }> = [];
+
+    for (const tc of allToolCalls) {
+      const meta = tc.meta as Record<string, any> | undefined;
+      const diagnostics = meta?.diagnostics as Record<string, any> | undefined;
+      const fileEdit = meta?.fileEdit as Record<string, any> | undefined;
+
+      if (diagnostics && (typeof diagnostics.errorCount === "number" || typeof diagnostics.warningCount === "number")) {
+        errorCount += diagnostics.errorCount || 0;
+        warningCount += diagnostics.warningCount || 0;
+        hasDiagnostics = true;
+        if (Array.isArray(diagnostics.problems)) {
+          problems.push(...diagnostics.problems);
+        }
+      } else if (fileEdit && (typeof fileEdit.errorCount === "number" || typeof fileEdit.warningCount === "number")) {
+        errorCount += fileEdit.errorCount || 0;
+        warningCount += fileEdit.warningCount || 0;
+        hasDiagnostics = true;
+      }
+    }
+
+    if (!hasDiagnostics) return null;
+    return { errorCount, warningCount, problems };
+  });
+
+  let hideDiagnostics = $state(false);
+  let diagnosticsExpanded = $state(false);
+
+  function openProblems(): void {
+    uiStore.openBottomPanelTab("problems");
+  }
+
+  async function openProblem(problem: {
+    file?: string;
+    relativePath?: string;
+    line?: number;
+    column?: number;
+  }): Promise<void> {
+    const candidate =
+      problem.file ||
+      problem.relativePath ||
+      (problem as any).path ||
+      (problem as any).absolutePath;
+
+    if (!candidate) return;
+
+    let fullPath = candidate;
+    if (projectStore.rootPath && !candidate.startsWith("/") && !candidate.includes(":")) {
+      const sep = projectStore.rootPath.includes("\\") ? "\\" : "/";
+      fullPath = `${projectStore.rootPath}${sep}${candidate}`;
+    }
+
+    await editorStore.openFile(fullPath);
+    window.dispatchEvent(
+      new CustomEvent("volt:navigate-to-position", {
+        detail: {
+          file: fullPath,
+          line: problem.line ?? 1,
+          column: problem.column ?? 1,
+        },
+      }),
+    );
+  }
 </script>
 
 <div
@@ -270,6 +361,8 @@
         {/if}
       </div>
 
+      <span class="edit-mode-badge">{editMode}</span>
+
       <!-- Stats - Always show if available -->
       {#if diffStats}
         <div class="diff-stats">
@@ -305,18 +398,6 @@
             </button>
           {/if}
         {:else}
-          {#if canViewDiffAny && onViewDiff}
-            <button
-              class="action-btn-text diff"
-              onclick={(e) => {
-                e.stopPropagation();
-                onViewDiff(toolCall, isGrouped ? allToolCalls : undefined);
-              }}
-              title="Highlight changes in editor"
-            >
-              Open diff
-            </button>
-          {/if}
           {#if canViewDiffAny && onFullDiff}
             <button
               class="action-btn-text full-diff"
@@ -327,7 +408,7 @@
               title="Show full diff with red/green (VS Code style)"
             >
               <UIIcon name="diff" size={12} />
-              Full Diff
+              Diff
             </button>
           {/if}
           {#if canRevert && onRevert}
@@ -362,9 +443,13 @@
           <span class="sub-status"
             >{tcReverted
               ? "Reverted"
-              : tc.status === "failed"
-                ? "Failed"
-                : "Edited"}</span
+              : (tc.meta as any)?.editPhase === "queued"
+                ? "Queued"
+                : (tc.meta as any)?.editPhase === "writing"
+                  ? "Writing"
+                  : tc.status === "failed"
+                    ? "Failed"
+                    : "Edited"}</span
           >
           <div class="sub-actions">
             {#if tc.status === "completed"}
@@ -379,11 +464,11 @@
                   </button>
                 {/if}
               {:else}
-                {#if canViewDiffEdit(tc) && onViewDiff}
+                {#if canViewDiffEdit(tc) && onFullDiff}
                   <button
                     class="sub-btn"
-                    onclick={() => onViewDiff(tc)}
-                    title="Diff"
+                    onclick={() => onFullDiff(tc)}
+                    title="Full diff"
                   >
                     <UIIcon name="replace" size={12} />
                   </button>
@@ -403,6 +488,49 @@
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if diagnosticsSummary && !hideDiagnostics && hasAnyComplete && (diagnosticsSummary.errorCount > 0 || diagnosticsSummary.warningCount > 0)}
+    <div class="diagnostics-row">
+      <button
+        class="diag-toggle"
+        onclick={() => (diagnosticsExpanded = !diagnosticsExpanded)}
+        title={diagnosticsExpanded ? "Collapse" : "Expand"}
+      >
+        <UIIcon name={diagnosticsExpanded ? "chevron-down" : "chevron-right"} size={12} />
+      </button>
+      <div class="diagnostics-text">
+        <span class="diag-warn"
+          >⚠ {diagnosticsSummary.errorCount} error{diagnosticsSummary.errorCount === 1 ? "" : "s"}{diagnosticsSummary.warningCount > 0 ? ` · ${diagnosticsSummary.warningCount} warn` : ""}</span
+        >
+      </div>
+      <div class="diagnostics-actions">
+        <button class="diag-view" onclick={openProblems}>View</button>
+        <button
+          class="diag-close"
+          onclick={() => {
+            hideDiagnostics = true;
+          }}
+          title="Hide"
+        >
+          <UIIcon name="close" size={12} />
+        </button>
+      </div>
+    </div>
+    {#if diagnosticsExpanded && diagnosticsSummary.problems?.length}
+      <div class="diagnostics-details">
+        {#each diagnosticsSummary.problems.slice(0, 8) as p}
+          <button class="diag-item" onclick={() => openProblem(p)}>
+            <span class="diag-file">{p.fileName || p.relativePath || p.file || "file"}</span>
+            <span class="diag-loc">L{p.line ?? "?"}:{p.column ?? "?"}</span>
+            <span class="diag-msg">{p.message || "Problem detected"}</span>
+          </button>
+        {/each}
+        {#if diagnosticsSummary.problems.length > 8}
+          <div class="diag-more">+{diagnosticsSummary.problems.length - 8} more</div>
+        {/if}
+      </div>
+    {/if}
   {/if}
 
   <!-- Error message -->
@@ -518,6 +646,21 @@
     font-weight: 600;
     font-family: "JetBrains Mono", monospace;
     margin-left: 2px;
+  }
+
+  .edit-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    color: var(--color-text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--color-border);
+    text-transform: uppercase;
   }
 
   .stat-added {
@@ -685,5 +828,128 @@
     background: rgba(var(--color-error-rgb, 241, 76, 76), 0.05);
     border-radius: 4px;
     border-left: 2px solid var(--color-error);
+  }
+
+  .diagnostics-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 4px 0 8px 32px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--color-border);
+    font-size: 12px;
+  }
+
+  .diagnostics-text {
+    color: var(--color-text-secondary);
+    font-family: "JetBrains Mono", monospace;
+  }
+
+  .diag-warn {
+    color: #facc15;
+  }
+
+  .diagnostics-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .diag-view {
+    background: rgba(78, 201, 176, 0.12);
+    border: 1px solid #4ec9b0;
+    color: #4ec9b0;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .diag-view:hover {
+    background: rgba(78, 201, 176, 0.2);
+    color: #6dd5c0;
+  }
+
+  .diag-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+  }
+
+  .diag-toggle:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .diag-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+  }
+
+  .diag-close:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .diagnostics-details {
+    margin: 0 0 8px 32px;
+    padding: 6px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .diag-item {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .diag-item:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+  }
+
+  .diag-file {
+    font-family: "JetBrains Mono", monospace;
+    color: var(--color-text);
+  }
+
+  .diag-loc {
+    font-family: "JetBrains Mono", monospace;
+    color: #facc15;
+  }
+
+  .diag-msg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diag-more {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    padding: 2px 6px;
   }
 </style>

@@ -392,7 +392,7 @@
     }
 
     // React to change in problems for this file
-    const problems = problemsStore.problemsByFile[normalizedPath] || [];
+    const problems = problemsStore.getProblemsForFile(normalizedPath);
     const model = editor.getModel();
     if (!model) return;
 

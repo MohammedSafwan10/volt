@@ -44,6 +44,14 @@ export interface ProblemsByFile {
 }
 
 class ProblemsStore {
+  private normalizePath(filePath: string): string {
+    let normalized = filePath.replace(/\\/g, '/');
+    if (normalized.match(/^[a-zA-Z]:/)) {
+      normalized = normalized[0].toLowerCase() + normalized.slice(1);
+    }
+    return normalized;
+  }
+
   /** All problems grouped by file */
   problemsByFile = $state<ProblemsByFile>({});
   
@@ -146,37 +154,40 @@ class ProblemsStore {
    */
   setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
     this.markUpdating();
+
+    const normalizedPath = this.normalizePath(filePath);
     
     // Add timestamp to new problems
     const timestampedProblems = problems.map(p => ({
       ...p,
+      file: normalizedPath,
       timestamp: Date.now()
     }));
     
     if (source) {
       // Merge with existing problems from other sources
-      const existingProblems = this.problemsByFile[filePath] || [];
+      const existingProblems = this.problemsByFile[normalizedPath] || [];
       const otherSourceProblems = existingProblems.filter(p => p.source !== source);
       const mergedProblems = [...otherSourceProblems, ...timestampedProblems];
 
       if (mergedProblems.length === 0) {
-        const { [filePath]: _, ...rest } = this.problemsByFile;
+        const { [normalizedPath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;
       } else {
         this.problemsByFile = {
           ...this.problemsByFile,
-          [filePath]: mergedProblems
+          [normalizedPath]: mergedProblems
         };
       }
     } else {
       // Replace all problems for the file
       if (timestampedProblems.length === 0) {
-        const { [filePath]: _, ...rest } = this.problemsByFile;
+        const { [normalizedPath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;
       } else {
         this.problemsByFile = {
           ...this.problemsByFile,
-          [filePath]: timestampedProblems
+          [normalizedPath]: timestampedProblems
         };
       }
     }
@@ -187,21 +198,22 @@ class ProblemsStore {
    * If source is provided, only clears problems from that source
    */
   clearProblemsForFile(filePath: string, source?: string): void {
+    const normalizedPath = this.normalizePath(filePath);
     if (source) {
-      const existingProblems = this.problemsByFile[filePath] || [];
+      const existingProblems = this.problemsByFile[normalizedPath] || [];
       const remainingProblems = existingProblems.filter(p => p.source !== source);
 
       if (remainingProblems.length === 0) {
-        const { [filePath]: _, ...rest } = this.problemsByFile;
+        const { [normalizedPath]: _, ...rest } = this.problemsByFile;
         this.problemsByFile = rest;
       } else {
         this.problemsByFile = {
           ...this.problemsByFile,
-          [filePath]: remainingProblems
+          [normalizedPath]: remainingProblems
         };
       }
     } else {
-      const { [filePath]: _, ...rest } = this.problemsByFile;
+      const { [normalizedPath]: _, ...rest } = this.problemsByFile;
       this.problemsByFile = rest;
     }
   }
@@ -217,7 +229,8 @@ class ProblemsStore {
    * Get problems for a specific file
    */
   getProblemsForFile(filePath: string): Problem[] {
-    return this.problemsByFile[filePath] || [];
+    const normalizedPath = this.normalizePath(filePath);
+    return this.problemsByFile[normalizedPath] || [];
   }
 
   /**
