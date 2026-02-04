@@ -26,8 +26,8 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
     pathsToCheck = [String(args.path)];
   }
 
-  // Get all problems from the store
-  const allProblems = problemsStore.allProblems;
+  // Get all problems from the store (unfiltered to avoid UI filter mismatch)
+  const allProblems = problemsStore.allProblemsUnfiltered;
 
   // If specific paths requested, filter to those
   let relevantProblems = allProblems;

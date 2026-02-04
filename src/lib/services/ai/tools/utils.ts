@@ -3,6 +3,7 @@
  */
 
 import { projectStore } from '$lib/stores/project.svelte';
+import { isFileError, getFileErrorMessage } from '$lib/types/files';
 
 // Maximum output size (100KB)
 export const MAX_OUTPUT_SIZE = 100 * 1024;
@@ -26,6 +27,7 @@ export function truncateOutput(output: string): { text: string; truncated: boole
 export function extractErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
+  if (isFileError(err)) return getFileErrorMessage(err);
   if (err && typeof err === 'object' && 'message' in err) return String(err.message);
   return 'Unknown error';
 }

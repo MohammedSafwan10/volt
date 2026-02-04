@@ -603,9 +603,23 @@ export async function handleCreateDir(args: Record<string, unknown>): Promise<To
   const path = resolvePath(relativePath);
 
   try {
+    // If it already exists, treat as success
+    try {
+      const info = await invoke<{ isDir?: boolean }>('get_file_info', { path });
+      if (info?.isDir) {
+        return { success: true, output: `Directory already exists: ${relativePath}` };
+      }
+    } catch {
+      // Not found or invalid -> continue to create
+    }
+
     await invoke('create_dir', { path });
   } catch (err) {
-    return { success: false, error: `Failed to create: ${extractErrorMessage(err)}` };
+    const msg = extractErrorMessage(err);
+    if (msg.toLowerCase().includes('already exists')) {
+      return { success: true, output: `Directory already exists: ${relativePath}` };
+    }
+    return { success: false, error: `Failed to create: ${msg}` };
   }
 
   await projectStore.refreshTree();
