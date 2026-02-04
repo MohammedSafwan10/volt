@@ -177,7 +177,12 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
     return { success: true, output: text, truncated };
 
   } catch (err) {
-    return { success: false, error: `Search failed: ${err}` };
+    const message = err instanceof Error
+      ? err.message
+      : typeof err === 'object' && err !== null
+        ? JSON.stringify(err)
+        : String(err);
+    return { success: false, error: `Search failed: ${message}` };
   }
 }
 
@@ -296,7 +301,12 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     };
 
   } catch (err) {
-    return { success: false, error: `Find failed: ${err}` };
+    const message = err instanceof Error
+      ? err.message
+      : typeof err === 'object' && err !== null
+        ? JSON.stringify(err)
+        : String(err);
+    return { success: false, error: `Find failed: ${message}` };
   }
 }
 

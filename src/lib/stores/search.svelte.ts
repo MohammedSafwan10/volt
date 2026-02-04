@@ -40,6 +40,7 @@ class SearchStore {
   // Search state
   searching = $state(false);
   results = $state<SearchResults | null>(null);
+  lastSearchCancelled = $state(false);
   
   // Expanded files in results (for collapsible file groups)
   expandedFiles = $state<Set<string>>(new Set());
@@ -78,6 +79,7 @@ class SearchStore {
   async search(rootPath: string): Promise<void> {
     if (!this.query.trim() || !rootPath) {
       this.results = null;
+      this.lastSearchCancelled = false;
       return;
     }
 
@@ -100,6 +102,7 @@ class SearchStore {
     this.inFlightRequestId = requestId;
 
     this.searching = true;
+    this.lastSearchCancelled = false;
     this.results = {
       files: [],
       totalMatches: 0,
@@ -197,6 +200,7 @@ class SearchStore {
         flushStream();
 
         this.searching = false;
+        this.lastSearchCancelled = done.cancelled;
         if (!done.cancelled) {
           const files = this.results?.files ?? [];
           this.results = {
@@ -233,6 +237,7 @@ class SearchStore {
   clear(): void {
     this.query = '';
     this.results = null;
+    this.lastSearchCancelled = false;
     this.expandedFiles = new Set();
     this.selectedFile = null;
     this.selectedMatch = null;

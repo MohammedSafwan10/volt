@@ -26,6 +26,7 @@
   const hasResults = $derived(searchStore.results !== null);
   const resultCount = $derived(searchStore.results?.totalMatches ?? 0);
   const fileCount = $derived(searchStore.results?.totalFiles ?? 0);
+  const wasCancelled = $derived(searchStore.lastSearchCancelled);
 
   // Flatten results for virtualization - each file header and match is a row
   type FlatItem = 
@@ -459,6 +460,10 @@
           {/if}
         {/snippet}
       </VirtualList>
+    {:else if searchStore.query.trim() && !searchStore.searching && wasCancelled}
+      <div class="no-results">
+        <p>Search cancelled — try again or narrow with include/exclude.</p>
+      </div>
     {:else if searchStore.query.trim() && !searchStore.searching}
       <div class="no-results">
         <p>No results found for "{searchStore.query}"</p>
