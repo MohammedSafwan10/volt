@@ -16,8 +16,8 @@ const execAsync = promisify(exec);
 const SIDECAR_PATH = join(process.cwd(), 'src-tauri', 'binaries', 'node-x86_64-pc-windows-msvc.exe');
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 500;
-const BUILD_DIR = join(process.cwd(), 'src-tauri', 'target', 'debug', 'build');
-const TARGET_DIR = join(process.cwd(), 'src-tauri', 'target');
+const CARGO_TARGET_DIR = 'C:/Users/User/.cargo/volt-target';
+const BUILD_DIR = join(CARGO_TARGET_DIR, 'debug', 'build');
 
 async function killByPattern(pattern) {
   try {
@@ -67,7 +67,7 @@ async function cleanupBuildArtifacts() {
   // Remove build output folders that commonly get locked on Windows
   await safeRemoveDir(BUILD_DIR);
 
-  // Remove per-crate build artifacts under target/debug/build/volt-*
+  // Remove per-crate build artifacts under .cargo-target/debug/build/volt-*
   try {
     const entries = await readdir(BUILD_DIR, { withFileTypes: true });
     for (const entry of entries) {
@@ -80,7 +80,9 @@ async function cleanupBuildArtifacts() {
   }
 
   // Optional: if target is very broken, allow full cleanup via env var
-  await safeRemoveDir(TARGET_DIR);
+  if (process.env.VOLT_CLEAN_ALL === '1') {
+    await safeRemoveDir(CARGO_TARGET_DIR);
+  }
 }
 
 async function main() {
