@@ -141,7 +141,15 @@ export class ProjectDiagnostics {
                 startHtmlAnalysis(),
                 startTsAnalysis(),
                 startSvelteAnalysis(),
-                startEslintAnalysis()
+                startEslintAnalysis().catch((err) => {
+                    const type = (err as { type?: string })?.type;
+                    if (type === 'ServerAlreadyRunning') {
+                        // Benign reload/HMR race: server is already alive.
+                        console.log('[ProjectDiagnostics] ESLint sidecar already running, continuing');
+                        return;
+                    }
+                    throw err;
+                })
             ];
 
             // Specific check for Dart projects to start LSP and run analysis

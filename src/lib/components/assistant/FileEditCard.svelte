@@ -7,6 +7,7 @@
   import { editorStore } from "$lib/stores/editor.svelte";
   import { projectStore } from "$lib/stores/project.svelte";
   import { uiStore } from "$lib/stores/ui.svelte";
+  import { problemsStore } from "$lib/stores/problems.svelte";
   import type { ToolCall } from "$lib/stores/assistant.svelte";
 
   interface Props {
@@ -43,10 +44,12 @@
     allToolCalls.filter((tc) => tc.status === "running").length,
   );
   const queuedCount = $derived(
-    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "queued").length,
+    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "queued")
+      .length,
   );
   const writingCount = $derived(
-    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "writing").length,
+    allToolCalls.filter((tc) => (tc.meta as any)?.editPhase === "writing")
+      .length,
   );
   const totalCount = $derived(allToolCalls.length);
 
@@ -187,7 +190,9 @@
   }
 
   const canRevert = $derived(allToolCalls.some((tc) => canRevertEdit(tc)));
-  const canViewDiffAny = $derived(allToolCalls.some((tc) => canViewDiffEdit(tc)));
+  const canViewDiffAny = $derived(
+    allToolCalls.some((tc) => canViewDiffEdit(tc)),
+  );
   const hasAnyComplete = $derived(successCount > 0);
   const isAllRunning = $derived(
     runningCount > 0 && successCount === 0 && failedCount === 0,
@@ -208,7 +213,8 @@
 
   function getStatusText(): string {
     if (isReverted) return "Reverted";
-    if (queuedCount > 0 && writingCount === 0 && runningCount === 0) return "Queued";
+    if (queuedCount > 0 && writingCount === 0 && runningCount === 0)
+      return "Queued";
     if (writingCount > 0) return "Writing";
     if (isAllRunning) return "Editing";
     if (isAllFailed) return "Failed";
@@ -249,14 +255,22 @@
       const diagnostics = meta?.diagnostics as Record<string, any> | undefined;
       const fileEdit = meta?.fileEdit as Record<string, any> | undefined;
 
-      if (diagnostics && (typeof diagnostics.errorCount === "number" || typeof diagnostics.warningCount === "number")) {
+      if (
+        diagnostics &&
+        (typeof diagnostics.errorCount === "number" ||
+          typeof diagnostics.warningCount === "number")
+      ) {
         errorCount += diagnostics.errorCount || 0;
         warningCount += diagnostics.warningCount || 0;
         hasDiagnostics = true;
         if (Array.isArray(diagnostics.problems)) {
           problems.push(...diagnostics.problems);
         }
-      } else if (fileEdit && (typeof fileEdit.errorCount === "number" || typeof fileEdit.warningCount === "number")) {
+      } else if (
+        fileEdit &&
+        (typeof fileEdit.errorCount === "number" ||
+          typeof fileEdit.warningCount === "number")
+      ) {
         errorCount += fileEdit.errorCount || 0;
         warningCount += fileEdit.warningCount || 0;
         hasDiagnostics = true;
@@ -269,6 +283,41 @@
 
   let hideDiagnostics = $state(false);
   let diagnosticsExpanded = $state(false);
+
+  // Live diagnostic auto-refresh: watch the global problemsStore for the edited file
+  // When errors drop to 0, auto-hide the diagnostics row
+  const editedFilePath = $derived(() => {
+    const rawPath = toolCall.arguments.path as string;
+    if (!rawPath) return null;
+    if (rawPath.includes(":") || rawPath.startsWith("/")) return rawPath;
+    if (projectStore.rootPath) {
+      const sep = projectStore.rootPath.includes("\\") ? "\\" : "/";
+      return `${projectStore.rootPath}${sep}${rawPath}`;
+    }
+    return rawPath;
+  });
+
+  const liveErrorCount = $derived(() => {
+    const filePath = editedFilePath();
+    if (!filePath) return -1; // unknown
+    const problems = problemsStore.getProblemsForFile(filePath);
+    return problems.filter((p) => p.severity === "error").length;
+  });
+
+  // Auto-hide diagnostics when live LSP errors reach 0 for the edited file
+  $effect(() => {
+    const liveErrors = liveErrorCount();
+    const snapshot = diagnosticsSummary;
+    // Only auto-hide if: we had errors at edit time, and live errors are now 0
+    if (
+      snapshot &&
+      snapshot.errorCount > 0 &&
+      liveErrors === 0 &&
+      hasAnyComplete
+    ) {
+      hideDiagnostics = true;
+    }
+  });
 
   function openProblems(): void {
     uiStore.openBottomPanelTab("problems");
@@ -289,7 +338,11 @@
     if (!candidate) return;
 
     let fullPath = candidate;
-    if (projectStore.rootPath && !candidate.startsWith("/") && !candidate.includes(":")) {
+    if (
+      projectStore.rootPath &&
+      !candidate.startsWith("/") &&
+      !candidate.includes(":")
+    ) {
       const sep = projectStore.rootPath.includes("\\") ? "\\" : "/";
       fullPath = `${projectStore.rootPath}${sep}${candidate}`;
     }
@@ -497,11 +550,19 @@
         onclick={() => (diagnosticsExpanded = !diagnosticsExpanded)}
         title={diagnosticsExpanded ? "Collapse" : "Expand"}
       >
-        <UIIcon name={diagnosticsExpanded ? "chevron-down" : "chevron-right"} size={12} />
+        <UIIcon
+          name={diagnosticsExpanded ? "chevron-down" : "chevron-right"}
+          size={12}
+        />
       </button>
       <div class="diagnostics-text">
         <span class="diag-warn"
-          >⚠ {diagnosticsSummary.errorCount} error{diagnosticsSummary.errorCount === 1 ? "" : "s"}{diagnosticsSummary.warningCount > 0 ? ` · ${diagnosticsSummary.warningCount} warn` : ""}</span
+          >⚠ {diagnosticsSummary.errorCount} error{diagnosticsSummary.errorCount ===
+          1
+            ? ""
+            : "s"}{diagnosticsSummary.warningCount > 0
+            ? ` · ${diagnosticsSummary.warningCount} warn`
+            : ""}</span
         >
       </div>
       <div class="diagnostics-actions">
@@ -521,13 +582,17 @@
       <div class="diagnostics-details">
         {#each diagnosticsSummary.problems.slice(0, 8) as p}
           <button class="diag-item" onclick={() => openProblem(p)}>
-            <span class="diag-file">{p.fileName || p.relativePath || p.file || "file"}</span>
+            <span class="diag-file"
+              >{p.fileName || p.relativePath || p.file || "file"}</span
+            >
             <span class="diag-loc">L{p.line ?? "?"}:{p.column ?? "?"}</span>
             <span class="diag-msg">{p.message || "Problem detected"}</span>
           </button>
         {/each}
         {#if diagnosticsSummary.problems.length > 8}
-          <div class="diag-more">+{diagnosticsSummary.problems.length - 8} more</div>
+          <div class="diag-more">
+            +{diagnosticsSummary.problems.length - 8} more
+          </div>
         {/if}
       </div>
     {/if}

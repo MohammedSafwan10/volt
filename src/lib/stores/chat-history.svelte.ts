@@ -141,6 +141,17 @@ class ChatHistoryStore {
     }
 
     /**
+     * Update conversation mode (ask/plan/agent)
+     */
+    async updateMode(conversationId: string, mode: string): Promise<void> {
+        await invoke('chat_update_mode', { conversationId, mode });
+
+        this.conversations = this.conversations.map(c =>
+            c.id === conversationId ? { ...c, mode, updatedAt: Date.now() } : c
+        );
+    }
+
+    /**
      * Toggle pin status
      */
     async togglePin(conversationId: string): Promise<boolean> {

@@ -68,6 +68,7 @@ class McpStore {
   private userConfigWatcher: (() => void) | null = null;
   private workspaceConfigWatcher: (() => void) | null = null;
   private eventUnlisteners: UnlistenFn[] = [];
+  private listenersInitialized = false;
 
   // Paths
   private userConfigPath: string | null = null;
@@ -234,6 +235,7 @@ class McpStore {
       unlisten();
     }
     this.eventUnlisteners = [];
+    this.listenersInitialized = false;
 
     // Stop file watchers
     if (this.userConfigWatcher) {
@@ -430,6 +432,19 @@ class McpStore {
   // Private methods
 
   private async setupEventListeners(): Promise<void> {
+    if (this.listenersInitialized) {
+      return;
+    }
+
+    for (const unlisten of this.eventUnlisteners) {
+      try {
+        unlisten();
+      } catch {
+        // ignore stale listeners
+      }
+    }
+    this.eventUnlisteners = [];
+
     // Server state changes
     const unlistenState = await listen<McpServerEvent>('mcp://server-state', (event) => {
       const { server_id, state } = event.payload;
@@ -461,6 +476,7 @@ class McpStore {
       logOutput('MCP', `[${server_id}] ${message}`);
     });
     this.eventUnlisteners.push(unlistenLog);
+    this.listenersInitialized = true;
   }
 
   private async loadConfigs(): Promise<void> {

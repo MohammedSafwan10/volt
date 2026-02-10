@@ -10,10 +10,12 @@
     createFile,
     createDirectory,
     deletePath,
+    deletePathQuiet,
     renamePath,
     getFileInfo,
   } from "$lib/services/file-system";
   import { pauseWatching, resumeWatching } from "$lib/services/file-watch";
+  import { terminalStore } from "$lib/stores/terminal.svelte";
   import FileTreeItem from "./FileTreeItem.svelte";
 
   interface Props {
@@ -148,6 +150,30 @@
   let lastSelectedIndex = $state(-1);
   let treeRef: HTMLDivElement | null = $state(null);
   let treeFocused = $state(false);
+  let treeHovered = $state(false);
+  let lastPointerX = $state<number | null>(null);
+  let lastPointerY = $state<number | null>(null);
+  let isRefreshingTree = $state(false);
+  let isDeletingItems = $state(false);
+  let deleteProgressCurrent = $state(0);
+  let deleteProgressTotal = $state(0);
+  let deleteProgressPath = $state("");
+
+  function collectSelectablePaths(nodes: TreeNode[]): string[] {
+    const paths: string[] = [];
+    const walk = (items: TreeNode[]): void => {
+      for (const node of items) {
+        if (!node.path.startsWith("__draft__:")) {
+          paths.push(node.path);
+        }
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children);
+        }
+      }
+    };
+    walk(nodes);
+    return paths;
+  }
 
   function handleItemSelect(
     node: TreeNode,
@@ -179,32 +205,68 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent): void {
+    if (inlineEdit) return;
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+      const selected = [...projectStore.selectedPaths].filter(
+        (path) => !path.startsWith("__draft__:"),
+      );
+      if (selected.length > 0) {
+        e.preventDefault();
+        void handleDeleteSelection();
+      }
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key === "a") {
       // Only select all if not currently renaming/creating
-      if (inlineEdit) return;
-
       e.preventDefault();
-      const allPaths = flatNodes
-        .filter((n) => !n.node.path.startsWith("__draft__:"))
-        .map((n) => n.node.path);
+      const allPaths = collectSelectablePaths(projectStore.tree);
       projectStore.selectAll(allPaths);
     }
   }
 
   function handleWindowKeydown(e: KeyboardEvent): void {
+    if (inlineEdit) return;
+
+    const active = document.activeElement as HTMLElement | null;
+    const isInTree = !!(active && treeRef && treeRef.contains(active));
+    let isPointerInTree = false;
+    if (
+      treeRef &&
+      lastPointerX !== null &&
+      lastPointerY !== null &&
+      typeof document.elementFromPoint === "function"
+    ) {
+      const hovered = document.elementFromPoint(lastPointerX, lastPointerY);
+      isPointerInTree = !!(hovered && treeRef.contains(hovered));
+    }
+
+    if (!treeFocused && !isInTree && !treeHovered && !isPointerInTree) return;
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+      const selected = [...projectStore.selectedPaths].filter(
+        (path) => !path.startsWith("__draft__:"),
+      );
+      if (selected.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleDeleteSelection();
+      }
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key === "a") {
-      if (inlineEdit) return;
-
-      const active = document.activeElement as HTMLElement | null;
-      const isInTree = !!(active && treeRef && treeRef.contains(active));
-      if (!treeFocused && !isInTree) return;
-
       e.preventDefault();
-      const allPaths = flatNodes
-        .filter((n) => !n.node.path.startsWith("__draft__:"))
-        .map((n) => n.node.path);
+      e.stopPropagation();
+      const allPaths = collectSelectablePaths(projectStore.tree);
       projectStore.selectAll(allPaths);
     }
+  }
+
+  function handleWindowMouseMove(e: MouseEvent): void {
+    lastPointerX = e.clientX;
+    lastPointerY = e.clientY;
   }
 
   // Auto-scroll configuration
@@ -308,7 +370,13 @@
   }
 
   async function handleRefresh(): Promise<void> {
-    await projectStore.refreshTree();
+    if (isRefreshingTree || isDeletingItems) return;
+    isRefreshingTree = true;
+    try {
+      await projectStore.refreshTree();
+    } finally {
+      isRefreshingTree = false;
+    }
   }
 
   function handleCollapseAll(): void {
@@ -341,6 +409,14 @@
   function handleTreePointerDown(): void {
     treeFocused = true;
     treeRef?.focus();
+  }
+
+  function handleTreeMouseEnter(): void {
+    treeHovered = true;
+  }
+
+  function handleTreeMouseLeave(): void {
+    treeHovered = false;
   }
 
   function handleTreeFocusIn(): void {
@@ -788,6 +864,7 @@
   }
 
   async function handleDelete(node: TreeNode): Promise<void> {
+    if (isDeletingItems) return;
     closeContextMenu();
 
     const confirmed = await requestConfirm({
@@ -820,21 +897,34 @@
       editorStore.closeFile(path, true);
     }
 
+    await terminalStore.stopSessionsInPath(node.path);
+
     // Pause file watcher to release handles on Windows
     await pauseWatching();
     await new Promise((resolve) => setTimeout(resolve, 50));
+
+    isDeletingItems = true;
+    deleteProgressTotal = 1;
+    deleteProgressCurrent = 0;
+    deleteProgressPath = node.name;
 
     try {
       const ok = await deletePath(node.path);
       if (ok) {
         projectStore.removeNode(node.path);
+        deleteProgressCurrent = 1;
       }
     } finally {
       await resumeWatching();
+      isDeletingItems = false;
+      deleteProgressCurrent = 0;
+      deleteProgressTotal = 0;
+      deleteProgressPath = "";
     }
   }
 
   async function handleDeleteSelection(): Promise<void> {
+    if (isDeletingItems) return;
     closeContextMenu();
 
     const selected = [...projectStore.selectedPaths].filter(
@@ -854,9 +944,25 @@
     });
     if (!confirmed) return;
 
+    // Collapse descendant paths when parent directory is selected.
+    // This avoids redundant delete calls and "not found" churn on large trees.
+    const normalize = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const sortedSelected = [...new Set(selected)].sort((a, b) => normalize(a).length - normalize(b).length);
+    const deleteTargets: string[] = [];
+    for (const path of sortedSelected) {
+      const norm = normalize(path);
+      if (deleteTargets.some((kept) => {
+        const keptNorm = normalize(kept);
+        return norm === keptNorm || norm.startsWith(keptNorm + "/");
+      })) {
+        continue;
+      }
+      deleteTargets.push(path);
+    }
+
     // Close any open files under selected paths to release Windows file handles
     const filesToClose: string[] = [];
-    const normalizedSelections = selected.map((p) => p.replace(/\\/g, "/"));
+    const normalizedSelections = deleteTargets.map((p) => normalize(p));
     for (const f of editorStore.openFiles) {
       const normalizedFilePath = f.path.replace(/\\/g, "/");
       if (
@@ -873,25 +979,64 @@
       editorStore.closeFile(path, true);
     }
 
+    for (const path of deleteTargets) {
+      await terminalStore.stopSessionsInPath(path);
+    }
+
     await pauseWatching();
     await new Promise((resolve) => setTimeout(resolve, 50));
 
+    const failed: string[] = [];
+    const deleted: string[] = [];
+    isDeletingItems = true;
+    deleteProgressTotal = deleteTargets.length;
+    deleteProgressCurrent = 0;
+    deleteProgressPath = "";
     try {
-      for (const path of selected) {
-        const ok = await deletePath(path);
+      for (const path of deleteTargets) {
+        deleteProgressPath = path.split(/[\\/]/).pop() ?? path;
+        const ok = await deletePathQuiet(path);
         if (ok) {
+          deleted.push(path);
           projectStore.removeNode(path);
+        } else {
+          failed.push(path);
         }
+        deleteProgressCurrent += 1;
       }
     } finally {
       await resumeWatching();
+      isDeletingItems = false;
+      deleteProgressCurrent = 0;
+      deleteProgressTotal = 0;
+      deleteProgressPath = "";
+    }
+
+    if (deleted.length > 20 && failed.length > 0) {
+      await projectStore.refreshTree();
     }
 
     projectStore.clearSelection();
+
+    if (failed.length > 0) {
+      showToast({
+        message: `Deleted ${deleted.length} item(s), failed ${failed.length}.`,
+        type: "warning",
+      });
+    } else {
+      showToast({
+        message: `Deleted ${deleted.length} item(s).`,
+        type: "success",
+      });
+    }
   }
 </script>
 
-<svelte:window onclick={handleWindowClick} onkeydown={handleWindowKeydown} />
+<svelte:window
+  onclick={handleWindowClick}
+  onkeydown={handleWindowKeydown}
+  onmousemove={handleWindowMouseMove}
+/>
 
 <div
   class="file-tree"
@@ -901,6 +1046,8 @@
   onpointerdown={handleTreePointerDown}
   onfocusin={handleTreeFocusIn}
   onfocusout={handleTreeFocusOut}
+  onmouseenter={handleTreeMouseEnter}
+  onmouseleave={handleTreeMouseLeave}
   bind:this={treeRef}
   tabindex="0"
 >
@@ -929,6 +1076,7 @@
           onclick={() => void beginCreate("newFile", null)}
           aria-label="New File"
           type="button"
+          disabled={isDeletingItems || isRefreshingTree}
         >
           <UIIcon name="file-plus" size={16} />
         </button>
@@ -938,6 +1086,7 @@
           onclick={() => void beginCreate("newFolder", null)}
           aria-label="New Folder"
           type="button"
+          disabled={isDeletingItems || isRefreshingTree}
         >
           <UIIcon name="folder-plus" size={16} />
         </button>
@@ -947,8 +1096,13 @@
           onclick={() => void handleRefresh()}
           aria-label="Refresh"
           type="button"
+          disabled={isDeletingItems || isRefreshingTree}
         >
-          <UIIcon name="refresh" size={16} />
+          {#if isRefreshingTree}
+            <span class="loading-icon"><UIIcon name="spinner" size={16} /></span>
+          {:else}
+            <UIIcon name="refresh" size={16} />
+          {/if}
         </button>
         <button
           class="toolbar-btn"
@@ -956,11 +1110,26 @@
           onclick={handleCollapseAll}
           aria-label="Collapse All"
           type="button"
+          disabled={isDeletingItems || isRefreshingTree}
         >
           <UIIcon name="collapse-all" size={16} />
         </button>
       </div>
     </div>
+    {#if isDeletingItems || isRefreshingTree}
+      <div class="operation-status" aria-live="polite">
+        {#if isDeletingItems}
+          <span class="operation-icon"><UIIcon name="spinner" size={12} /></span>
+          <span>
+            Deleting {deleteProgressCurrent}/{deleteProgressTotal}
+            {#if deleteProgressPath} - {deleteProgressPath}{/if}
+          </span>
+        {:else if isRefreshingTree}
+          <span class="operation-icon"><UIIcon name="spinner" size={12} /></span>
+          <span>Refreshing explorer...</span>
+        {/if}
+      </div>
+    {/if}
 
     <div
       class="tree-content"
@@ -1233,6 +1402,32 @@
   .toolbar-btn:hover {
     background: var(--color-hover);
     color: var(--color-text);
+  }
+
+  .toolbar-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .operation-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: color-mix(in srgb, var(--color-bg-panel) 85%, var(--color-accent) 15%);
+  }
+
+  .operation-icon {
+    display: grid;
+    place-items: center;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
   }
 
   .tree-content {

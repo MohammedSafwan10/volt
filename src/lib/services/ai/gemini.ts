@@ -42,7 +42,7 @@ function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThi
     // Gemini 3 series: use thinkingLevel
     return {
       includeThoughts: thinkingEnabled,
-      thinkingLevel: thinkingEnabled ? 'LOW' : 'LOW'
+      thinkingLevel: thinkingEnabled ? 'HIGH' : 'MINIMAL'
     };
   }
 

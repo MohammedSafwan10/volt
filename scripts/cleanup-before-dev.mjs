@@ -8,7 +8,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { access, constants, readdir, rm, stat } from 'fs/promises';
+import { access, constants, readdir, rm } from 'fs/promises';
 import { join } from 'path';
 
 const execAsync = promisify(exec);
@@ -18,6 +18,7 @@ const MAX_RETRIES = 5;
 const RETRY_DELAY = 500;
 const CARGO_TARGET_DIR = join(process.cwd(), '.cargo-target');
 const BUILD_DIR = join(CARGO_TARGET_DIR, 'debug', 'build');
+const CARGO_DEBUG_DIR = join(CARGO_TARGET_DIR, 'debug');
 
 async function killByPattern(pattern) {
   try {
@@ -55,6 +56,21 @@ async function canAccessSidecar() {
   }
 }
 
+async function killByExactExePath(exePath) {
+  try {
+    // Use Get-Process.Path for simple/robust exact matching.
+    const escaped = exePath.replace(/'/g, "''");
+    const ps = `@($procs = Get-Process | Where-Object { $_.Path -eq '${escaped}' }); $procs | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {} }; ($procs | Measure-Object).Count`;
+    const { stdout } = await execAsync(`powershell -NoProfile -Command "${ps}"`, { windowsHide: true });
+    const count = Number(String(stdout).trim()) || 0;
+    if (count > 0) {
+      console.log(`[cleanup] Killed ${count} process(es) by exact path: ${exePath}`);
+    }
+  } catch {
+    // Ignore lookup errors
+  }
+}
+
 async function safeRemoveDir(path) {
   try {
     await rm(path, { recursive: true, force: true });
@@ -62,6 +78,26 @@ async function safeRemoveDir(path) {
   } catch (err) {
     console.log(`[cleanup] Failed to remove ${path}: ${err?.message ?? err}`);
   }
+}
+
+async function forceDeleteFile(filePath, retries = 8, delayMs = 350) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      // Clear readonly/system/hidden flags first on Windows.
+      await execAsync(`attrib -R -S -H "${filePath}"`, { windowsHide: true }).catch(() => {});
+      await rm(filePath, { force: true });
+      console.log(`[cleanup] Removed stale file: ${filePath}`);
+      return true;
+    } catch (err) {
+      const message = err?.message ?? String(err);
+      if (i === retries - 1) {
+        console.log(`[cleanup] Failed to remove stale file after ${retries} attempts: ${filePath} (${message})`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return false;
 }
 
 async function cleanupBuildArtifacts() {
@@ -89,6 +125,62 @@ async function cleanupBuildArtifacts() {
   }
 }
 
+async function cleanupTargetSidecars() {
+  // Tauri externalBin "binaries/node" is copied to CARGO_TARGET_DIR/debug/node.exe.
+  // If that file is left locked by a stale process, tauri-build panics with AccessDenied.
+  const candidates = [
+    join(CARGO_DEBUG_DIR, 'node.exe'),
+    join(CARGO_DEBUG_DIR, 'node-x86_64-pc-windows-msvc.exe'),
+    join(CARGO_DEBUG_DIR, 'node-aarch64-pc-windows-msvc.exe'),
+  ];
+
+  for (const file of candidates) {
+    await forceDeleteFile(file);
+  }
+}
+
+async function killByPort(port) {
+  try {
+    const { stdout } = await execAsync('netstat -ano -p tcp', { windowsHide: true });
+    const lines = String(stdout).split(/\r?\n/);
+    const pids = new Set();
+    const localSuffix = `:${Number(port)}`;
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (!line.toUpperCase().startsWith('TCP')) continue;
+      const parts = line.split(/\s+/);
+      if (parts.length < 5) continue;
+      const local = parts[1] || '';
+      const state = (parts[3] || '').toUpperCase();
+      const pid = parts[4] || '';
+
+      // Match both IPv4/IPv6 forms:
+      // 127.0.0.1:1420, 0.0.0.0:1420, [::]:1420
+      if (!local.endsWith(localSuffix)) continue;
+      if (state !== 'LISTENING' && state !== 'ESTABLISHED' && state !== 'CLOSE_WAIT' && state !== 'TIME_WAIT') continue;
+      if (!/^\d+$/.test(pid)) continue;
+      pids.add(pid);
+    }
+
+    let killed = 0;
+    for (const pid of pids) {
+      try {
+        await execAsync(`taskkill /PID ${pid} /T /F`, { windowsHide: true });
+        killed++;
+      } catch {
+        // Ignore if already exited or inaccessible
+      }
+    }
+
+    if (killed > 0) {
+      console.log(`[cleanup] Killed ${killed} process(es) using TCP port ${port}`);
+    }
+  } catch {
+    // Ignore if netstat parsing fails
+  }
+}
+
 async function main() {
   console.log('[cleanup] Killing stale dev processes...');
 
@@ -96,7 +188,12 @@ async function main() {
   await killByPattern('.cargo-target');
   await killByPattern('volt\\\\src-tauri\\\\target');
   await killByPattern('volt\\\\src-tauri\\\\binaries');
+  await killByPattern('\\\\.cargo\\\\volt-target');
+  await killByPattern('volt-target\\\\debug\\\\node');
   await killByPattern('volt.exe');
+  await killByExactExePath(join(CARGO_DEBUG_DIR, 'node.exe'));
+  await killByExactExePath(join(CARGO_DEBUG_DIR, 'volt.exe'));
+  await killByPort(1420);
 
   // Also kill any orphaned esbuild/vite processes from previous dev sessions
   // These can hold file handles open
@@ -107,6 +204,7 @@ async function main() {
 
   // Cleanup build artifacts that can remain locked on Windows
   await cleanupBuildArtifacts();
+  await cleanupTargetSidecars();
 
   // Verify sidecar is accessible with retries
   for (let i = 0; i < MAX_RETRIES; i++) {

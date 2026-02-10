@@ -66,6 +66,14 @@ export async function startWatching(workspaceRoot: string): Promise<boolean> {
       handleFileChangeBatch(event.payload);
     });
 
+    // Recover from stale backend watcher state (e.g. reload/HMR):
+    // if Rust still watches this workspace, stop it first so re-attach is reliable.
+    try {
+      await invoke('stop_file_watch', { workspaceRoot });
+    } catch {
+      // ignore if it was not watching
+    }
+
     // Start the Rust watcher
     await invoke('start_file_watch', { workspaceRoot });
     currentWorkspace = workspaceRoot;
@@ -74,16 +82,19 @@ export async function startWatching(workspaceRoot: string): Promise<boolean> {
     return true;
   } catch (error) {
     // Clean up listener if watcher failed to start
+    // Special-case: backend already watching (race/reload). Keep listener and proceed.
+    const errorStr = String(error);
+    if (errorStr.includes('AlreadyWatching')) {
+      currentWorkspace = workspaceRoot;
+      logOutput('Volt', `Reusing existing file watcher for ${workspaceRoot}`);
+      return true;
+    }
+
     if (unlistenChange) {
       unlistenChange();
       unlistenChange = null;
     }
-    
-    // Don't log "already watching" as an error
-    const errorStr = String(error);
-    if (!errorStr.includes('AlreadyWatching')) {
-      logOutput('Volt', `Failed to start file watcher: ${error}`);
-    }
+    logOutput('Volt', `Failed to start file watcher: ${error}`);
     return false;
   }
 }

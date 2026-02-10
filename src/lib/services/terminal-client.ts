@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { registerCleanup } from '$lib/services/hmr-cleanup';
 
 /**
  * Terminal session info returned from Rust backend
@@ -122,43 +123,95 @@ const pendingEvents = new Map<string, Array<{ type: string; payload: any }>>();
 /**
  * Start global listeners immediately to capture all terminal events
  */
+type TerminalListenerState = {
+	started: boolean;
+	startPromise: Promise<void> | null;
+	unlisteners: UnlistenFn[];
+};
+
+const globalScope = globalThis as typeof globalThis & {
+	__voltTerminalListeners?: TerminalListenerState;
+};
+
+function getTerminalListenerState(): TerminalListenerState {
+	if (!globalScope.__voltTerminalListeners) {
+		globalScope.__voltTerminalListeners = {
+			started: false,
+			startPromise: null,
+			unlisteners: []
+		};
+	}
+	return globalScope.__voltTerminalListeners;
+}
+
 async function startGlobalListeners() {
-	await Promise.all([
-		listen<TerminalDataEvent>('terminal://data', (event) => {
-			const session = sessionRegistry.get(event.payload.terminalId);
-			if (session) {
-				session.handleDataEvent(event.payload);
-			} else {
-				const events = pendingEvents.get(event.payload.terminalId) || [];
-				events.push({ type: 'data', payload: event.payload });
-				pendingEvents.set(event.payload.terminalId, events);
-			}
-		}),
-		listen<TerminalExitEvent>('terminal://exit', (event) => {
-			const session = sessionRegistry.get(event.payload.terminalId);
-			if (session) {
-				session.handleExitEvent(event.payload);
-			} else {
-				const events = pendingEvents.get(event.payload.terminalId) || [];
-				events.push({ type: 'exit', payload: event.payload });
-				pendingEvents.set(event.payload.terminalId, events);
-			}
-		}),
-		listen<TerminalReadyEvent>('terminal://ready', (event) => {
-			const session = sessionRegistry.get(event.payload.terminalId);
-			if (session) {
-				session.handleReadyEvent(event.payload);
-			} else {
-				const events = pendingEvents.get(event.payload.terminalId) || [];
-				events.push({ type: 'ready', payload: event.payload });
-				pendingEvents.set(event.payload.terminalId, events);
-			}
-		})
-	]);
+	const state = getTerminalListenerState();
+	if (state.started) return;
+	if (state.startPromise) return state.startPromise;
+
+	state.startPromise = (async () => {
+		const [unlistenData, unlistenExit, unlistenReady] = await Promise.all([
+			listen<TerminalDataEvent>('terminal://data', (event) => {
+				const session = sessionRegistry.get(event.payload.terminalId);
+				if (session) {
+					session.handleDataEvent(event.payload);
+				} else {
+					const events = pendingEvents.get(event.payload.terminalId) || [];
+					events.push({ type: 'data', payload: event.payload });
+					pendingEvents.set(event.payload.terminalId, events);
+				}
+			}),
+			listen<TerminalExitEvent>('terminal://exit', (event) => {
+				const session = sessionRegistry.get(event.payload.terminalId);
+				if (session) {
+					session.handleExitEvent(event.payload);
+				} else {
+					const events = pendingEvents.get(event.payload.terminalId) || [];
+					events.push({ type: 'exit', payload: event.payload });
+					pendingEvents.set(event.payload.terminalId, events);
+				}
+			}),
+			listen<TerminalReadyEvent>('terminal://ready', (event) => {
+				const session = sessionRegistry.get(event.payload.terminalId);
+				if (session) {
+					session.handleReadyEvent(event.payload);
+				} else {
+					const events = pendingEvents.get(event.payload.terminalId) || [];
+					events.push({ type: 'ready', payload: event.payload });
+					pendingEvents.set(event.payload.terminalId, events);
+				}
+			})
+		]);
+
+		state.unlisteners = [unlistenData, unlistenExit, unlistenReady];
+		state.started = true;
+		state.startPromise = null;
+	})().catch((error) => {
+		state.startPromise = null;
+		state.started = false;
+		console.error('[TerminalClient] Failed to start global listeners:', error);
+	});
+
+	return state.startPromise;
+}
+
+async function stopGlobalListeners(): Promise<void> {
+	const state = getTerminalListenerState();
+	for (const unlisten of state.unlisteners) {
+		try {
+			unlisten();
+		} catch {
+			// ignore
+		}
+	}
+	state.unlisteners = [];
+	state.started = false;
+	state.startPromise = null;
 }
 
 // Kick off global listeners
 void startGlobalListeners();
+registerCleanup('terminal-client-events', () => stopGlobalListeners());
 
 export async function onTerminalData(
 	callback: (event: TerminalDataEvent) => void
@@ -197,6 +250,33 @@ export interface CommandCompletion {
 }
 
 const OSC_633_REGEX = /\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x07|\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x1b\\/g;
+const OSC_GENERIC_REGEX = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+function stripTerminalArtifacts(data: string): string {
+	if (!data) return '';
+	let cleaned = data;
+
+	// Remove OSC control sequences (633 + any other OSC payload)
+	cleaned = cleaned.replace(OSC_633_REGEX, '');
+	cleaned = cleaned.replace(OSC_GENERIC_REGEX, '');
+
+	// Remove fallback sentinels and helper variable noise
+	cleaned = cleaned
+		.replace(/__VOLT_EXIT_CODE_\d+__/g, '')
+		.replace(/__VOLT_DONE_[A-Za-z0-9]+__/g, '')
+		.replace(/^\s*\$voltExit\s*=.*$/gm, '');
+
+	// Remove leaked plain-text cursor query marker while preserving real ESC[6n control queries.
+	// Stripping ESC[6n would prevent xterm from answering DSR and can freeze prompt rendering.
+	cleaned = cleaned.replace(/(?<!\x1b)\[6n/g, '');
+
+	// Remove any line that still contains raw shell integration markers
+	cleaned = cleaned
+		.replace(/^.*\]633;.*$/gm, '')
+		.replace(/^.*ShellIntegration=Volt.*$/gmi, '');
+
+	return cleaned;
+}
 
 function parseOscSequences(data: string): { events: ShellIntegrationEvent[]; cleanData: string } {
 	const events: ShellIntegrationEvent[] = [];
@@ -324,15 +404,14 @@ export class TerminalSession {
 
 		this.captureToHistory(payload.data);
 		if (cleanData) {
-			this.captureToCleanHistory(cleanData);
-			for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(cleanData);
+			const sanitized = stripTerminalArtifacts(cleanData);
+			if (sanitized) {
+				this.captureToCleanHistory(sanitized);
+				for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(sanitized);
+			}
 		}
 
-		const displayData = cleanData;
-		const filteredDisplay = displayData
-			.replace(/__VOLT_EXIT_CODE_\d+__/g, '')
-			.replace(/__VOLT_DONE_[A-Za-z0-9]+__/g, '')
-			.replace(/^\s*\$voltExit.*\r?\n?/gm, '');
+		const filteredDisplay = stripTerminalArtifacts(cleanData);
 
 		if (filteredDisplay) {
 			if (this.onDataCallback) this.onDataCallback(filteredDisplay);
@@ -413,7 +492,8 @@ export class TerminalSession {
 
 	private cleanCommandOutput(output: string): string {
 		const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-		let cleaned = output.replace(ansiRegex, '').trim();
+		let cleaned = output.replace(ansiRegex, '');
+		cleaned = stripTerminalArtifacts(cleaned).trim();
 		cleaned = cleaned.replace(/\nPS [^\n]+>\s*$/, '');
 		cleaned = cleaned.replace(/\n\$\s*$/, '');
 		return cleaned;
@@ -521,6 +601,7 @@ export class TerminalSession {
 			const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
 			const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 			let cleaned = raw.replace(ansiRegex, '');
+			cleaned = stripTerminalArtifacts(cleaned);
 			const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 			let startIdx = 0;
 			for (let i = 0; i < Math.min(lines.length, 5); i++) {
@@ -550,6 +631,16 @@ export class TerminalSession {
 export async function createTerminalSession(cwd?: string, cols?: number, rows?: number): Promise<TerminalSession | null> {
 	const info = await createTerminal(cwd, cols, rows);
 	if (!info) return null;
+	const session = new TerminalSession(info);
+	await session.startListening();
+	return session;
+}
+
+/**
+ * Rehydrate a session object from an already-running backend terminal.
+ * Used after frontend reload/HMR so existing terminals remain visible/controllable.
+ */
+export async function createTerminalSessionFromInfo(info: TerminalInfo): Promise<TerminalSession> {
 	const session = new TerminalSession(info);
 	await session.startListening();
 	return session;

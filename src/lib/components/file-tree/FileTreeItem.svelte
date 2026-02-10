@@ -199,6 +199,14 @@
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", node.path);
+      e.dataTransfer.setData(
+        "application/x-volt-tree-node",
+        JSON.stringify({
+          path: node.path,
+          name: node.name,
+          isDir: node.isDir,
+        }),
+      );
     }
     onDragStart?.(node, e);
   }

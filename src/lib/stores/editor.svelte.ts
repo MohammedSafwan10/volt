@@ -32,6 +32,37 @@ import {
   notifySvelteDocumentSaved,
   notifySvelteDocumentChanged
 } from '$lib/services/lsp/svelte-sidecar';
+import {
+  isHtmlFile,
+  notifyHtmlDocumentClosed,
+  notifyHtmlDocumentChanged
+} from '$lib/services/lsp/html-sidecar';
+import {
+  isCssFile,
+  notifyCssDocumentClosed,
+  notifyCssDocumentChanged
+} from '$lib/services/lsp/css-sidecar';
+import {
+  isJsonFile,
+  notifyJsonDocumentClosed,
+  notifyJsonDocumentChanged
+} from '$lib/services/lsp/json-sidecar';
+import {
+  isDartLspFile,
+  notifyDocumentClosed as notifyDartDocumentClosed,
+  notifyDocumentSaved as notifyDartDocumentSaved,
+  notifyDocumentChanged as notifyDartDocumentChanged
+} from '$lib/services/lsp/dart-sidecar';
+import {
+  isYamlFile,
+  notifyDocumentClosed as notifyYamlDocumentClosed,
+  notifyDocumentChanged as notifyYamlDocumentChanged
+} from '$lib/services/lsp/yaml-sidecar';
+import {
+  isXmlFile,
+  notifyDocumentClosed as notifyXmlDocumentClosed,
+  notifyDocumentChanged as notifyXmlDocumentChanged
+} from '$lib/services/lsp/xml-sidecar';
 
 export interface OpenFile {
   /** Full file path (normalized with forward slashes) */
@@ -282,6 +313,24 @@ class EditorStore {
     if (isSvelteFile(normalizedPath)) {
       notifySvelteDocumentClosed(normalizedPath);
     }
+    if (isHtmlFile(normalizedPath)) {
+      notifyHtmlDocumentClosed(normalizedPath);
+    }
+    if (isCssFile(normalizedPath)) {
+      notifyCssDocumentClosed(normalizedPath);
+    }
+    if (isJsonFile(normalizedPath)) {
+      notifyJsonDocumentClosed(normalizedPath);
+    }
+    if (isDartLspFile(normalizedPath)) {
+      notifyDartDocumentClosed(normalizedPath);
+    }
+    if (isYamlFile(normalizedPath)) {
+      notifyYamlDocumentClosed(normalizedPath);
+    }
+    if (isXmlFile(normalizedPath)) {
+      notifyXmlDocumentClosed(normalizedPath);
+    }
 
     // Update active file
     if (this.activeFilePath === normalizedPath) {
@@ -322,6 +371,24 @@ class EditorStore {
       // Notify Svelte LSP sidecar about the file being closed
       if (isSvelteFile(file.path)) {
         notifySvelteDocumentClosed(file.path);
+      }
+      if (isHtmlFile(file.path)) {
+        notifyHtmlDocumentClosed(file.path);
+      }
+      if (isCssFile(file.path)) {
+        notifyCssDocumentClosed(file.path);
+      }
+      if (isJsonFile(file.path)) {
+        notifyJsonDocumentClosed(file.path);
+      }
+      if (isDartLspFile(file.path)) {
+        notifyDartDocumentClosed(file.path);
+      }
+      if (isYamlFile(file.path)) {
+        notifyYamlDocumentClosed(file.path);
+      }
+      if (isXmlFile(file.path)) {
+        notifyXmlDocumentClosed(file.path);
       }
     }
     this.openFiles = [];
@@ -460,6 +527,9 @@ class EditorStore {
       if (isSvelteFile(normalizedPath)) {
         notifySvelteDocumentSaved(normalizedPath, file.content);
       }
+      if (isDartLspFile(normalizedPath)) {
+        notifyDartDocumentSaved(normalizedPath, file.content);
+      }
     }
   }
 
@@ -509,6 +579,24 @@ class EditorStore {
       }
       if (isSvelteFile(normalizedPath)) {
         notifySvelteDocumentChanged(normalizedPath, content);
+      }
+      if (isHtmlFile(normalizedPath)) {
+        notifyHtmlDocumentChanged(normalizedPath, content);
+      }
+      if (isCssFile(normalizedPath)) {
+        notifyCssDocumentChanged(normalizedPath, content);
+      }
+      if (isJsonFile(normalizedPath)) {
+        notifyJsonDocumentChanged(normalizedPath, content);
+      }
+      if (isDartLspFile(normalizedPath)) {
+        notifyDartDocumentChanged(normalizedPath, content);
+      }
+      if (isYamlFile(normalizedPath)) {
+        notifyYamlDocumentChanged(normalizedPath, content);
+      }
+      if (isXmlFile(normalizedPath)) {
+        notifyXmlDocumentChanged(normalizedPath, content);
       }
 
       return true;
@@ -598,6 +686,24 @@ class EditorStore {
     }
     if (isSvelteFile(normalizedPath)) {
       notifySvelteDocumentChanged(normalizedPath, content);
+    }
+    if (isHtmlFile(normalizedPath)) {
+      notifyHtmlDocumentChanged(normalizedPath, content);
+    }
+    if (isCssFile(normalizedPath)) {
+      notifyCssDocumentChanged(normalizedPath, content);
+    }
+    if (isJsonFile(normalizedPath)) {
+      notifyJsonDocumentChanged(normalizedPath, content);
+    }
+    if (isDartLspFile(normalizedPath)) {
+      notifyDartDocumentChanged(normalizedPath, content);
+    }
+    if (isYamlFile(normalizedPath)) {
+      notifyYamlDocumentChanged(normalizedPath, content);
+    }
+    if (isXmlFile(normalizedPath)) {
+      notifyXmlDocumentChanged(normalizedPath, content);
     }
 
     return true;

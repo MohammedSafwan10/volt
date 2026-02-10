@@ -6,9 +6,12 @@
   import { toastStore } from "$lib/stores/toast.svelte";
   import { readTextFile } from "@tauri-apps/plugin-fs";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
+  import { getFileInfo } from "$lib/services/file-system";
   import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
   import ContextUsage from "./ContextUsage.svelte";
   import { fade } from "svelte/transition";
+
+  const TREE_NODE_MIME = "application/x-volt-tree-node";
 
   interface Props {
     inputRef?: HTMLTextAreaElement;
@@ -27,6 +30,7 @@
     onAttachSelection: () => void;
     onAttachImage?: (file: File) => void;
     onAttachImageFromPicker?: () => void;
+    onOpenPromptLibrary?: () => void;
   }
 
   let {
@@ -42,6 +46,7 @@
     onAttachSelection,
     onAttachImage,
     onAttachImageFromPicker,
+    onOpenPromptLibrary,
   }: Props = $props();
 
   // Get current model from settings store (synced with settings panel)
@@ -434,7 +439,12 @@
   // Handle drag over
   function handleDragOver(e: DragEvent): void {
     e.preventDefault();
-    if (e.dataTransfer?.types.includes("Files")) {
+    const types = e.dataTransfer?.types ?? [];
+    if (
+      types.includes("Files") ||
+      types.includes(TREE_NODE_MIME) ||
+      types.includes("text/plain")
+    ) {
       isDraggingOver = true;
     }
   }
@@ -446,21 +456,185 @@
   }
 
   // Handle drop for images
-  function handleDrop(e: DragEvent): void {
+  async function handleDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
     isDraggingOver = false;
 
-    if (!onAttachImage) return;
+    const transfer = e.dataTransfer;
+    if (!transfer) return;
 
-    const files = e.dataTransfer?.files;
+    // Internal file-tree drag/drop payload
+    const treeNodeData = transfer.getData(TREE_NODE_MIME);
+    if (treeNodeData) {
+      try {
+        const parsed = JSON.parse(treeNodeData) as {
+          path?: string;
+          name?: string;
+          isDir?: boolean;
+        };
+        const path = parsed.path?.trim();
+        if (!path) return;
+
+        if (parsed.isDir) {
+          assistantStore.attachFolder(path);
+          return;
+        }
+
+        const content = await readTextFile(path);
+        const label = parsed.name || path.split(/[\\/]/).pop() || path;
+        const result = assistantStore.attachFile(path, content, label);
+        if (!result.success) {
+          toastStore.show({
+            type: "warning",
+            message: result.error || `Failed to attach ${label}`,
+          });
+        }
+      } catch (err: any) {
+        toastStore.show({
+          type: "error",
+          message: `Could not attach dropped file: ${err?.message || "Unknown error"}`,
+        });
+      }
+      return;
+    }
+
+    // Platform fallback: some drags only provide plain-text absolute path.
+    const plainPath = await getDroppedPathAsPlainText(transfer);
+    if (plainPath) {
+      try {
+        const info = await getFileInfo(plainPath);
+        if (info?.isDir) {
+          assistantStore.attachFolder(plainPath);
+          return;
+        }
+
+        const content = await readTextFile(plainPath);
+        const label = info?.name || plainPath.split(/[\\/]/).pop() || plainPath;
+        const result = assistantStore.attachFile(plainPath, content, label);
+        if (!result.success) {
+          toastStore.show({
+            type: "warning",
+            message: result.error || `Failed to attach ${label}`,
+          });
+        }
+      } catch (err: any) {
+        toastStore.show({
+          type: "error",
+          message: `Could not attach dropped path: ${err?.message || "Unknown error"}`,
+        });
+      }
+      return;
+    }
+
+    const files = transfer.files;
     if (!files) return;
 
     for (const file of files) {
       const mimeType =
         file.type as (typeof IMAGE_LIMITS.allowedMimeTypes)[number];
       if (IMAGE_LIMITS.allowedMimeTypes.includes(mimeType)) {
-        onAttachImage(file);
+        onAttachImage?.(file);
+        continue;
       }
+
+      // Try attaching dropped text/code files from OS file explorer
+      if (!canAttachAsTextFile(file)) {
+        continue;
+      }
+
+      try {
+        const droppedPath = getDroppedFilePath(file);
+        const content = droppedPath
+          ? await readTextFile(droppedPath)
+          : await file.text();
+        const attachPath = droppedPath || file.name;
+        const result = assistantStore.attachFile(attachPath, content, file.name);
+        if (!result.success) {
+          toastStore.show({
+            type: "warning",
+            message: result.error || `Failed to attach ${file.name}`,
+          });
+        }
+      } catch (err: any) {
+        toastStore.show({
+          type: "error",
+          message: `Could not attach ${file.name}: ${err?.message || "Unknown error"}`,
+        });
+      }
+    }
+  }
+
+  function getDroppedFilePath(file: File): string | null {
+    const maybePath = (file as any).path;
+    return typeof maybePath === "string" && maybePath.trim().length > 0
+      ? maybePath
+      : null;
+  }
+
+  function canAttachAsTextFile(file: File): boolean {
+    // Guard against huge files in chat context
+    if (file.size > 2 * 1024 * 1024) return false;
+
+    const type = (file.type || "").toLowerCase();
+    if (type.startsWith("text/")) return true;
+    if (
+      type.includes("json") ||
+      type.includes("javascript") ||
+      type.includes("typescript") ||
+      type.includes("xml") ||
+      type.includes("yaml")
+    ) {
+      return true;
+    }
+
+    const name = (file.name || "").toLowerCase();
+    const textExtensions = [
+      ".md",
+      ".txt",
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".json",
+      ".css",
+      ".scss",
+      ".html",
+      ".svelte",
+      ".rs",
+      ".py",
+      ".java",
+      ".go",
+      ".yaml",
+      ".yml",
+      ".xml",
+      ".env",
+      ".toml",
+      ".ini",
+      ".sh",
+      ".ps1",
+    ];
+    return textExtensions.some((ext) => name.endsWith(ext));
+  }
+
+  async function getDroppedPathAsPlainText(
+    transfer: DataTransfer,
+  ): Promise<string | null> {
+    const plain = transfer.getData("text/plain")?.trim();
+    if (!plain) return null;
+
+    if (
+      plain.startsWith("{") ||
+      plain.startsWith("http://") ||
+      plain.startsWith("https://")
+    ) {
+      return null;
+    }
+
+    try {
+      const info = await getFileInfo(plain);
+      return info ? plain : null;
+    } catch {
+      return null;
     }
   }
 
@@ -496,8 +670,15 @@
 >
   {#if isDraggingOver}
     <div class="drop-overlay">
-      <UIIcon name="image" size={24} />
-      <span>Drop image to attach</span>
+      <div class="drop-card">
+        <div class="drop-icon">
+          <UIIcon name="file" size={20} />
+        </div>
+        <div class="drop-text">
+          <span class="drop-title">Drop to attach</span>
+          <span class="drop-subtitle">Images, files, or folders</span>
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -565,7 +746,10 @@
               </button>
               <button
                 class="attach-option"
-                onclick={() => (showAttachMenu = false)}
+                onclick={() => {
+                  showAttachMenu = false;
+                  onOpenPromptLibrary?.();
+                }}
                 role="menuitem"
                 type="button"
               >
@@ -690,25 +874,62 @@
   }
 
   .chat-input-bar.dragging {
-    background: var(--color-accent-alpha);
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
   }
 
   .drop-overlay {
     position: absolute;
     inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: var(--color-accent-alpha);
-    border: 2px dashed var(--color-accent);
-    border-radius: 8px;
-    color: var(--color-accent);
-    font-size: 13px;
-    font-weight: 500;
+    display: grid;
+    place-items: center;
+    padding: 10px;
+    background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+    border-radius: 10px;
     z-index: 10;
     pointer-events: none;
+  }
+
+  .drop-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 220px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-surface0)) 85%, var(--color-accent) 15%);
+    border: 1px dashed color-mix(in srgb, var(--color-accent) 70%, var(--color-border) 30%);
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+    color: var(--color-text);
+  }
+
+  .drop-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+    flex: 0 0 auto;
+  }
+
+  .drop-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    line-height: 1.2;
+  }
+
+  .drop-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .drop-subtitle {
+    font-size: 12px;
+    color: var(--color-text-secondary);
   }
 
   .unified-input-container {

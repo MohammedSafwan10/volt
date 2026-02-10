@@ -7,6 +7,7 @@
 
 import { problemsStore } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
+import { toolObservabilityStore } from '$lib/stores/tool-observability.svelte';
 import { truncateOutput, type ToolResult } from '../utils';
 
 /**
@@ -130,6 +131,68 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
         relativePath: p.file.replace(workspaceRoot, '').replace(/^[/\\]/, '')
       }))
     }
+  };
+}
+
+/**
+ * Get structured tool observability metrics:
+ * - Per-tool latency / error / retry stats
+ * - Top failing signatures
+ */
+export async function handleGetToolMetrics(): Promise<ToolResult> {
+  const aggregates = toolObservabilityStore.toolAggregates;
+  const topFailingSignatures = toolObservabilityStore.topFailingSignatures;
+  const topSlowTools = toolObservabilityStore.topSlowTools;
+  const recentSlowEvents = toolObservabilityStore.recentSlowEvents;
+
+  const lines: string[] = [];
+  lines.push(`Total executions: ${toolObservabilityStore.totalExecutions}`);
+  lines.push(`Success rate: ${(toolObservabilityStore.successRate * 100).toFixed(1)}%`);
+  lines.push('');
+
+  if (aggregates.length === 0) {
+    lines.push('No tool telemetry collected yet.');
+  } else {
+    lines.push('Per-tool metrics:');
+    for (const item of aggregates.slice(0, 30)) {
+      lines.push(
+        `- ${item.toolName}: total=${item.total} fail=${item.failed} retry=${item.retries} avg=${item.avgLatencyMs.toFixed(1)}ms p95=${item.p95LatencyMs.toFixed(1)}ms slow=${(item.slowRate * 100).toFixed(1)}% critical=${item.criticalCount} errorRate=${(item.errorRate * 100).toFixed(1)}%`
+      );
+    }
+  }
+
+  if (topSlowTools.length > 0) {
+    lines.push('');
+    lines.push('Top slow tools:');
+    for (const item of topSlowTools.slice(0, 15)) {
+      lines.push(
+        `- ${item.toolName}: slowRate=${(item.slowRate * 100).toFixed(1)}% critical=${item.criticalCount} p95=${item.p95LatencyMs.toFixed(1)}ms`
+      );
+    }
+  }
+
+  if (topFailingSignatures.length > 0) {
+    lines.push('');
+    lines.push('Top failing signatures:');
+    for (const entry of topFailingSignatures.slice(0, 20)) {
+      lines.push(`- ${entry.failures}x ${entry.signature}`);
+    }
+  }
+
+  const { text, truncated } = truncateOutput(lines.join('\n'));
+
+  return {
+    success: true,
+    output: text,
+    truncated,
+    data: {
+      totalExecutions: toolObservabilityStore.totalExecutions,
+      successRate: toolObservabilityStore.successRate,
+      aggregates,
+      topSlowTools,
+      recentSlowEvents,
+      topFailingSignatures,
+    },
   };
 }
 

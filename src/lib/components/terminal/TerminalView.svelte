@@ -41,6 +41,20 @@
 	let pendingCols = 0;
 	let pendingRows = 0;
 	let dataHandlerAttached = false;
+	let inputWriteFailed = false;
+	let containerMouseDownCleanup: (() => void) | null = null;
+
+	async function ensureInitialPromptVisible(): Promise<void> {
+		// Some Windows shells occasionally start without painting the first prompt
+		// until they receive input. Nudge once with Enter when output is still empty.
+		const hasOutput = session.getRecentOutput(256).trim().length > 0;
+		if (hasOutput) return;
+		await session.write('\r\n');
+	}
+
+	function handleContainerMouseDown(): void {
+		if (terminal && initialized) terminal.focus();
+	}
 
 	function applyTheme(term: Terminal): void {
 		const theme = getTerminalTheme();
@@ -170,6 +184,10 @@
 		terminal.loadAddon(fitAddon);
 		terminal.loadAddon(webLinksAddon);
 		terminal.open(containerRef);
+		containerRef.addEventListener('mousedown', handleContainerMouseDown);
+		containerMouseDownCleanup = () => {
+			containerRef?.removeEventListener('mousedown', handleContainerMouseDown);
+		};
 
 		// Handle Ctrl+C: copy if selection exists, otherwise send SIGINT
 		terminal.attachCustomKeyEventHandler((event) => {
@@ -190,7 +208,15 @@
 
 		// Set up input handler to backend
 		terminal.onData((data) => {
-			void session.write(data);
+			void (async () => {
+				const ok = await session.write(data);
+				if (!ok && !inputWriteFailed) {
+					inputWriteFailed = true;
+					terminal?.write(
+						"\r\n[Volt] Terminal input failed (session ended). Create a new terminal.\r\n",
+					);
+				}
+			})();
 		});
 
 		// Initial fit - do it immediately
@@ -202,8 +228,9 @@
 		});
 		resizeObserver.observe(containerRef);
 
-		// Attach data handler after terminal is ready
-		updateDataHandler();
+		// Attach data handler immediately so early output is rendered.
+		session.onData((data) => enqueueWrite(data));
+		dataHandlerAttached = true;
 
 		// Wait for backend readiness (or first output) before nudging prompt/resize.
 		// This avoids racing prompt kicks against PTY/shell startup.
@@ -214,6 +241,7 @@
 		requestAnimationFrame(() => {
 			setTimeout(async () => {
 				await fitTerminal();
+				await ensureInitialPromptVisible();
 			}, 100);
 		});
 	}
@@ -227,6 +255,7 @@
 		try {
 			await initTerminal();
 			initialized = true;
+			inputWriteFailed = false;
 
 			// Double check fit after a few frames to handle any late layout shifts
 			setTimeout(() => {
@@ -273,6 +302,8 @@
 		dataHandlerAttached = false;
 		writeQueue = [];
 		queuedChars = 0;
+		containerMouseDownCleanup?.();
+		containerMouseDownCleanup = null;
 		resizeObserver?.disconnect();
 		terminal?.dispose();
 	});
@@ -292,7 +323,7 @@
 	});
 
 	function updateDataHandler(): void {
-		if (!initialized || !terminal) return;
+		if (!terminal) return;
 		if (!dataHandlerAttached) {
 			session.onData((data) => enqueueWrite(data));
 			dataHandlerAttached = true;

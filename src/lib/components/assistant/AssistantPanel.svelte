@@ -33,8 +33,12 @@
   } from "$lib/services/ai/context";
   import {
     getAllToolsForMode,
+    getToolByName,
     validateToolCall as validateTool,
     executeToolCall,
+    getToolCapabilities,
+    isFileMutatingTool,
+    isTerminalTool as isTerminalToolName,
     type ToolResult,
   } from "$lib/services/ai/tools";
   import { resolvePath } from "$lib/services/ai/tools/utils";
@@ -43,12 +47,12 @@
   import ChatInputBar from "./ChatInputBar.svelte";
   import RevertConfirmationModal from "./RevertConfirmationModal.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { readTextFile } from "@tauri-apps/plugin-fs";
   import { invoke } from "@tauri-apps/api/core";
   import {
-    setReviewHighlight,
-    clearReviewHighlight,
-  } from "$lib/services/monaco-models";
+    } from "$lib/services/monaco-models";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
+  import { uiStore } from "$lib/stores/ui.svelte";
 
   // Revert confirmation state
   let confirmRevertOpen = $state(false);
@@ -89,7 +93,11 @@
     }
     if (msg.role === "tool") {
       const toolLines = (msg.toolCalls || []).map((tc) => {
-        const output = tc.output ?? tc.error ?? "No output";
+        const output =
+          tc.output ??
+          (tc.data ? JSON.stringify(tc.data) : undefined) ??
+          tc.error ??
+          "No output";
         return `TOOL ${tc.name} (${tc.status}): ${output}`;
       });
       return toolLines.join("\n");
@@ -206,74 +214,6 @@
     }
   });
 
-  function getReviewableFilePath(meta: any): string | null {
-    const relativePath = meta?.fileEdit?.relativePath;
-    const absolutePath = meta?.fileEdit?.absolutePath;
-
-    if (absolutePath) {
-      const openFile = editorStore.openFiles.find(
-        (f) =>
-          f.path === absolutePath ||
-          (typeof relativePath === "string" && f.path.endsWith(relativePath)),
-      );
-      if (openFile) return openFile.path;
-    }
-
-    if (typeof relativePath === "string") {
-      const openFile = editorStore.openFiles.find((f) =>
-        f.path.endsWith(relativePath),
-      );
-      if (openFile) return openFile.path;
-    }
-
-    return editorStore.activeFile?.path ?? null;
-  }
-
-  function applyReviewHighlight(meta: any): string | null {
-    const path = getReviewableFilePath(meta);
-    if (!path) {
-      console.warn(
-        "[applyReviewHighlight] No reviewable file path found for meta:",
-        meta,
-      );
-      return null;
-    }
-
-    const first = meta?.fileEdit?.firstChangedLine;
-    const last = meta?.fileEdit?.lastChangedLine;
-    console.log(
-      "[applyReviewHighlight] Applying highlight to",
-      path,
-      "lines",
-      first,
-      "-",
-      last,
-    );
-
-    if (typeof first === "number" && typeof last === "number") {
-      const success = setReviewHighlight(path, first, last);
-      if (!success) {
-        console.warn(
-          "[applyReviewHighlight] setReviewHighlight returned false for",
-          path,
-        );
-      }
-      return path;
-    }
-    if (typeof first === "number") {
-      const success = setReviewHighlight(path, first, first);
-      if (!success) {
-        console.warn(
-          "[applyReviewHighlight] setReviewHighlight returned false for",
-          path,
-        );
-      }
-      return path;
-    }
-    console.warn("[applyReviewHighlight] No line info in meta:", meta);
-    return null;
-  }
-
   function normalizeQueueKey(path: string): string {
     if (!path) return path;
     const resolved = resolvePath(path);
@@ -292,6 +232,95 @@
     );
   }
 
+  function handleOpenPromptLibrary(): void {
+    uiStore.setActiveSidebarPanel("prompts");
+  }
+
+  $effect(() => {
+    const onAssistantSend = () => {
+      void handleSend();
+    };
+    window.addEventListener("volt:assistant-send", onAssistantSend);
+    return () => window.removeEventListener("volt:assistant-send", onAssistantSend);
+  });
+
+  function stableStringify(value: unknown): string {
+    if (value == null || typeof value !== "object") {
+      return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+    }
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return `{${keys
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+      .join(",")}}`;
+  }
+
+  function getToolIdempotencyKey(
+    scopeId: string,
+    toolCallId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): string {
+    return `${scopeId}:${toolCallId}:${toolName}:${stableStringify(args)}`;
+  }
+
+  function shouldRunAfterFileEdits(toolName: string): boolean {
+    if (toolName === "get_diagnostics" || toolName.startsWith("lsp_")) {
+      return true;
+    }
+
+    const tool = getToolByName(toolName);
+    const capabilities = getToolCapabilities(toolName);
+    if (
+      !tool ||
+      capabilities.isMutating ||
+      tool.category === "terminal" ||
+      tool.category === "browser"
+    ) {
+      return false;
+    }
+
+    return (
+      tool.category === "workspace_read" ||
+      tool.category === "workspace_search" ||
+      tool.category === "editor_context" ||
+      tool.category === "diagnostics" ||
+      capabilities.requiresWorkspacePathValidation
+    );
+  }
+
+  function getAdaptiveFileEditConcurrency(queueCount: number): number {
+    if (queueCount >= 12) return 2;
+    if (queueCount >= 6) return 3;
+    return 4;
+  }
+
+  async function mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    if (items.length === 0) return [];
+    const bounded = Math.max(1, Math.min(concurrency, items.length));
+    const results: R[] = new Array(items.length);
+    let cursor = 0;
+
+    const runWorker = async (): Promise<void> => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    };
+
+    await Promise.all(Array.from({ length: bounded }, () => runWorker()));
+    return results;
+  }
+
   function recordToolResult(toolCall: ToolCall, result: ToolResult): void {
     if (hasToolResultMessage(toolCall.id)) return;
     assistantStore.addToolMessage({
@@ -301,6 +330,8 @@
       status: result.success ? "completed" : "failed",
       output: result.output,
       error: result.error,
+      meta: result.meta,
+      data: result.data,
     });
   }
 
@@ -324,7 +355,14 @@
             name: tc.name,
             response: {
               success: tc.status === "completed",
-              output: tc.output ?? tc.error ?? "No output",
+              output:
+                tc.output ??
+                (tc.data ? JSON.stringify(tc.data) : undefined) ??
+                tc.error ??
+                "No output",
+              error: tc.error ?? "",
+              meta: tc.meta ?? {},
+              data: tc.data,
             },
           };
           out.push({
@@ -600,14 +638,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     let fullContent = "";
     let iteration = 0;
     let hasToolsInConversation = false;
-    let intentPrefixed = false;
-    let intentPrefixPending = false;
-    let readyForResult = false;
-    let resultPrefixAdded = false;
+    const toolRunScope = crypto.randomUUID();
+    const loopStartedAt = Date.now();
+    const MAX_LOOP_DURATION_MS = 8 * 60 * 1000;
 
     // Kiro-style: Track consecutive empty responses to detect stuck model
     let consecutiveEmptyResponses = 0;
     const MAX_EMPTY_RESPONSES = 3;
+    let recoveryRetryCount = 0;
+    const MAX_RECOVERY_RETRIES = 2;
 
     // Streaming safety guards
     let lastChunk = "";
@@ -684,6 +723,21 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     while (iteration < maxIterations) {
       iteration++;
 
+      if (Date.now() - loopStartedAt > MAX_LOOP_DURATION_MS) {
+        assistantStore.updateAssistantMessage(
+          msgId,
+          fullContent
+            ? `${fullContent}\n\n⚠️ Stopped: tool loop exceeded time budget (${Math.round(MAX_LOOP_DURATION_MS / 60000)} min).`
+            : `⚠️ Stopped: tool loop exceeded time budget (${Math.round(MAX_LOOP_DURATION_MS / 60000)} min).`,
+          false,
+        );
+        showToast({
+          message: "Tool loop timed out (time budget exceeded)",
+          type: "warning",
+        });
+        return;
+      }
+
       if (controller.signal.aborted) {
         import("$lib/stores/output.svelte").then((m) =>
           m.logOutput("Volt", `Agent: Loop aborted at iteration ${iteration}`),
@@ -707,11 +761,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         arguments: Record<string, unknown>;
         thoughtSignature?: string;
       }> = [];
-      const eagerPromises: Promise<{
+      const queuedNonFileTools: Array<{
         id: string;
         name: string;
-        result: { success: boolean; output?: string; error?: string };
-      }>[] = [];
+        args: Record<string, unknown>;
+        runAfterFileEdits: boolean;
+      }> = [];
       // Queue for sequential file edits - edits to the same file run one after another
       const fileEditQueues = new Map<
         string,
@@ -727,7 +782,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       const immediateResults: Array<{
         id: string;
         name: string;
-        result: { success: boolean; output?: string; error?: string };
+        result: ToolResult;
       }> = [];
 
       try {
@@ -807,28 +862,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             // End any active thinking part before adding text
             assistantStore.endThinkingPart(msgId);
 
-            // If tools were called earlier but no intent prefix yet, apply it now.
-            if (hasToolsInConversation && !readyForResult && !intentPrefixed) {
-              const prefix = "Intent:\n";
-              const textToAppend = prefix + chunk.content;
-              iterationContent += textToAppend;
-              assistantStore.appendTextToMessage(msgId, textToAppend, true);
-              intentPrefixed = true;
-              intentPrefixPending = false;
-              continue;
-            }
-
-            if (readyForResult && !resultPrefixAdded) {
-              const prefix =
-                fullContent.trim().length > 0 ? "\n\nResult:\n" : "Result:\n";
-              const textToAppend = prefix + chunk.content;
-              iterationContent += textToAppend;
-              assistantStore.appendTextToMessage(msgId, textToAppend, true);
-              resultPrefixAdded = true;
-              readyForResult = false;
-              continue;
-            }
-
             iterationContent += chunk.content;
             // Stream ALL content to UI immediately (no truncation)
             assistantStore.appendTextToMessage(msgId, chunk.content, true);
@@ -846,22 +879,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             assistantStore.endThinkingPart(msgId);
             toolCallSeenThisIteration = true;
             hasToolsInConversation = true;
-            if (!intentPrefixed && fullContent.trim().length === 0) {
-              const currentMsg = assistantStore.messages.find(
-                (m) => m.id === msgId,
-              );
-              if (currentMsg?.content?.trim()) {
-                assistantStore.prefixFirstTextPart(msgId, "Intent:\n");
-                iterationContent = "Intent:\n" + iterationContent;
-                intentPrefixed = true;
-              } else {
-                intentPrefixPending = true;
-              }
-            } else if (!intentPrefixed) {
-              intentPrefixPending = true;
-            }
-            // Keep streaming text for intent if it arrives after tool call.
-            // REMOVED: sawToolCallInThisTurn = true - don't suppress text after tool calls
             const toolCallArgs = chunk.toolCall.arguments;
             const toolCallName = chunk.toolCall.name;
             const toolCallId = chunk.toolCall.id;
@@ -869,10 +886,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
             // DEDUPLICATION: Check if we already have this exact tool call in this iteration
             // This prevents the AI from running the same command twice in one response
+            const callArgsSignature = stableStringify(toolCallArgs);
             const isDuplicate = allToolCalls.some(
               (tc) =>
                 tc.name === toolCallName &&
-                JSON.stringify(tc.arguments) === JSON.stringify(toolCallArgs),
+                stableStringify(tc.arguments) === callArgsSignature,
             );
 
             if (isDuplicate) {
@@ -956,14 +974,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
               // CRITICAL: If a file-modifying tool fails validation, mark it so we can skip
               // running subsequent tools that might depend on it (like eslint after write_file)
-              const isFileModifyingTool = [
-                "write_file",
-                "create_file",
-                "apply_edit",
-                "multi_replace_file_content",
-                "delete_path",
-                "delete_paths",
-              ].includes(toolCallName);
+              const isFileModifyingTool = isFileMutatingTool(toolCallName);
 
               if (isFileModifyingTool) {
                 // Set a flag to skip running other tools in this batch
@@ -997,17 +1008,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             }
 
             if (!validation.requiresApproval && validation.valid) {
-              const FILE_EDIT_TOOLS = [
-                "write_file",
-                "create_file",
-                "apply_edit",
-                "str_replace",
-                "append_file",
-                "multi_replace_file_content",
-              ];
-              const TERMINAL_TOOLS = ["run_command", "start_process"];
-              const isFileEdit = FILE_EDIT_TOOLS.includes(toolCallName);
-              const isTerminalCommand = TERMINAL_TOOLS.includes(toolCallName);
+              const capabilities = getToolCapabilities(toolCallName);
+              const isFileEdit = isFileMutatingTool(toolCallName);
+              const isTerminalCommand =
+                isTerminalToolName(toolCallName) && capabilities.requiresApproval;
               const rawFilePath = isFileEdit
                 ? String(toolCallArgs.path || "")
                 : "";
@@ -1037,41 +1041,23 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 // Don't add them to fileEditQueues to avoid duplicate execution
                 // They will be processed sequentially in the approval section below
               } else {
-                // Non-file-edit, non-terminal tools run in parallel as before
-                assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                  status: "running" as const,
-                  startTime: Date.now(),
+                // Non-file-edit, non-terminal tools are queued and executed in phases.
+                // Diagnostics/LSP tools are deferred until file edits complete.
+                const runAfterFileEdits =
+                  shouldRunAfterFileEdits(toolCallName);
+
+                queuedNonFileTools.push({
+                  id: toolCallId,
+                  name: toolCallName,
+                  args: toolCallArgs,
+                  runAfterFileEdits,
                 });
 
-                const p = executeToolCall(toolCallName, toolCallArgs, {
-                  signal: controller.signal,
-                })
-                  .then((result) => {
-                    assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                      status: result.success ? "completed" : "failed",
-                      output: result.output,
-                      error: result.error,
-                      meta: result.meta,
-                      data: result.data,
-                      endTime: Date.now(),
-                    });
-                    return { id: toolCallId, name: toolCallName, result };
-                  })
-                  .catch((err) => {
-                    const error =
-                      err instanceof Error ? err.message : String(err);
-                    assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                      status: "failed",
-                      error,
-                      endTime: Date.now(),
-                    });
-                    return {
-                      id: toolCallId,
-                      name: toolCallName,
-                      result: { success: false, error },
-                    };
+                if (runAfterFileEdits) {
+                  assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                    meta: { executionPhase: "after_file_edits" },
                   });
-                eagerPromises.push(p);
+                }
               }
             }
           }
@@ -1101,14 +1087,90 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         lastChunk = "";
         repeatedChunkCount = 0;
 
-        // Wait for all Eager tools from this iteration (non-file-edit tools)
-        const eagerResults = await Promise.all(eagerPromises);
+        const executeQueuedNonFileTools = (
+          toolsToRun: Array<{
+            id: string;
+            name: string;
+            args: Record<string, unknown>;
+            runAfterFileEdits: boolean;
+          }>,
+        ): Promise<
+          Array<{
+            id: string;
+            name: string;
+            result: ToolResult;
+          }>
+        > => {
+          for (const queued of toolsToRun) {
+            assistantStore.updateToolCallInMessage(msgId, queued.id, {
+              status: "running" as const,
+              startTime: Date.now(),
+            });
+          }
+
+          const promises = toolsToRun.map((queued) =>
+            executeToolCall(queued.name, queued.args, {
+              signal: controller.signal,
+              idempotencyKey: getToolIdempotencyKey(
+                toolRunScope,
+                queued.id,
+                queued.name,
+                queued.args,
+              ),
+            })
+              .then((result) => {
+                assistantStore.updateToolCallInMessage(msgId, queued.id, {
+                  status: result.success ? "completed" : "failed",
+                  output: result.output,
+                  error: result.error,
+                  meta: result.meta,
+                  data: result.data,
+                  endTime: Date.now(),
+                });
+                return { id: queued.id, name: queued.name, result };
+              })
+              .catch((err) => {
+                const error = err instanceof Error ? err.message : String(err);
+                assistantStore.updateToolCallInMessage(msgId, queued.id, {
+                  status: "failed",
+                  error,
+                  endTime: Date.now(),
+                });
+                return {
+                  id: queued.id,
+                  name: queued.name,
+                  result: { success: false, error },
+                };
+              }),
+          );
+
+          return Promise.all(promises);
+        };
+
+        const hasQueuedFileEdits = fileEditQueues.size > 0;
+        const immediateNonFileTools = hasQueuedFileEdits
+          ? queuedNonFileTools.filter((t) => !t.runAfterFileEdits)
+          : queuedNonFileTools;
+        const deferredNonFileTools = hasQueuedFileEdits
+          ? queuedNonFileTools.filter((t) => t.runAfterFileEdits)
+          : [];
+
+        // Run non-file tools that don't depend on fresh edits.
+        const eagerResults = await executeQueuedNonFileTools(
+          immediateNonFileTools,
+        );
 
         // Execute file edits SEQUENTIALLY per file path
         // This prevents race conditions where multiple str_replace calls to the same file
         // fail because the file content changed between reads
-        const fileEditPromises = Array.from(fileEditQueues.entries()).map(
-          async ([filePath, edits]) => {
+        const fileEditTasks = Array.from(fileEditQueues.entries());
+        const fileEditConcurrency = getAdaptiveFileEditConcurrency(
+          fileEditTasks.length,
+        );
+        const fileEditResultsNested = await mapWithConcurrency(
+          fileEditTasks,
+          fileEditConcurrency,
+          async ([, edits]) => {
             let previousFailed = false;
             const results: Array<{
               id: string;
@@ -1149,9 +1211,26 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               });
 
               try {
-                const result = await executeToolCall(edit.name, edit.args, {
-                  signal: controller.signal,
-                });
+                const isLastEditForPath = edit.queueIndex === edits.length;
+                const result = await executeToolCall(
+                  edit.name,
+                  {
+                    ...edit.args,
+                    postEditDiagnostics: isLastEditForPath,
+                  },
+                  {
+                    signal: controller.signal,
+                    idempotencyKey: getToolIdempotencyKey(
+                      toolRunScope,
+                      edit.id,
+                      edit.name,
+                      {
+                        ...edit.args,
+                        postEditDiagnostics: isLastEditForPath,
+                      },
+                    ),
+                  },
+                );
 
                 assistantStore.updateToolCallInMessage(msgId, edit.id, {
                   status: result.success ? "completed" : "failed",
@@ -1165,25 +1244,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   data: result.data,
                   endTime: Date.now(),
                 });
-
-                // Apply review highlight if we have line info
-                if (result.success && result.meta) {
-                  const metaAny: any = result.meta;
-                  if (
-                    metaAny?.fileEdit &&
-                    typeof metaAny?.fileEdit?.firstChangedLine === "number"
-                  ) {
-                    const highlightPath = applyReviewHighlight(metaAny);
-                    if (highlightPath) {
-                      assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                        meta: {
-                          ...metaAny,
-                          reviewHighlightPath: highlightPath,
-                        },
-                      });
-                    }
-                  }
-                }
 
                 results.push({ id: edit.id, name: edit.name, result });
 
@@ -1210,12 +1270,19 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             return results;
           },
         );
-
-        const fileEditResultsNested = await Promise.all(fileEditPromises);
         const fileEditResults = fileEditResultsNested.flat();
 
+        // Run diagnostics/LSP tools after file edits so they see latest state.
+        const deferredResults = await executeQueuedNonFileTools(
+          deferredNonFileTools,
+        );
+
         // Combine all results
-        const allEagerResults = [...eagerResults, ...fileEditResults];
+        const allEagerResults = [
+          ...eagerResults,
+          ...fileEditResults,
+          ...deferredResults,
+        ];
 
         if (
           pendingToolCalls.length === 0 &&
@@ -1374,11 +1441,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Reset counters since we have tool calls to process
         justProcessedToolResults = false;
         consecutiveEmptyResponses = 0; // Reset on successful tool calls
+        recoveryRetryCount = 0;
 
         const toolResults: Array<{
           id: string;
           name: string;
-          result: { success: boolean; output?: string; error?: string };
+          result: ToolResult;
         }> = [...allEagerResults, ...immediateResults];
 
         const eagerIds = new Set(allEagerResults.map((r) => r.id));
@@ -1392,30 +1460,41 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           );
 
           // Separate terminal commands from other tools for sequential processing
-          const TERMINAL_TOOLS = ["run_command", "start_process"];
           const terminalTools = toolsNeedingApproval.filter((tc) =>
-            TERMINAL_TOOLS.includes(tc.name),
+            isTerminalToolName(tc.name) && getToolCapabilities(tc.name).requiresApproval,
           );
           const otherTools = toolsNeedingApproval.filter(
-            (tc) => !TERMINAL_TOOLS.includes(tc.name),
+            (tc) =>
+              !(isTerminalToolName(tc.name) && getToolCapabilities(tc.name).requiresApproval),
           );
 
           // Process non-terminal tools in parallel (old behavior)
           if (otherTools.length > 0) {
-            await waitForToolApprovals(
+            const approvalsResolved = await waitForToolApprovals(
               msgId,
               otherTools.map((tc) => tc.id),
               controller.signal,
             );
-            if (controller.signal.aborted) return;
+            if (controller.signal.aborted || !approvalsResolved) return;
 
             for (const tc of otherTools) {
-              const currentMsg = assistantStore.messages.find(
-                (m) => m.id === msgId,
-              );
-              const currentToolCall = currentMsg?.inlineToolCalls?.find(
+              let currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+              let currentToolCall = currentMsg?.inlineToolCalls?.find(
                 (t) => t.id === tc.id,
               );
+
+              if (currentToolCall?.status === "running") {
+                const completed = await waitForToolCompletion(
+                  msgId,
+                  tc.id,
+                  controller.signal,
+                );
+                if (!completed) return;
+                currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+                currentToolCall = currentMsg?.inlineToolCalls?.find(
+                  (t) => t.id === tc.id,
+                );
+              }
 
               if (
                 currentToolCall?.status === "completed" ||
@@ -1445,6 +1524,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               try {
                 const result = await executeToolCall(tc.name, tc.arguments, {
                   signal: controller.signal,
+                  idempotencyKey: getToolIdempotencyKey(
+                    toolRunScope,
+                    tc.id,
+                    tc.name,
+                    tc.arguments,
+                  ),
                 });
                 toolResults.push({ id: tc.id, name: tc.name, result });
                 assistantStore.updateToolCallInMessage(msgId, tc.id, {
@@ -1457,25 +1542,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   streamingProgress: undefined,
                 });
 
-                if (result.success && result.meta) {
-                  const metaAny: any = result.meta;
-                  const hasFileEdit = metaAny?.fileEdit;
-                  const hasLineInfo =
-                    typeof metaAny?.fileEdit?.firstChangedLine === "number";
-
-                  if (hasFileEdit && hasLineInfo) {
-                    const highlightPath = applyReviewHighlight(metaAny);
-                    const mergedMeta = {
-                      ...metaAny,
-                      ...(highlightPath
-                        ? { reviewHighlightPath: highlightPath }
-                        : {}),
-                    };
-                    assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                      meta: mergedMeta,
-                    });
-                  }
-                }
+                
               } catch (err) {
                 const error = err instanceof Error ? err.message : String(err);
                 toolResults.push({
@@ -1496,10 +1563,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           // Wait for approval → execute → wait for next approval → execute...
           let previousTerminalFailed = false;
           for (const tc of terminalTools) {
-            const currentMsg = assistantStore.messages.find(
+            let currentMsg = assistantStore.messages.find(
               (m) => m.id === msgId,
             );
-            const currentToolCall = currentMsg?.inlineToolCalls?.find(
+            let currentToolCall = currentMsg?.inlineToolCalls?.find(
               (t) => t.id === tc.id,
             );
 
@@ -1530,8 +1597,38 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             }
 
             // Wait for THIS specific tool's approval
-            await waitForToolApprovals(msgId, [tc.id], controller.signal);
-            if (controller.signal.aborted) return;
+            const approvalResolved = await waitForToolApprovals(
+              msgId,
+              [tc.id],
+              controller.signal,
+            );
+            if (controller.signal.aborted || !approvalResolved) return;
+
+            currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+            currentToolCall = currentMsg?.inlineToolCalls?.find(
+              (t) => t.id === tc.id,
+            );
+
+            if (currentToolCall?.status === "running") {
+              const completed = await waitForToolCompletion(
+                msgId,
+                tc.id,
+                controller.signal,
+              );
+              if (!completed) return;
+              currentMsg = assistantStore.messages.find((m) => m.id === msgId);
+              currentToolCall = currentMsg?.inlineToolCalls?.find(
+                (t) => t.id === tc.id,
+              );
+            }
+
+            if (
+              currentToolCall?.status === "completed" ||
+              currentToolCall?.status === "failed"
+            ) {
+              // Already executed inline; skip re-execution.
+              continue;
+            }
 
             if (currentToolCall?.status === "cancelled") {
               toolResults.push({
@@ -1555,6 +1652,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             try {
               const result = await executeToolCall(tc.name, tc.arguments, {
                 signal: controller.signal,
+                idempotencyKey: getToolIdempotencyKey(
+                  toolRunScope,
+                  tc.id,
+                  tc.name,
+                  tc.arguments,
+                ),
               });
               toolResults.push({ id: tc.id, name: tc.name, result });
               assistantStore.updateToolCallInMessage(msgId, tc.id, {
@@ -1592,14 +1695,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
         justProcessedToolResults = true;
-        if (hasToolsInConversation) {
-          readyForResult = true;
-          if (!intentPrefixed) {
-            // If tools happened but no intent text was shown, keep intent unset.
-            // The next content will be labeled as Result.
-            intentPrefixed = false;
-          }
-        }
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1616,11 +1711,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         );
 
         // If retryable and we have content, try to continue
-        if (isRetryable && iteration < maxIterations - 1) {
+        if (
+          isRetryable &&
+          iteration < maxIterations - 1 &&
+          recoveryRetryCount < MAX_RECOVERY_RETRIES
+        ) {
+          recoveryRetryCount++;
           import("$lib/stores/output.svelte").then((m) =>
             m.logOutput(
               "Volt",
-              `Retryable error detected, attempting to continue...`,
+              `Retryable error detected, attempting to continue... (${recoveryRetryCount}/${MAX_RECOVERY_RETRIES})`,
             ),
           );
 
@@ -1670,7 +1770,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     results: Array<{
       id: string;
       name: string;
-      result: { success: boolean; output?: string; error?: string };
+      result: ToolResult;
     }>,
   ): void {
     // We need to add both the assistant's function calls and the user's function responses
@@ -1689,6 +1789,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         status: result.result.success ? "completed" : "failed",
         output: result.result.output,
         error: result.result.error,
+        meta: result.result.meta,
+        data: result.result.data,
       });
     }
   }
@@ -1701,22 +1803,45 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     messageId: string,
     toolIds: string[],
     signal: AbortSignal,
-  ): Promise<void> {
+    maxWaitMs = 10 * 60 * 1000,
+  ): Promise<boolean> {
     return new Promise((resolve) => {
+      const startedAt = Date.now();
+      let finished = false;
+      const finish = (ok: boolean): void => {
+        if (finished) return;
+        finished = true;
+        clearInterval(checkInterval);
+        signal.removeEventListener("abort", onAbort);
+        resolve(ok);
+      };
+
+      const onAbort = (): void => finish(false);
+
       // Faster polling for snappier UX (50ms instead of 100ms)
       const checkInterval = setInterval(() => {
         // Check if aborted
         if (signal.aborted) {
-          clearInterval(checkInterval);
-          resolve();
+          finish(false);
+          return;
+        }
+
+        if (Date.now() - startedAt > maxWaitMs) {
+          for (const toolId of toolIds) {
+            assistantStore.updateToolCallInMessage(messageId, toolId, {
+              status: "failed",
+              error: `Approval timed out after ${Math.round(maxWaitMs / 1000)}s`,
+              endTime: Date.now(),
+            });
+          }
+          finish(false);
           return;
         }
 
         // Find the message and check tool statuses
         const msg = assistantStore.messages.find((m) => m.id === messageId);
         if (!msg?.inlineToolCalls) {
-          clearInterval(checkInterval);
-          resolve();
+          finish(false);
           return;
         }
 
@@ -1728,16 +1853,61 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         });
 
         if (allResolved) {
-          clearInterval(checkInterval);
-          resolve();
+          finish(true);
         }
       }, 50); // Check every 50ms for snappier response
 
       // Also listen for abort
-      signal.addEventListener("abort", () => {
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /**
+   * Wait for a running inline tool execution to finish.
+   * Prevents duplicate execution in the main tool loop.
+   */
+  function waitForToolCompletion(
+    messageId: string,
+    toolId: string,
+    signal: AbortSignal,
+    maxWaitMs = 5 * 60 * 1000,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      let finished = false;
+      const finish = (ok: boolean): void => {
+        if (finished) return;
+        finished = true;
         clearInterval(checkInterval);
-        resolve();
-      });
+        signal.removeEventListener("abort", onAbort);
+        resolve(ok);
+      };
+      const onAbort = (): void => finish(false);
+
+      const checkInterval = setInterval(() => {
+        if (signal.aborted) {
+          finish(false);
+          return;
+        }
+
+        if (Date.now() - startedAt > maxWaitMs) {
+          assistantStore.updateToolCallInMessage(messageId, toolId, {
+            status: "failed",
+            error: `Execution timed out after ${Math.round(maxWaitMs / 1000)}s`,
+            endTime: Date.now(),
+          });
+          finish(false);
+          return;
+        }
+
+        const msg = assistantStore.messages.find((m) => m.id === messageId);
+        const tool = msg?.inlineToolCalls?.find((t) => t.id === toolId);
+        if (!tool || tool.status !== "running") {
+          finish(true);
+        }
+      }, 50);
+
+      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -1757,6 +1927,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
         signal,
+        idempotencyKey: getToolIdempotencyKey(
+          assistantStore.currentConversation?.id ?? "ad-hoc",
+          toolCall.id,
+          toolCall.name,
+          toolCall.arguments,
+        ),
       });
 
       if (result.success) {
@@ -1768,25 +1944,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           streamingProgress: undefined, // Clear progress on completion
         });
 
-        if (result.meta) {
-          const metaAny: any = result.meta;
-          const hasFileEdit = metaAny?.fileEdit;
-          const hasLineInfo =
-            typeof metaAny?.fileEdit?.firstChangedLine === "number";
-
-          if (hasFileEdit && hasLineInfo) {
-            const highlightPath = applyReviewHighlight(metaAny);
-            const beforeContent = metaAny?.fileEdit?.beforeContent;
-            assistantStore.updateToolCall(toolCall.id, {
-              meta: {
-                ...metaAny,
-                ...(highlightPath
-                  ? { reviewHighlightPath: highlightPath }
-                  : {}),
-              },
-            });
-          }
-        }
+        
       } else {
         assistantStore.updateToolCall(toolCall.id, {
           status: "failed",
@@ -2157,6 +2315,12 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     try {
       const result = await executeToolCall(toolCall.name, toolCall.arguments, {
         signal: assistantStore.abortController?.signal,
+        idempotencyKey: getToolIdempotencyKey(
+          assistantStore.currentConversation?.id ?? "ad-hoc",
+          toolCall.id,
+          toolCall.name,
+          toolCall.arguments,
+        ),
       });
 
       assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
@@ -2168,21 +2332,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         endTime: Date.now(),
       });
 
-      // Apply review highlight if applicable
-      if (result.success && result.meta) {
-        const metaAny: any = result.meta;
-        if (
-          metaAny?.fileEdit &&
-          typeof metaAny?.fileEdit?.firstChangedLine === "number"
-        ) {
-          const highlightPath = applyReviewHighlight(metaAny);
-          if (highlightPath) {
-            assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-              meta: { ...metaAny, reviewHighlightPath: highlightPath },
-            });
-          }
-        }
-      }
       recordToolResult(toolCall, result);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -2210,20 +2359,56 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
   /**
    * Handle "Start Implementation" button click from Plan mode
-   * Switches to Agent mode and sends the plan content for execution
+   * Switches to Agent mode and executes using attached plan file context
    */
-  function handleStartImplementation(planContent: string): void {
+  async function handleStartImplementation(plan: {
+    filename: string;
+    content: string;
+    relativePath?: string;
+    absolutePath?: string;
+  }): Promise<void> {
     // Switch to Agent mode
     assistantStore.setMode("agent");
 
-    // Create a prompt that instructs the agent to execute the plan
-    const implementationPrompt = `Execute the following implementation plan step by step. Read files as needed, make the changes described, and verify each step works before moving to the next.
+    const guessedRelativePath =
+      plan.relativePath ||
+      `.volt/plans/${plan.filename.endsWith(".md") ? plan.filename : `${plan.filename}.md`}`;
+    const attachmentPath = plan.absolutePath || guessedRelativePath;
+    const resolvedPlanPath = plan.absolutePath || resolvePath(guessedRelativePath);
+    let latestPlanContent = plan.content;
 
----
-${planContent}
----
+    // Prefer current on-disk plan so Agent executes the latest edited version.
+    try {
+      const diskContent = await readTextFile(resolvedPlanPath);
+      if (diskContent && diskContent.trim().length > 0) {
+        latestPlanContent = diskContent;
+      }
+    } catch {
+      // Fallback to tool-captured content from chat history.
+    }
 
-Start implementing now. Work through each step carefully.`;
+    const attachResult = assistantStore.attachFile(
+      attachmentPath,
+      latestPlanContent,
+      plan.filename,
+    );
+
+    if (!attachResult.success) {
+      showToast({
+        message: attachResult.error ?? "Failed to attach plan file",
+        type: "warning",
+      });
+    }
+
+    const implementationPrompt =
+      `Implement the attached plan file (${guessedRelativePath}) step by step.\n` +
+      `Rules:\n` +
+      `1. Read the attached plan first, then execute exactly one step at a time.\n` +
+      `2. Keep changes incremental and verify each step before moving to the next.\n` +
+      `3. Update the same plan markdown file as you progress:\n` +
+      `   - mark completed steps ([x])\n` +
+      `   - add/update an "Execution Progress" section with what was done and verification results.\n` +
+      `4. If blocked, stop and report blocker + next action needed.`;
 
     // Set the input and trigger send
     assistantStore.setInputValue(implementationPrompt);
@@ -2233,7 +2418,7 @@ Start implementing now. Work through each step carefully.`;
 
     // Trigger send after a brief delay to ensure UI updates
     setTimeout(() => {
-      handleSend();
+      void handleSend();
     }, 100);
   }
 
@@ -2261,6 +2446,15 @@ Start implementing now. Work through each step carefully.`;
       </span>
     </div>
     <div class="header-actions">
+      <button
+        class="header-btn"
+        onclick={handleOpenPromptLibrary}
+        title="Prompt library"
+        aria-label="Prompt library"
+        type="button"
+      >
+        <UIIcon name="code" size={14} />
+      </button>
       <button
         class="header-btn"
         onclick={() => chatHistoryStore.toggleSidebar()}
@@ -2412,6 +2606,7 @@ Start implementing now. Work through each step carefully.`;
       onAttachSelection={handleAttachSelection}
       onAttachImage={handleAttachImage}
       onAttachImageFromPicker={handleAttachImageFromPicker}
+      onOpenPromptLibrary={handleOpenPromptLibrary}
     />
   </div>
 </aside>

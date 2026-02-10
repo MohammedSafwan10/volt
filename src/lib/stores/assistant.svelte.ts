@@ -10,10 +10,11 @@
 
 import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
-import { getModelConfig } from '$lib/services/ai/models';
+import { getModelConfig, MODEL_REGISTRY, type ModelConfig } from '$lib/services/ai/models';
 import { countTokens, countConversationTokens, type ContentType } from '$lib/services/token-counter';
 import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$lib/services/file-service';
+import { terminalStore } from '$lib/stores/terminal.svelte';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
@@ -170,17 +171,30 @@ export const IMAGE_LIMITS = {
   allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'] as const
 };
 
-// Model context limits (in tokens)
-// Gemini 2.5 Flash: 1,048,576 input tokens, 65,536 output tokens
-// Gemini 3 Flash Preview: 1,048,576 input tokens, 65,536 output tokens (estimated)
-export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputTokens: number }> = {
-  'gemini-2.5-flash': { inputTokens: 1_048_576, outputTokens: 65_536 },
-  'gemini-2.5-flash-lite': { inputTokens: 1_048_576, outputTokens: 65_536 },
-  'gemini-2.5-pro': { inputTokens: 1_048_576, outputTokens: 65_536 },
-};
+// Model context limits - derived from the single source of truth in models.ts
+// No more hardcoded duplicates that go stale!
+export function getModelContextLimits(modelId: string): { inputTokens: number; outputTokens: number } {
+  const config = getModelConfig(modelId);
+  if (config) {
+    return {
+      inputTokens: config.contextWindow,
+      outputTokens: config.maxOutput,
+    };
+  }
+  return DEFAULT_CONTEXT_LIMIT;
+}
 
 // Default context limit if model not found
 const DEFAULT_CONTEXT_LIMIT = { inputTokens: 1_000_000, outputTokens: 8_192 };
+
+// Keep backward-compatible export (dynamically generated from MODEL_REGISTRY)
+export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputTokens: number }> =
+  Object.fromEntries(
+    Object.values(MODEL_REGISTRY).map((m: ModelConfig) => [
+      m.id.replace(/\|thinking$/, ''),
+      { inputTokens: m.contextWindow, outputTokens: m.maxOutput }
+    ])
+  );
 
 // Context packing limits
 export const CONTEXT_LIMITS = {
@@ -189,6 +203,8 @@ export const CONTEXT_LIMITS = {
 };
 
 const MAX_THINKING_CHARS = 8000;
+const MAX_IN_MEMORY_MESSAGES = 500;
+const IN_MEMORY_KEEP_RECENT = 220;
 
 // Secret patterns to redact
 const SECRET_PATTERNS = [
@@ -262,17 +278,13 @@ function isLikelySecretPath(path: string): boolean {
  * Redact potential secrets from content
  */
 function redactSecrets(content: string): string {
-  // Redact common secret patterns
+  // Redact common secret patterns - key=value assignments with secret-like names
   return content
     .replace(/([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*["']?([^"'\s\n]+)["']?/gi, '$1=[REDACTED]')
-    .replace(/Bearer\s+[A-Za-z0-9_-]{20,}/gi, 'Bearer [REDACTED]')
-    .replace(/[A-Za-z0-9_-]{32,}/g, (match) => {
-      // Only redact if it looks like a key (mixed case, numbers, etc.)
-      if (/[A-Z]/.test(match) && /[a-z]/.test(match) && /[0-9]/.test(match)) {
-        return '[REDACTED]';
-      }
-      return match;
-    });
+    .replace(/Bearer\s+[A-Za-z0-9_-]{20,}/gi, 'Bearer [REDACTED]');
+  // NOTE: Removed the overly aggressive 32+ char regex that was redacting
+  // UUIDs, base64 content, long variable names, hash strings, etc.
+  // Only secret-like key=value patterns and Bearer tokens are now redacted.
 }
 
 /**
@@ -365,6 +377,24 @@ class AssistantStore {
     this.loadPanelOpen();
     this.initConversation();
     this.loadCurrentConversationId();
+  }
+
+  private enforceInMemoryBudget(): void {
+    if (this.messages.length <= MAX_IN_MEMORY_MESSAGES) return;
+
+    const summary = this.messages.find((m) => m.role === 'system' && m.isSummary);
+    const nonSummary = this.messages.filter(
+      (m) => !(m.role === 'system' && m.isSummary)
+    );
+    const keepTail = nonSummary.slice(-IN_MEMORY_KEEP_RECENT);
+    this.messages = summary ? [summary, ...keepTail] : keepTail;
+
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.messages,
+      };
+    }
   }
 
   /**
@@ -582,6 +612,7 @@ class AssistantStore {
     });
 
     this.messages = restoredMessages;
+    this.enforceInMemoryBudget();
 
     // Set current conversation
     this.currentConversation = {
@@ -677,7 +708,18 @@ class AssistantStore {
 
   // Mode controls
   setMode(mode: AIMode): void {
+    if (this.currentMode === mode) return;
     this.currentMode = mode;
+
+    const convId = this.currentConversation?.id;
+    if (!convId) return;
+
+    // Persist mode so reload restores the same UX state (e.g. Plan CTA visibility).
+    import('./chat-history.svelte')
+      .then(({ chatHistoryStore }) => chatHistoryStore.updateMode(convId, mode))
+      .catch((err) => {
+        console.warn('[AssistantStore] Failed to persist conversation mode:', err);
+      });
   }
 
   // History management
@@ -766,6 +808,7 @@ class AssistantStore {
     }
 
     this.messages = [...this.messages, message];
+    this.enforceInMemoryBudget();
 
     // Update conversation
     if (this.currentConversation) {
@@ -801,6 +844,7 @@ class AssistantStore {
     } else {
       this.messages = [...this.messages, msg];
     }
+    this.enforceInMemoryBudget();
 
     if (this.currentConversation) {
       this.currentConversation.messages = this.messages;
@@ -849,6 +893,7 @@ class AssistantStore {
       isStreaming
     };
     this.messages = [...this.messages, message];
+    this.enforceInMemoryBudget();
 
     // Update conversation
     if (this.currentConversation) {
@@ -911,6 +956,7 @@ class AssistantStore {
       toolCalls: [toolCall]
     };
     this.messages = [...this.messages, message];
+    this.enforceInMemoryBudget();
 
     if (this.currentConversation) {
       this.currentConversation = {
@@ -1095,7 +1141,21 @@ class AssistantStore {
   /**
    * Helper to persist a specific message to history database
    */
-  private async persistMessageToHistory(messageId: string): Promise<void> {
+  private persistDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private async persistMessageToHistory(messageId: string, immediate = false): Promise<void> {
+    // Debounce rapid persists during streaming (every text chunk triggers this)
+    // Only the final state matters since saveMessage upserts by ID
+    if (!immediate) {
+      const existing = this.persistDebounceTimers.get(messageId);
+      if (existing) clearTimeout(existing);
+      this.persistDebounceTimers.set(messageId, setTimeout(() => {
+        this.persistDebounceTimers.delete(messageId);
+        this.persistMessageToHistory(messageId, true);
+      }, 500));
+      return;
+    }
+
     const msg = this.messages.find(m => m.id === messageId);
     const convId = this.currentConversation?.id;
     if (!msg || !convId) return;
@@ -1107,14 +1167,69 @@ class AssistantStore {
       } catch (createErr) {
         console.debug('[AssistantStore] Conversation may already exist:', createErr);
       }
+
+      // Sanitize tool calls to ensure clean JSON serialization
+      // Remove undefined values, functions, and circular refs
+      const sanitizeToolCalls = (calls?: ToolCall[]): ToolCall[] | undefined => {
+        if (!calls || calls.length === 0) return undefined;
+        return calls.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments ?? {},
+          status: tc.status,
+          output: tc.output,
+          error: tc.error,
+          meta: tc.meta ? { ...tc.meta } : undefined,
+          data: tc.data ? { ...tc.data } : undefined,
+          startTime: tc.startTime,
+          endTime: tc.endTime,
+          requiresApproval: tc.requiresApproval,
+          thoughtSignature: tc.thoughtSignature,
+          streamingProgress: tc.streamingProgress ? { ...tc.streamingProgress } : undefined,
+          reviewStatus: tc.reviewStatus,
+        }));
+      };
+
+      // Sanitize contentParts - ensure tool call data within parts is also clean
+      const sanitizeContentParts = (parts?: ContentPart[]): ContentPart[] | undefined => {
+        if (!parts || parts.length === 0) return undefined;
+        return parts.map(part => {
+          if (part.type === 'tool') {
+            const tc = part.toolCall;
+            return {
+              type: 'tool' as const,
+              toolCall: {
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments ?? {},
+                status: tc.status,
+                output: tc.output,
+                error: tc.error,
+                meta: tc.meta ? { ...tc.meta } : undefined,
+                data: tc.data ? { ...tc.data } : undefined,
+                startTime: tc.startTime,
+                endTime: tc.endTime,
+                requiresApproval: tc.requiresApproval,
+                thoughtSignature: tc.thoughtSignature,
+                streamingProgress: tc.streamingProgress ? { ...tc.streamingProgress } : undefined,
+                reviewStatus: tc.reviewStatus,
+              }
+            };
+          }
+          return part;
+        });
+      };
+
       const metadata = JSON.stringify({
         attachments: msg.attachments,
-        toolCalls: msg.toolCalls,
-        inlineToolCalls: msg.inlineToolCalls,
-        contentParts: msg.contentParts,
+        toolCalls: sanitizeToolCalls(msg.toolCalls),
+        inlineToolCalls: sanitizeToolCalls(msg.inlineToolCalls),
+        contentParts: sanitizeContentParts(msg.contentParts),
         thinking: msg.thinking,
         smartContextBlock: msg.smartContextBlock,
-        contextMentions: msg.contextMentions
+        contextMentions: msg.contextMentions,
+        isSummary: msg.isSummary || undefined, // Bug fix: was missing!
+        endTime: msg.endTime,
       });
 
       await chatHistoryStore.saveMessage(convId, {
@@ -1155,67 +1270,14 @@ class AssistantStore {
       }
       return msg;
     });
+    this.enforceInMemoryBudget();
 
     // Persist to database immediately
     this.persistMessageToHistory(messageId);
   }
 
-  /**
-   * Prefix the first text part in a message (used for Intent/Result labeling)
-   */
-  prefixFirstTextPart(messageId: string, prefix: string): void {
-    if (!prefix) return;
 
-    const applyPrefix = (msg: AssistantMessage): AssistantMessage => {
-      const parts = msg.contentParts ?? [];
-      if (parts.length === 0) {
-        const newParts: ContentPart[] = [{ type: 'text' as const, text: prefix }];
-        return { ...msg, contentParts: newParts, content: prefix };
-      }
 
-      const firstTextIndex = parts.findIndex(p => p.type === 'text');
-      if (firstTextIndex === -1) {
-        const newParts = [{ type: 'text' as const, text: prefix }, ...parts];
-        const fullContent = newParts
-          .filter(p => p.type === 'text')
-          .map(p => (p as { type: 'text'; text: string }).text)
-          .join('');
-        return { ...msg, contentParts: newParts, content: fullContent };
-      }
-
-      const firstText = parts[firstTextIndex] as { type: 'text'; text: string };
-      if (firstText.text.startsWith(prefix)) {
-        return msg;
-      }
-
-      const updatedText = prefix + firstText.text;
-      const newParts = parts.map((p, i) =>
-        i === firstTextIndex ? { type: 'text' as const, text: updatedText } : p
-      );
-
-      const fullContent = newParts
-        .filter(p => p.type === 'text')
-        .map(p => (p as { type: 'text'; text: string }).text)
-        .join('');
-
-      return { ...msg, contentParts: newParts, content: fullContent };
-    };
-
-    this.messages = this.messages.map(msg =>
-      msg.id === messageId ? applyPrefix(msg) : msg
-    );
-
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(msg =>
-          msg.id === messageId ? applyPrefix(msg) : msg
-        ),
-      };
-    }
-
-    this.persistMessageToHistory(messageId);
-  }
 
   /**
    * Add or update thinking content in a message (for inline thinking like Cursor)
@@ -1745,18 +1807,7 @@ class AssistantStore {
     isNearLimit: boolean;
     isOverLimit: boolean;
   } {
-    const modelConfig = getModelConfig(model);
-
-    let maxTokens: number;
-    if (modelConfig) {
-      maxTokens = modelConfig.contextWindow;
-    } else {
-      const normalizedModel = model
-        .replace(/\|thinking$/g, '')
-        .replace(/^models\//g, '');
-      const limits = MODEL_CONTEXT_LIMITS[normalizedModel] ?? DEFAULT_CONTEXT_LIMIT;
-      maxTokens = limits.inputTokens;
-    }
+    const { inputTokens: maxTokens } = getModelContextLimits(model);
 
     const usedChars = this.getConversationContextChars();
     const usedTokens = this.getConversationTokens(); // Use accurate counting
@@ -2147,8 +2198,45 @@ class AssistantStore {
       }
     }
 
+    const normalizePath = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
+    const deletionTargets = [...filesToRevert.entries()]
+      .filter(([, content]) => content === null)
+      .map(([path]) => path);
+    const sortedDeletionTargets = [...new Set(deletionTargets)].sort(
+      (a, b) => normalizePath(a).length - normalizePath(b).length
+    );
+    const collapsedDeletionTargets: string[] = [];
+    for (const path of sortedDeletionTargets) {
+      const normalized = normalizePath(path);
+      if (collapsedDeletionTargets.some((kept) => {
+        const keptNorm = normalizePath(kept);
+        return normalized === keptNorm || normalized.startsWith(keptNorm + '/');
+      })) {
+        continue;
+      }
+      collapsedDeletionTargets.push(path);
+    }
+
     // 2. Perform physical revert
     try {
+      const { editorStore } = await import('./editor.svelte');
+
+      // Pre-close open files and stop terminals inside deletion targets.
+      // This dramatically improves reliability when deleting big trees (e.g. node_modules) on Windows.
+      if (collapsedDeletionTargets.length > 0) {
+        const targetsNormalized = collapsedDeletionTargets.map(normalizePath);
+        for (const openFile of editorStore.openFiles) {
+          const fileNorm = normalizePath(openFile.path);
+          if (targetsNormalized.some((target) => fileNorm === target || fileNorm.startsWith(target + '/'))) {
+            editorStore.closeFile(openFile.path, true);
+          }
+        }
+
+        for (const target of collapsedDeletionTargets) {
+          await terminalStore.stopSessionsInPath(target);
+        }
+      }
+
       // De-rename first (reverse order)
       for (const { newPath, oldPath } of filesToRenameBack) {
         try {
@@ -2174,9 +2262,6 @@ class AssistantStore {
           console.error(`[Revert] Failed for ${path}:`, e);
         }
       }
-
-      // Sync editor state
-      const { editorStore } = await import('./editor.svelte');
 
       // 1. Sync renames
       for (const { newPath, oldPath } of filesToRenameBack) {

@@ -22,7 +22,12 @@
     isStreaming?: boolean;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
-    onStartImplementation?: (planContent: string) => void;
+    onStartImplementation?: (plan: {
+      filename: string;
+      content: string;
+      relativePath?: string;
+      absolutePath?: string;
+    }) => void;
     onRevert?: (messageId: string) => void;
   }
 
@@ -177,7 +182,12 @@
   }
 
   // Plan mode: check for plan file
-  function findPlanFileCreated(): { filename: string; content: string } | null {
+  function findPlanFileCreated(): {
+    filename: string;
+    content: string;
+    relativePath?: string;
+    absolutePath?: string;
+  } | null {
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
       for (const part of msg.contentParts ?? []) {
@@ -186,7 +196,20 @@
         if (tc.name === "write_plan_file" && tc.status === "completed") {
           const content = tc.arguments.content as string;
           const filename = tc.arguments.filename as string;
-          if (content && filename) return { filename, content };
+          const meta = (tc.meta ?? {}) as Record<string, any>;
+          const planMeta = (meta.planFile ?? {}) as Record<string, any>;
+          if (content && filename) {
+            return {
+              filename: String(planMeta.filename || filename),
+              content,
+              relativePath: planMeta.relativePath
+                ? String(planMeta.relativePath)
+                : undefined,
+              absolutePath: planMeta.absolutePath
+                ? String(planMeta.absolutePath)
+                : undefined,
+            };
+          }
         }
       }
     }
@@ -202,7 +225,7 @@
 
   function handleStartImplementation(): void {
     const plan = findPlanFileCreated();
-    if (plan && onStartImplementation) onStartImplementation(plan.content);
+    if (plan && onStartImplementation) onStartImplementation(plan);
   }
 </script>
 
@@ -251,9 +274,6 @@
           <span>Start Implementation</span>
           <UIIcon name="arrow-right" size={14} />
         </button>
-        <p class="implementation-hint">
-          Switch to Agent mode and execute the plan
-        </p>
       </div>
     {/if}
   </div>
@@ -329,36 +349,74 @@
 
   .start-implementation-wrapper {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 20px;
-    margin-top: 12px;
+    justify-content: center;
+    padding: 10px 0;
+    margin-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .start-implementation-btn {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 24px;
-    background: linear-gradient(135deg, var(--color-green), var(--color-teal));
-    color: var(--color-bg);
-    border-radius: 12px;
-    font-size: 14px;
+    gap: 8px;
+    padding: 7px 18px;
+    background: linear-gradient(135deg, hsl(165, 75%, 42%), hsl(180, 80%, 35%));
+    color: white;
+    border-radius: 8px;
+    font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s ease;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(255, 255, 255, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    overflow: hidden;
+  }
+
+  .start-implementation-btn::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.15),
+      transparent
+    );
+    transition: 0.5s;
   }
 
   .start-implementation-btn:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    box-shadow:
+      0 8px 20px rgba(0, 0, 0, 0.5),
+      0 0 15px rgba(78, 201, 176, 0.3);
+    filter: brightness(1.05);
   }
 
-  .implementation-hint {
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    margin: 0;
+  .start-implementation-btn:hover::before {
+    left: 100%;
+  }
+
+  .start-implementation-btn:active {
+    transform: translateY(0) scale(0.96);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 </style>

@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Volt Prompt",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "category",
+    "description",
+    "template",
+    "tags",
+    "author",
+    "source",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "category": {
+      "type": "string",
+      "minLength": 2
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5
+    },
+    "template": {
+      "type": "string",
+      "minLength": 20
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "author": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["builtin", "user", "server"]
+    },
+    "updatedAt": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false
+}
+

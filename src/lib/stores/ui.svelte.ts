@@ -5,7 +5,16 @@
 
 import { bottomPanelStore, type BottomPanelTab } from './bottom-panel.svelte';
 
-export type SidebarPanel = 'explorer' | 'search' | 'git' | 'extensions' | 'settings' | 'mcp' | 'browser' | null;
+export type SidebarPanel =
+  | 'explorer'
+  | 'search'
+  | 'git'
+  | 'extensions'
+  | 'settings'
+  | 'mcp'
+  | 'browser'
+  | 'prompts'
+  | null;
 
 const ZOOM_MIN_PERCENT = 50;
 const ZOOM_MAX_PERCENT = 200;
@@ -14,6 +23,8 @@ const ZOOM_STORAGE_KEY = 'volt.zoomPercent';
 const SIDEBAR_OPEN_KEY = 'volt.sidebarOpen';
 const SIDEBAR_PANEL_KEY = 'volt.sidebarPanel';
 const BOTTOM_PANEL_OPEN_KEY = 'volt.bottomPanelOpen';
+const SIDEBAR_MIN_WIDTH = 150;
+const SIDEBAR_MAX_WIDTH = 900;
 
 class UIStore {
   // Sidebar state
@@ -122,7 +133,7 @@ class UIStore {
    * Set sidebar width (for resizing)
    */
   setSidebarWidth(width: number): void {
-    this.sidebarWidth = Math.max(150, Math.min(500, width));
+    this.sidebarWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, width));
   }
 
   /**

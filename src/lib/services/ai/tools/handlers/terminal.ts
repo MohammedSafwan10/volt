@@ -291,15 +291,16 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
       }
 
       const now = Date.now();
+      const normalizedCommand = normalizeCommand(command);
       const recent = recentAiCommands.get(session.id);
-      if (recent && recent.command === command && now - recent.timestamp < 800) {
+      if (recent && recent.command === normalizedCommand && now - recent.timestamp < 300) {
         return {
           success: true,
           output: `[Volt]: Skipped duplicate command (debounced): ${command}`,
           meta: { terminalId: session.id, debounced: true }
         };
       }
-      recentAiCommands.set(session.id, { command, timestamp: now });
+      recentAiCommands.set(session.id, { command: normalizedCommand, timestamp: now });
 
       console.log(`[TerminalTool] Executing command: "${command}" in cwd: "${cwd || session.cwd || session.info.cwd}"`);
 
@@ -392,11 +393,11 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
         }
       }
 
-		// If the command detached (likely a long-running server) or timed out,
-		// detach the AI terminal so the next command gets a fresh shell.
-		if (isDetached || toolResult.meta?.timedOut) {
-			terminalStore.detachAiTerminal(session.id, isDetached ? 'Volt AI (running)' : 'Volt AI (busy)');
-		}
+      // If the command detached (likely a long-running server) or timed out,
+      // detach the AI terminal so the next command gets a fresh shell.
+      if (isDetached || toolResult.meta?.timedOut) {
+        terminalStore.detachAiTerminal(session.id, isDetached ? 'Volt AI (running)' : 'Volt AI (busy)');
+      }
 
       if (isDetached) {
         const proc = trackDetachedProcess(command, cwd, session.id);
@@ -529,6 +530,7 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
     }
 
     proc.status = 'stopped';
+    processStore.set(processId, proc);
     return { success: true, output: `Process ${processId} stopped and terminal closed.` };
   } catch (err) {
     return { success: false, error: `Failed to stop process: ${err}` };
@@ -641,6 +643,89 @@ export async function handleReadTerminal(args: Record<string, unknown>): Promise
   return {
     success: true,
     output: lines || '(Empty output)'
+  };
+}
+
+// ============================================================================
+// COMMAND STATUS - Smart polling with wait + incremental reads
+// ============================================================================
+
+/**
+ * Poll a running process for status and output.
+ * Supports optional wait (blocks until new output or process exit),
+ * and incremental reads via `since` offset.
+ */
+export async function handleCommandStatus(args: Record<string, unknown>): Promise<ToolResult> {
+  const processId = Number(args.processId);
+  const waitSeconds = typeof args.wait === 'number' ? Math.min(Math.max(0, args.wait), 60) : 0;
+  const sinceOffset = typeof args.since === 'number' ? Math.max(0, args.since) : 0;
+  const maxLines = Number(args.maxLines) || 200;
+
+  const proc = processes.get(processId);
+  if (!proc) {
+    return { success: false, error: `Process ${processId} not found. Use list_processes to see available processes.` };
+  }
+
+  const session = proc.terminalId
+    ? terminalStore.sessions.find(s => s.id === proc.terminalId)
+    : null;
+
+  if (!session) {
+    return {
+      success: true,
+      output: `Process ${processId} (${proc.command}): ${proc.status.toUpperCase()} — terminal no longer exists`,
+      meta: { processId, status: proc.status }
+    };
+  }
+
+  // Helper: get output since offset
+  const getOutput = (): { text: string; newOffset: number } => {
+    const fullOutput = session.getRecentCleanOutput(maxLines * 200);
+    const sliced = sinceOffset > 0 ? fullOutput.slice(sinceOffset) : fullOutput;
+    const lines = sliced.split('\n').slice(-maxLines).join('\n');
+    return { text: lines, newOffset: sinceOffset + sliced.length };
+  };
+
+  // If wait > 0, poll for new output or process exit
+  if (waitSeconds > 0) {
+    const startTime = Date.now();
+    const timeoutMs = waitSeconds * 1000;
+    const initialOutput = getOutput();
+    const initialLength = initialOutput.text.length;
+
+    while (Date.now() - startTime < timeoutMs) {
+      // Check if process has stopped
+      if (proc.status !== 'running') break;
+
+      // Check for new output
+      const current = getOutput();
+      if (current.text.length > initialLength) break;
+
+      // Wait 500ms before next check
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+
+  // Get final output
+  const { text, newOffset } = getOutput();
+  const elapsed = Date.now() - proc.startTime;
+
+  let output = `Process ${processId} (${proc.command}): ${proc.status.toUpperCase()} (${formatDuration(elapsed)})`;
+  if (text.trim()) {
+    output += `\n\n${text}`;
+  } else {
+    output += '\n\n(No new output)';
+  }
+
+  return {
+    success: true,
+    output,
+    meta: {
+      processId,
+      status: proc.status,
+      offset: newOffset,
+      elapsed,
+    }
   };
 }
 

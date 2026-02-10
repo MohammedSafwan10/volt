@@ -164,6 +164,36 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       warnings: problems.filter((p) => p.severity === "warning").length,
     };
   }
+
+  function getVisibleProblemsForFile(filePath: string): Problem[] {
+    let problems = problemsStore.getProblemsForFile(filePath);
+
+    if (problemsStore.severityFilter !== "all") {
+      problems = problems.filter(
+        (p) => p.severity === problemsStore.severityFilter,
+      );
+    }
+
+    if (problemsStore.searchQuery) {
+      const query = problemsStore.searchQuery.toLowerCase();
+      problems = problems.filter(
+        (p) =>
+          p.message.toLowerCase().includes(query) ||
+          p.file.toLowerCase().includes(query) ||
+          p.source.toLowerCase().includes(query) ||
+          (p.code && p.code.toLowerCase().includes(query)),
+      );
+    }
+
+    return problems;
+  }
+
+  function getVisibleFilePaths(): string[] {
+    const visibleFiles = new Set(problemsStore.allProblems.map((p) => p.file));
+    return problemsStore.filesWithProblems.filter((path) =>
+      visibleFiles.has(path),
+    );
+  }
   
   // Handle filter change
   function handleFilterChange(filter: 'all' | 'error' | 'warning' | 'info'): void {
@@ -293,8 +323,8 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     </div>
 
     <div class="problems-list">
-      {#each problemsStore.filesWithProblems as filePath (filePath)}
-        {@const problems = problemsStore.getProblemsForFile(filePath)}
+      {#each getVisibleFilePaths() as filePath (filePath)}
+        {@const problems = getVisibleProblemsForFile(filePath)}
         {@const counts = getFileCounts(problems)}
         {@const expanded = isExpanded(filePath)}
 

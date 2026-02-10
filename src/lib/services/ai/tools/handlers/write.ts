@@ -15,6 +15,41 @@ import { editorStore } from '$lib/stores/editor.svelte';
 import { fileService } from '$lib/services/file-service';
 import { resolvePath, extractErrorMessage, isSameOrSuffixPath, calculateDiffStats, type ToolResult } from '../utils';
 
+interface PostEditProblem {
+  id: string;
+  file: string;
+  fileName: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  message: string;
+  severity: string;
+  source: string;
+  code?: string;
+  relativePath: string;
+}
+
+interface PostEditDiagnosticsResult {
+  errorCount: number;
+  warningCount: number;
+  fileCount: number;
+  problems: PostEditProblem[];
+}
+
+const POST_EDIT_DIAGNOSTICS_CACHE_MS = 4000;
+const EMPTY_DIAGNOSTICS: PostEditDiagnosticsResult = {
+  errorCount: 0,
+  warningCount: 0,
+  fileCount: 0,
+  problems: [],
+};
+const postEditDiagnosticsCache = new Map<string, {
+  timestamp: number;
+  result: PostEditDiagnosticsResult;
+  inFlight?: Promise<PostEditDiagnosticsResult>;
+}>();
+
 /**
  * Read file using unified file service
  * Ensures we always get the latest content from single source of truth
@@ -37,11 +72,11 @@ async function writeFileWithSync(path: string, content: string, expectedVersion?
     source: 'ai',
     force: expectedVersion === undefined  // Force if no version check requested
   });
-  
+
   if (!result.success) {
     return { success: false, error: result.error };
   }
-  
+
   return { success: true, newVersion: result.newVersion };
 }
 
@@ -53,14 +88,14 @@ async function syncEditorWithDisk(path: string, normalizedPath: string, content:
     // Update Monaco model directly (handles disposed models)
     const { setModelValue } = await import('$lib/services/monaco-models');
     setModelValue(normalizedPath, content);
-    
+
     // Reload in editor store
     const existing = editorStore.openFiles.find(f =>
       f.path === path || f.path === normalizedPath ||
       f.path.endsWith('/' + path.split(/[/\\]/).pop()) ||
       f.path.endsWith('\\' + path.split(/[/\\]/).pop())
     );
-    
+
     if (existing) {
       existing.content = content;
       existing.originalContent = content;
@@ -80,122 +115,97 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
   errorCount: number;
   warningCount: number;
   fileCount: number;
-  problems: Array<{
-    id: string;
-    file: string;
-    fileName: string;
-    line: number;
-    column: number;
-    endLine: number;
-    endColumn: number;
-    message: string;
-    severity: string;
-    source: string;
-    code?: string;
-    relativePath: string;
-  }>;
+  problems: PostEditProblem[];
 }> {
+  const now = Date.now();
+  const cached = postEditDiagnosticsCache.get(absolutePath);
+  if (cached?.inFlight) {
+    return cached.inFlight;
+  }
+  if (cached && now - cached.timestamp < POST_EDIT_DIAGNOSTICS_CACHE_MS) {
+    return cached.result;
+  }
+
+  const run = async (): Promise<PostEditDiagnosticsResult> => {
   try {
     // Notify LSPs of the file change based on file type
     const ext = absolutePath.split('.').pop()?.toLowerCase() || '';
+    const doc = await fileService.read(absolutePath, true);
+    const latestContent = doc?.content;
 
     // 1. Notify TypeScript/JavaScript/ESLint
-    if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
+    if (latestContent && ['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          // TypeScript
-          const { notifyDocumentChanged } = await import('$lib/services/lsp/typescript-sidecar');
-          await notifyDocumentChanged(absolutePath, doc.content);
+        // TypeScript
+        const { notifyDocumentChanged } = await import('$lib/services/lsp/typescript-sidecar');
+        await notifyDocumentChanged(absolutePath, latestContent);
 
-          // ESLint
-          const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
-          await notifyEslintDocumentChanged(absolutePath, doc.content);
-        }
+        // ESLint
+        const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
+        await notifyEslintDocumentChanged(absolutePath, latestContent);
       } catch {
         // Continue anyway
       }
     }
 
     // 2. Notify Svelte
-    if (ext === 'svelte') {
+    if (latestContent && ext === 'svelte') {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifySvelteDocumentChanged } = await import('$lib/services/lsp/svelte-sidecar');
-          await notifySvelteDocumentChanged(absolutePath, doc.content);
-        }
+        const { notifySvelteDocumentChanged } = await import('$lib/services/lsp/svelte-sidecar');
+        await notifySvelteDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
 
     // 3. Notify HTML
-    if (['html', 'htm'].includes(ext)) {
+    if (latestContent && ['html', 'htm'].includes(ext)) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyHtmlDocumentChanged } = await import('$lib/services/lsp/html-sidecar');
-          await notifyHtmlDocumentChanged(absolutePath, doc.content);
-        }
+        const { notifyHtmlDocumentChanged } = await import('$lib/services/lsp/html-sidecar');
+        await notifyHtmlDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
 
     // 4. Notify CSS/SCSS/LESS
-    if (['css', 'scss', 'less', 'sass'].includes(ext)) {
+    if (latestContent && ['css', 'scss', 'less', 'sass'].includes(ext)) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyCssDocumentChanged } = await import('$lib/services/lsp/css-sidecar');
-          await notifyCssDocumentChanged(absolutePath, doc.content);
-        }
+        const { notifyCssDocumentChanged } = await import('$lib/services/lsp/css-sidecar');
+        await notifyCssDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
 
     // 5. Notify JSON
-    if (ext === 'json') {
+    if (latestContent && ext === 'json') {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyJsonDocumentChanged } = await import('$lib/services/lsp/json-sidecar');
-          await notifyJsonDocumentChanged(absolutePath, doc.content);
-        }
+        const { notifyJsonDocumentChanged } = await import('$lib/services/lsp/json-sidecar');
+        await notifyJsonDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
 
     // 6. Notify Dart LSP for Dart files and pubspec.yaml
-    if (ext === 'dart' || absolutePath.toLowerCase().endsWith('pubspec.yaml') || absolutePath.toLowerCase().endsWith('analysis_options.yaml')) {
+    if (latestContent && (ext === 'dart' || absolutePath.toLowerCase().endsWith('pubspec.yaml') || absolutePath.toLowerCase().endsWith('analysis_options.yaml'))) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
-          if (isDartLspRunning()) {
-            await notifyDocumentChanged(absolutePath, doc.content);
-          }
+        const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
+        if (isDartLspRunning()) {
+          await notifyDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
 
     // 7. Notify YAML LSP for YAML files
-    if (['yaml', 'yml'].includes(ext)) {
+    if (latestContent && ['yaml', 'yml'].includes(ext)) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
-          if (isYamlLspRunning()) {
-            await notifyDocumentChanged(absolutePath, doc.content);
-          }
+        const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
+        if (isYamlLspRunning()) {
+          await notifyDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
 
     // 8. Notify XML LSP for XML and plist files
-    if (['xml', 'plist', 'xsd', 'xsl', 'xslt', 'svg'].includes(ext)) {
+    if (latestContent && ['xml', 'plist', 'xsd', 'xsl', 'xslt', 'svg'].includes(ext)) {
       try {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
-          if (isXmlLspRunning()) {
-            await notifyDocumentChanged(absolutePath, doc.content);
-          }
+        const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
+        if (isXmlLspRunning()) {
+          await notifyDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
@@ -203,54 +213,63 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 9. Notify Tailwind
     try {
       const { notifyTailwindDocumentChanged, isTailwindLspConnected } = await import('$lib/services/lsp/tailwind-sidecar');
-      if (isTailwindLspConnected()) {
-        const doc = await fileService.read(absolutePath);
-        if (doc) {
-          await notifyTailwindDocumentChanged(absolutePath, doc.content);
-        }
+      if (latestContent && isTailwindLspConnected()) {
+        await notifyTailwindDocumentChanged(absolutePath, latestContent);
       }
     } catch { }
 
-    // Wait for LSPs to process (increased from 300ms to 500ms for more reliable diagnostics)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    const collectDiagnostics = async (): Promise<PostEditDiagnosticsResult> => {
+      const { handleGetDiagnostics } = await import('./diagnostics');
+      const result = await handleGetDiagnostics({ paths: [relativePath] });
 
-    // Import diagnostics handler dynamically to avoid circular deps
-    const { handleGetDiagnostics } = await import('./diagnostics');
-    const result = await handleGetDiagnostics({ paths: [relativePath] });
+      if (!result.success) {
+        return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
+      }
 
-    if (!result.success) {
-      return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
-    }
+      const meta = (result.meta ?? {}) as {
+        errorCount?: number;
+        warningCount?: number;
+        fileCount?: number;
+        problems?: PostEditProblem[];
+      };
 
-    const meta = (result.meta ?? {}) as {
-      errorCount?: number;
-      warningCount?: number;
-      fileCount?: number;
-      problems?: Array<{
-        id: string;
-        file: string;
-        fileName: string;
-        line: number;
-        column: number;
-        endLine: number;
-        endColumn: number;
-        message: string;
-        severity: string;
-        source: string;
-        code?: string;
-        relativePath: string;
-      }>;
+      return {
+        errorCount: meta.errorCount ?? 0,
+        warningCount: meta.warningCount ?? 0,
+        fileCount: meta.fileCount ?? 0,
+        problems: meta.problems ?? [],
+      };
     };
 
-    return {
-      errorCount: meta.errorCount ?? 0,
-      warningCount: meta.warningCount ?? 0,
-      fileCount: meta.fileCount ?? 0,
-      problems: meta.problems ?? [],
-    };
+    return await collectDiagnostics();
   } catch {
-    return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
+    return EMPTY_DIAGNOSTICS;
   }
+  };
+
+  const inFlight = run()
+    .then((result) => {
+      postEditDiagnosticsCache.set(absolutePath, {
+        timestamp: Date.now(),
+        result,
+      });
+      return result;
+    })
+    .catch(() => EMPTY_DIAGNOSTICS)
+    .finally(() => {
+      const entry = postEditDiagnosticsCache.get(absolutePath);
+      if (entry) {
+        delete entry.inFlight;
+        postEditDiagnosticsCache.set(absolutePath, entry);
+      }
+    });
+
+  postEditDiagnosticsCache.set(absolutePath, {
+    timestamp: now,
+    result: cached?.result ?? EMPTY_DIAGNOSTICS,
+    inFlight,
+  });
+  return inFlight;
 }
 
 /**
@@ -346,7 +365,9 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   const diffStats = calculateDiffStats(before, content);
 
   // Get diagnostics after edit (Kiro-style auto-check)
-  const diagnostics = await getPostEditDiagnostics(path, relativePath);
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
 
   // Build output message
   let output = isNewFile
@@ -430,7 +451,9 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
   const diffStats = calculateDiffStats(existing, newContent);
 
   // Get diagnostics after edit
-  const diagnostics = await getPostEditDiagnostics(path, relativePath);
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
 
   let output = `Appended to ${relativePath} (+${addedLines} lines)`;
   if (diagnostics.errorCount > 0) {
@@ -554,7 +577,9 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
   const diffStats = calculateDiffStats(content, newContent);
 
   // Get diagnostics after edit
-  const diagnostics = await getPostEditDiagnostics(path, relativePath);
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
 
   let output = `Edited ${relativePath}: ${oldLines} → ${newLines} lines${confidence}`;
   if (diagnostics.errorCount > 0) {
@@ -591,6 +616,178 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
         fileCount: diagnostics.fileCount,
         problems: diagnostics.problems,
       },
+    }
+  };
+}
+
+// ============================================================================
+// MULTI REPLACE - Batch non-contiguous edits in a single operation
+// ============================================================================
+
+/**
+ * Handle multiple non-contiguous edits in a single file operation.
+ * Edits are applied bottom-to-top so that earlier indices remain valid.
+ * Rejects overlapping matches with a clear error.
+ */
+export async function handleMultiReplace(args: Record<string, unknown>): Promise<ToolResult> {
+  const relativePath = String(args.path);
+  const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
+  const rawEdits = args.edits;
+
+  // Validate edits array
+  if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
+    return { success: false, error: 'Missing or empty "edits" array. Expected: [{ oldStr, newStr }, ...]' };
+  }
+
+  if (rawEdits.length > 50) {
+    return { success: false, error: `Too many edits (${rawEdits.length}). Maximum 50 edits per call.` };
+  }
+
+  // Parse and validate each edit
+  const edits: Array<{ oldStr: string; newStr: string }> = [];
+  for (let i = 0; i < rawEdits.length; i++) {
+    const edit = rawEdits[i] as Record<string, unknown>;
+    if (!edit || typeof edit !== 'object') {
+      return { success: false, error: `Edit ${i}: expected object with oldStr and newStr` };
+    }
+    const oldStr = fixEscapedNewlines(String(edit.oldStr ?? edit.original_snippet ?? ''));
+    const newStr = fixEscapedNewlines(String(edit.newStr ?? edit.new_snippet ?? ''));
+    if (!oldStr) {
+      return { success: false, error: `Edit ${i}: missing "oldStr"` };
+    }
+    edits.push({ oldStr, newStr });
+  }
+
+  // Read file fresh from disk
+  let content = '';
+  try {
+    content = await readFileFresh(path);
+  } catch {
+    return { success: false, error: `File not found: ${relativePath}` };
+  }
+
+  // Find all matches
+  const matches: Array<{
+    index: number;
+    length: number;
+    similarity: number;
+    editIndex: number;
+    oldStr: string;
+    newStr: string;
+  }> = [];
+
+  for (let i = 0; i < edits.length; i++) {
+    const match = findBestMatch(content, edits[i].oldStr);
+    if (!match) {
+      const preview = edits[i].oldStr.slice(0, 80).replace(/\n/g, '\\n');
+      return {
+        success: false,
+        error: `Edit ${i}: no match for "${preview}..."\n\nCall read_file("${relativePath}") to see current content before retrying.`
+      };
+    }
+    matches.push({
+      ...match,
+      editIndex: i,
+      oldStr: edits[i].oldStr,
+      newStr: edits[i].newStr,
+    });
+  }
+
+  // Sort by position descending (bottom-to-top) so replacements don't shift indices
+  matches.sort((a, b) => b.index - a.index);
+
+  // Check for overlapping matches
+  for (let i = 0; i < matches.length - 1; i++) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    const nextEnd = next.index + next.length;
+    if (nextEnd > current.index) {
+      return {
+        success: false,
+        error: `Overlapping edits: edit ${next.editIndex} overlaps with edit ${current.editIndex}. Split into separate calls.`
+      };
+    }
+  }
+
+  // Apply all replacements bottom-to-top
+  let resultContent = content;
+  for (const match of matches) {
+    resultContent =
+      resultContent.slice(0, match.index) +
+      match.newStr +
+      resultContent.slice(match.index + match.length);
+  }
+
+  // Skip if no changes
+  if (resultContent === content) {
+    return {
+      success: true,
+      output: `No changes: ${relativePath} (all ${edits.length} edits resulted in identical content)`,
+    };
+  }
+
+  // Write with verification
+  const writeResult = await writeFileWithSync(path, resultContent);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to write: ${writeResult.error}` };
+  }
+
+  // Sync editor
+  await syncEditorWithDisk(path, normalizedPath, resultContent);
+
+  // Stats
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, resultContent);
+  const diffStats = calculateDiffStats(content, resultContent);
+
+  // Diagnostics
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
+
+  // Build summary
+  const confidences = matches
+    .filter(m => m.similarity < 1)
+    .map(m => `edit ${m.editIndex}: ${Math.round(m.similarity * 100)}%`);
+  const confidenceNote = confidences.length > 0 ? ` (fuzzy: ${confidences.join(', ')})` : '';
+
+  let output = `Applied ${edits.length} edits to ${relativePath}${confidenceNote}`;
+  output += ` | +${diffStats.added} -${diffStats.removed} lines`;
+  if (diagnostics.errorCount > 0) {
+    output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? 's' : ''}`;
+  }
+
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
+    : '';
+
+  return {
+    success: true,
+    output: output + aiErrors,
+    meta: {
+      fileEdit: {
+        relativePath,
+        absolutePath: path,
+        beforeContent: content.length <= 100_000 ? content : null,
+        afterContent: resultContent.length <= 100_000 ? resultContent : null,
+        firstChangedLine,
+        lastChangedLine,
+        added: diffStats.added,
+        removed: diffStats.removed,
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
+      editCount: edits.length,
     }
   };
 }
@@ -797,7 +994,9 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   const diffStats = calculateDiffStats(content, resultContent);
 
   // Get diagnostics after edit
-  const diagnostics = await getPostEditDiagnostics(path, relativePath);
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
 
   let output = `Replaced lines ${startLine}-${actualEndLine} (${replacedLines} lines → ${insertedLines} lines) in ${relativePath}`;
   if (diagnostics.errorCount > 0) {

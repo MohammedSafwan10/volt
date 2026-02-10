@@ -1,8 +1,8 @@
 import {
 	createTerminalSession,
+	createTerminalSessionFromInfo,
 	listTerminals,
 	killAllTerminals,
-	type TerminalInfo,
 	TerminalSession
 } from '$lib/services/terminal-client';
 import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
@@ -24,6 +24,26 @@ class TerminalStore {
 		this.syncWithBackend();
 		// Start terminal problem matcher (background service)
 		void terminalProblemMatcher.start();
+	}
+
+	private attachSession(session: TerminalSession, makeActive = false): void {
+		// Avoid duplicate attachment
+		if (this.sessions.some((s) => s.id === session.id)) {
+			if (makeActive) this.activeTerminalId = session.id;
+			return;
+		}
+
+		// Set up exit handler to remove session when terminal exits
+		session.onExit(() => {
+			console.log('[TerminalStore] Terminal exited:', session.id);
+			session.dispose();
+			this.removeSession(session.id);
+		});
+
+		this.sessions = [...this.sessions, session];
+		if (makeActive || !this.activeTerminalId) {
+			this.activeTerminalId = session.id;
+		}
 	}
 
 	/**
@@ -64,17 +84,7 @@ class TerminalStore {
 			}
 
 			console.log('[TerminalStore] Terminal created:', session.id);
-
-			// Set up exit handler to remove session when terminal exits
-			session.onExit(() => {
-				console.log('[TerminalStore] Terminal exited:', session.id);
-				session.dispose();
-				this.removeSession(session.id);
-			});
-
-			// Use spread to trigger reactivity (Svelte 5 $state)
-			this.sessions = [...this.sessions, session];
-			this.activeTerminalId = session.id;
+			this.attachSession(session, true);
 
 			return session;
 		})();
@@ -166,6 +176,37 @@ class TerminalStore {
 	}
 
 	/**
+	 * Stop terminal sessions whose cwd is inside the target path.
+	 * Helps Windows release file handles before deleting large folders.
+	 */
+	async stopSessionsInPath(targetPath: string): Promise<number> {
+		if (!targetPath) return 0;
+		const normalize = (p: string): string => {
+			const n = p.replace(/\\/g, '/').replace(/\/+$/, '');
+			return /^[A-Za-z]:/.test(n) ? n.toLowerCase() : n;
+		};
+		const target = normalize(targetPath);
+		let stopped = 0;
+		const snapshot = [...this.sessions];
+
+		for (const session of snapshot) {
+			const cwdRaw = session.cwd || session.info.cwd || '';
+			if (!cwdRaw) continue;
+			const cwd = normalize(cwdRaw);
+			if (cwd === target || cwd.startsWith(target + '/')) {
+				try {
+					await this.killTerminal(session.id);
+					stopped++;
+				} catch (err) {
+					console.warn('[TerminalStore] Failed to stop terminal in path:', cwdRaw, err);
+				}
+			}
+		}
+
+		return stopped;
+	}
+
+	/**
 	 * Set the active terminal
 	 */
 	setActive(terminalId: string): void {
@@ -237,6 +278,18 @@ class TerminalStore {
 			if (!backendIds.has(session.id)) {
 				session.dispose();
 				this.removeSession(session.id);
+			}
+		}
+
+		// Rehydrate missing backend terminals after reload/HMR.
+		const knownIds = new Set(this.sessions.map((s) => s.id));
+		for (const info of backendTerminals) {
+			if (knownIds.has(info.terminalId)) continue;
+			try {
+				const restored = await createTerminalSessionFromInfo(info);
+				this.attachSession(restored, this.sessions.length === 0);
+			} catch (err) {
+				console.warn('[TerminalStore] Failed to rehydrate terminal:', info.terminalId, err);
 			}
 		}
 	}

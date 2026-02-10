@@ -16,6 +16,7 @@
     StreamingProgress,
   } from "$lib/stores/assistant.svelte";
   import type { Problem } from "$lib/stores/problems.svelte";
+  import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$lib/services/ai/tools";
 
   interface Props {
     toolCall: ToolCall;
@@ -344,9 +345,7 @@
 
   // Check if this is a terminal command tool
   const isTerminalTool = $derived(
-    toolCall.name === "run_command" ||
-      toolCall.name === "start_process" ||
-      toolCall.name === "terminal_write",
+    isTerminalToolName(toolCall.name),
   );
 
   // For terminal commands, only show approval if this is the first pending one (Kiro-style)
@@ -364,10 +363,7 @@
 
   // Check if this is a file write tool that supports streaming
   const isFileWriteTool = $derived(
-    toolCall.name === "write_file" ||
-      toolCall.name === "create_file" ||
-      toolCall.name === "apply_edit" ||
-      toolCall.name === "multi_replace_file_content",
+    isFileMutatingTool(toolCall.name),
   );
   const isStreaming = $derived(
     isFileWriteTool && isRunning && streamingProgress != null,

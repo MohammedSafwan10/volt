@@ -412,7 +412,14 @@ export interface NavigateResult {
 
 export async function browser_navigate(params: NavigateParams): Promise<NavigateResult> {
   try {
-    await browserStore.navigate(params.url);
+    if (!browserStore.isOpen) {
+      await browserStore.open(params.url);
+    } else {
+      if (!browserStore.isVisible) {
+        await browserStore.setVisible(true);
+      }
+      await browserStore.navigate(params.url);
+    }
     return {
       success: true,
       url: browserStore.url,

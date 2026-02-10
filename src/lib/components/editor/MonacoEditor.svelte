@@ -33,6 +33,36 @@
     notifySvelteDocumentOpened,
     notifySvelteDocumentChanged,
   } from "$lib/services/lsp/svelte-sidecar";
+  import {
+    isHtmlFile,
+    notifyHtmlDocumentOpened,
+    notifyHtmlDocumentChanged,
+  } from "$lib/services/lsp/html-sidecar";
+  import {
+    isCssFile,
+    notifyCssDocumentOpened,
+    notifyCssDocumentChanged,
+  } from "$lib/services/lsp/css-sidecar";
+  import {
+    isJsonFile,
+    notifyJsonDocumentOpened,
+    notifyJsonDocumentChanged,
+  } from "$lib/services/lsp/json-sidecar";
+  import {
+    isDartLspFile,
+    notifyDocumentOpened as notifyDartDocumentOpened,
+    notifyDocumentChanged as notifyDartDocumentChanged,
+  } from "$lib/services/lsp/dart-sidecar";
+  import {
+    isYamlFile,
+    notifyDocumentOpened as notifyYamlDocumentOpened,
+    notifyDocumentChanged as notifyYamlDocumentChanged,
+  } from "$lib/services/lsp/yaml-sidecar";
+  import {
+    isXmlFile,
+    notifyDocumentOpened as notifyXmlDocumentOpened,
+    notifyDocumentChanged as notifyXmlDocumentChanged,
+  } from "$lib/services/lsp/xml-sidecar";
   import { themeStore, getMonacoThemeName } from "$lib/stores/theme.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
@@ -229,6 +259,30 @@
             if (filepath && isSvelteFile(filepath)) {
               notifySvelteDocumentChanged(filepath, newValue);
             }
+
+            if (filepath && isHtmlFile(filepath)) {
+              notifyHtmlDocumentChanged(filepath, newValue);
+            }
+
+            if (filepath && isCssFile(filepath)) {
+              notifyCssDocumentChanged(filepath, newValue);
+            }
+
+            if (filepath && isJsonFile(filepath)) {
+              notifyJsonDocumentChanged(filepath, newValue);
+            }
+
+            if (filepath && isDartLspFile(filepath)) {
+              notifyDartDocumentChanged(filepath, newValue);
+            }
+
+            if (filepath && isYamlFile(filepath)) {
+              notifyYamlDocumentChanged(filepath, newValue);
+            }
+
+            if (filepath && isXmlFile(filepath)) {
+              notifyXmlDocumentChanged(filepath, newValue);
+            }
           }, 75);
         });
 
@@ -334,6 +388,36 @@
       // Notify Svelte LSP sidecar about the file being opened
       if (isSvelteFile(path)) {
         await notifySvelteDocumentOpened(path, value);
+      }
+
+      // Notify HTML LSP sidecar about the file being opened
+      if (isHtmlFile(path)) {
+        await notifyHtmlDocumentOpened(path, value);
+      }
+
+      // Notify CSS LSP sidecar about the file being opened
+      if (isCssFile(path)) {
+        await notifyCssDocumentOpened(path, value);
+      }
+
+      // Notify JSON LSP sidecar about the file being opened
+      if (isJsonFile(path)) {
+        await notifyJsonDocumentOpened(path, value);
+      }
+
+      // Notify Dart LSP sidecar about the file being opened
+      if (isDartLspFile(path)) {
+        await notifyDartDocumentOpened(path, value);
+      }
+
+      // Notify YAML LSP sidecar about the file being opened
+      if (isYamlFile(path)) {
+        await notifyYamlDocumentOpened(path, value);
+      }
+
+      // Notify XML LSP sidecar about the file being opened
+      if (isXmlFile(path)) {
+        await notifyXmlDocumentOpened(path, value);
       }
     })();
   });

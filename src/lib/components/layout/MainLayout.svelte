@@ -157,7 +157,6 @@
     // Handle window beforeunload to clean up services
     const handleBeforeUnload = () => {
       // Best-effort cleanup - browser may not wait for async
-      void terminalStore.killAll();
       void disposeLspRegistry();
       void mcpStore.cleanup();
       void browserStore.cleanup();
@@ -176,8 +175,8 @@
 
     return () => {
       destroyAutoSave();
-      // Kill all terminals on unmount
-      void terminalStore.killAll();
+      // Do not kill terminals on component unmount/reload.
+      // Backend handles terminal cleanup on actual window close.
       // Stop all LSP servers on unmount
       void disposeLspRegistry();
       // Cleanup browser

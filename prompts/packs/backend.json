@@ -1,0 +1,9 @@
+[
+  "backend/data-modeling-schema.md",
+  "backend/api-blueprint.md",
+  "backend/background-job-architecture.md",
+  "backend/caching-strategy-rollout.md",
+  "security/auth-hardening.md",
+  "quality/contract-testing-suite.md"
+]
+

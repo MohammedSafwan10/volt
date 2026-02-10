@@ -1,0 +1,14 @@
+[
+  "ui-ux/ui-ux-upgrade.md",
+  "ui-ux/ux-audit-fix-plan.md",
+  "performance/performance-optimization.md",
+  "debugging/root-cause-debugging.md",
+  "code-quality/refactor-readability.md",
+  "planning/feature-spec-generator.md",
+  "planning/agent-build-plan.md",
+  "backend/data-modeling-schema.md",
+  "backend/api-blueprint.md",
+  "security/security-quick-audit.md",
+  "quality/test-plan-cases.md"
+]
+

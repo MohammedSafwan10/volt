@@ -381,6 +381,29 @@ pub async fn chat_update_title<R: Runtime>(
     Ok(())
 }
 
+/// Update conversation mode (ask/plan/agent)
+#[tauri::command]
+pub async fn chat_update_mode<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, ChatHistoryState>,
+    conversation_id: String,
+    mode: String,
+) -> Result<(), String> {
+    ensure_db(&app, &state)?;
+
+    let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let conn = db_guard.as_ref().ok_or("Database not initialized")?;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    conn.execute(
+        "UPDATE conversations SET mode = ?1, updated_at = ?2 WHERE id = ?3",
+        params![mode, now, conversation_id],
+    )
+    .map_err(|e| format!("Failed to update mode: {}", e))?;
+
+    Ok(())
+}
+
 /// Toggle pin status
 #[tauri::command]
 pub async fn chat_toggle_pin<R: Runtime>(

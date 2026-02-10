@@ -18,7 +18,7 @@ use cdp::commands::{
 use chat_history::{
     chat_clear_all, chat_create_conversation, chat_delete_conversation, chat_get_conversation,
     chat_list_conversations, chat_save_message, chat_search_conversations, chat_toggle_pin,
-    chat_truncate_conversation, chat_update_title, ChatHistoryState,
+    chat_truncate_conversation, chat_update_mode, chat_update_title, ChatHistoryState,
 };
 use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
 use commands::browser::{
@@ -97,6 +97,7 @@ pub fn run() {
             chat_get_conversation,
             chat_save_message,
             chat_update_title,
+            chat_update_mode,
             chat_toggle_pin,
             chat_delete_conversation,
             chat_search_conversations,

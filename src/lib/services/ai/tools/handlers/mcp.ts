@@ -102,6 +102,66 @@ export function parseMcpToolName(toolName: string): { serverId: string; toolName
   return { serverId, toolName: actualToolName };
 }
 
+function toSnakeCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
+}
+
+function toCamelCase(value: string): string {
+  const normalized = value.replace(/[-\s]+/g, '_');
+  return normalized.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+function getMcpToolSchema(serverId: string, toolName: string): {
+  required: string[];
+  properties: Record<string, unknown>;
+} {
+  const entry = mcpStore.tools.find((t) => t.serverId === serverId && t.tool.name === toolName);
+  const inputSchema = (entry?.tool.inputSchema ?? {}) as Record<string, unknown>;
+  const required = Array.isArray(inputSchema.required)
+    ? inputSchema.required.filter((x): x is string => typeof x === 'string')
+    : [];
+  const properties =
+    inputSchema.properties && typeof inputSchema.properties === 'object'
+      ? (inputSchema.properties as Record<string, unknown>)
+      : {};
+  return { required, properties };
+}
+
+function normalizeMcpArgsToSchema(
+  args: Record<string, unknown>,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...args };
+
+  for (const schemaKey of Object.keys(properties)) {
+    if (out[schemaKey] !== undefined) continue;
+
+    const snake = toSnakeCase(schemaKey);
+    const camel = toCamelCase(schemaKey);
+    const kebab = schemaKey.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+
+    const candidates = [snake, camel, kebab];
+    for (const c of candidates) {
+      if (out[c] !== undefined) {
+        out[schemaKey] = out[c];
+        break;
+      }
+    }
+  }
+
+  return out;
+}
+
+function validateRequiredArgs(
+  required: string[],
+  args: Record<string, unknown>
+): string[] {
+  return required.filter((key) => args[key] === undefined || args[key] === null || args[key] === '');
+}
+
 /**
  * Execute an MCP tool
  */
@@ -118,9 +178,22 @@ export async function executeMcpTool(
   }
 
   const { serverId, toolName: actualToolName } = parsed;
+  const { required, properties } = getMcpToolSchema(serverId, actualToolName);
+  const normalizedArgs = normalizeMcpArgsToSchema(args, properties);
+  const missingRequired = validateRequiredArgs(required, normalizedArgs);
+
+  if (missingRequired.length > 0) {
+    const providedKeys = Object.keys(args);
+    const requiredText = required.length > 0 ? required.join(', ') : '(none)';
+    const missingText = missingRequired.join(', ');
+    return {
+      success: false,
+      output: `MCP validation failed for ${serverId}/${actualToolName}: missing required argument(s): ${missingText}. Required: ${requiredText}. Provided keys: ${providedKeys.length > 0 ? providedKeys.join(', ') : '(none)'}`,
+    };
+  }
 
   try {
-    const result = await mcpStore.callTool(serverId, actualToolName, args);
+    const result = await mcpStore.callTool(serverId, actualToolName, normalizedArgs);
     
     // Format result for AI
     let output: string;

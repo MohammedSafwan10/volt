@@ -272,6 +272,14 @@ pub async fn start_file_watch(
                 let mut abs_paths: Vec<String> = Vec::new();
 
                 for path in &ev.paths {
+                    let rel = get_relative_path(path, &root_for_handler);
+                    let is_top_level = !rel.contains('/');
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default();
+                    let is_ignored_name = IGNORE_PATTERNS.iter().any(|p| *p == name);
+
                     // Resolve symlinks to get the actual target path
                     // This ensures we track the real file, not just the link
                     let resolved_path = if is_symlink(path) {
@@ -279,12 +287,6 @@ pub async fn start_file_watch(
                     } else {
                         path.to_path_buf()
                     };
-
-                    if should_ignore_path(&resolved_path) {
-                        rel_paths.clear();
-                        abs_paths.clear();
-                        break;
-                    }
 
                     // Check if it's a directory (using resolved path for symlinks)
                     let is_dir = if resolved_path.exists() {
@@ -295,7 +297,20 @@ pub async fn start_file_watch(
                     };
 
                     if is_dir {
+                        // Emit top-level dependency cache dir changes (e.g. node_modules create/delete)
+                        // so frontend can refresh tree once, without watching all nested files.
+                        if is_top_level && is_ignored_name {
+                            abs_paths.push(strip_windows_prefix(&path.to_string_lossy()));
+                            rel_paths.push(rel);
+                            continue;
+                        }
                         // Skip directory events.
+                        rel_paths.clear();
+                        abs_paths.clear();
+                        break;
+                    }
+
+                    if should_ignore_path(&resolved_path) {
                         rel_paths.clear();
                         abs_paths.clear();
                         break;
@@ -304,7 +319,7 @@ pub async fn start_file_watch(
                     // Use the original path for relative path calculation (preserves symlink names)
                     // but use resolved path for absolute path (points to actual file)
                     abs_paths.push(strip_windows_prefix(&path.to_string_lossy()));
-                    rel_paths.push(get_relative_path(path, &root_for_handler));
+                    rel_paths.push(rel);
                 }
 
                 if rel_paths.is_empty() || abs_paths.is_empty() {

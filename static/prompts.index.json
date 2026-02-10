@@ -1,0 +1,352 @@
+[
+  {
+    "id": "builtin-accessibility-upgrade-v2",
+    "title": "Accessibility Upgrade (WCAG)",
+    "category": "UI/UX",
+    "description": "Find and fix accessibility issues with keyboard, semantics, contrast, and focus.",
+    "tags": [
+      "a11y",
+      "wcag",
+      "keyboard",
+      "semantics"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Perform an accessibility upgrade for {{scope}}.\n\nChecklist:\n- Keyboard navigation and visible focus\n- Semantic structure and labels\n- Contrast and text readability\n- Error messaging and assistive announcements\n- Reduced-motion safe behavior\n\nImplement the highest-severity issues now.\n\nReturn:\n- Issues by severity\n- Fixes with file references\n- Verification checklist"
+  },
+  {
+    "id": "builtin-agent-build-plan-v2",
+    "title": "Agent Build Plan",
+    "category": "Planning",
+    "description": "Create a stepwise implementation plan and execute step 1 immediately.",
+    "tags": [
+      "agent",
+      "implementation",
+      "planning",
+      "execution"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Build a plan for {{goal}} and execute Step 1 now.\n\nRequirements:\n1. Break work into 5-10 concrete steps.\n2. Each step must include verification criteria.\n3. Keep changes incremental and reversible.\n4. Execute Step 1 after plan creation.\n\nOutput:\n- Checklist plan\n- Step 1 implementation details\n- Verification notes"
+  },
+  {
+    "id": "builtin-api-blueprint-v2",
+    "title": "API Blueprint",
+    "category": "Backend",
+    "description": "Define endpoint contracts, validation, auth, and error taxonomy.",
+    "tags": [
+      "api",
+      "backend",
+      "contract",
+      "architecture"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Design API blueprint for {{feature_or_domain}}.\n\nInclude:\n- Endpoint table (method/path/purpose)\n- Request/response schemas\n- Validation and authorization checks\n- Error model (codes/messages/retryability)\n- Versioning and backward compatibility strategy"
+  },
+  {
+    "id": "builtin-auth-hardening",
+    "title": "Auth Hardening Checklist",
+    "category": "Security",
+    "description": "Strengthen authentication and session controls with practical fixes.",
+    "tags": [
+      "auth",
+      "security",
+      "session",
+      "access-control"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Harden auth/session logic for {{system}}.\n\nChecklist:\n- Session lifecycle and revocation\n- Token handling and rotation\n- Authorization boundary checks\n- Account recovery and lockout policy\n- Abuse protection for auth endpoints\n\nApply high-impact fixes and report residual risks."
+  },
+  {
+    "id": "builtin-background-job-architecture",
+    "title": "Background Job Architecture",
+    "category": "Backend",
+    "description": "Design reliable async job pipeline with retries, idempotency, and observability.",
+    "tags": [
+      "jobs",
+      "queues",
+      "backend",
+      "reliability"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Design background processing for {{workload}}.\n\nMust cover:\n- Queue model and worker topology\n- Idempotency and deduplication\n- Retry/backoff + dead-letter policy\n- Failure handling and replay strategy\n- Metrics and alerting"
+  },
+  {
+    "id": "builtin-contract-testing-suite",
+    "title": "Contract Testing Suite",
+    "category": "Quality",
+    "description": "Define and implement API contract tests to prevent provider/consumer drift.",
+    "tags": [
+      "contract-testing",
+      "api",
+      "integration",
+      "quality"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Create contract tests for {{api_boundary}}.\n\nDo:\n1. Define provider/consumer contract assumptions.\n2. Add test fixtures and schema checks.\n3. Implement CI checks for backward compatibility.\n4. Report breaking-change risk points."
+  },
+  {
+    "id": "builtin-conversion-copy-v2",
+    "title": "Conversion Copy + Implementation",
+    "category": "Marketing",
+    "description": "Rewrite key landing/flow copy for conversion and apply directly in UI.",
+    "tags": [
+      "copywriting",
+      "conversion",
+      "marketing",
+      "ui"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Improve conversion copy for {{page_or_flow}} targeting {{audience}}.\n\nDeliver:\n- Revised headline/subheadline/CTA\n- Objection-handling sections\n- Clear benefit-first messaging\n- Apply copy in code files\n\nReturn before/after copy and rationale."
+  },
+  {
+    "id": "builtin-data-modeling-schema-v2",
+    "title": "Data Modeling + Schema",
+    "category": "Backend",
+    "description": "Design entity model, constraints, and seed data with migration notes.",
+    "tags": [
+      "database",
+      "schema",
+      "backend",
+      "modeling"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Design a robust data model for {{domain}}.\n\nDeliver:\n- Entities and relationships\n- SQL schema or ORM definitions\n- Constraints and indexes\n- Seed data for local/dev\n- Migration strategy and risks"
+  },
+  {
+    "id": "builtin-design-system-starter-v2",
+    "title": "Design System Starter",
+    "category": "UI/UX",
+    "description": "Establish design tokens + core components and apply to key screens.",
+    "tags": [
+      "design-system",
+      "tokens",
+      "components",
+      "consistency"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Create a practical design system starter for {{product_name}}.\n\nInclude:\n- Tokens: color, typography, spacing, radius, elevation, motion.\n- Components: button, input, card, badge, alert, modal.\n- Usage rules and anti-patterns.\n- Apply system to {{apply_scope}}.\n\nOutput:\n- Token table\n- Component contract\n- Files changed and migration notes"
+  },
+  {
+    "id": "builtin-feature-spec-generator-v2",
+    "title": "Feature Spec Generator",
+    "category": "Planning",
+    "description": "Generate practical PRD with stories, acceptance criteria, and rollout plan.",
+    "tags": [
+      "prd",
+      "planning",
+      "product",
+      "specification"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Create a feature specification for {{feature_name}}.\n\nInclude:\n- Problem statement and goals\n- Personas and use cases\n- User stories + acceptance criteria\n- Edge cases and failure states\n- Release/rollout approach\n\nReturn as clean markdown ready for execution."
+  },
+  {
+    "id": "builtin-flaky-bug-isolation",
+    "title": "Flaky Bug Isolation",
+    "category": "Debugging",
+    "description": "Isolate nondeterministic failures and stabilize with deterministic checks.",
+    "tags": [
+      "flaky",
+      "race-condition",
+      "debugging",
+      "reliability"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Investigate flaky behavior: {{flaky_issue}}.\n\nDo:\n1. Build a deterministic repro harness.\n2. Identify timing, shared-state, or async ordering hazards.\n3. Add instrumentation logs/guards.\n4. Implement stabilization fix.\n5. Add regression test to lock behavior."
+  },
+  {
+    "id": "builtin-frontend-lcp-interaction",
+    "title": "Frontend LCP + Interaction Tuning",
+    "category": "Performance",
+    "description": "Improve Core Web Vitals and interaction smoothness with concrete frontend changes.",
+    "tags": [
+      "frontend",
+      "web-vitals",
+      "lcp",
+      "inp",
+      "cls"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Improve frontend performance for {{page_or_flow}}.\n\nFocus:\n- Largest Contentful Paint (LCP)\n- Interaction latency (INP)\n- Cumulative layout shift (CLS)\n\nDo:\n1. Identify render-blocking and heavy components.\n2. Optimize asset loading and code-splitting.\n3. Reduce layout shifts and unnecessary re-renders.\n4. Validate with measurable metrics."
+  },
+  {
+    "id": "builtin-landing-page-experiment-pack",
+    "title": "Landing Page Experiment Pack",
+    "category": "Marketing",
+    "description": "Create practical A/B experiments for headline, CTA, and section ordering.",
+    "tags": [
+      "ab-testing",
+      "conversion",
+      "landing-page",
+      "experiments"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Build an experiment pack for {{landing_page}}.\n\nNeed:\n- 5 A/B test hypotheses\n- Variant copy + visual direction for each\n- Success metric and guardrails\n- Implementation notes for tracking events"
+  },
+  {
+    "id": "builtin-migration-plan-generator",
+    "title": "Migration Plan Generator",
+    "category": "Planning",
+    "description": "Build low-risk migration plan with checkpoints, fallbacks, and validation.",
+    "tags": [
+      "migration",
+      "planning",
+      "rollout",
+      "risk"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Create a migration plan for {{from_system}} -> {{to_system}}.\n\nPlan must include:\n- Preconditions and assumptions\n- Incremental phases\n- Data and compatibility strategy\n- Rollback and fallback path\n- Verification per phase"
+  },
+  {
+    "id": "builtin-onboarding-activation-flow",
+    "title": "Onboarding + Activation Flow",
+    "category": "UI/UX",
+    "description": "Optimize onboarding flow to reduce drop-off and reach first-value quickly.",
+    "tags": [
+      "onboarding",
+      "activation",
+      "conversion",
+      "product"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Redesign onboarding for {{product_or_feature}} to improve activation.\n\nGoals:\n- Reduce friction in first-run experience.\n- Help users reach first success in under {{target_minutes}} minutes.\n- Clarify next actions after setup.\n\nDeliver:\n1. Current friction map.\n2. Improved flow with UX copy updates.\n3. Implement key UI changes.\n4. Define activation metrics/events."
+  },
+  {
+    "id": "builtin-performance-optimization-v2",
+    "title": "Performance Optimization",
+    "category": "Performance",
+    "description": "Identify bottlenecks, implement top fix, and report measurable results.",
+    "tags": [
+      "performance",
+      "profiling",
+      "optimization"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Optimize {{target_area}} performance end-to-end.\n\nSteps:\n1. Capture baseline metrics (render, CPU, network, memory, startup).\n2. Identify top 3 bottlenecks.\n3. Implement highest-impact fix first.\n4. Re-measure and compare before/after.\n\nOutput:\n- Baseline table\n- Bottleneck ranking\n- Implemented fix\n- Before/after metrics"
+  },
+  {
+    "id": "builtin-refactor-readability-v2",
+    "title": "Refactor for Readability",
+    "category": "Code Quality",
+    "description": "Improve structure and naming while preserving behavior.",
+    "tags": [
+      "refactor",
+      "readability",
+      "maintainability"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Refactor {{scope}} for readability and maintainability.\n\nRules:\n- No behavior change.\n- Improve naming and decomposition.\n- Remove duplication safely.\n- Keep public interfaces stable unless justified.\n\nReturn:\n- Refactor plan\n- Changes made\n- Risk notes\n- Behavior checks"
+  },
+  {
+    "id": "builtin-root-cause-debugging-v2",
+    "title": "Root-Cause Debugging",
+    "category": "Debugging",
+    "description": "Reproduce issue, isolate root cause, and implement a regression-safe fix.",
+    "tags": [
+      "debugging",
+      "bugfix",
+      "rca"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Debug and fix: {{bug_description}}.\n\nWorkflow:\n1. Reproduce reliably.\n2. Trace call/data flow to root cause.\n3. Explain why the bug occurs.\n4. Implement minimal safe fix.\n5. Add/adjust tests to prevent recurrence.\n\nReturn:\n- Repro\n- Root cause\n- Fix\n- Verification"
+  },
+  {
+    "id": "builtin-security-quick-audit-v2",
+    "title": "Security Quick Audit",
+    "category": "Security",
+    "description": "Identify critical risks and implement highest-priority security fixes.",
+    "tags": [
+      "security",
+      "audit",
+      "hardening"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Run a security quick audit for {{scope}}.\n\nFocus:\n- Input validation/injection\n- Auth/session correctness\n- Secret exposure risks\n- File/command execution safety\n- Dependency and supply chain risk\n\nImplement top critical findings first."
+  },
+  {
+    "id": "builtin-test-plan-cases-v2",
+    "title": "Test Plan + Cases",
+    "category": "Quality",
+    "description": "Build prioritized unit/integration/manual test plan and implement top tests.",
+    "tags": [
+      "testing",
+      "quality",
+      "qa",
+      "coverage"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Create a test strategy for {{feature_or_system}}.\n\nInclude:\n- Unit tests for critical logic\n- Integration tests for key flows\n- Manual checklist for UX and edge cases\n- Regression matrix\n\nImplement the top missing tests now."
+  },
+  {
+    "id": "builtin-ui-ux-upgrade-v2",
+    "title": "UI/UX Upgrade (Premium SaaS Polish)",
+    "category": "UI/UX",
+    "description": "Upgrade interface quality with concrete polish tasks and production-safe implementation.",
+    "tags": [
+      "ui",
+      "ux",
+      "frontend",
+      "polish",
+      "saas"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Upgrade {{surface}} to premium SaaS quality without breaking behavior.\n\nRequirements:\n1. Audit current UI and identify top 7 visual/interaction quality issues.\n2. Pick top 3 highest-impact fixes and implement them.\n3. Improve spacing rhythm, hierarchy, and action clarity.\n4. Ensure desktop + mobile responsiveness.\n5. Keep accessibility and performance intact.\n\nOutput:\n- Audit findings (ranked)\n- What changed and why\n- Files touched\n- Quick before/after summary"
+  },
+  {
+    "id": "builtin-ux-audit-fix-plan-v2",
+    "title": "UX Audit + Fix Plan",
+    "category": "UI/UX",
+    "description": "Deep UX audit with prioritized fixes and immediate implementation of top issues.",
+    "tags": [
+      "ux",
+      "audit",
+      "prioritization",
+      "usability"
+    ],
+    "author": "Volt Team",
+    "source": "builtin",
+    "updatedAt": 1739160000000,
+    "template": "Run a UX audit for {{feature_or_page}} and implement improvements.\n\nDo:\n1. Find top 10 UX issues (clarity, navigation, feedback, friction, recoverability).\n2. Rank by impact x effort.\n3. Implement top {{top_n}} fixes immediately.\n4. Add verification notes for each fix.\n\nReturn:\n- Ranked issue table\n- Implemented fixes\n- Remaining backlog"
+  }
+]

@@ -2,22 +2,24 @@
   /**
    * MCP Panel - Shows connected MCP servers and their tools
    */
-  import { UIIcon } from '$lib/components/ui';
-  import { mcpStore, type McpServerState } from '$lib/stores/mcp.svelte';
-  import { editorStore } from '$lib/stores/editor.svelte';
-  import { assistantStore } from '$lib/stores/assistant.svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { onMount } from 'svelte';
+  import { UIIcon } from "$lib/components/ui";
+  import { mcpStore, type McpServerState } from "$lib/stores/mcp.svelte";
+  import { editorStore } from "$lib/stores/editor.svelte";
+  import { assistantStore } from "$lib/stores/assistant.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
 
   let expandedServers = $state<Set<string>>(new Set());
-  let configPath = $state<string>('~/.volt/settings/mcp.json');
+  let configPath = $state<string>("~/.volt/settings/mcp.json");
 
   // Get actual config path on mount and auto-open the config file
   onMount(async () => {
     try {
-      const path = await invoke<string>('get_mcp_config_path');
-      configPath = path.replace(/^[A-Z]:\\Users\\[^\\]+/i, '~').replace(/\\/g, '/');
-      
+      const path = await invoke<string>("get_mcp_config_path");
+      configPath = path
+        .replace(/^[A-Z]:\\Users\\[^\\]+/i, "~")
+        .replace(/\\/g, "/");
+
       // Auto-open mcp.json in editor when panel opens
       await editorStore.openFile(path);
     } catch {
@@ -38,9 +40,17 @@
 }`;
 
   // Group servers by status
-  const connectedServers = $derived(mcpStore.serverList.filter(s => s.status === 'connected'));
-  const connectingServers = $derived(mcpStore.serverList.filter(s => s.status === 'connecting'));
-  const otherServers = $derived(mcpStore.serverList.filter(s => s.status !== 'connected' && s.status !== 'connecting'));
+  const connectedServers = $derived(
+    mcpStore.serverList.filter((s) => s.status === "connected"),
+  );
+  const connectingServers = $derived(
+    mcpStore.serverList.filter((s) => s.status === "connecting"),
+  );
+  const otherServers = $derived(
+    mcpStore.serverList.filter(
+      (s) => s.status !== "connected" && s.status !== "connecting",
+    ),
+  );
 
   function toggleServer(serverId: string): void {
     if (expandedServers.has(serverId)) {
@@ -51,23 +61,35 @@
     expandedServers = new Set(expandedServers);
   }
 
-  function getStatusIcon(status: McpServerState['status']): 'check-circle' | 'spinner' | 'error' | 'circle' {
+  function getStatusIcon(
+    status: McpServerState["status"],
+  ): "check-circle" | "spinner" | "error" | "circle" {
     switch (status) {
-      case 'connected': return 'check-circle';
-      case 'connecting': return 'spinner';
-      case 'error': return 'error';
-      case 'stopped': return 'circle';
-      default: return 'circle';
+      case "connected":
+        return "check-circle";
+      case "connecting":
+        return "spinner";
+      case "error":
+        return "error";
+      case "stopped":
+        return "circle";
+      default:
+        return "circle";
     }
   }
 
-  function getStatusColor(status: McpServerState['status']): string {
+  function getStatusColor(status: McpServerState["status"]): string {
     switch (status) {
-      case 'connected': return 'var(--color-success)';
-      case 'connecting': return 'var(--color-accent)';
-      case 'error': return 'var(--color-error)';
-      case 'stopped': return 'var(--color-text-secondary)';
-      default: return 'var(--color-text-secondary)';
+      case "connected":
+        return "var(--color-success)";
+      case "connecting":
+        return "var(--color-accent)";
+      case "error":
+        return "var(--color-error)";
+      case "stopped":
+        return "var(--color-text-secondary)";
+      default:
+        return "var(--color-text-secondary)";
     }
   }
 
@@ -76,45 +98,52 @@
   }
 
   async function handleStopAll(): Promise<void> {
-    for (const server of connectedServers) {
-      await mcpStore.stopServer(server.id);
-    }
+    await Promise.allSettled(
+      connectedServers.map((server) => mcpStore.stopServer(server.id)),
+    );
   }
 
   async function handleStartAll(): Promise<void> {
-    for (const server of otherServers) {
-      mcpStore.startServer(server.id);
-    }
+    await Promise.allSettled(
+      otherServers.map((server) => mcpStore.startServer(server.id)),
+    );
   }
 
   async function handleAddServer(): Promise<void> {
     try {
-      const configPath = await invoke<string>('ensure_mcp_config', { 
-        defaultContent: DEFAULT_MCP_CONFIG 
+      const configPath = await invoke<string>("ensure_mcp_config", {
+        defaultContent: DEFAULT_MCP_CONFIG,
       });
       await editorStore.openFile(configPath);
     } catch (err) {
-      console.error('[MCP] Failed to open config:', err);
+      console.error("[MCP] Failed to open config:", err);
     }
   }
 
   async function handleOpenConfig(): Promise<void> {
     try {
-      const configPath = await invoke<string>('get_mcp_config_path');
+      const configPath = await invoke<string>("get_mcp_config_path");
       await editorStore.openFile(configPath);
     } catch (err) {
-      console.error('[MCP] Failed to open config:', err);
+      console.error("[MCP] Failed to open config:", err);
     }
   }
 
-  async function handleToggleEnabled(serverId: string, isCurrentlyActive: boolean): Promise<void> {
+  async function handleToggleEnabled(
+    serverId: string,
+    isCurrentlyActive: boolean,
+  ): Promise<void> {
     // Update UI immediately for instant feedback
     if (isCurrentlyActive) {
       // Immediately show as stopped
-      mcpStore.updateServerState(serverId, { status: 'stopped', tools: [], error: undefined });
+      mcpStore.updateServerState(serverId, {
+        status: "stopped",
+        tools: [],
+        error: undefined,
+      });
     } else {
       // Immediately show as connecting
-      mcpStore.updateServerState(serverId, { status: 'connecting' });
+      mcpStore.updateServerState(serverId, { status: "connecting" });
     }
 
     try {
@@ -125,56 +154,60 @@
         // Start the server (don't await - let it connect in background)
         mcpStore.startServer(serverId);
       }
-      
+
       // Update config file in background (fire and forget)
-      invoke<string>('read_mcp_config').then(configContent => {
-        const config = JSON.parse(configContent);
-        if (config.mcpServers?.[serverId]) {
-          if (isCurrentlyActive) {
-            // Disabling - set disabled: true
-            config.mcpServers[serverId].disabled = true;
-          } else {
-            // Enabling - remove disabled key (false is default)
-            delete config.mcpServers[serverId].disabled;
+      invoke<string>("read_mcp_config")
+        .then((configContent) => {
+          const config = JSON.parse(configContent);
+          if (config.mcpServers?.[serverId]) {
+            if (isCurrentlyActive) {
+              // Disabling - set disabled: true
+              config.mcpServers[serverId].disabled = true;
+            } else {
+              // Enabling - remove disabled key (false is default)
+              delete config.mcpServers[serverId].disabled;
+            }
+            invoke("write_mcp_config", {
+              content: JSON.stringify(config, null, 2),
+            });
           }
-          invoke('write_mcp_config', { content: JSON.stringify(config, null, 2) });
-        }
-      }).catch(() => {});
+        })
+        .catch(() => {});
     } catch (err) {
-      console.error('[MCP] Failed to toggle server:', err);
+      console.error("[MCP] Failed to toggle server:", err);
     }
   }
 </script>
 
 <div class="mcp-panel">
   <div class="panel-toolbar">
-    <button 
-      class="toolbar-btn" 
-      title="Add MCP Server" 
+    <button
+      class="toolbar-btn"
+      title="Add MCP Server"
       onclick={handleAddServer}
     >
       <UIIcon name="plus" size={14} />
     </button>
-    <button 
-      class="toolbar-btn" 
-      title="Reload servers" 
+    <button
+      class="toolbar-btn"
+      title="Reload servers"
       onclick={handleReload}
       disabled={mcpStore.loading}
     >
-      <UIIcon name={mcpStore.loading ? 'spinner' : 'refresh'} size={14} />
+      <UIIcon name={mcpStore.loading ? "spinner" : "refresh"} size={14} />
     </button>
-    <button 
-      class="toolbar-btn" 
-      title="Edit mcp.json" 
+    <button
+      class="toolbar-btn"
+      title="Edit mcp.json"
       onclick={handleOpenConfig}
     >
       <UIIcon name="settings" size={14} />
     </button>
     <div class="toolbar-spacer"></div>
     {#if connectedServers.length > 0}
-      <button 
-        class="toolbar-btn stop-all" 
-        title="Stop all servers" 
+      <button
+        class="toolbar-btn stop-all"
+        title="Stop all servers"
         onclick={handleStopAll}
       >
         <UIIcon name="stop" size={14} />
@@ -182,7 +215,11 @@
     {/if}
   </div>
 
-  <button class="config-path" onclick={handleOpenConfig} title="Open config file">
+  <button
+    class="config-path"
+    onclick={handleOpenConfig}
+    title="Open config file"
+  >
     <UIIcon name="file" size={12} />
     <span>{configPath}</span>
   </button>
@@ -192,7 +229,9 @@
       <div class="empty-state">
         <UIIcon name="plug" size={32} />
         <p class="empty-title">No MCP servers configured</p>
-        <p class="empty-desc">Add MCP servers to extend AI capabilities with external tools</p>
+        <p class="empty-desc">
+          Add MCP servers to extend AI capabilities with external tools
+        </p>
         <button class="add-btn" onclick={handleAddServer}>
           <UIIcon name="plus" size={14} />
           <span>Add Server</span>
@@ -239,7 +278,11 @@
             <span class="group-title">Disconnected</span>
             <span class="group-count">{otherServers.length}</span>
             {#if otherServers.length > 1}
-              <button class="group-action" onclick={handleStartAll} title="Start all">
+              <button
+                class="group-action"
+                onclick={handleStartAll}
+                title="Start all"
+              >
                 <UIIcon name="play" size={10} />
               </button>
             {/if}
@@ -263,36 +306,47 @@
 
 {#snippet serverItem(server: McpServerState)}
   <div class="server-item" class:expanded={expandedServers.has(server.id)}>
-    <div 
-      class="server-header" 
+    <div
+      class="server-header"
       role="button"
       tabindex="0"
       onclick={() => toggleServer(server.id)}
-      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleServer(server.id); } }}
+      onkeydown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleServer(server.id);
+        }
+      }}
     >
       <span class="expand-icon" class:expanded={expandedServers.has(server.id)}>
         <UIIcon name="chevron-right" size={12} />
       </span>
-      
+
       <span class="status-icon" style="color: {getStatusColor(server.status)}">
         <UIIcon name={getStatusIcon(server.status)} size={14} />
       </span>
-      
+
       <span class="server-name">{server.name}</span>
-      
-      {#if server.status === 'connected'}
+
+      {#if server.status === "connected"}
         <span class="tool-count">{server.tools.length} tools</span>
       {/if}
-      
+
       <span class="server-actions">
         <!-- Toggle switch -->
-        <button 
+        <button
           class="toggle-btn"
-          class:active={server.status === 'connected' || server.status === 'connecting'}
-          title={server.status === 'connected' || server.status === 'connecting' ? 'Disable' : 'Enable'}
-          onclick={(e) => { 
-            e.stopPropagation(); 
-            handleToggleEnabled(server.id, server.status === 'connected' || server.status === 'connecting'); 
+          class:active={server.status === "connected" ||
+            server.status === "connecting"}
+          title={server.status === "connected" || server.status === "connecting"
+            ? "Disable"
+            : "Enable"}
+          onclick={(e) => {
+            e.stopPropagation();
+            handleToggleEnabled(
+              server.id,
+              server.status === "connected" || server.status === "connecting",
+            );
           }}
         >
           <span class="toggle-track">
@@ -308,8 +362,8 @@
           <div class="error-message">
             <UIIcon name="error" size={12} />
             <span>{server.error}</span>
-            <button 
-              class="fix-error-btn" 
+            <button
+              class="fix-error-btn"
               title="Fix with Volt"
               onclick={(e) => {
                 e.stopPropagation();
@@ -332,13 +386,15 @@
                 <span class="tool-name">{tool.name}</span>
                 {#if tool.description}
                   <span class="tool-desc" title={tool.description}>
-                    {tool.description.slice(0, 50)}{tool.description.length > 50 ? '...' : ''}
+                    {tool.description.slice(0, 50)}{tool.description.length > 50
+                      ? "..."
+                      : ""}
                   </span>
                 {/if}
               </div>
             {/each}
           </div>
-        {:else if server.status === 'connected'}
+        {:else if server.status === "connected"}
           <div class="no-tools">No tools available</div>
         {/if}
       </div>
@@ -428,8 +484,12 @@
   }
 
   @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .panel-content {
@@ -522,8 +582,13 @@
   }
 
   @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   .group-title {

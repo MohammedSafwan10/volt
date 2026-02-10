@@ -18,6 +18,7 @@
 import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
 import { problemsStore, type Problem, type ProblemSeverity } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * Get the detected package manager from projectStore
@@ -35,6 +36,18 @@ function normalizeFilePath(filepath: string): string {
 let eslintServerTransport: LspTransport | null = null;
 let eslintServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+
+interface LspStartErrorLike {
+  type?: string;
+}
+
+function isServerAlreadyRunningError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      (error as LspStartErrorLike).type === 'ServerAlreadyRunning'
+  );
+}
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -221,10 +234,23 @@ async function initializeServer(): Promise<void> {
       const registry = getLspRegistry();
 
       // Start the ESLint server
-      eslintServerTransport = await registry.startServer('eslint', {
-        serverId: 'eslint-main',
-        cwd: projectStore.rootPath ?? undefined
-      });
+      try {
+        eslintServerTransport = await registry.startServer('eslint', {
+          serverId: 'eslint-main',
+          cwd: projectStore.rootPath ?? undefined
+        });
+      } catch (error) {
+        if (isServerAlreadyRunningError(error)) {
+          console.warn('[ESLint LSP] Recovering from stale server state (ServerAlreadyRunning)');
+          await invoke('lsp_stop_server', { serverId: 'eslint-main' });
+          eslintServerTransport = await registry.startServer('eslint', {
+            serverId: 'eslint-main',
+            cwd: projectStore.rootPath ?? undefined
+          });
+        } else {
+          throw error;
+        }
+      }
 
       // Set up message handler
       eslintServerTransport.onMessage(handleLspMessage);

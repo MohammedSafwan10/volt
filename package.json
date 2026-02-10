@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "prompts:build": "node scripts/build-prompts-index.mjs",
     "cleanup": "node scripts/cleanup-before-dev.mjs",
     "sidecars:node": "node scripts/prepare-node-sidecar.mjs",
     "dev:with-sidecars": "npm run cleanup && npm run sidecars:node && vite dev",

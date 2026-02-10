@@ -159,27 +159,6 @@ class BrowserStore {
     if (this.isOpen) return;
 
     let url = initialUrl || this.url || 'https://www.google.com';
-    
-    // Safety: If URL is localhost and might not be running, use a safe default
-    // This prevents crashes when webview tries to load a dead server on startup
-    if (url.includes('localhost') || url.includes('127.0.0.1')) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-        
-        await fetch(url, { 
-          method: 'HEAD', 
-          signal: controller.signal,
-          mode: 'no-cors'
-        });
-        
-        clearTimeout(timeoutId);
-      } catch {
-        // Server not responding - use safe default to prevent crash
-        console.warn('[Browser] localhost not responding, using safe default URL');
-        url = 'https://www.google.com';
-      }
-    }
 
     this.isOpen = true;
     this.isVisible = true;

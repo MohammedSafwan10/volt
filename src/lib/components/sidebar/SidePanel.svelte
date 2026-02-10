@@ -8,12 +8,32 @@
   import { GitPanel } from '$lib/components/git';
   import SettingsPanel from './SettingsPanel.svelte';
   import McpPanel from '$lib/components/mcp/McpPanel.svelte';
+  import PromptLibraryPanel from './PromptLibraryPanel.svelte';
 
   interface Props {
     onFileSelect?: (path: string) => void;
   }
 
   let { onFileSelect }: Props = $props();
+
+  const PROMPTS_DEFAULT_WIDTH = 520;
+  const PROMPTS_MIN_WIDTH = 360;
+  const PROMPTS_MAX_WIDTH = 760;
+  const DEFAULT_MIN_WIDTH = 150;
+  const DEFAULT_MAX_WIDTH = 500;
+
+  const resizeMin = $derived(
+    uiStore.activeSidebarPanel === 'prompts' ? PROMPTS_MIN_WIDTH : DEFAULT_MIN_WIDTH
+  );
+  const resizeMax = $derived(
+    uiStore.activeSidebarPanel === 'prompts' ? PROMPTS_MAX_WIDTH : DEFAULT_MAX_WIDTH
+  );
+
+  $effect(() => {
+    if (uiStore.activeSidebarPanel === 'prompts' && uiStore.sidebarWidth < PROMPTS_DEFAULT_WIDTH) {
+      uiStore.setSidebarWidth(PROMPTS_DEFAULT_WIDTH);
+    }
+  });
 
   function getPanelTitle(): string {
     switch (uiStore.activeSidebarPanel) {
@@ -29,6 +49,8 @@
         return 'SETTINGS';
       case 'mcp':
         return 'MCP SERVERS';
+      case 'prompts':
+        return 'PROMPT LIBRARY';
       default:
         return '';
     }
@@ -71,6 +93,8 @@
         <SettingsPanel />
       {:else if uiStore.activeSidebarPanel === 'mcp'}
         <McpPanel />
+      {:else if uiStore.activeSidebarPanel === 'prompts'}
+        <PromptLibraryPanel />
       {/if}
     </div>
   </div>
@@ -78,8 +102,8 @@
   <ResizablePanel
     direction="horizontal"
     size={uiStore.sidebarWidth}
-    minSize={150}
-    maxSize={500}
+    minSize={resizeMin}
+    maxSize={resizeMax}
     onResize={(width) => uiStore.setSidebarWidth(width)}
   />
 {/if}

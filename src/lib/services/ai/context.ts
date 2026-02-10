@@ -27,6 +27,7 @@ import { projectStore } from '$lib/stores/project.svelte';
 import { terminalStore } from '$lib/stores/terminal.svelte';
 import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
 import { activityStore } from '$lib/stores/activity.svelte';
+import { gitStore } from '$lib/stores/git.svelte';
 import { readFileQuiet } from '$lib/services/file-system';
 import { contextEventsStore } from '$lib/stores/context-events.svelte';
 
@@ -380,15 +381,21 @@ function resolveImports(content: string, currentPath: string, workspaceRoot: str
 
       let resolved: string;
 
+      // Helper: join path segments with the platform separator
+      const join = (...segments: string[]) => segments.join(sep).replace(/[/\\]+/g, sep);
+
       if (importPath.startsWith('$lib')) {
         // SvelteKit $lib alias
-        resolved = workspaceRoot + sep + 'src' + sep + 'lib' + importPath.slice(4).replace(/\//g, sep);
+        const rest = importPath.slice(4).replace(/\//g, sep);
+        resolved = join(workspaceRoot, 'src', 'lib') + rest;
       } else if (importPath.startsWith('@/')) {
         // Common @ alias (src/)
-        resolved = workspaceRoot + sep + 'src' + importPath.slice(2).replace(/\//g, sep);
+        const rest = importPath.slice(2).replace(/\//g, sep);
+        resolved = join(workspaceRoot, 'src') + sep + rest;
       } else {
         // Relative import
-        resolved = dir + importPath.replace(/\//g, sep);
+        const rest = importPath.replace(/\//g, sep);
+        resolved = join(dir, rest);
       }
 
       // Normalize path (remove ./ and resolve ..)
@@ -409,10 +416,30 @@ function resolveImports(content: string, currentPath: string, workspaceRoot: str
   return [...new Set(imports)];
 }
 
-/** Normalize file path */
+/** Normalize file path - handles Windows drive letters and UNC paths */
 function normalizePath(path: string): string {
+  // Detect the dominant separator
   const sep = path.includes('\\') ? '\\' : '/';
-  const parts = path.split(/[/\\]/);
+
+  // Normalize all separators to the dominant one first
+  const normalized = path.replace(/[/\\]/g, sep);
+
+  // Preserve Windows drive letter prefix (e.g., "C:")
+  let prefix = '';
+  let rest = normalized;
+
+  // Handle UNC paths: \\server\share
+  if (rest.startsWith(sep + sep)) {
+    prefix = sep + sep;
+    rest = rest.slice(2);
+  }
+  // Handle drive letter: C:\...
+  else if (/^[A-Za-z]:/.test(rest)) {
+    prefix = rest.slice(0, 2) + sep; // "C:\"
+    rest = rest.slice(rest[2] === sep ? 3 : 2);
+  }
+
+  const parts = rest.split(sep);
   const result: string[] = [];
 
   for (const part of parts) {
@@ -423,7 +450,7 @@ function normalizePath(path: string): string {
     }
   }
 
-  return result.join(sep);
+  return prefix + result.join(sep);
 }
 
 /** Check if path should be excluded */
@@ -890,11 +917,74 @@ function getProblemsContext(maxChars: number): string | undefined {
   return output.trim() || undefined;
 }
 
-/** Get git context (status, recent changes) */
-async function getGitContext(workspaceRoot: string, maxChars: number): Promise<string | undefined> {
-  // This would integrate with the git service
-  // For now, return undefined - can be enhanced later
-  return undefined;
+/** Get git context (status, recent changes) from the live gitStore */
+function getGitContext(workspaceRoot: string, maxChars: number): string | undefined {
+  // Use the live gitStore which already tracks git state reactively
+  if (!gitStore.isRepo || !gitStore.status) return undefined;
+
+  const status = gitStore.status;
+  let output = '';
+
+  // Branch info
+  if (status.branch) {
+    output += `Branch: ${status.branch}`;
+    if (status.upstream) {
+      output += ` → ${status.upstream}`;
+      if (status.ahead > 0 || status.behind > 0) {
+        const parts: string[] = [];
+        if (status.ahead > 0) parts.push(`${status.ahead} ahead`);
+        if (status.behind > 0) parts.push(`${status.behind} behind`);
+        output += ` (${parts.join(', ')})`;
+      }
+    }
+    output += '\n';
+  }
+
+  // Staged changes
+  if (status.staged.length > 0) {
+    output += `\nStaged (${status.staged.length}):\n`;
+    for (const file of status.staged.slice(0, 15)) {
+      output += `  + ${file.status} ${file.path}\n`;
+      if (output.length > maxChars) break;
+    }
+    if (status.staged.length > 15) {
+      output += `  ... and ${status.staged.length - 15} more\n`;
+    }
+  }
+
+  // Unstaged changes
+  if (status.unstaged.length > 0) {
+    output += `\nModified (${status.unstaged.length}):\n`;
+    for (const file of status.unstaged.slice(0, 15)) {
+      output += `  ~ ${file.status} ${file.path}\n`;
+      if (output.length > maxChars) break;
+    }
+    if (status.unstaged.length > 15) {
+      output += `  ... and ${status.unstaged.length - 15} more\n`;
+    }
+  }
+
+  // Untracked files
+  if (status.untracked.length > 0) {
+    output += `\nUntracked (${status.untracked.length}):\n`;
+    for (const file of status.untracked.slice(0, 10)) {
+      output += `  ? ${file.path}\n`;
+      if (output.length > maxChars) break;
+    }
+    if (status.untracked.length > 10) {
+      output += `  ... and ${status.untracked.length - 10} more\n`;
+    }
+  }
+
+  // Conflicts
+  if (status.conflicted.length > 0) {
+    output += `\n⚠️ CONFLICTS (${status.conflicted.length}):\n`;
+    for (const file of status.conflicted) {
+      output += `  !! ${file.path}\n`;
+    }
+  }
+
+  return output.trim() || undefined;
 }
 
 // ============================================================================
@@ -1078,12 +1168,14 @@ export async function getSmartContext(query: string = ''): Promise<SmartContext>
     }
   }
 
-  // 6. GIT CONTEXT (if needed)
-  if (intent.needsGit && workspaceRoot) {
-    contextEventsStore.addActivity('read', 'Checking git status...');
+  // 6. GIT CONTEXT (always include if there are changes, prioritize if user asks about git)
+  if (workspaceRoot) {
     const gitBudget = Math.floor(availableBudget * CONFIG.BUDGET.git);
-    const gitContext = await getGitContext(workspaceRoot, gitBudget);
+    const gitContext = getGitContext(workspaceRoot, gitBudget);
     if (gitContext) {
+      if (intent.needsGit) {
+        contextEventsStore.addActivity('read', 'Checking git status...');
+      }
       context.gitContext = gitContext;
       totalSize += gitContext.length;
     }

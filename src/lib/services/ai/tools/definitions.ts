@@ -105,6 +105,20 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
+  {
+    name: 'file_outline',
+    description: 'Get file structure outline (functions, classes, types with line ranges) without loading content. ~100x more token-efficient than read_code for understanding file layout.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path, e.g. "src/utils.ts"' }
+      },
+      required: ['path']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
 
   // ============================================
   // SEARCH TOOLS
@@ -142,7 +156,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'search_symbols',
-    description: 'Search for functions, classes, variables, types by name. Uses LSP for accurate results.',
+    description: 'Search for functions, classes, variables, and types by name.',
     parameters: {
       type: 'object',
       properties: {
@@ -255,6 +269,36 @@ Example: replace_lines(path, 10, 20, "new content") replaces lines 10-20 with ne
         force: { type: 'boolean', description: 'Force overwrite even if identical' }
       },
       required: ['path', 'start_line', 'end_line', 'content']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'multi_replace',
+    description: `Apply MULTIPLE non-contiguous edits to ONE file in a single call.
+Edits are applied bottom-to-top to preserve indices. Rejects overlapping edits.
+
+Use instead of calling str_replace multiple times on the same file.
+Example: multi_replace(path, [{oldStr: "foo", newStr: "bar"}, {oldStr: "baz", newStr: "qux"}])`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path' },
+        edits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              oldStr: { type: 'string', description: 'Exact text to find' },
+              newStr: { type: 'string', description: 'Replacement text' }
+            },
+            required: ['oldStr', 'newStr']
+          },
+          description: 'Array of {oldStr, newStr} edits (max 50)'
+        }
+      },
+      required: ['path', 'edits']
     },
     category: 'file_write',
     requiresApproval: false,
@@ -414,6 +458,25 @@ After starting, use "get_process_output" to check status.`,
     allowedModes: ['agent']
   },
   {
+    name: 'command_status',
+    description: `Poll a background process for status and new output. Supports optional wait (blocks until new output or exit) and incremental reads via offset.
+
+Better than get_process_output for monitoring: waits for new output instead of returning stale data.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        processId: { type: 'number', description: 'Process ID from start_process' },
+        wait: { type: 'number', description: 'Seconds to wait for new output (0-60, default: 0)' },
+        since: { type: 'number', description: 'Read output from this offset (for incremental reads)' },
+        maxLines: { type: 'number', description: 'Max lines to return (default: 200)' }
+      },
+      required: ['processId']
+    },
+    category: 'terminal',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
     name: 'read_terminal',
     description: 'Read recent output from the AI terminal session.',
     parameters: {
@@ -442,127 +505,8 @@ After starting, use "get_process_output" to check status.`,
     allowedModes: ['agent']
   },
 
-  // ============================================
-  // LSP CODE INTELLIGENCE (Semantic, not text-based!)
-  // Supports: TypeScript, JavaScript, Svelte, HTML, CSS, JSON, Dart
-  // ============================================
-  {
-    name: 'lsp_go_to_definition',
-    description: `Jump to where a symbol is defined. BETTER than text search - understands imports/aliases.
-
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .dart
-
-Use when: "Where is X defined?", "Go to definition of Y"
-
-Can use EITHER:
-- symbol: Just pass the symbol name, tool finds it automatically
-- line + column: Exact position (1-based)
-
-Returns: File path, line, and surrounding code context.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File containing the symbol reference' },
-        symbol: { type: 'string', description: 'Symbol name to find (e.g. "handleSubmit")' },
-        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
-        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' }
-      },
-      required: ['path']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'lsp_find_references',
-    description: `Find ALL usages of a symbol across the project. BETTER than text search - finds renamed imports, aliases, etc.
-
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .dart
-
-Use when: "What uses X?", "Find all references to Y", "Who calls this function?"
-
-Can use EITHER:
-- symbol: Just pass the symbol name, tool finds it automatically
-- line + column: Exact position (1-based)
-
-Returns: List of all files and lines that reference the symbol.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File containing the symbol' },
-        symbol: { type: 'string', description: 'Symbol name to find (e.g. "UserService")' },
-        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
-        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' },
-        include_declaration: { type: 'boolean', description: 'Include the definition itself (default: true)' }
-      },
-      required: ['path']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'lsp_get_hover',
-    description: `Get type information and documentation for a symbol. Shows inferred types, function signatures, JSDoc/DartDoc.
-
-Supported: .ts, .tsx, .js, .jsx, .svelte, .html, .css, .scss, .less, .json, .dart
-
-Use when: "What type is X?", "What are the parameters?", "Show signature"
-
-Can use EITHER:
-- symbol: Just pass the symbol name, tool finds it automatically
-- line + column: Exact position (1-based)
-
-Returns: Type signature, documentation, and JSDoc comments.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File path' },
-        symbol: { type: 'string', description: 'Symbol name to find (e.g. "handleSubmit")' },
-        line: { type: 'number', description: 'Line number (1-based) - optional if symbol provided' },
-        column: { type: 'number', description: 'Column number (1-based) - optional if symbol provided' }
-      },
-      required: ['path']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'lsp_rename_symbol',
-    description: `Rename a symbol across ALL files atomically. MUCH safer than str_replace - won't break strings/comments.
-
-Supported: .ts, .tsx, .js, .jsx, .mts, .cts, .mjs, .cjs, .dart (TypeScript/JavaScript and Dart)
-
-Use when: "Rename X to Y", "Refactor name of Z"
-
-Can use EITHER:
-- old_name: Just pass the current name, tool finds it automatically  
-- line + column: Exact position (1-based)
-
-ALWAYS use this instead of str_replace for renaming! It:
-- Updates all import statements
-- Updates all usage sites
-- Preserves strings and comments
-- Handles re-exports correctly`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'File containing the symbol to rename' },
-        old_name: { type: 'string', description: 'Current name of the symbol (e.g. "userId")' },
-        new_name: { type: 'string', description: 'New name for the symbol (e.g. "memberId")' },
-        line: { type: 'number', description: 'Line number (1-based) - optional if old_name provided' },
-        column: { type: 'number', description: 'Column on the symbol (1-based) - optional if old_name provided' }
-      },
-      required: ['path', 'new_name']
-    },
-    category: 'diagnostics',
-    requiresApproval: true,
-    allowedModes: ['agent']
-  },
-  // NOTE: lsp_get_code_actions and lsp_apply_code_action REMOVED
-  // These tools were unreliable due to slow LSP initialization.
-  // AI should use: run_command({ command: "npx eslint --fix path/to/file.ts" }) instead.
+  // NOTE: LSP semantic tools are intentionally disabled from AI tool exposure.
+  // Keep diagnostics + search-based workflows active for stability.
 
   // ============================================
   // DIAGNOSTICS
@@ -579,6 +523,17 @@ ALWAYS use this instead of str_replace for renaming! It:
           description: 'Files to check, e.g. ["src/app.ts", "src/utils.ts"]'
         }
       }
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'get_tool_metrics',
+    description: 'Get tool observability dashboard data: per-tool latency/error/retry stats and top failing signatures.',
+    parameters: {
+      type: 'object',
+      properties: {}
     },
     category: 'diagnostics',
     requiresApproval: false,
@@ -841,17 +796,8 @@ export function isToolAllowed(toolName: string, mode: 'ask' | 'plan' | 'agent'):
   return getToolByName(toolName)?.allowedModes.includes(mode) ?? false;
 }
 
-/**
- * Get all tools for a mode, including MCP tools (agent mode only)
- */
 export function getAllToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
   const builtInTools = getToolsForMode(mode);
-
-  // MCP tools only available in agent mode
-  if (mode === 'agent') {
-    const mcpTools = getMcpToolDefinitions();
-    return [...builtInTools, ...mcpTools];
-  }
-
-  return builtInTools;
+  const mcpTools = mode === 'agent' ? getMcpToolDefinitions() : [];
+  return [...builtInTools, ...mcpTools];
 }

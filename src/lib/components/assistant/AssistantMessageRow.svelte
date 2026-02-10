@@ -14,6 +14,7 @@
   import { showToast } from "$lib/stores/toast.svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
   import StreamingStatus from "./StreamingStatus.svelte";
+  import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$lib/services/ai/tools";
 
   interface Props {
     message: AssistantMessage;
@@ -66,23 +67,12 @@
     }
   });
 
-  const FILE_EDIT_TOOLS = [
-    "write_file",
-    "str_replace",
-    "apply_edit",
-    "append_file",
-    "create_file",
-    "replace_lines",
-    "multi_replace_file_content",
-  ];
-  const TERMINAL_TOOLS = ["run_command", "start_process", "terminal_write"];
-
   function isFileEditTool(toolCall: ToolCall): boolean {
-    return FILE_EDIT_TOOLS.includes(toolCall.name);
+    return isFileMutatingTool(toolCall.name);
   }
 
   function isTerminalTool(toolCall: ToolCall): boolean {
-    return TERMINAL_TOOLS.includes(toolCall.name);
+    return isTerminalToolName(toolCall.name);
   }
 
   // Get the first pending terminal tool ID (for Kiro-style sequential approval)

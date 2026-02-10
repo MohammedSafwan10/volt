@@ -17,6 +17,7 @@
     { id: 'explorer', icon: 'files', label: 'Explorer', implemented: true },
     { id: 'search', icon: 'search', label: 'Search', implemented: true },
     { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: true },
+    { id: 'prompts', icon: 'code', label: 'Prompt Library', implemented: true },
     { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true },
     { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true },
     { id: 'browser', icon: 'globe', label: 'Browser', implemented: true }
@@ -42,14 +43,12 @@
     // Browser opens full screen (replaces editor area)
     if (item.id === 'browser') {
       if (browserStore.isOpen) {
-        if (browserStore.isVisible) {
-          // Hide browser (keep it alive)
-          browserStore.setVisible(false);
-        } else {
-          // Show browser again
+        // Keep browser visible; don't toggle-hide on repeated click.
+        // Closing is handled by browser toolbar close button.
+        if (!browserStore.isVisible) {
           browserStore.setVisible(true);
-          uiStore.sidebarOpen = false;
         }
+        uiStore.sidebarOpen = false;
       } else {
         // First time opening - create browser
         browserStore.open();

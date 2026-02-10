@@ -474,6 +474,9 @@ class ProjectStore {
 
       // Re-detect package manager
       void this.refreshPackageManager();
+      // Also refresh tree so externally-created deps/files (e.g. npm install)
+      // show up without manual refresh.
+      this.scheduleTreeRefresh();
     }
   }
 
@@ -533,6 +536,7 @@ class ProjectStore {
           if (changed) {
             console.log('[ProjectStore] Lock files changed (polling fallback)');
             await this.refreshPackageManager();
+            this.scheduleTreeRefresh();
           }
         } catch (e) {
           console.error('[ProjectStore] Lock file polling error:', e);

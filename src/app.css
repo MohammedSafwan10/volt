@@ -10,12 +10,12 @@
   --color-bg-panel: #1f1f1f;
   --color-bg-header: #181818;
   --color-bg-input: #2a2d2e;
-  
+
   /* Text colors */
   --color-text: #cccccc;
   --color-text-secondary: #969696;
   --color-text-disabled: #616161;
-  
+
   /* Accent colors */
   --color-accent: #007acc;
   --color-accent-rgb: 0, 122, 204;
@@ -23,7 +23,7 @@
   --color-success: #4ec9b0;
   --color-warning: #cca700;
   --color-error: #f14c4c;
-  
+
   /* UI colors */
   --color-border: #2b2b2b;
   --color-hover: #2a2d2e;
@@ -32,7 +32,7 @@
   /* Elevated surfaces */
   --color-bg-elevated: #252526;
   --shadow-elevated: 0 4px 20px rgba(0, 0, 0, 0.5);
-  
+
   /* Surface colors */
   --color-surface0: #252526;
   --color-surface1: #333333;
@@ -42,7 +42,7 @@
   --color-overlay0: #3c3c3c;
   --color-overlay1: #454545;
   --color-overlay2: #5a5a5a;
-  
+
   /* Syntax highlighting colors (VS Code Dark Modern default) */
   --color-pink: #c586c0;
   --color-mauve: #c586c0;
@@ -56,10 +56,20 @@
   --color-sapphire: #4fc1ff;
   --color-blue: #569cd6;
   --color-lavender: #b5cea8;
+  /* Design Excellence — Premium Tokens */
+  --glass-bg: rgba(31, 31, 31, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  --color-accent-hsl: 204, 100%, 40%;
+  --color-accent-glow: hsla(var(--color-accent-hsl), 0.3);
+  --color-success-hsl: 167, 54%, 55%;
+  --color-success-glow: hsla(var(--color-success-hsl), 0.3);
 }
 
 /* Base styles */
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -74,16 +84,16 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
- .monaco-editor .ai-edit-highlight {
-   background: rgba(166, 227, 161, 0.18) !important;
-   border-left: 3px solid rgba(166, 227, 161, 0.8) !important;
- }
+.monaco-editor .ai-edit-highlight {
+  background: rgba(166, 227, 161, 0.18) !important;
+  border-left: 3px solid rgba(166, 227, 161, 0.8) !important;
+}
 
- .monaco-editor .ai-edit-line-decoration {
-   background: rgba(166, 227, 161, 0.8);
-   width: 3px !important;
-   margin-left: 0;
- }
+.monaco-editor .ai-edit-line-decoration {
+  background: rgba(166, 227, 161, 0.8);
+  width: 3px !important;
+  margin-left: 0;
+}
 
 /* Monaco DiffEditor - Enhanced styling for better visibility */
 /* Deleted lines (original/left side) - RED */
@@ -93,13 +103,11 @@ html, body {
 }
 
 .monaco-diff-editor .diagonal-fill {
-  background: repeating-linear-gradient(
-    -45deg,
-    rgba(255, 0, 0, 0.1),
-    rgba(255, 0, 0, 0.1) 2px,
-    transparent 2px,
-    transparent 6px
-  ) !important;
+  background: repeating-linear-gradient(-45deg,
+      rgba(255, 0, 0, 0.1),
+      rgba(255, 0, 0, 0.1) 2px,
+      transparent 2px,
+      transparent 6px) !important;
 }
 
 /* Inserted lines (modified/right side) - GREEN */
@@ -173,7 +181,8 @@ button {
 }
 
 /* Input reset */
-input, textarea {
+input,
+textarea {
   background: var(--color-bg-input);
   border: 1px solid var(--color-border);
   color: var(--color-text);
@@ -182,7 +191,8 @@ input, textarea {
   border-radius: 4px;
 }
 
-input:focus, textarea:focus {
+input:focus,
+textarea:focus {
   border-color: var(--color-accent);
   outline: none;
 }
@@ -190,8 +200,13 @@ input:focus, textarea:focus {
 
 /* Loading spinner animation */
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spinner {
@@ -218,8 +233,13 @@ input:focus, textarea:focus {
 
 /* Fade in animation for smooth loading */
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .fade-in {

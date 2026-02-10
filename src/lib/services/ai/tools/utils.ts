@@ -190,3 +190,16 @@ export interface ToolResult {
   retryable?: boolean;
   timestamp?: number;
 }
+
+export interface CanonicalToolResult {
+  success: boolean;
+  output: string;
+  error: string;
+  data: any;
+  meta: Record<string, any>;
+  tool: string;
+  code: string;
+  retryable: boolean;
+  timestamp: number;
+  truncated?: boolean;
+}
