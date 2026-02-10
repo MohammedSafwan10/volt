@@ -80,6 +80,7 @@ export async function* streamChat(
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       let hasYieldedContent = false;
+      let sawDone = false;
       
       for await (const chunk of provider.streamChat({ ...request, model }, apiKey, signal)) {
         // If we get any content, reset retry state
@@ -110,14 +111,37 @@ export async function* streamChat(
         
         // If we got 'done', we're finished successfully
         if (chunk.type === 'done') {
+          sawDone = true;
           return;
         }
       }
       
-      // If we completed the stream without error, we're done
-      if (hasYieldedContent) {
+      // Normal successful completion should always include explicit done.
+      if (sawDone) {
         return;
       }
+
+      // Stream ended unexpectedly without done/error.
+      // Retry if possible; otherwise surface a clear error.
+      if (attempt < MAX_RETRIES) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+        const reason = hasYieldedContent
+          ? 'Stream interrupted before completion.'
+          : 'No stream data received.';
+        lastError = reason;
+        console.warn(`[AI] Stream ended early on attempt ${attempt}, retrying in ${delay}ms:`, reason);
+        await sleep(delay);
+        continue;
+      }
+      yield {
+        type: 'error',
+        error:
+          lastError ||
+          (hasYieldedContent
+            ? 'Streaming interrupted before completion.'
+            : 'No streaming response received.'),
+      };
+      return;
       
     } catch (err) {
       // Handle unexpected errors

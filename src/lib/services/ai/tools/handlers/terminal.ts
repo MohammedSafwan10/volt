@@ -20,6 +20,21 @@ import { truncateOutput, extractErrorMessage, type ToolResult } from '../utils';
 
 let aiCommandQueue: Promise<ToolResult> = Promise.resolve({ success: true, output: '' });
 const recentAiCommands = new Map<string, { command: string; timestamp: number }>();
+const AI_QUEUE_WAIT_TIMEOUT_MS = 45_000;
+const AI_COMMAND_HARD_CAP_MS = 120_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(fallback), timeoutMs);
+    })
+  ]);
+}
 
 function isLikelyDevServer(command: string): boolean {
   const cmd = command.trim().toLowerCase();
@@ -35,6 +50,29 @@ function isLikelyDevServer(command: string): boolean {
 
 function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function getBlockedCommandReason(command: string): string | null {
+  const normalized = normalizeCommand(command);
+
+  // Protect Volt metadata/project control directory from AI shell mutations.
+  const mutatingShellVerb =
+    /\b(move-item|rename-item|remove-item|del|erase|rmdir|rd|rm|mv|ren)\b/i;
+  const touchesVoltDir = /(^|[\s"'`\\\/])\.volt([\\\/\s"'`]|$)/i.test(command);
+  if (touchesVoltDir && mutatingShellVerb.test(command)) {
+    return 'Blocked unsafe command: modifying `.volt` is not allowed because it can break plans/chat state.';
+  }
+
+  // Common failure mode: create-next-app in current directory conflicts with `.volt`.
+  // Force safer scaffolding flow in a temp/sub folder.
+  if (
+    /\bcreate-next-app(?:@[\w.-]+)?\b/i.test(normalized) &&
+    /(?:^|\s)\.(?:\s|$)/.test(normalized)
+  ) {
+    return 'Blocked unsafe scaffold target: do not run create-next-app in `.`. Scaffold into a temp/subfolder and move app files instead.';
+  }
+
+  return null;
 }
 
 function extractPort(command: string): number | null {
@@ -236,10 +274,21 @@ const processes = {
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command).trim();
   const cwd = args.cwd ? String(args.cwd) : undefined;
-  const timeout = typeof args.timeout === 'number' ? args.timeout : 300000;
+  const timeout = typeof args.timeout === 'number' ? args.timeout : 90_000;
   const waitForExit = args.waitForExit === true;
   const allowDetach = args.detached !== false;
   const isDevServer = isLikelyDevServer(command);
+  const blockedReason = getBlockedCommandReason(command);
+  if (blockedReason) {
+    return {
+      success: false,
+      error: blockedReason,
+      output:
+        'Suggested safe flow:\n1) Scaffold in `./_scaffold_tmp`.\n2) Copy generated app files into workspace (exclude `.volt`).\n3) Delete temp folder.',
+      code: 'COMMAND_BLOCKED',
+      retryable: false
+    };
+  }
 
   const run = async (): Promise<ToolResult> => {
     try {
@@ -424,7 +473,40 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
     }
   };
 
-  aiCommandQueue = aiCommandQueue.then(run, run);
+  const queueReady = withTimeout(
+    aiCommandQueue,
+    AI_QUEUE_WAIT_TIMEOUT_MS,
+    {
+      success: false,
+      error: `Previous AI terminal command was stuck for over ${AI_QUEUE_WAIT_TIMEOUT_MS}ms; skipping queue wait.`,
+      retryable: true
+    } satisfies ToolResult
+  );
+
+  aiCommandQueue = queueReady.then(
+    () =>
+      withTimeout(
+        run(),
+        Math.max(timeout + 10_000, AI_COMMAND_HARD_CAP_MS),
+        {
+          success: false,
+          error:
+            'AI terminal command exceeded hard execution cap and was aborted to prevent queue lock.',
+          retryable: true
+        } satisfies ToolResult
+      ),
+    () =>
+      withTimeout(
+        run(),
+        Math.max(timeout + 10_000, AI_COMMAND_HARD_CAP_MS),
+        {
+          success: false,
+          error:
+            'AI terminal command exceeded hard execution cap and was aborted to prevent queue lock.',
+          retryable: true
+        } satisfies ToolResult
+      )
+  );
   return aiCommandQueue;
 }
 
@@ -435,6 +517,17 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
   const command = String(args.command);
   const cwd = args.cwd ? String(args.cwd) : undefined;
   const processId = processStore.nextProcessId();
+  const blockedReason = getBlockedCommandReason(command);
+  if (blockedReason) {
+    return {
+      success: false,
+      error: blockedReason,
+      output:
+        'Use a safe non-destructive command. For scaffolding, run in a temp/subfolder first.',
+      code: 'COMMAND_BLOCKED',
+      retryable: false
+    };
+  }
 
   try {
     if (isLikelyDevServer(command)) {

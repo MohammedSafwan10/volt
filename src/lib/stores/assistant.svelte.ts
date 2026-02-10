@@ -500,8 +500,8 @@ class AssistantStore {
         // Already have properly ordered contentParts - don't normalize, just ensure text is included
         const hasTextPart = base.contentParts.some(p => p.type === 'text');
         if (!hasTextPart && base.content) {
-          // Prepend text part if missing
-          base.contentParts = [{ type: 'text', text: base.content }, ...base.contentParts];
+          // Keep tool-first chronology: append summary text after tool parts.
+          base.contentParts = [...base.contentParts, { type: 'text', text: base.content }];
         }
 
         // Ensure inline tool calls have stable text offsets for future rebuilds
@@ -2022,11 +2022,12 @@ class AssistantStore {
       return parts;
     }
 
-    // No text parts exist - need to add one
+    // No text parts exist - need to add one while preserving chronology.
     const normalized = [...(parts || [])];
     if (content) {
-      // Insert text at the beginning (before tools) for new content
-      normalized.unshift({ type: 'text', text: content });
+      // If tool/thinking parts already exist, append final text so it renders below tools.
+      // This keeps "tool execution first, summary later" visual ordering.
+      normalized.push({ type: 'text', text: content });
     }
 
     return normalized.length > 0 ? normalized : parts;

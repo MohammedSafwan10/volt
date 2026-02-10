@@ -63,6 +63,10 @@
     label: string;
     mimeType: "image/png" | "image/jpeg" | "image/webp";
   } | null>(null);
+  let verificationGateStatus = $state<"idle" | "required" | "verified">(
+    "idle",
+  );
+  let verificationGateMessage = $state("No verification gate");
 
   // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
@@ -290,6 +294,186 @@
       tool.category === "diagnostics" ||
       capabilities.requiresWorkspacePathValidation
     );
+  }
+
+  type VerificationProfile = {
+    id: string;
+    label: string;
+    commandPattern: RegExp;
+    suggestedCommands: string[];
+    requiresTerminalVerification: boolean;
+  };
+
+  function getWorkspaceRootFileNames(): Set<string> {
+    return new Set(
+      (projectStore.tree ?? [])
+        .map((node) => node.name?.toLowerCase?.() ?? "")
+        .filter(Boolean),
+    );
+  }
+
+  function getVerificationProfiles(): VerificationProfile[] {
+    const rootNames = getWorkspaceRootFileNames();
+    const has = (name: string) => rootNames.has(name.toLowerCase());
+
+    const profiles: VerificationProfile[] = [];
+
+    if (has("pubspec.yaml")) {
+      profiles.push({
+        id: "dart_flutter",
+        label: "Dart/Flutter",
+        commandPattern:
+          /\b(flutter\s+(analyze|test|build)|dart\s+(analyze|test))\b/i,
+        suggestedCommands: ["flutter analyze", "flutter test", "dart analyze"],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (
+      has("package.json") ||
+      has("pnpm-lock.yaml") ||
+      has("yarn.lock") ||
+      has("package-lock.json")
+    ) {
+      profiles.push({
+        id: "node_js_ts",
+        label: "Node/JS/TS",
+        commandPattern:
+          /\b((npm|pnpm|yarn|bun)\s+(run\s+)?(lint|test|build|typecheck|check)|vitest|jest|eslint|tsc(\s|$))\b/i,
+        suggestedCommands: ["npm run lint", "npm run test", "npm run build"],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (has("cargo.toml")) {
+      profiles.push({
+        id: "rust",
+        label: "Rust",
+        commandPattern: /\bcargo\s+(check|test|clippy|build)\b/i,
+        suggestedCommands: ["cargo check", "cargo test"],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (
+      has("pyproject.toml") ||
+      has("requirements.txt") ||
+      has("poetry.lock")
+    ) {
+      profiles.push({
+        id: "python",
+        label: "Python",
+        commandPattern:
+          /\b(pytest|python\s+-m\s+pytest|ruff\s+check|mypy|python\s+-m\s+unittest)\b/i,
+        suggestedCommands: ["pytest", "ruff check"],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (has("go.mod")) {
+      profiles.push({
+        id: "go",
+        label: "Go",
+        commandPattern: /\bgo\s+(test|vet|build)\b/i,
+        suggestedCommands: ["go test ./...", "go vet ./..."],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (has("pom.xml") || has("build.gradle") || has("build.gradle.kts")) {
+      profiles.push({
+        id: "java_jvm",
+        label: "Java/JVM",
+        commandPattern:
+          /\b(mvn\s+(test|verify|package)|gradle\s+(test|build)|\.\?\/gradlew\s+(test|build))\b/i,
+        suggestedCommands: ["mvn test", "gradle test"],
+        requiresTerminalVerification: true,
+      });
+    }
+
+    if (profiles.length === 0) {
+      profiles.push({
+        id: "generic",
+        label: "Generic",
+        commandPattern:
+          /\b(test|lint|build|check|typecheck|tsc|vitest|jest|pytest|cargo\s+check|cargo\s+test|eslint)\b/i,
+        suggestedCommands: ["run project checks/tests"],
+        requiresTerminalVerification: false,
+      });
+    }
+
+    return profiles;
+  }
+
+  function buildVerificationCommandGuidance(
+    profiles: VerificationProfile[],
+  ): string {
+    const suggestions = profiles
+      .flatMap((p) => p.suggestedCommands)
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+      .slice(0, 4);
+    if (suggestions.length === 0) return "Run a relevant validation command.";
+    return `Run at least one relevant terminal verification command, for example: ${suggestions.map((s) => `\`${s}\``).join(", ")}.`;
+  }
+
+  function isTerminalVerificationCommand(
+    command: string,
+    profiles: VerificationProfile[],
+  ): boolean {
+    const cmd = command.trim().toLowerCase();
+    if (!cmd) return false;
+    return profiles.some((profile) => profile.commandPattern.test(cmd));
+  }
+
+  function isVerificationTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    profiles: VerificationProfile[],
+  ): boolean {
+    if (toolName === "get_diagnostics" || toolName.startsWith("lsp_")) {
+      return true;
+    }
+    if (toolName === "run_command") {
+      return isTerminalVerificationCommand(String(args.command ?? ""), profiles);
+    }
+    if (
+      toolName === "browser_get_errors" ||
+      toolName === "browser_get_console_logs" ||
+      toolName === "browser_get_summary" ||
+      toolName === "browser_get_network_requests"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function hasStructuredCompletionReport(content: string): boolean {
+    const hasChanges =
+      /\b(changed|updated|modified|created|deleted|refactored|files?\s+(changed|updated|touched))\b/i.test(
+        content,
+      );
+    const hasVerification =
+      /\b(verify|verified|verification|diagnostic|diagnostics|test|tests|lint|build|check)\b/i.test(
+        content,
+      );
+    const hasRisks =
+      /\b(risk|risks|remaining|follow-?up|next steps?|limitations?)\b/i.test(
+        content,
+      );
+    return hasChanges && hasVerification && hasRisks;
+  }
+
+  function getFailureSignature(
+    toolName: string,
+    args: Record<string, unknown>,
+    result: ToolResult,
+  ): string | null {
+    if (result.success) return null;
+    const raw = String(result.error ?? result.output ?? "").trim().toLowerCase();
+    if (!raw) return null;
+    const condensed = raw.replace(/\s+/g, " ").slice(0, 220);
+    const pathHint = String(args.path ?? args.filePath ?? "").toLowerCase();
+    return `${toolName}:${pathHint}:${condensed}`;
   }
 
   function getAdaptiveFileEditConcurrency(queueCount: number): number {
@@ -634,6 +818,8 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     controller: AbortController,
     maxIterations = 30, // Increased from 20 to handle complex tasks like Kiro
   ): Promise<void> {
+    verificationGateStatus = "idle";
+    verificationGateMessage = "No verification gate";
     const msgId = assistantStore.addAssistantMessage("", true);
     let fullContent = "";
     let iteration = 0;
@@ -647,6 +833,60 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     const MAX_EMPTY_RESPONSES = 3;
     let recoveryRetryCount = 0;
     const MAX_RECOVERY_RETRIES = 2;
+    let hadMutatingEdits = false;
+    let lastMutationIteration = 0;
+    let lastVerificationIteration = 0;
+    let verificationNudgeCount = 0;
+    let reportNudgeCount = 0;
+    let planModeViolationNudgeCount = 0;
+    const isPlanMode = assistantStore.currentMode === "plan";
+    const isAgentMode = assistantStore.currentMode === "agent";
+    const failureSignatureCounts = new Map<string, number>();
+    const failureNudgedSignatures = new Set<string>();
+    const verificationProfiles = getVerificationProfiles();
+    const terminalVerificationRequired = verificationProfiles.some(
+      (p) => p.requiresTerminalVerification,
+    );
+    const verificationCommandGuidance =
+      buildVerificationCommandGuidance(verificationProfiles);
+    let lastTerminalVerificationIteration = 0;
+
+    const trackToolOutcome = (
+      toolName: string,
+      args: Record<string, unknown>,
+      result: ToolResult,
+    ): void => {
+      if (!result.success) return;
+      const capabilities = getToolCapabilities(toolName);
+      if (capabilities.isMutating) {
+        hadMutatingEdits = true;
+        lastMutationIteration = iteration;
+        verificationGateStatus = "required";
+        verificationGateMessage = "Verification required after edits";
+      }
+      if (
+        toolName === "run_command" &&
+        isTerminalVerificationCommand(
+          String(args.command ?? ""),
+          verificationProfiles,
+        )
+      ) {
+        lastTerminalVerificationIteration = iteration;
+      }
+      if (isVerificationTool(toolName, args, verificationProfiles)) {
+        lastVerificationIteration = iteration;
+        if (
+          hadMutatingEdits &&
+          lastMutationIteration > 0 &&
+          lastVerificationIteration >= lastMutationIteration &&
+          (!terminalVerificationRequired ||
+            lastTerminalVerificationIteration >= lastMutationIteration)
+        ) {
+          verificationGateStatus = "verified";
+          verificationGateMessage = "Verification passed";
+        }
+      }
+    };
 
     // Streaming safety guards
     let lastChunk = "";
@@ -784,6 +1024,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         name: string;
         result: ToolResult;
       }> = [];
+      let hadPlanModeViolationThisIteration = false;
 
       try {
         // Reduce hallucinations: use conservative temperature defaults per mode.
@@ -863,8 +1104,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             assistantStore.endThinkingPart(msgId);
 
             iterationContent += chunk.content;
-            // Stream ALL content to UI immediately (no truncation)
-            assistantStore.appendTextToMessage(msgId, chunk.content, true);
+            // In Agent mode, keep text buffered until iteration completes.
+            // This enforces tool-first UX (avoid premature "done" summaries).
+            if (!isAgentMode) {
+              assistantStore.appendTextToMessage(msgId, chunk.content, true);
+            }
           }
 
           // Handle thinking chunks - display INLINE (Cursor-style)
@@ -934,6 +1178,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               toolCallArgs,
               assistantStore.currentMode,
             );
+            const capabilities = getToolCapabilities(toolCallName);
+            const isPlanModeViolation =
+              isPlanMode &&
+              (isTerminalToolName(toolCallName) ||
+                (capabilities.isMutating && toolCallName !== "write_plan_file"));
+            const resolvedValidationError = validation.valid
+              ? undefined
+              : isPlanModeViolation
+                ? `Tool "${toolCallName}" is not allowed in plan mode. In plan mode, use READ tools and optionally "write_plan_file" only.`
+                : (validation.error ?? "Invalid tool call");
             const status: ToolCall["status"] = validation.valid
               ? "pending"
               : "failed";
@@ -944,9 +1198,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               status,
               requiresApproval: validation.requiresApproval,
               thoughtSignature: toolCallThoughtSignature,
-              error: validation.valid
-                ? undefined
-                : (validation.error ?? "Invalid tool call"),
+              error: resolvedValidationError,
               endTime: validation.valid ? undefined : Date.now(),
             };
 
@@ -962,13 +1214,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             });
 
             if (!validation.valid) {
+              if (isPlanModeViolation) {
+                hadPlanModeViolationThisIteration = true;
+              }
               // Feed an error tool result back to the model so the conversation stays consistent.
               immediateResults.push({
                 id: toolCallId,
                 name: toolCallName,
                 result: {
                   success: false,
-                  error: validation.error ?? "Invalid tool call",
+                  error: resolvedValidationError ?? "Invalid tool call",
                 },
               });
 
@@ -1079,8 +1334,10 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           );
         }
 
-        // All content already streamed to UI, just update fullContent for history
-        fullContent += iterationContent;
+        if (isAgentMode && toolCallSeenThisIteration && iterationContent.trim()) {
+          // Drop pre-tool narration for cleaner, trustworthy execution flow.
+          iterationContent = "";
+        }
 
         // Reset repetition guard per iteration boundary so we don't over-trigger
         // on unrelated chunks in later iterations.
@@ -1127,6 +1384,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   data: result.data,
                   endTime: Date.now(),
                 });
+                trackToolOutcome(queued.name, queued.args, result);
+                const signature = getFailureSignature(
+                  queued.name,
+                  queued.args,
+                  result,
+                );
+                if (signature) {
+                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                  failureSignatureCounts.set(signature, count);
+                }
                 return { id: queued.id, name: queued.name, result };
               })
               .catch((err) => {
@@ -1136,6 +1403,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   error,
                   endTime: Date.now(),
                 });
+                const signature = getFailureSignature(
+                  queued.name,
+                  queued.args,
+                  { success: false, error },
+                );
+                if (signature) {
+                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                  failureSignatureCounts.set(signature, count);
+                }
                 return {
                   id: queued.id,
                   name: queued.name,
@@ -1244,6 +1520,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   data: result.data,
                   endTime: Date.now(),
                 });
+                trackToolOutcome(edit.name, edit.args, result);
+                const signature = getFailureSignature(
+                  edit.name,
+                  edit.args,
+                  result,
+                );
+                if (signature) {
+                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                  failureSignatureCounts.set(signature, count);
+                }
 
                 results.push({ id: edit.id, name: edit.name, result });
 
@@ -1263,6 +1549,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   name: edit.name,
                   result: { success: false, error },
                 });
+                const signature = getFailureSignature(
+                  edit.name,
+                  edit.args,
+                  { success: false, error },
+                );
+                if (signature) {
+                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                  failureSignatureCounts.set(signature, count);
+                }
                 previousFailed = true;
               }
             }
@@ -1343,6 +1638,21 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             p.test(iterationContent),
           );
 
+          if (hadPlanModeViolationThisIteration) {
+            if (planModeViolationNudgeCount < 3) {
+              planModeViolationNudgeCount++;
+              assistantStore.addToolMessage({
+                id: `plan_mode_guard_${Date.now()}`,
+                name: "_system_plan_mode_guard",
+                arguments: {},
+                status: "completed",
+                output:
+                  'You are in PLAN mode. Do NOT call write/edit/terminal tools. Use read/search tools to understand code, then either (a) provide a plan in chat, or (b) call "write_plan_file" once with the final plan.',
+              });
+              continue;
+            }
+          }
+
           if (looksIncomplete && iterationContent.trim()) {
             consecutiveEmptyResponses++;
 
@@ -1363,7 +1673,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               );
               assistantStore.updateAssistantMessage(
                 msgId,
-                fullContent +
+                (fullContent + iterationContent) +
                   "\n\n(Stream ended unexpectedly. Please try again.)",
                 false,
               );
@@ -1427,7 +1737,62 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             continue; // Continue to next iteration
           }
 
+          const pendingVerification =
+            hadMutatingEdits &&
+            lastMutationIteration > 0 &&
+            (lastVerificationIteration < lastMutationIteration ||
+              (terminalVerificationRequired &&
+                lastTerminalVerificationIteration < lastMutationIteration));
+          if (pendingVerification) {
+            verificationGateStatus = "required";
+            verificationGateMessage = "Waiting for diagnostics/tests/runtime checks";
+            if (verificationNudgeCount < 3) {
+              verificationNudgeCount++;
+              assistantStore.addToolMessage({
+                id: `verification_required_${Date.now()}`,
+                name: "_system_verification_required",
+                arguments: {},
+                status: "completed",
+                output:
+                  `Before finalizing, you MUST verify your edits. Run: (1) get_diagnostics, (2) terminal verification: ${verificationCommandGuidance}, and (3) browser runtime checks for frontend changes (browser_get_errors/browser_get_summary). Then report results.`,
+              });
+              continue;
+            }
+            assistantStore.updateAssistantMessage(
+              msgId,
+              fullContent +
+                "\n\n⚠️ Verification gate not satisfied: edits were made but required verification steps did not complete.",
+              false,
+            );
+            return;
+          }
+
+          if (
+            hadMutatingEdits &&
+            !hasStructuredCompletionReport(fullContent) &&
+            reportNudgeCount < 2
+          ) {
+            reportNudgeCount++;
+            assistantStore.addToolMessage({
+              id: `report_required_${Date.now()}`,
+              name: "_system_report_required",
+              arguments: {},
+              status: "completed",
+              output:
+                "Provide a structured completion report with exactly these sections: What changed, Verification run, Remaining risks.",
+            });
+            continue;
+          }
+
           // Successful completion with content
+          fullContent += iterationContent;
+          if (hadMutatingEdits) {
+            verificationGateStatus = "verified";
+            verificationGateMessage = "Verification passed";
+          } else {
+            verificationGateStatus = "idle";
+            verificationGateMessage = "No verification gate";
+          }
           import("$lib/stores/output.svelte").then((m) =>
             m.logOutput(
               "Volt",
@@ -1541,6 +1906,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                   endTime: Date.now(),
                   streamingProgress: undefined,
                 });
+                trackToolOutcome(tc.name, tc.arguments, result);
 
                 
               } catch (err) {
@@ -1668,6 +2034,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 data: result.data,
                 endTime: Date.now(),
               });
+              trackToolOutcome(tc.name, tc.arguments, result);
+              const signature = getFailureSignature(
+                tc.name,
+                tc.arguments,
+                result,
+              );
+              if (signature) {
+                const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                failureSignatureCounts.set(signature, count);
+              }
 
               if (!result.success) {
                 previousTerminalFailed = true;
@@ -1684,6 +2060,15 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
                 error,
                 endTime: Date.now(),
               });
+              const signature = getFailureSignature(
+                tc.name,
+                tc.arguments,
+                { success: false, error },
+              );
+              if (signature) {
+                const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+                failureSignatureCounts.set(signature, count);
+              }
               previousTerminalFailed = true;
             }
           }
@@ -1692,12 +2077,29 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Add ALL results to conversation as special tool messages
         addToolResultsToConversation(allToolCalls, toolResults);
 
+        for (const [signature, count] of failureSignatureCounts.entries()) {
+          if (count < 3 || failureNudgedSignatures.has(signature)) continue;
+          failureNudgedSignatures.add(signature);
+          assistantStore.addToolMessage({
+            id: `strategy_switch_${Date.now()}`,
+            name: "_system_strategy_switch",
+            arguments: {},
+            status: "completed",
+            output:
+              "The same failure repeated multiple times. Stop repeating the same call. Inspect current outputs/files, choose a different strategy, then retry.",
+          });
+        }
+
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
         justProcessedToolResults = true;
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
+        if (hadMutatingEdits) {
+          verificationGateStatus = "required";
+          verificationGateMessage = "Verification incomplete due to error";
+        }
 
         // Kiro-style: Check if this is a retryable error
         const isRetryable =
@@ -2444,6 +2846,23 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       <span class="header-title" title={currentChatTitle}>
         {currentChatTitle}
       </span>
+      <span
+        class="verification-gate"
+        class:required={verificationGateStatus === "required"}
+        class:verified={verificationGateStatus === "verified"}
+        title={verificationGateMessage}
+      >
+        {#if verificationGateStatus === "required"}
+          <UIIcon name="warning" size={11} />
+          <span>Verification Required</span>
+        {:else if verificationGateStatus === "verified"}
+          <UIIcon name="check" size={11} />
+          <span>Verified</span>
+        {:else}
+          <UIIcon name="info" size={11} />
+          <span>Idle</span>
+        {/if}
+      </span>
     </div>
     <div class="header-actions">
       <button
@@ -2676,6 +3095,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     display: flex;
     align-items: center;
     gap: 6px;
+    min-width: 0;
   }
 
   .header-icon {
@@ -2691,6 +3111,44 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--color-text);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .verification-gate {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 2px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-surface0) 86%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  }
+
+  .verification-gate.required {
+    color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
+  }
+
+  .verification-gate.verified {
+    color: var(--color-success, #22c55e);
+    background: color-mix(
+      in srgb,
+      var(--color-success, #22c55e) 12%,
+      transparent
+    );
+    border-color: color-mix(
+      in srgb,
+      var(--color-success, #22c55e) 35%,
+      transparent
+    );
   }
 
   .header-actions {
