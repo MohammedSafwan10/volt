@@ -15,9 +15,17 @@
  */
 
 import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$lib/stores/problems.svelte';
+import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
+import { readFileQuiet } from '$lib/services/file-system';
+import { getAllFiles } from '$lib/services/file-index';
 import { registerSvelteMonacoProviders, disposeSvelteMonacoProviders } from './svelte-monaco-providers';
+import {
+  getSvelteLanguageId,
+  mapSvelteSeverity,
+  sveltePathToUri,
+  svelteUriToPath,
+} from './svelte-sidecar-utils';
 
 // Server instance tracking
 let svelteServerTransport: LspTransport | null = null;
@@ -37,60 +45,6 @@ const DIAGNOSTIC_DEBOUNCE_MS = 150;
  */
 export function isSvelteFile(filepath: string): boolean {
   return filepath.toLowerCase().endsWith('.svelte');
-}
-
-/**
- * Get the language ID for LSP
- */
-function getLanguageId(_filepath: string): string {
-  return 'svelte';
-}
-
-/**
- * Convert file path to URI
- */
-function pathToUri(filepath: string): string {
-  // Handle Windows paths
-  let normalizedPath = filepath.replace(/\\/g, '/');
-  // Normalize drive letter to lowercase for consistency
-  if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    normalizedPath = normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
-  }
-  const encodedPath = encodeURI(normalizedPath);
-  if (normalizedPath.match(/^[a-zA-Z]:/)) {
-    return `file:///${encodedPath}`;
-  }
-  return `file://${encodedPath}`;
-}
-
-/**
- * Convert URI to file path (normalized with forward slashes)
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
-}
-
-/**
- * Map LSP severity to our severity
- */
-function mapSeverity(lspSeverity: number): ProblemSeverity {
-  switch (lspSeverity) {
-    case 1: return 'error';
-    case 2: return 'warning';
-    case 3: return 'info';
-    case 4: return 'hint';
-    default: return 'info';
-  }
 }
 
 /**
@@ -141,7 +95,7 @@ interface PublishDiagnosticsParams {
  * Handle diagnostics from the LSP server
  */
 function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = uriToPath(params.uri);
+  const filePath = svelteUriToPath(params.uri);
   const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
   const problems: Problem[] = params.diagnostics.map((diag, index) => ({
@@ -153,7 +107,7 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     endLine: diag.range.end.line + 1,
     endColumn: diag.range.end.character + 1,
     message: diag.message,
-    severity: mapSeverity(diag.severity ?? 1),
+    severity: mapSvelteSeverity(diag.severity ?? 1),
     source: diag.source || 'svelte',
     code: diag.code?.toString()
   }));
@@ -208,7 +162,7 @@ async function initializeServer(): Promise<void> {
       });
 
       // Send initialize request
-      const rootUri = pathToUri(projectStore.rootPath!);
+      const rootUri = sveltePathToUri(projectStore.rootPath!);
 
       const initResult = await svelteServerTransport.sendRequest('initialize', {
         processId: null,
@@ -376,8 +330,8 @@ export async function notifySvelteDocumentOpened(filepath: string, content: stri
 
   if (!svelteServerTransport || !svelteServerInitialized) return;
 
-  const uri = pathToUri(filepath);
-  const languageId = getLanguageId(filepath);
+  const uri = sveltePathToUri(filepath);
+  const languageId = getSvelteLanguageId(filepath);
 
   // Track document
   openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
@@ -423,7 +377,7 @@ export async function notifySvelteDocumentChanged(filepath: string, content: str
   doc.version++;
   doc.content = content;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   // Debounce the change notification
   const existingTimer = diagnosticDebounceTimers.get(filepath);
@@ -454,7 +408,7 @@ export async function notifySvelteDocumentSaved(filepath: string, content: strin
   if (!isSvelteFile(filepath)) return;
   if (!svelteServerTransport || !svelteServerInitialized) return;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   await svelteServerTransport.sendNotification('textDocument/didSave', {
     textDocument: { uri },
@@ -471,7 +425,7 @@ export async function notifySvelteDocumentClosed(filepath: string): Promise<void
 
   openDocuments.delete(filepath);
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   await svelteServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri }
@@ -492,7 +446,7 @@ export async function getSvelteCompletions(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<CompletionList | CompletionItem[] | null>(
@@ -554,7 +508,7 @@ export async function getSvelteHover(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<HoverResult | null>(
@@ -591,7 +545,7 @@ export async function getSvelteDefinition(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<Location | Location[] | null>(
@@ -630,7 +584,7 @@ export async function getSvelteReferences(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<Location[] | null>(
@@ -660,7 +614,7 @@ export async function getSvelteSignatureHelp(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<SignatureHelp | null>(
@@ -702,7 +656,7 @@ export async function formatSvelteDocument(filepath: string): Promise<TextEdit[]
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<TextEdit[] | null>(
@@ -739,7 +693,7 @@ export async function getSvelteCodeActions(
   if (!isSvelteFile(filepath)) return null;
   if (!svelteServerTransport || !svelteServerInitialized) return null;
 
-  const uri = pathToUri(filepath);
+  const uri = sveltePathToUri(filepath);
 
   try {
     const result = await svelteServerTransport.sendRequest<CodeAction[] | null>(
@@ -863,10 +817,6 @@ export async function ensureSvelteLspStarted(): Promise<void> {
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
-  // Use dynamic import for fileIndex to avoid circular deps if any
-  const { getAllFiles } = await import('$lib/services/file-index');
-  const { readFileQuiet } = await import('$lib/services/file-system');
-
   const allFiles = getAllFiles();
   const svelteFiles = allFiles.filter(f => isSvelteFile(f.path));
 
@@ -891,4 +841,5 @@ export async function startProjectWideAnalysis(): Promise<void> {
     }
   }
 }
+
 

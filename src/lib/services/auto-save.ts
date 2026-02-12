@@ -15,6 +15,7 @@ import { editorStore } from '$lib/stores/editor.svelte';
 import { settingsStore } from '$lib/stores/settings.svelte';
 import { writeFile } from '$lib/services/file-system';
 import { formatBeforeSave, isPrettierFile } from '$lib/services/prettier';
+import { getModelValue, setModelValue } from '$lib/services/monaco-models';
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let isInitialized = false;
@@ -30,29 +31,23 @@ async function saveFile(path: string, skipFormat = false): Promise<boolean> {
   // Only save if dirty
   if (!editorStore.isDirty(path)) return true;
   
-  // Get the latest content from Monaco model if available
+  // Get the latest content from Monaco model if available.
   let contentToSave = file.content;
-  try {
-    const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
-    const modelValue = getModelValue(path);
-    if (typeof modelValue === 'string') {
-      contentToSave = modelValue;
-    }
-    
-    // Format on save if enabled and file is supported
-    if (!skipFormat && settingsStore.formatOnSaveEnabled && isPrettierFile(path)) {
-      const formatted = await formatBeforeSave(contentToSave, path);
-      if (formatted !== contentToSave) {
-        contentToSave = formatted;
-        // Update the Monaco model with formatted content
-        setModelValue(path, formatted);
-      }
-    }
-    
-    editorStore.updateContent(path, contentToSave);
-  } catch {
-    // Use store content if model not available
+  const modelValue = getModelValue(path);
+  if (typeof modelValue === 'string') {
+    contentToSave = modelValue;
   }
+
+  // Format on save if enabled and file is supported.
+  if (!skipFormat && settingsStore.formatOnSaveEnabled && isPrettierFile(path)) {
+    const formatted = await formatBeforeSave(contentToSave, path);
+    if (formatted !== contentToSave) {
+      contentToSave = formatted;
+      setModelValue(path, formatted);
+    }
+  }
+
+  editorStore.updateContent(path, contentToSave);
   
   const success = await writeFile(path, contentToSave);
   if (success) {

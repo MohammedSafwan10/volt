@@ -8,6 +8,14 @@ use tauri::{AppHandle, Emitter};
 // Track running watch processes
 static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+fn kill_watch_process(watch_id: &str) {
+    if let Ok(mut processes) = WATCH_PROCESSES.lock() {
+        if let Some(mut child) = processes.remove(watch_id) {
+            let _ = child.kill();
+        }
+    }
+}
+
 /// System information returned to the frontend
 #[derive(Debug, Serialize)]
 pub struct SystemInfo {
@@ -163,7 +171,13 @@ pub async fn start_watch_command(
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             if let Ok(line) = line {
-                let _ = app_clone.emit(&format!("watch://{}//stdout", watch_id_clone), line);
+                if app_clone
+                    .emit(&format!("watch://{}//stdout", watch_id_clone), line)
+                    .is_err()
+                {
+                    kill_watch_process(&watch_id_clone);
+                    return;
+                }
             }
         }
     });
@@ -176,7 +190,13 @@ pub async fn start_watch_command(
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             if let Ok(line) = line {
-                let _ = app_clone2.emit(&format!("watch://{}//stderr", watch_id_clone2), line);
+                if app_clone2
+                    .emit(&format!("watch://{}//stderr", watch_id_clone2), line)
+                    .is_err()
+                {
+                    kill_watch_process(&watch_id_clone2);
+                    return;
+                }
             }
         }
     });
@@ -222,6 +242,16 @@ pub fn stop_watch_command(watch_id: String) -> Result<(), String> {
     } else {
         Err(format!("Watch '{}' not found", watch_id))
     }
+}
+
+/// Stop all running watch commands
+#[tauri::command]
+pub fn stop_all_watch_commands() -> Result<(), String> {
+    let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
+    for (_, mut child) in processes.drain() {
+        let _ = child.kill();
+    }
+    Ok(())
 }
 
 /// List active watch commands

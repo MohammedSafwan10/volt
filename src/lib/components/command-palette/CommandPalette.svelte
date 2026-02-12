@@ -17,6 +17,7 @@
     formatCurrentDocument,
     isPrettierFile,
   } from "$lib/services/prettier";
+  import { getModelValue, setModelValue } from "$lib/services/monaco-models";
   import {
     indexProject,
     indexUpdateTick,
@@ -129,33 +130,25 @@
           return;
         }
         let contentToSave = activeFile.content;
-        try {
-          const { getModelValue, setModelValue } = await import(
-            "$lib/services/monaco-models"
-          );
-          const modelValue = getModelValue(activeFile.path);
-          if (typeof modelValue === "string") {
-            contentToSave = modelValue;
-          }
-
-          if (
-            settingsStore.formatOnSaveEnabled &&
-            isPrettierFile(activeFile.path)
-          ) {
-            const formatted = await formatBeforeSave(
-              contentToSave,
-              activeFile.path,
-            );
-            if (formatted !== contentToSave) {
-              contentToSave = formatted;
-              setModelValue(activeFile.path, formatted);
-            }
-          }
-
-          editorStore.updateContent(activeFile.path, contentToSave);
-        } catch {
-          /* ignore */
+        const modelValue = getModelValue(activeFile.path);
+        if (typeof modelValue === "string") {
+          contentToSave = modelValue;
         }
+
+        if (
+          settingsStore.formatOnSaveEnabled &&
+          isPrettierFile(activeFile.path)
+        ) {
+          const formatted = await formatBeforeSave(
+            contentToSave,
+            activeFile.path,
+          );
+          if (formatted !== contentToSave) {
+            contentToSave = formatted;
+            setModelValue(activeFile.path, formatted);
+          }
+        }
+        editorStore.updateContent(activeFile.path, contentToSave);
         const success = await writeFile(activeFile.path, contentToSave);
         if (success) editorStore.markSaved(activeFile.path);
       },

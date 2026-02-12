@@ -261,6 +261,16 @@ interface CommandResult {
   stderr: string;
 }
 
+interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  isFile: boolean;
+  isSymlink: boolean;
+  size: number;
+  modified?: number;
+}
+
 async function runCommand(command: string, args: string[]): Promise<CommandResult> {
   try {
     const result = await invoke<{ exit_code: number; stdout: string; stderr: string }>('run_command', {
@@ -283,7 +293,7 @@ async function runCommand(command: string, args: string[]): Promise<CommandResul
 
 async function fileExists(path: string): Promise<boolean> {
   try {
-    await invoke('file_exists', { path });
+    await invoke('get_file_info', { path });
     return true;
   } catch {
     return false;
@@ -309,10 +319,10 @@ async function resolveWildcardPath(pattern: string): Promise<string | null> {
   const filePrefix = prefix.substring(prefix.lastIndexOf('/') > 0 ? prefix.lastIndexOf('/') + 1 : prefix.lastIndexOf('\\') + 1);
 
   try {
-    const entries = await invoke<string[]>('list_dir', { path: dir });
+    const entries = await invoke<FileEntry[]>('list_dir', { path: dir });
     for (const entry of entries) {
-      if (entry.startsWith(filePrefix)) {
-        const fullPath = `${dir}/${entry}${suffix}`;
+      if (entry.name.startsWith(filePrefix)) {
+        const fullPath = `${dir}/${entry.name}${suffix}`;
         if (await fileExists(fullPath)) {
           return fullPath;
         }

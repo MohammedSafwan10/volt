@@ -33,6 +33,8 @@ interface PendingRequest {
   timestamp: number;
 }
 
+type StartMode = 'sidecar' | 'external';
+
 /**
  * LSP Transport - manages communication with a single LSP server sidecar
  */
@@ -47,6 +49,9 @@ export class LspTransport {
   private nextRequestId = 1;
   private unlisteners: UnlistenFn[] = [];
   private isConnected = false;
+  private startMode: StartMode | null = null;
+  private startConfig: Omit<LspServerConfig, 'serverId' | 'serverType'> | Omit<ExternalLspConfig, 'serverId' | 'serverType'> | null = null;
+  private isRestarting = false;
 
   // Health monitoring state
   private healthConfig: Required<HealthConfig>;
@@ -93,6 +98,33 @@ export class LspTransport {
     return this.healthStatus.healthy;
   }
 
+  /** Lightweight runtime metrics for leak/perf monitoring */
+  getRuntimeSnapshot(): {
+    id: string;
+    type: string;
+    connected: boolean;
+    healthy: boolean;
+    pendingRequests: number;
+    eventListeners: number;
+    messageHandlers: number;
+    errorHandlers: number;
+    exitHandlers: number;
+    healthHandlers: number;
+  } {
+    return {
+      id: this.serverId,
+      type: this.serverType,
+      connected: this.isConnected,
+      healthy: this.healthStatus.healthy,
+      pendingRequests: this.pendingRequests.size,
+      eventListeners: this.unlisteners.length,
+      messageHandlers: this.messageHandlers.size,
+      errorHandlers: this.errorHandlers.size,
+      exitHandlers: this.exitHandlers.size,
+      healthHandlers: this.healthHandlers.size,
+    };
+  }
+
 
   /**
    * Start the LSP server sidecar and set up event listeners
@@ -112,6 +144,8 @@ export class LspTransport {
     // Set up event listeners
     await this.setupEventListeners();
     this.isConnected = true;
+    this.startMode = 'sidecar';
+    this.startConfig = { ...config };
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -136,6 +170,8 @@ export class LspTransport {
     // Set up event listeners (same as sidecar)
     await this.setupEventListeners();
     this.isConnected = true;
+    this.startMode = 'external';
+    this.startConfig = { ...config };
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -147,6 +183,12 @@ export class LspTransport {
    * Set up Tauri event listeners for this server
    */
   private async setupEventListeners(): Promise<void> {
+    // Defensive cleanup in case listeners were left over from a prior lifecycle.
+    for (const unlisten of this.unlisteners) {
+      unlisten();
+    }
+    this.unlisteners = [];
+
     // Listen for JSON-RPC messages from the server
     const messageUnlisten = await listen<JsonRpcMessage>(
       `lsp://${this.serverId}//message`,
@@ -367,6 +409,7 @@ export class LspTransport {
         if (this.healthConfig.autoRestart) {
           console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
           this.notifyError(`Server unhealthy, attempting restart...`);
+          await this.restartFromSavedConfig();
         }
       }
     }
@@ -377,78 +420,54 @@ export class LspTransport {
    * Uses $/cancelRequest with a fake ID - this is fast and doesn't trigger warnings
    */
   private async sendHealthPing(): Promise<void> {
-    const timeoutMs = this.healthConfig.timeoutMs;
-
-    return new Promise<void>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new Error('Health check timeout'));
-      }, timeoutMs);
-
-      // Use $/cancelRequest with a non-existent ID
-      // This is a notification (no response expected), so we just check if send succeeds
-      // The server will ignore it (no such request to cancel) but we confirm communication works
-      const notification: JsonRpcNotification = {
-        jsonrpc: '2.0',
-        method: '$/cancelRequest',
-        params: { id: -9999 }, // Non-existent ID
-      };
-
-      const message = JSON.stringify(notification);
-      invoke('lsp_send_message', {
-        serverId: this.serverId,
-        message,
-      })
-        .then(() => {
-          clearTimeout(timeoutId);
-          resolve();
-        })
-        .catch((e) => {
-          clearTimeout(timeoutId);
-          reject(e);
-        });
-    });
+    await this.sendRequestWithTimeout(
+      'workspace/symbol',
+      { query: '__volt_health_check__' },
+      this.healthConfig.timeoutMs
+    );
   }
 
   /**
    * Record a response time for average calculation
    */
   private recordResponseTime(timeMs: number): void {
-  this.responseTimes.push(timeMs);
-  // Keep only the last N response times
-  if(this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
-  this.responseTimes.shift();
-}
+    this.responseTimes.push(timeMs);
+    // Keep only the last N response times.
+    if (this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
+      this.responseTimes.shift();
+    }
   }
 
   /**
    * Calculate average response time from recorded times
    */
   private calculateAvgResponseTime(): number | null {
-  if (this.responseTimes.length === 0) return null;
-  const sum = this.responseTimes.reduce((a, b) => a + b, 0);
-  return Math.round(sum / this.responseTimes.length);
-}
+    if (this.responseTimes.length === 0) return null;
+    const sum = this.responseTimes.reduce((a, b) => a + b, 0);
+    return Math.round(sum / this.responseTimes.length);
+  }
 
   /**
    * Update health status and notify handlers
    */
   private updateHealthStatus(partial: Partial<HealthStatus>): void {
-  const previousHealthy = this.healthStatus.healthy;
-  this.healthStatus = { ...this.healthStatus, ...partial };
+    const previousHealthy = this.healthStatus.healthy;
+    const hadPreviousCheck = this.healthStatus.lastCheckAt !== null;
+    this.healthStatus = { ...this.healthStatus, ...partial };
 
-  // Only notify handlers if health state changed or it's the first check
-  const healthChanged = previousHealthy !== this.healthStatus.healthy;
-  const isFirstCheck = this.healthStatus.lastCheckAt === partial.lastCheckAt && partial.lastCheckAt !== null;
+    // Notify on health transitions and first completed check.
+    const healthChanged = previousHealthy !== this.healthStatus.healthy;
+    const isFirstCheck = !hadPreviousCheck && this.healthStatus.lastCheckAt !== null;
 
-  if(healthChanged || isFirstCheck) {
-  for (const handler of this.healthHandlers) {
-    try {
-      handler(this.health);
-    } catch (e) {
-      console.error('[LSP Transport] Health handler error:', e);
+    if (healthChanged || isFirstCheck) {
+      for (const handler of this.healthHandlers) {
+        try {
+          handler(this.health);
+        } catch (e) {
+          console.error('[LSP Transport] Health handler error:', e);
+        }
+      }
     }
-  }
-}
   }
 
   /**
@@ -478,36 +497,68 @@ configureHealth(config: HealthConfig): void {
    * Send a JSON-RPC request and wait for response
    */
   async sendRequest < T = unknown > (method: string, params ?: unknown): Promise < T > {
-  if(!this.isConnected) {
-  throw new Error('Transport not connected');
-}
+    return this.sendRequestWithTimeout<T>(method, params);
+  }
 
-const id = this.nextRequestId++;
-const request: JsonRpcRequest = {
-  jsonrpc: '2.0',
-  id,
-  method,
-  params,
-};
+  private async sendRequestWithTimeout<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs?: number
+  ): Promise<T> {
+    if (!this.isConnected) {
+      throw new Error('Transport not connected');
+    }
 
-// Create promise for the response
-const responsePromise = new Promise<T>((resolve, reject) => {
-  this.pendingRequests.set(id, {
-    resolve: resolve as (result: unknown) => void,
-    reject,
-    method,
-    timestamp: Date.now(),
-  });
-});
+    const id = this.nextRequestId++;
+    const request: JsonRpcRequest = {
+      jsonrpc: '2.0',
+      id,
+      method,
+      params,
+    };
 
-// Send the request
-const message = JSON.stringify(request);
-await invoke('lsp_send_message', {
-  serverId: this.serverId,
-  message,
-});
+    // Create promise for the response
+    const responsePromise = new Promise<T>((resolve, reject) => {
+      this.pendingRequests.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+        method,
+        timestamp: Date.now(),
+      });
+    });
 
-return responsePromise;
+    // Send the request
+    const message = JSON.stringify(request);
+    try {
+      await invoke('lsp_send_message', {
+        serverId: this.serverId,
+        message,
+      });
+    } catch (error) {
+      this.pendingRequests.delete(id);
+      throw error;
+    }
+
+    if (!timeoutMs || timeoutMs <= 0) {
+      return responsePromise;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`LSP request timed out: ${method}`));
+      }, timeoutMs);
+
+      responsePromise
+        .then((value) => {
+          clearTimeout(timeoutId);
+          resolve(value);
+        })
+        .catch((error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        });
+    });
   }
 
   /**
@@ -613,6 +664,36 @@ this.exitHandlers.clear();
 this.healthHandlers.clear();
 this.pendingRequests.clear();
 this.responseTimes = [];
+  }
+
+  private async restartFromSavedConfig(): Promise<void> {
+    if (this.isRestarting || !this.startMode || !this.startConfig) {
+      return;
+    }
+
+    this.isRestarting = true;
+    const messageHandlers = new Set(this.messageHandlers);
+    const errorHandlers = new Set(this.errorHandlers);
+    const exitHandlers = new Set(this.exitHandlers);
+    const healthHandlers = new Set(this.healthHandlers);
+
+    try {
+      await this.stop();
+      this.messageHandlers = messageHandlers;
+      this.errorHandlers = errorHandlers;
+      this.exitHandlers = exitHandlers;
+      this.healthHandlers = healthHandlers;
+
+      if (this.startMode === 'sidecar') {
+        await this.start(this.startConfig as Omit<LspServerConfig, 'serverId' | 'serverType'>);
+      } else {
+        await this.startExternal(this.startConfig as Omit<ExternalLspConfig, 'serverId' | 'serverType'>);
+      }
+    } catch (error) {
+      this.notifyError(`Failed to auto-restart server: ${String(error)}`);
+    } finally {
+      this.isRestarting = false;
+    }
   }
 
 /**

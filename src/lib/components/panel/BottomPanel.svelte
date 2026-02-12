@@ -453,6 +453,7 @@
 
   .panel-content {
     flex: 1;
+    min-height: 0;
     overflow: hidden;
     position: relative;
   }
@@ -460,6 +461,7 @@
   .panel-view {
     position: absolute;
     inset: 0;
+    min-height: 0;
     visibility: hidden;
     pointer-events: none;
   }

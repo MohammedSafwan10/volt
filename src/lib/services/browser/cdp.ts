@@ -137,7 +137,19 @@ export interface CdpEvaluateResult {
 // =============================================================================
 
 class CdpClient {
-  private unlisteners: UnlistenFn[] = [];
+  private unlisteners: Set<UnlistenFn> = new Set();
+
+  private trackUnlistener(unlisten: UnlistenFn): UnlistenFn {
+    const wrapped: UnlistenFn = () => {
+      try {
+        unlisten();
+      } finally {
+        this.unlisteners.delete(wrapped);
+      }
+    };
+    this.unlisteners.add(wrapped);
+    return wrapped;
+  }
 
   // ---------------------------------------------------------------------------
   // Connection
@@ -199,8 +211,7 @@ class CdpClient {
     const unlisten = await listen<CdpConsoleLog>('cdp://console', (event) => {
       callback(event.payload);
     });
-    this.unlisteners.push(unlisten);
-    return unlisten;
+    return this.trackUnlistener(unlisten);
   }
 
   /** Subscribe to error events */
@@ -208,8 +219,7 @@ class CdpClient {
     const unlisten = await listen<CdpJsError>('cdp://error', (event) => {
       callback(event.payload);
     });
-    this.unlisteners.push(unlisten);
-    return unlisten;
+    return this.trackUnlistener(unlisten);
   }
 
   /** Subscribe to network request events */
@@ -217,8 +227,7 @@ class CdpClient {
     const unlisten = await listen<CdpNetworkRequest>('cdp://network-request', (event) => {
       callback(event.payload);
     });
-    this.unlisteners.push(unlisten);
-    return unlisten;
+    return this.trackUnlistener(unlisten);
   }
 
   /** Subscribe to network response events */
@@ -226,8 +235,7 @@ class CdpClient {
     const unlisten = await listen<CdpNetworkResponse>('cdp://network-response', (event) => {
       callback(event.payload);
     });
-    this.unlisteners.push(unlisten);
-    return unlisten;
+    return this.trackUnlistener(unlisten);
   }
 
   // ---------------------------------------------------------------------------
@@ -398,8 +406,15 @@ class CdpClient {
 
   /** Cleanup all event listeners */
   cleanup(): void {
-    this.unlisteners.forEach(unlisten => unlisten());
-    this.unlisteners = [];
+    for (const unlisten of Array.from(this.unlisteners)) {
+      unlisten();
+    }
+    this.unlisteners.clear();
+  }
+
+  /** Runtime listener count for leak/perf monitoring */
+  getRuntimeSnapshot(): { listenerCount: number } {
+    return { listenerCount: this.unlisteners.size };
   }
 }
 

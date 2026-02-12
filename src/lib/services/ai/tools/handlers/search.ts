@@ -10,6 +10,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$lib/services/file-service';
+import { getIndexAge, indexProject, isIndexReady, searchFiles } from '$lib/services/file-index';
 import { projectStore } from '$lib/stores/project.svelte';
 import { truncateOutput, resolvePath, type ToolResult } from '../utils';
 import { getWorkspaceSymbols as getTsWorkspaceSymbols, isTsLspConnected, ensureTsLspStarted } from '$lib/services/lsp/typescript-sidecar';
@@ -218,8 +219,6 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     return { success: false, error: 'Search query cannot be empty' };
   }
 
-  // Import the file index search function
-  const { searchFiles, isIndexReady, indexProject, getIndexAge } = await import('$lib/services/file-index');
   const workspaceRoot = projectStore.rootPath || '';
 
   // Ensure index is ready and fresh (re-index if older than 5 minutes)

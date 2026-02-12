@@ -342,7 +342,9 @@ pub async fn start_file_watch(
                     total_changes: total,
                 };
 
-                let _ = app_handle.emit("file-watch://change", batch);
+                if app_handle.emit("file-watch://change", batch).is_err() {
+                    break;
+                }
             }
         }
     });

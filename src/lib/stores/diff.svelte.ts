@@ -2,6 +2,8 @@
  * Diff View Store - Manages Monaco DiffEditor state
  * Provides proper VS Code-style inline diff with red/green highlighting
  */
+import { writeFile } from '$lib/services/file-system';
+import { editorStore } from './editor.svelte';
 
 export interface DiffState {
   /** Whether diff view is active */
@@ -119,9 +121,6 @@ class DiffStore {
     // Sync the modified content to the editor if file is open
     if (filePath && modifiedContent) {
       try {
-        const { editorStore } = await import('./editor.svelte');
-        const { writeFile } = await import('$lib/services/file-system');
-        
         // Write modified content back to disk
         await writeFile(filePath, modifiedContent);
         await editorStore.updateFileContent(filePath, modifiedContent);
@@ -143,9 +142,6 @@ class DiffStore {
     // Revert to original content if file is open
     if (filePath && originalContent) {
       try {
-        const { editorStore } = await import('./editor.svelte');
-        const { writeFile } = await import('$lib/services/file-system');
-        
         // Write original content back to disk
         await writeFile(filePath, originalContent);
         

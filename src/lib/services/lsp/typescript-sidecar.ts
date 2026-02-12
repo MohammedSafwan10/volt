@@ -20,6 +20,8 @@
 import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
 import { problemsStore, type Problem, type ProblemSeverity } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
+import { readFileQuiet } from '$lib/services/file-system';
+import { getAllFiles } from '$lib/services/file-index';
 import { registerTsMonacoProviders, disposeTsMonacoProviders } from './typescript-monaco-providers';
 
 // Server instance tracking
@@ -554,10 +556,6 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
  */
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
-
-  // Use dynamic import for fileIndex to avoid circular deps if any
-  const { getAllFiles } = await import('$lib/services/file-index');
-  const { readFileQuiet } = await import('$lib/services/file-system');
 
   const allFiles = getAllFiles();
   const tsJsFiles = allFiles.filter(f => isTsJsFile(f.path));

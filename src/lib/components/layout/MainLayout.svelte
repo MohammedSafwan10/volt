@@ -7,13 +7,9 @@
   import { ActivityBar, SidePanel } from "$lib/components/sidebar";
   import SettingsPanel from "$lib/components/sidebar/SettingsPanel.svelte";
   import { WelcomeScreen } from "$lib/components/welcome";
-  import {
-    MonacoEditor,
-    MonacoDiffEditor,
-    Breadcrumb,
-    EmptyState,
-    GoToLineDialog,
-  } from "$lib/components/editor";
+  import Breadcrumb from "$lib/components/editor/Breadcrumb.svelte";
+  import EmptyState from "$lib/components/editor/EmptyState.svelte";
+  import GoToLineDialog from "$lib/components/editor/GoToLineDialog.svelte";
   import { TabBar } from "$lib/components/tabs";
   import {
     CommandPalette,
@@ -22,8 +18,14 @@
   import { BottomPanel } from "$lib/components/panel";
   import { AssistantPanel } from "$lib/components/assistant";
   import { BrowserPanel } from "$lib/components/browser";
-  import { loadMonaco } from "$lib/services/monaco-loader";
   import { loadXterm } from "$lib/services/terminal-loader";
+  import {
+    getModelLineCount,
+    getModelValue,
+    revealLine,
+    runEditorAction,
+    setModelValue,
+  } from "$lib/services/monaco-models";
   import { uiStore } from "$lib/stores/ui.svelte";
   import { bottomPanelStore } from "$lib/stores/bottom-panel.svelte";
   import { projectStore } from "$lib/stores/project.svelte";
@@ -51,6 +53,7 @@
     formatCurrentDocument,
     isPrettierFile,
   } from "$lib/services/prettier";
+  import { runtimeTelemetry } from "$lib/services/runtime-telemetry";
   import { mcpStore } from "$lib/stores/mcp.svelte";
 
   interface Props {
@@ -61,6 +64,9 @@
 
   // Command palette reference
   let commandPalette: ReturnType<typeof CommandPalette> | undefined = $state();
+  let MonacoEditorComponent = $state<any | null>(null);
+  let MonacoDiffEditorComponent = $state<any | null>(null);
+  let monacoFeatureLoading = $state(false);
 
   // Go to Line dialog state
   let goToLineOpen = $state(false);
@@ -103,22 +109,32 @@
 
   function openGoToLine(): void {
     if (!editorStore.activeFile) return;
-    // Get line count from Monaco model
-    import("$lib/services/monaco-models")
-      .then(({ getModelLineCount }) => {
-        const lineCount = getModelLineCount(editorStore.activeFile!.path);
-        goToLineMax = lineCount || 1;
-        goToLineOpen = true;
-      })
-      .catch(() => {
-        goToLineMax = 1000;
-        goToLineOpen = true;
-      });
+    const lineCount = getModelLineCount(editorStore.activeFile.path);
+    goToLineMax = lineCount || 1;
+    goToLineOpen = true;
+  }
+
+  async function ensureMonacoFeatureLoaded(): Promise<void> {
+    if (MonacoEditorComponent && MonacoDiffEditorComponent) return;
+    if (monacoFeatureLoading) return;
+
+    monacoFeatureLoading = true;
+    try {
+      const [editorModule, diffModule] = await Promise.all([
+        import("$lib/components/editor/MonacoEditor.svelte"),
+        import("$lib/components/editor/MonacoDiffEditor.svelte"),
+      ]);
+      MonacoEditorComponent = editorModule.default;
+      MonacoDiffEditorComponent = diffModule.default;
+    } catch (error) {
+      console.error("[MainLayout] Failed to load Monaco feature bundle:", error);
+    } finally {
+      monacoFeatureLoading = false;
+    }
   }
 
   async function handleGoToLine(line: number): Promise<void> {
     if (!editorStore.activeFile) return;
-    const { revealLine } = await import("$lib/services/monaco-models");
     revealLine(editorStore.activeFile.path, line);
   }
 
@@ -139,10 +155,12 @@
   // Also initialize auto-save listeners.
   onMount(() => {
     logOutput("Volt", "Volt IDE started");
-    logOutput("Volt", "Warming up Monaco editor...");
-    void loadMonaco();
     logOutput("Volt", "Warming up terminal...");
     void loadXterm();
+    const telemetryDebug =
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("volt.runtimeTelemetry.log") === "1";
+    runtimeTelemetry.start(30_000, telemetryDebug);
     initAutoSave();
     logOutput("Volt", "Auto-save initialized");
 
@@ -174,6 +192,7 @@
     );
 
     return () => {
+      runtimeTelemetry.stop();
       destroyAutoSave();
       // Do not kill terminals on component unmount/reload.
       // Backend handles terminal cleanup on actual window close.
@@ -219,32 +238,25 @@
 
     // Prefer saving the live Monaco model value to avoid any lag from debounced store updates.
     let contentToSave = activeFile.content;
-    try {
-      const { getModelValue, setModelValue } = await import(
-        "$lib/services/monaco-models"
-      );
-      const modelValue = getModelValue(activeFile.path);
-      if (typeof modelValue === "string") {
-        contentToSave = modelValue;
-        editorStore.updateContent(activeFile.path, modelValue);
-      }
+    const modelValue = getModelValue(activeFile.path);
+    if (typeof modelValue === "string") {
+      contentToSave = modelValue;
+      editorStore.updateContent(activeFile.path, modelValue);
+    }
 
-      if (
-        settingsStore.formatOnSaveEnabled &&
-        isPrettierFile(activeFile.path)
-      ) {
-        const formatted = await formatBeforeSave(
-          contentToSave,
-          activeFile.path,
-        );
-        if (formatted !== contentToSave) {
-          contentToSave = formatted;
-          setModelValue(activeFile.path, formatted);
-          editorStore.updateContent(activeFile.path, formatted);
-        }
+    if (
+      settingsStore.formatOnSaveEnabled &&
+      isPrettierFile(activeFile.path)
+    ) {
+      const formatted = await formatBeforeSave(
+        contentToSave,
+        activeFile.path,
+      );
+      if (formatted !== contentToSave) {
+        contentToSave = formatted;
+        setModelValue(activeFile.path, formatted);
+        editorStore.updateContent(activeFile.path, formatted);
       }
-    } catch {
-      // ignore
     }
 
     const success = await writeFile(activeFile.path, contentToSave);
@@ -419,13 +431,7 @@
     if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
       e.preventDefault();
       uiStore.closeMenus();
-      void import("$lib/services/monaco-models")
-        .then(({ runEditorAction }) =>
-          runEditorAction("editor.action.quickOutline"),
-        )
-        .catch(() => {
-          // ignore
-        });
+      runEditorAction("editor.action.quickOutline");
     }
 
     // Ctrl+T to open Go to Symbol in Workspace
@@ -538,6 +544,12 @@
   $effect(() => {
     void applyNativeZoom(uiStore.zoomPercent);
   });
+
+  $effect(() => {
+    if (diffStore.isActive || !!editorStore.activeFile) {
+      void ensureMonacoFeatureLoaded();
+    }
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -587,14 +599,18 @@
               {@render children()}
             {:else if diffStore.isActive}
               <!-- Diff Editor Mode -->
-              {#key diffStore.state.sessionId}
-                <MonacoDiffEditor
-                  originalContent={diffStore.state.originalContent}
-                  modifiedContent={diffStore.state.modifiedContent}
-                  language={diffStore.state.language}
-                  title={diffStore.state.title}
-                />
-              {/key}
+              {#if MonacoDiffEditorComponent}
+                {#key diffStore.state.sessionId}
+                  <MonacoDiffEditorComponent
+                    originalContent={diffStore.state.originalContent}
+                    modifiedContent={diffStore.state.modifiedContent}
+                    language={diffStore.state.language}
+                    title={diffStore.state.title}
+                  />
+                {/key}
+              {:else}
+                <EmptyState hasProject={true} />
+              {/if}
             {:else if editorStore.activeFile}
               {#if editorStore.activeFile.path === VOLT_SETTINGS_PATH}
                 <div
@@ -605,13 +621,17 @@
                   <SettingsPanel />
                 </div>
               {:else}
-                <MonacoEditor
-                  filepath={editorStore.activeFile.path}
-                  value={editorStore.activeFile.content}
-                  language={editorStore.activeFile.language}
-                  readonly={editorStore.activeFile.readonly ?? false}
-                  onchange={handleEditorChange}
-                />
+                {#if MonacoEditorComponent}
+                  <MonacoEditorComponent
+                    filepath={editorStore.activeFile.path}
+                    value={editorStore.activeFile.content}
+                    language={editorStore.activeFile.language}
+                    readonly={editorStore.activeFile.readonly ?? false}
+                    onchange={handleEditorChange}
+                  />
+                {:else}
+                  <EmptyState hasProject={true} />
+                {/if}
               {/if}
             {:else if !projectStore.rootPath}
               <WelcomeScreen />

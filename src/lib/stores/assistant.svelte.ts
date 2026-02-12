@@ -10,11 +10,36 @@
 
 import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName } from '$lib/services/ai/tools/definitions';
-import { getModelConfig, MODEL_REGISTRY, type ModelConfig } from '$lib/services/ai/models';
-import { countTokens, countConversationTokens, type ContentType } from '$lib/services/token-counter';
+import type { ContentType } from '$lib/services/token-counter';
+import { readFile } from '$lib/services/file-system';
 import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$lib/services/file-service';
 import { terminalStore } from '$lib/stores/terminal.svelte';
+import { projectStore } from '$lib/stores/project.svelte';
+import { editorStore } from './editor.svelte';
+import { chatHistoryStore } from './chat-history.svelte';
+import {
+  estimateTokensFromChars,
+  generateChecksum,
+  isLikelySecretPath,
+  redactSecrets,
+  sanitizeUserInput,
+} from './assistant/utils';
+import {
+  CONTEXT_LIMITS,
+  IMAGE_LIMITS,
+  MODE_CAPABILITIES,
+} from './assistant/config';
+import {
+  formatTokenCount,
+  getAttachmentPreviews,
+  getContextUsage,
+  getConversationContextChars,
+  getConversationTokens,
+  getTotalContextSize,
+  isContextWithinLimits,
+  type ContextUsage,
+} from './assistant/context-utils';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
@@ -163,87 +188,9 @@ export interface AttachedContext {
   label: string;
 }
 
-// Image attachment limits (configurable)
-export const IMAGE_LIMITS = {
-  maxImagesPerMessage: 5,
-  maxImageBytes: 5 * 1024 * 1024, // 5MB per image
-  maxTotalImageBytesPerMessage: 15 * 1024 * 1024, // 15MB total
-  allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'] as const
-};
-
-// Model context limits - derived from the single source of truth in models.ts
-// No more hardcoded duplicates that go stale!
-export function getModelContextLimits(modelId: string): { inputTokens: number; outputTokens: number } {
-  const config = getModelConfig(modelId);
-  if (config) {
-    return {
-      inputTokens: config.contextWindow,
-      outputTokens: config.maxOutput,
-    };
-  }
-  return DEFAULT_CONTEXT_LIMIT;
-}
-
-// Default context limit if model not found
-const DEFAULT_CONTEXT_LIMIT = { inputTokens: 1_000_000, outputTokens: 8_192 };
-
-// Keep backward-compatible export (dynamically generated from MODEL_REGISTRY)
-export const MODEL_CONTEXT_LIMITS: Record<string, { inputTokens: number; outputTokens: number }> =
-  Object.fromEntries(
-    Object.values(MODEL_REGISTRY).map((m: ModelConfig) => [
-      m.id.replace(/\|thinking$/, ''),
-      { inputTokens: m.contextWindow, outputTokens: m.maxOutput }
-    ])
-  );
-
-// Context packing limits
-export const CONTEXT_LIMITS = {
-  maxContextSize: 100000, // ~100k chars default cap for attachments
-  maxFilesPerMessage: 10
-};
-
 const MAX_THINKING_CHARS = 8000;
 const MAX_IN_MEMORY_MESSAGES = 500;
 const IN_MEMORY_KEEP_RECENT = 220;
-
-// Secret patterns to redact
-const SECRET_PATTERNS = [
-  /^\.env$/i,
-  /\.env\./i,
-  /secret/i,
-  /password/i,
-  /api[_-]?key/i,
-  /token/i,
-  /credential/i,
-  /private[_-]?key/i
-];
-
-// Mode capabilities - enforced in code, not just UI
-export const MODE_CAPABILITIES: Record<AIMode, {
-  canMutateFiles: boolean;
-  canExecuteCommands: boolean;
-  canUseTools: boolean;
-  description: string;
-}> = {
-  ask: {
-    canMutateFiles: false,
-    canExecuteCommands: false,
-    canUseTools: true, // Read-only tools are allowed
-    description: 'Read-only mode for questions and explanations'
-  },
-  plan: {
-    canMutateFiles: false,
-    canExecuteCommands: false,
-    canUseTools: true,
-    description: 'Planning mode - can analyze but not modify'
-  },
-  agent: {
-    canMutateFiles: true,
-    canExecuteCommands: true,
-    canUseTools: true,
-    description: 'Full agent mode with file and command access'
-  }
-};
 
 // Panel width storage key
 const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
@@ -252,94 +199,6 @@ const CURRENT_CONV_ID_KEY = 'volt.assistant.currentConversationId';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
-
-/**
- * Generate a short checksum for content (for stale detection)
- */
-function generateChecksum(content: string): string {
-  let hash = 0;
-  for (let i = 0; i < content.length; i++) {
-    const char = content.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  return Math.abs(hash).toString(16).slice(0, 8);
-}
-
-/**
- * Check if a path looks like it contains secrets
- */
-function isLikelySecretPath(path: string): boolean {
-  const filename = path.split('/').pop() ?? path;
-  return SECRET_PATTERNS.some(pattern => pattern.test(filename));
-}
-
-/**
- * Redact potential secrets from content
- */
-function redactSecrets(content: string): string {
-  // Redact common secret patterns - key=value assignments with secret-like names
-  return content
-    .replace(/([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*["']?([^"'\s\n]+)["']?/gi, '$1=[REDACTED]')
-    .replace(/Bearer\s+[A-Za-z0-9_-]{20,}/gi, 'Bearer [REDACTED]');
-  // NOTE: Removed the overly aggressive 32+ char regex that was redacting
-  // UUIDs, base64 content, long variable names, hash strings, etc.
-  // Only secret-like key=value patterns and Bearer tokens are now redacted.
-}
-
-/**
- * Sanitize user input to remove excessive repetition
- * This prevents the model from echoing back massive repetitive text
- */
-function sanitizeUserInput(content: string): string {
-  // Max input length (chars) - roughly 50k tokens
-  const MAX_INPUT_LENGTH = 200_000;
-
-  // If input is short, no need to process
-  if (content.length < 500) {
-    return content;
-  }
-
-  // Truncate if excessively long
-  if (content.length > MAX_INPUT_LENGTH) {
-    content = content.slice(0, MAX_INPUT_LENGTH) + '\n\n[Input truncated due to length]';
-  }
-
-  // Detect repetitive patterns (phrases repeated 3+ times consecutively)
-  // Common pattern: "make it better and add features and make it better and add features..."
-  const words = content.split(/\s+/);
-
-  // Look for repeated phrase patterns (5-30 words)
-  for (let phraseLen = 5; phraseLen <= 30; phraseLen++) {
-    if (words.length < phraseLen * 3) continue;
-
-    for (let start = 0; start < words.length - phraseLen * 2; start++) {
-      const phrase = words.slice(start, start + phraseLen).join(' ');
-      let repeatCount = 1;
-      let checkPos = start + phraseLen;
-
-      while (checkPos + phraseLen <= words.length) {
-        const nextPhrase = words.slice(checkPos, checkPos + phraseLen).join(' ');
-        if (nextPhrase === phrase) {
-          repeatCount++;
-          checkPos += phraseLen;
-        } else {
-          break;
-        }
-      }
-
-      // If phrase repeats 3+ times, collapse it
-      if (repeatCount >= 3) {
-        const beforeRepeat = words.slice(0, start).join(' ');
-        const afterRepeat = words.slice(start + phraseLen * repeatCount).join(' ');
-        const collapsed = `${beforeRepeat} ${phrase} [repeated ${repeatCount}x, collapsed] ${afterRepeat}`.trim();
-        return sanitizeUserInput(collapsed); // Recurse to catch nested patterns
-      }
-    }
-  }
-
-  return content;
-}
 
 class AssistantStore {
   // Panel state
@@ -431,11 +290,9 @@ class AssistantStore {
     };
     this.saveCurrentConversationId();
 
-    // Immediately notify chat history store of the new active ID
-    // The conversation will be persisted when the first message is sent
-    import('./chat-history.svelte').then(({ chatHistoryStore }) => {
-      chatHistoryStore.activeConversationId = newId;
-    });
+    // Immediately notify chat history store of the new active ID.
+    // The conversation will be persisted when the first message is sent.
+    chatHistoryStore.activeConversationId = newId;
   }
 
   /**
@@ -715,11 +572,9 @@ class AssistantStore {
     if (!convId) return;
 
     // Persist mode so reload restores the same UX state (e.g. Plan CTA visibility).
-    import('./chat-history.svelte')
-      .then(({ chatHistoryStore }) => chatHistoryStore.updateMode(convId, mode))
-      .catch((err) => {
-        console.warn('[AssistantStore] Failed to persist conversation mode:', err);
-      });
+    chatHistoryStore.updateMode(convId, mode).catch((err) => {
+      console.warn('[AssistantStore] Failed to persist conversation mode:', err);
+    });
   }
 
   // History management
@@ -1161,7 +1016,6 @@ class AssistantStore {
     if (!msg || !convId) return;
 
     try {
-      const { chatHistoryStore } = await import('./chat-history.svelte');
       try {
         await chatHistoryStore.createConversation(convId, this.currentMode);
       } catch (createErr) {
@@ -1663,179 +1517,61 @@ class AssistantStore {
     thumbnailData?: string;
     mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   }> {
-    return this.pendingAttachments.map(a => {
-      const base = {
-        id: a.id,
-        type: a.type,
-        label: a.label,
-        isImage: a.type === 'image'
-      };
-
-      if (a.type === 'image') {
-        const img = a as ImageAttachment;
-        return {
-          ...base,
-          size: `${(img.byteSize / 1024).toFixed(1)}KB`,
-          dimensions: img.dimensions ? `${img.dimensions.width}×${img.dimensions.height}` : undefined,
-          thumbnailData: img.data, // For preview
-          mimeType: img.mimeType
-        };
-      }
-
-      if (a.type === 'file' || a.type === 'selection') {
-        const content = (a as FileAttachment | SelectionAttachment).content;
-        return {
-          ...base,
-          size: `${content.length} chars`
-        };
-      }
-
-      if (a.type === 'element') {
-        const el = a as ElementAttachment;
-        return {
-          ...base,
-          size: `${Math.round(el.rect.width)}×${Math.round(el.rect.height)}`
-        };
-      }
-
-      return base;
-    });
+    return getAttachmentPreviews(this.pendingAttachments) as Array<{
+      id: string;
+      type: MessageAttachment['type'];
+      label: string;
+      size?: string;
+      dimensions?: string;
+      isImage: boolean;
+      thumbnailData?: string;
+      mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
+    }>;
   }
-
   /**
    * Get total context size for current attachments
    */
   getTotalContextSize(): number {
-    return this.pendingAttachments.reduce((total, a) => {
-      if (a.type === 'file' || a.type === 'selection') {
-        return total + (a as FileAttachment | SelectionAttachment).content.length;
-      }
-      if (a.type === 'image') {
-        return total + (a as ImageAttachment).byteSize;
-      }
-      return total;
-    }, 0);
+    return getTotalContextSize(this.pendingAttachments);
   }
-
   /**
    * Check if context size is within limits
    */
   isContextWithinLimits(): boolean {
-    const textSize = this.pendingAttachments
-      .filter(a => a.type === 'file' || a.type === 'selection')
-      .reduce((sum, a) => sum + (a as FileAttachment | SelectionAttachment).content.length, 0);
-
-    return textSize <= CONTEXT_LIMITS.maxContextSize;
+    return isContextWithinLimits(this.pendingAttachments);
   }
-
   /**
    * Estimate token count from character count (uses accurate token counter)
    */
   estimateTokens(charCount: number, contentType: ContentType = 'mixed'): number {
-    return countTokens('x'.repeat(charCount), contentType);
+    return estimateTokensFromChars(charCount, contentType);
   }
-
   /**
    * Get accurate token count for the entire conversation
    * Uses content-aware token counting (code vs prose vs mixed)
    */
   getConversationTokens(): number {
-    const messagesForCount = this.messages.map(msg => ({
-      content: msg.content + (msg.thinking ? `\n${msg.thinking}` : ''),
-      attachments: msg.attachments?.map(a => {
-        if (a.type === 'file' || a.type === 'selection') {
-          return { type: a.type, content: (a as FileAttachment | SelectionAttachment).content };
-        }
-        if (a.type === 'image') {
-          return { type: a.type, data: (a as ImageAttachment).data };
-        }
-        return { type: a.type };
-      })
-    }));
-
-    const pendingAtts = this.pendingAttachments.map(a => {
-      if (a.type === 'file' || a.type === 'selection') {
-        return { type: a.type, content: (a as FileAttachment | SelectionAttachment).content };
-      }
-      if (a.type === 'image') {
-        return { type: a.type, data: (a as ImageAttachment).data };
-      }
-      return { type: a.type };
-    });
-
-    return countConversationTokens(messagesForCount, this.inputValue, pendingAtts);
+    return getConversationTokens(this.messages, this.inputValue, this.pendingAttachments);
   }
-
   /**
    * Get total conversation context size in characters (legacy, for compatibility)
    * Includes all messages + pending attachments + input
    */
   getConversationContextChars(): number {
-    let total = 0;
-
-    for (const msg of this.messages) {
-      total += msg.content.length;
-      if (msg.thinking) {
-        total += msg.thinking.length;
-      }
-      if (msg.attachments) {
-        for (const a of msg.attachments) {
-          if (a.type === 'file' || a.type === 'selection') {
-            total += (a as FileAttachment | SelectionAttachment).content.length;
-          }
-          if (a.type === 'image') {
-            total += (a as ImageAttachment).data.length;
-          }
-        }
-      }
-    }
-
-    total += this.getTotalContextSize();
-    total += this.inputValue.length;
-
-    return total;
+    return getConversationContextChars(this.messages, this.pendingAttachments, this.inputValue);
   }
-
   /**
    * Get context usage info for UI display (uses accurate token counting)
    */
-  getContextUsage(model = 'gemini-2.5-flash'): {
-    usedTokens: number;
-    maxTokens: number;
-    usedChars: number;
-    percentage: number;
-    isNearLimit: boolean;
-    isOverLimit: boolean;
-  } {
-    const { inputTokens: maxTokens } = getModelContextLimits(model);
-
-    const usedChars = this.getConversationContextChars();
-    const usedTokens = this.getConversationTokens(); // Use accurate counting
-    const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
-
-    return {
-      usedTokens,
-      maxTokens,
-      usedChars,
-      percentage,
-      isNearLimit: percentage > 80,
-      isOverLimit: percentage >= 100
-    };
+  getContextUsage(model = 'gemini-2.5-flash'): ContextUsage {
+    return getContextUsage(model, this.messages, this.pendingAttachments, this.inputValue);
   }
-
   /**
    * Format token count for display (e.g., "1.2M", "500K", "1,234")
    */
   formatTokenCount(tokens: number): string {
-    if (tokens >= 1_000_000) {
-      return `${(tokens / 1_000_000).toFixed(1)}M`;
-    }
-    if (tokens >= 1_000) {
-      return `${(tokens / 1_000).toFixed(0)}K`;
-    }
-    return tokens.toLocaleString();
+    return formatTokenCount(tokens);
   }
-
   // Streaming controls
   startStreaming(): AbortController {
     const controller = new AbortController();
@@ -2087,7 +1823,6 @@ class AssistantStore {
 
     // 2. Format results and calculate rough diffs
     const results = [];
-    const { readFile } = await import('$lib/services/file-system');
 
     for (const [path, { before, isNew }] of filesToRevert.entries()) {
       const name = path.split(/[/\\]/).pop() || path;
@@ -2220,8 +1955,6 @@ class AssistantStore {
 
     // 2. Perform physical revert
     try {
-      const { editorStore } = await import('./editor.svelte');
-
       // Pre-close open files and stop terminals inside deletion targets.
       // This dramatically improves reliability when deleting big trees (e.g. node_modules) on Windows.
       if (collapsedDeletionTargets.length > 0) {
@@ -2281,7 +2014,6 @@ class AssistantStore {
       }
 
       // Refresh tree
-      const { projectStore } = await import('./project.svelte');
       await projectStore.refreshTree();
     } catch (err) {
       console.error('[AssistantStore] Revert failed:', err);
@@ -2325,9 +2057,20 @@ class AssistantStore {
 
 // Singleton instance
 export const assistantStore = new AssistantStore();
+chatHistoryStore.setActiveConversationDeletedHandler(() => {
+  assistantStore.clearConversation();
+});
 
 // Export constants for use in components
 export { MIN_PANEL_WIDTH, MAX_PANEL_WIDTH };
+export {
+  CONTEXT_LIMITS,
+  getModelContextLimits,
+  IMAGE_LIMITS,
+  MODE_CAPABILITIES,
+  MODEL_CONTEXT_LIMITS,
+} from './assistant/config';
 
 // Export utility functions
-export { generateChecksum, isLikelySecretPath, redactSecrets };
+export { generateChecksum, isLikelySecretPath, redactSecrets } from './assistant/utils';
+

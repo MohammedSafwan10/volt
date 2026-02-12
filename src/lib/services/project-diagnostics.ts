@@ -1,5 +1,22 @@
 import { invoke } from '@tauri-apps/api/core';
 import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
+import {
+    clearIndex,
+    getAllFiles,
+    getIndexedRoot,
+    indexProject,
+    isIndexReady,
+    isIndexing,
+} from '$lib/services/file-index';
+import { startProjectWideAnalysis as startCssAnalysis } from '$lib/services/lsp/css-sidecar';
+import { startProjectWideAnalysis as startHtmlAnalysis } from '$lib/services/lsp/html-sidecar';
+import { startProjectWideAnalysis as startTsAnalysis } from '$lib/services/lsp/typescript-sidecar';
+import { startProjectWideAnalysis as startSvelteAnalysis } from '$lib/services/lsp/svelte-sidecar';
+import { startProjectWideAnalysis as startEslintAnalysis } from '$lib/services/lsp/eslint-sidecar';
+import {
+    startDartLsp,
+    startProjectWideAnalysis as startDartAnalysis,
+} from '$lib/services/lsp/dart-sidecar';
 
 interface SystemCapabilities {
     os_name?: string;
@@ -105,8 +122,6 @@ export class ProjectDiagnostics {
      */
     private async runLspDiagnostics(rootPath: string): Promise<void> {
         try {
-            const { indexProject, isIndexReady, isIndexing, getIndexedRoot, getAllFiles, clearIndex } = await import('$lib/services/file-index');
-
             // Ensure index is ready for THIS root path
             const currentIndexedRoot = getIndexedRoot();
             if (rootPath && (currentIndexedRoot !== rootPath || !isIndexReady() || isIndexing())) {
@@ -125,14 +140,6 @@ export class ProjectDiagnostics {
                 allFiles = getAllFiles();
                 console.log(`[ProjectDiagnostics] Re-index complete. Found ${allFiles.length} files`);
             }
-
-            // Use dynamic imports to avoid circular dependencies
-            const { startProjectWideAnalysis: startCssAnalysis } = await import('./lsp/css-sidecar');
-            const { startProjectWideAnalysis: startHtmlAnalysis } = await import('./lsp/html-sidecar');
-            const { startProjectWideAnalysis: startTsAnalysis } = await import('./lsp/typescript-sidecar');
-            const { startProjectWideAnalysis: startSvelteAnalysis } = await import('./lsp/svelte-sidecar');
-            const { startProjectWideAnalysis: startEslintAnalysis } = await import('./lsp/eslint-sidecar');
-            const { startDartLsp, startProjectWideAnalysis: startDartAnalysis } = await import('./lsp/dart-sidecar');
 
             console.log('[ProjectDiagnostics] Starting background LSP analysis discovery...');
 

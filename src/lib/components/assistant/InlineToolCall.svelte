@@ -437,6 +437,9 @@
     });
   });
 
+  const primaryFiles = $derived(files.slice(0, 1));
+  const remainingFileCount = $derived(Math.max(0, files.length - primaryFiles.length));
+
   const diagnosticSummary = $derived.by(() => {
     if (!toolCall.meta) return null;
     const meta = toolCall.meta as any;
@@ -499,7 +502,9 @@
 
         <div class="terminal-command-preview">
           <span class="prompt-char">$</span>
-          <span class="command-text">{terminalCommand || "command"}</span>
+          <span class="command-text" class:loading-text={isRunning}
+            >{terminalCommand || "command"}</span
+          >
         </div>
 
         <div class="terminal-meta">
@@ -557,7 +562,14 @@
             {/if}
           </span>
         {/if}
-        <span class="tool-name">{getToolDisplayName()}</span>
+        <span class="tool-name" class:loading-text={isRunning}
+          >{getToolDisplayName()}</span
+        >
+        {#if isRunning}
+          <span class="live-indicator" aria-label="Tool is running"
+            >Working…</span
+          >
+        {/if}
       </div>
 
       <div class="header-right-meta">
@@ -579,10 +591,7 @@
           </div>
         {:else if files.length > 0}
           <div class="files-container" class:multi={files.length > 1}>
-            {#each files as file}
-              {@const parts = file.path.split(/[/\\]/)}
-              {@const dir =
-                parts.length > 1 ? parts.slice(0, -1).join("/") : null}
+            {#each primaryFiles as file}
               <div
                 class="file-pill-group"
                 role="button"
@@ -598,16 +607,15 @@
                   }
                 }}
               >
-                {#if dir}
-                  <span class="path-pill">{dir}/</span>
-                {/if}
                 <div class="file-pill" class:is-loading={isRunning}>
                   {#if isRunning && !isStreaming}
                     <UIIcon name="spinner" size={12} class="spinner-icon" />
                   {:else}
                     <UIIcon name={file.icon} size={12} />
                   {/if}
-                  <span class="filename">{file.filename}</span>
+                  <span class="filename" class:loading-text={isRunning}
+                    >{file.filename}</span
+                  >
                   {#if isStreaming && streamingProgress}
                     <div class="pill-progress-bar">
                       <div
@@ -619,6 +627,25 @@
                 </div>
               </div>
             {/each}
+            {#if remainingFileCount > 0}
+              <span
+                class="more-files-pill"
+                role="button"
+                tabindex="0"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  expanded = true;
+                }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    expanded = true;
+                  }
+                }}
+              >
+                +{remainingFileCount} more
+              </span>
+            {/if}
           </div>
         {/if}
 
@@ -739,6 +766,25 @@
           {/each}
         </div>
       {:else}
+        {#if files.length > 1}
+          <div class="detail-section">
+            <span class="detail-label">Files:</span>
+            <div class="detail-file-list">
+              {#each files as file}
+                <button
+                  class="detail-file-item"
+                  type="button"
+                  onclick={() => handleFileClick(file.path)}
+                >
+                  <UIIcon name={file.icon} size={12} />
+                  <span class="detail-file-name">{file.filename}</span>
+                  <span class="detail-file-path">{file.path}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         {#if meta?.why && !isPending}
           <div class="detail-row">
             <span class="detail-label">Why:</span>
@@ -766,6 +812,15 @@
             <pre class="detail-output">{@html formatOutputWithLinks(
                 toolCall.output,
               )}</pre>
+          </div>
+        {:else if isRunning}
+          <div class="detail-section">
+            <span class="detail-label">Output:</span>
+            <div class="detail-skeleton" aria-hidden="true">
+              <span class="skeleton-line short"></span>
+              <span class="skeleton-line medium"></span>
+              <span class="skeleton-line long"></span>
+            </div>
           </div>
         {/if}
       {/if}
@@ -993,6 +1048,28 @@
     font-size: 12px;
   }
 
+  .live-indicator {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+    opacity: 0.9;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+  }
+
+  .loading-text {
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-text-secondary) 45%, transparent) 0%,
+      color-mix(in srgb, var(--color-text) 85%, transparent) 50%,
+      color-mix(in srgb, var(--color-text-secondary) 45%, transparent) 100%
+    );
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: tool-text-shimmer 1.5s linear infinite;
+  }
+
   .header-right-meta {
     display: flex;
     align-items: center;
@@ -1000,37 +1077,6 @@
     flex: 1;
     min-width: 0;
     justify-content: flex-start;
-  }
-
-  .inline-tool-call.running .tool-header {
-    position: relative;
-    overflow: hidden;
-  }
-
-  .inline-tool-call.running .tool-header::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      rgba(255, 255, 255, 0.05),
-      transparent
-    );
-    animation: header-shimmer 2s infinite linear;
-    pointer-events: none;
-  }
-
-  @keyframes header-shimmer {
-    0% {
-      transform: translateX(-100%);
-    }
-    100% {
-      transform: translateX(100%);
-    }
   }
 
   .files-container {
@@ -1059,12 +1105,25 @@
     border-color: var(--color-active);
   }
 
-  .path-pill {
+  .more-files-pill {
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-bg-input);
     color: var(--color-text-secondary);
-    opacity: 0.6;
-    font-size: 11px;
+    font-size: 10px;
+    font-weight: 600;
     white-space: nowrap;
-    padding-right: 4px;
+    transition: all 0.12s ease;
+  }
+
+  .more-files-pill:hover {
+    color: var(--color-text);
+    border-color: var(--color-active);
+    background: var(--color-hover);
   }
 
   .file-pill {
@@ -1381,6 +1440,47 @@
     color: var(--color-error);
   }
 
+  .detail-file-list {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  .detail-file-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--color-surface0);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    text-align: left;
+  }
+
+  .detail-file-item:hover {
+    background: var(--color-hover);
+    border-color: var(--color-active);
+    color: var(--color-text);
+  }
+
+  .detail-file-name {
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .detail-file-path {
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .detail-output {
     font-size: 11px;
     font-family: monospace;
@@ -1393,6 +1493,50 @@
     border-radius: 4px;
     max-height: 200px;
     overflow-y: auto;
+  }
+
+  .detail-skeleton {
+    margin-top: 4px;
+    padding: 8px;
+    background: var(--color-surface0);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .skeleton-line {
+    height: 10px;
+    border-radius: 4px;
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-surface1) 75%, transparent) 0%,
+      color-mix(in srgb, var(--color-text-secondary) 20%, transparent) 50%,
+      color-mix(in srgb, var(--color-surface1) 75%, transparent) 100%
+    );
+    background-size: 220% 100%;
+    animation: tool-text-shimmer 1.4s linear infinite;
+  }
+
+  .skeleton-line.short {
+    width: 38%;
+  }
+
+  .skeleton-line.medium {
+    width: 63%;
+  }
+
+  .skeleton-line.long {
+    width: 84%;
+  }
+
+  @keyframes tool-text-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -20% 0;
+    }
   }
 
   .detail-output :global(.output-link) {

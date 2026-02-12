@@ -2,6 +2,8 @@
   import { tick } from 'svelte';
   import Tab from './Tab.svelte';
   import { editorStore, type OpenFile } from '$lib/stores/editor.svelte';
+  import { projectStore } from '$lib/stores/project.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { triggerImmediateAutoSave } from '$lib/services/auto-save';
   import { showToast } from '$lib/stores/toast.svelte';
   import { UIIcon } from '$lib/components/ui';
@@ -110,7 +112,6 @@
   async function copyRelativePath() {
     if (contextFile) {
       // Get relative path from project root
-      const { projectStore } = await import('$lib/stores/project.svelte');
       let relativePath = contextFile.path;
       if (projectStore.rootPath) {
         const root = projectStore.rootPath.replace(/\\/g, '/');
@@ -150,7 +151,6 @@
     const filePath = contextFile?.path;
     closeContextMenu();
     if (filePath) {
-      const { uiStore } = await import('$lib/stores/ui.svelte');
       // Force open sidebar with explorer panel
       uiStore.sidebarOpen = true;
       uiStore.activeSidebarPanel = 'explorer';

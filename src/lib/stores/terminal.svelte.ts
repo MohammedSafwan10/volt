@@ -7,6 +7,7 @@ import {
 } from '$lib/services/terminal-client';
 import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
 import { registerCleanup } from '$lib/services/hmr-cleanup';
+import { projectStore } from './project.svelte';
 
 /**
  * Terminal store for managing terminal sessions
@@ -65,9 +66,6 @@ class TerminalStore {
 		}
 
 		this.createPromise = (async () => {
-			// Use project root as default cwd
-			const { projectStore } = await import('./project.svelte');
-
 			// Wait for project restoration to finish if it's currently loading
 			// and no explicit cwd was provided.
 			if (!cwd) {

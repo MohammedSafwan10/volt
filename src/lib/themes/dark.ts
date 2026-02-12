@@ -110,6 +110,13 @@ export const voltDarkMonacoTheme: Monaco.editor.IStandaloneThemeData = {
         'editor.findMatchBackground': '#eab30833',
         'editor.findMatchHighlightBackground': '#eab3081a',
         'editorBracketMatch.background': '#262626',
-        'editorBracketMatch.border': '#3b82f6'
+        'editorBracketMatch.border': '#3b82f6',
+        'editorError.foreground': '#ef4444',
+        'editorWarning.foreground': '#eab308',
+        'editorInfo.foreground': '#3b82f6',
+        'editorHint.foreground': '#737373',
+        'editorOverviewRuler.errorForeground': '#ef4444',
+        'editorOverviewRuler.warningForeground': '#eab308',
+        'editorOverviewRuler.infoForeground': '#3b82f6'
     }
 };

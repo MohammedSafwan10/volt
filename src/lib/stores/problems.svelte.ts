@@ -44,6 +44,8 @@ export interface ProblemsByFile {
 }
 
 class ProblemsStore {
+  private readonly NATIVE_SOURCE = 'monaco-native';
+
   private normalizePath(filePath: string): string {
     let normalized = filePath.replace(/\\/g, '/');
     if (normalized.match(/^[a-zA-Z]:/)) {
@@ -72,7 +74,7 @@ class ProblemsStore {
 
   /** Get all problems as a flat array (with filters applied) */
   get allProblems(): Problem[] {
-    let problems = Object.values(this.problemsByFile).flat();
+    let problems = this.getDedupedProblems();
     
     // Apply severity filter
     if (this.severityFilter !== 'all') {
@@ -95,7 +97,47 @@ class ProblemsStore {
   
   /** Get all problems WITHOUT filters (for counts) */
   get allProblemsUnfiltered(): Problem[] {
-    return Object.values(this.problemsByFile).flat();
+    return this.getDedupedProblems();
+  }
+
+  /**
+   * Remove duplicate diagnostics reported by multiple sources.
+   * Preference order: non-native sources win over monaco-native fallback.
+   */
+  private getDedupedProblems(): Problem[] {
+    const all = Object.values(this.problemsByFile).flat();
+    const byFingerprint = new Map<string, Problem>();
+
+    const fingerprint = (problem: Problem): string => {
+      return [
+        this.normalizePath(problem.file),
+        problem.line,
+        problem.column,
+        problem.endLine,
+        problem.endColumn,
+        problem.severity,
+        problem.code ?? '',
+        problem.message.trim(),
+      ].join('|');
+    };
+
+    for (const problem of all) {
+      const key = fingerprint(problem);
+      const existing = byFingerprint.get(key);
+      if (!existing) {
+        byFingerprint.set(key, problem);
+        continue;
+      }
+
+      const existingIsNative = (existing.source || '') === this.NATIVE_SOURCE;
+      const nextIsNative = (problem.source || '') === this.NATIVE_SOURCE;
+
+      if (existingIsNative && !nextIsNative) {
+        byFingerprint.set(key, problem);
+      }
+    }
+
+    return Array.from(byFingerprint.values());
   }
 
   /** Get error count (unfiltered for badge) */
@@ -153,7 +195,9 @@ class ProblemsStore {
    * Otherwise replaces all existing problems for that file
    */
   setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
-    this.markUpdating();
+    if (source !== 'monaco-native') {
+      this.markUpdating();
+    }
 
     const normalizedPath = this.normalizePath(filePath);
     

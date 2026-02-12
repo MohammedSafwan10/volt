@@ -16,6 +16,43 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import {
+  isTsLspConnected,
+  notifyDocumentChanged as notifyTsDocumentChanged,
+} from '$lib/services/lsp/typescript-sidecar';
+import { notifyEslintDocumentChanged } from '$lib/services/lsp/eslint-sidecar';
+import {
+  isSvelteLspConnected,
+  notifySvelteDocumentChanged,
+} from '$lib/services/lsp/svelte-sidecar';
+import {
+  isHtmlLspConnected,
+  notifyHtmlDocumentChanged,
+} from '$lib/services/lsp/html-sidecar';
+import {
+  isCssLspConnected,
+  notifyCssDocumentChanged,
+} from '$lib/services/lsp/css-sidecar';
+import {
+  isJsonLspConnected,
+  notifyJsonDocumentChanged,
+} from '$lib/services/lsp/json-sidecar';
+import {
+  isDartLspRunning,
+  notifyDocumentChanged as notifyDartDocumentChanged,
+} from '$lib/services/lsp/dart-sidecar';
+import {
+  isYamlLspRunning,
+  notifyDocumentChanged as notifyYamlDocumentChanged,
+} from '$lib/services/lsp/yaml-sidecar';
+import {
+  isXmlLspRunning,
+  notifyDocumentChanged as notifyXmlDocumentChanged,
+} from '$lib/services/lsp/xml-sidecar';
+import {
+  isTailwindLspConnected,
+  notifyTailwindDocumentChanged,
+} from '$lib/services/lsp/tailwind-sidecar';
 
 // ============================================================================
 // Types
@@ -469,17 +506,14 @@ export async function initializeFileService(): Promise<void> {
     try {
       // TypeScript/JavaScript
       if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
-        const { notifyDocumentChanged, isTsLspConnected } = await import('$lib/services/lsp/typescript-sidecar');
-        const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
         if (isTsLspConnected()) {
-          await notifyDocumentChanged(path, content);
+          await notifyTsDocumentChanged(path, content);
         }
         await notifyEslintDocumentChanged(path, content);
       }
       
       // Svelte
       if (ext === 'svelte') {
-        const { notifySvelteDocumentChanged, isSvelteLspConnected } = await import('$lib/services/lsp/svelte-sidecar');
         if (isSvelteLspConnected()) {
           await notifySvelteDocumentChanged(path, content);
         }
@@ -487,7 +521,6 @@ export async function initializeFileService(): Promise<void> {
       
       // HTML
       if (['html', 'htm'].includes(ext)) {
-        const { notifyHtmlDocumentChanged, isHtmlLspConnected } = await import('$lib/services/lsp/html-sidecar');
         if (isHtmlLspConnected()) {
           await notifyHtmlDocumentChanged(path, content);
         }
@@ -495,7 +528,6 @@ export async function initializeFileService(): Promise<void> {
       
       // CSS/SCSS/LESS
       if (['css', 'scss', 'less', 'sass'].includes(ext)) {
-        const { notifyCssDocumentChanged, isCssLspConnected } = await import('$lib/services/lsp/css-sidecar');
         if (isCssLspConnected()) {
           await notifyCssDocumentChanged(path, content);
         }
@@ -503,7 +535,6 @@ export async function initializeFileService(): Promise<void> {
       
       // JSON
       if (ext === 'json') {
-        const { notifyJsonDocumentChanged, isJsonLspConnected } = await import('$lib/services/lsp/json-sidecar');
         if (isJsonLspConnected()) {
           await notifyJsonDocumentChanged(path, content);
         }
@@ -511,30 +542,26 @@ export async function initializeFileService(): Promise<void> {
       
       // Dart
       if (ext === 'dart') {
-        const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
         if (isDartLspRunning()) {
-          await notifyDocumentChanged(path, content);
+          await notifyDartDocumentChanged(path, content);
         }
       }
       
       // YAML
       if (['yaml', 'yml'].includes(ext)) {
-        const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
         if (isYamlLspRunning()) {
-          await notifyDocumentChanged(path, content);
+          await notifyYamlDocumentChanged(path, content);
         }
       }
       
       // XML
       if (['xml', 'plist', 'xsd'].includes(ext)) {
-        const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
         if (isXmlLspRunning()) {
-          await notifyDocumentChanged(path, content);
+          await notifyXmlDocumentChanged(path, content);
         }
       }
       
       // Tailwind (for any file that might have Tailwind classes)
-      const { notifyTailwindDocumentChanged, isTailwindLspConnected } = await import('$lib/services/lsp/tailwind-sidecar');
       if (isTailwindLspConnected()) {
         await notifyTailwindDocumentChanged(path, content);
       }

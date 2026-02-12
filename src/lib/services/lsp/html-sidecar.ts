@@ -16,6 +16,8 @@
 import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
 import { problemsStore, type Problem, type ProblemSeverity } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
+import { readFileQuiet } from '$lib/services/file-system';
+import { getAllFiles } from '$lib/services/file-index';
 
 // Server instance tracking
 let htmlServerTransport: LspTransport | null = null;
@@ -462,10 +464,6 @@ export async function stopHtmlLsp(): Promise<void> {
  */
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
-
-  // Use dynamic import for fileIndex to avoid circular deps if any
-  const { getAllFiles } = await import('$lib/services/file-index');
-  const { readFileQuiet } = await import('$lib/services/file-system');
 
   const allFiles = getAllFiles();
   const htmlFiles = allFiles.filter(f => isHtmlFile(f.path));

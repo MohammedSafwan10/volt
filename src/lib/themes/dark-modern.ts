@@ -88,5 +88,12 @@ export const voltDarkModernMonacoTheme: Monaco.editor.IStandaloneThemeData = {
     'editorIndentGuide.activeBackground': '#454545',
     'editor.selectionBackground': '#264f78',
     'editor.inactiveSelectionBackground': '#3a3d41',
+    'editorError.foreground': '#f14c4c',
+    'editorWarning.foreground': '#cca700',
+    'editorInfo.foreground': '#4fc1ff',
+    'editorHint.foreground': '#6e7681',
+    'editorOverviewRuler.errorForeground': '#f14c4c',
+    'editorOverviewRuler.warningForeground': '#cca700',
+    'editorOverviewRuler.infoForeground': '#4fc1ff',
   }
 };

@@ -4,11 +4,13 @@
   import { onMount } from 'svelte';
   import { open } from '@tauri-apps/plugin-shell';
   import { initializeFileService } from '$lib/services/file-service';
+  import { cleanupStaleBackendWatchers } from '$lib/services/hmr-cleanup';
   
   let { children } = $props();
 
   // Initialize unified file service with LSP integration
   onMount(() => {
+    void cleanupStaleBackendWatchers();
     void initializeFileService();
   });
 

@@ -101,8 +101,11 @@
 
   let changeTimer: ReturnType<typeof setTimeout> | null = $state(null);
   let changeDisposable: Monaco.IDisposable | null = $state(null);
+  let markersDisposable: Monaco.IDisposable | null = $state(null);
   let cursorDisposable: Monaco.IDisposable | null = $state(null);
   let selectionDisposable: Monaco.IDisposable | null = $state(null);
+
+  const MONACO_NATIVE_SOURCE = "monaco-native";
 
   // Derived language from filepath or explicit prop
   const detectedLanguage = $derived(language || detectLanguage(filepath));
@@ -118,6 +121,99 @@
 
   function normalizePath(path: string): string {
     return path.replace(/\\/g, "/");
+  }
+
+  function normalizeProblemsPath(path: string): string {
+    let normalized = path.replace(/\\/g, "/");
+    if (normalized.match(/^[a-zA-Z]:/)) {
+      normalized = normalized[0].toLowerCase() + normalized.slice(1);
+    }
+    return normalized;
+  }
+
+  function applyProblemsMarkersForCurrentModel(
+    model: Monaco.editor.ITextModel,
+    targetFilePath: string,
+  ): void {
+    if (!monaco) return;
+    const monacoInstance = monaco;
+
+    const normalizedPath = normalizeProblemsPath(targetFilePath);
+    const problems = problemsStore.getProblemsForFile(normalizedPath);
+
+    const markers: Monaco.editor.IMarkerData[] = problems.map((p: Problem) => ({
+      message: p.message,
+      severity:
+        p.severity === "error"
+          ? monacoInstance.MarkerSeverity.Error
+          : p.severity === "warning"
+            ? monacoInstance.MarkerSeverity.Warning
+            : p.severity === "hint"
+              ? monacoInstance.MarkerSeverity.Hint
+              : monacoInstance.MarkerSeverity.Info,
+      startLineNumber: p.line,
+      startColumn: p.column,
+      endLineNumber: p.endLine || p.line,
+      endColumn: p.endColumn || p.column + 1,
+      source: p.source,
+      code: p.code,
+    }));
+
+    monacoInstance.editor.setModelMarkers(model, "volt-problems", markers);
+  }
+
+  function mapNativeMarkerSeverity(
+    severity: Monaco.MarkerSeverity,
+  ): Problem["severity"] {
+    if (!monaco) return "info";
+    switch (severity) {
+      case monaco.MarkerSeverity.Error:
+        return "error";
+      case monaco.MarkerSeverity.Warning:
+        return "warning";
+      case monaco.MarkerSeverity.Hint:
+        return "hint";
+      default:
+        return "info";
+    }
+  }
+
+  function syncNativeDiagnosticsForCurrentModel(): void {
+    if (!editor || !monaco || !filepath) return;
+    const model = editor.getModel();
+    if (!model) return;
+
+    const nativeMarkers = monaco.editor
+      .getModelMarkers({ resource: model.uri })
+      .filter((marker) => marker.owner !== "volt-problems");
+
+    const normalizedPath = normalizeProblemsPath(filepath);
+    const fileName = normalizedPath.split(/[/\\]/).pop() || normalizedPath;
+
+    const nativeProblems: Problem[] = nativeMarkers.map((marker, index) => ({
+      id: `${MONACO_NATIVE_SOURCE}:${normalizedPath}:${marker.startLineNumber}:${marker.startColumn}:${index}`,
+      file: normalizedPath,
+      fileName,
+      line: marker.startLineNumber,
+      column: marker.startColumn,
+      endLine: marker.endLineNumber,
+      endColumn: marker.endColumn,
+      message: marker.message,
+      severity: mapNativeMarkerSeverity(marker.severity),
+      source: marker.source || marker.owner || MONACO_NATIVE_SOURCE,
+      code:
+        typeof marker.code === "string"
+          ? marker.code
+          : marker.code && typeof marker.code === "object" && "value" in marker.code
+            ? String(marker.code.value)
+            : undefined,
+    }));
+
+    problemsStore.setProblemsForFile(
+      normalizedPath,
+      nativeProblems,
+      MONACO_NATIVE_SOURCE,
+    );
   }
 
   function applyPendingNavigation(): void {
@@ -188,6 +284,7 @@
             verticalScrollbarSize: 10,
             horizontalScrollbarSize: 10,
           },
+          renderValidationDecorations: "on",
           // Enable LSP features
           quickSuggestions: true,
           suggestOnTriggerCharacters: true,
@@ -286,6 +383,19 @@
           }, 75);
         });
 
+        markersDisposable = monaco.editor.onDidChangeMarkers((uris) => {
+          if (!editor) return;
+          const model = editor.getModel();
+          if (!model) return;
+          const currentUri = model.uri.toString();
+          const affectsCurrentModel = uris.some(
+            (uri) => uri.toString() === currentUri,
+          );
+          if (affectsCurrentModel) {
+            syncNativeDiagnosticsForCurrentModel();
+          }
+        });
+
         loading = false;
 
         // Notify parent that editor is ready
@@ -320,6 +430,10 @@
       if (changeDisposable) {
         changeDisposable.dispose();
         changeDisposable = null;
+      }
+      if (markersDisposable) {
+        markersDisposable.dispose();
+        markersDisposable = null;
       }
       if (cursorDisposable) {
         cursorDisposable.dispose();
@@ -356,6 +470,9 @@
 
       if (!editor) return;
       editor.setModel(model);
+
+      applyProblemsMarkersForCurrentModel(model, path);
+      syncNativeDiagnosticsForCurrentModel();
 
       // Apply persisted indentation options to the model.
       try {
@@ -467,41 +584,10 @@
   // Sync problems from store to Monaco markers (squiggles)
   $effect(() => {
     if (!editor || !monaco || !filepath) return;
-
-    // Ensure we use the same path normalization as the problemsStore (forward slashes + lowercase drive letter)
-    let normalizedPath = filepath.replace(/\\/g, "/");
-    if (normalizedPath.match(/^[a-zA-Z]:/)) {
-      normalizedPath =
-        normalizedPath[0].toLowerCase() + normalizedPath.slice(1);
-    }
-
-    // React to change in problems for this file
-    const problems = problemsStore.getProblemsForFile(normalizedPath);
     const model = editor.getModel();
     if (!model) return;
 
-    // Convert our Problem type to Monaco IMarkerData
-    const markers: Monaco.editor.IMarkerData[] = problems.map((p: Problem) => ({
-      message: p.message,
-      severity:
-        p.severity === "error"
-          ? monaco!.MarkerSeverity.Error
-          : p.severity === "warning"
-            ? monaco!.MarkerSeverity.Warning
-            : p.severity === "hint"
-              ? monaco!.MarkerSeverity.Hint
-              : monaco!.MarkerSeverity.Info,
-      startLineNumber: p.line,
-      startColumn: p.column,
-      endLineNumber: p.endLine || p.line,
-      endColumn: p.endColumn || p.column + 1,
-      source: p.source,
-      code: p.code,
-    }));
-
-    // Set markers on the model
-    // We use a specific owner name to avoid conflicts with Monaco's built-in markers
-    monaco.editor.setModelMarkers(model, "volt-problems", markers);
+    applyProblemsMarkersForCurrentModel(model, filepath);
   });
 </script>
 

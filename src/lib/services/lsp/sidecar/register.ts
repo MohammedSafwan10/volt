@@ -305,6 +305,41 @@ class LspRegistry {
   }
 
   /**
+   * Runtime telemetry snapshot for leak/perf monitoring.
+   */
+  getRuntimeSnapshot(): {
+    projectRoot: string | null;
+    serverCount: number;
+    servers: Array<ReturnType<LspTransport['getRuntimeSnapshot']>>;
+    totals: {
+      pendingRequests: number;
+      eventListeners: number;
+      messageHandlers: number;
+      errorHandlers: number;
+      exitHandlers: number;
+      healthHandlers: number;
+    };
+  } {
+    const servers = Array.from(this.transports.values()).map((transport) =>
+      transport.getRuntimeSnapshot()
+    );
+
+    return {
+      projectRoot: this.projectRoot,
+      serverCount: servers.length,
+      servers,
+      totals: {
+        pendingRequests: servers.reduce((sum, x) => sum + x.pendingRequests, 0),
+        eventListeners: servers.reduce((sum, x) => sum + x.eventListeners, 0),
+        messageHandlers: servers.reduce((sum, x) => sum + x.messageHandlers, 0),
+        errorHandlers: servers.reduce((sum, x) => sum + x.errorHandlers, 0),
+        exitHandlers: servers.reduce((sum, x) => sum + x.exitHandlers, 0),
+        healthHandlers: servers.reduce((sum, x) => sum + x.healthHandlers, 0),
+      },
+    };
+  }
+
+  /**
    * Check if all servers are healthy
    */
   areAllServersHealthy(): boolean {

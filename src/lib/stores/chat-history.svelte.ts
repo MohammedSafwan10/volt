@@ -69,6 +69,11 @@ class ChatHistoryStore {
     // Selection state for batch operations
     selectedIds = $state<Set<string>>(new Set());
     isSelectionMode = $state(false);
+    private onActiveConversationDeleted: (() => void) | null = null;
+
+    setActiveConversationDeletedHandler(handler: (() => void) | null): void {
+        this.onActiveConversationDeleted = handler;
+    }
 
     /**
      * Load all conversations from the database
@@ -188,10 +193,7 @@ class ChatHistoryStore {
         // If we deleted the active conversation, clear it from both stores
         if (deletingActive) {
             this.activeConversationId = null;
-            // Clear the assistant store's current chat via dynamic import to avoid circular deps
-            import('./assistant.svelte').then(({ assistantStore }) => {
-                assistantStore.clearConversation();
-            });
+            this.onActiveConversationDeleted?.();
         }
 
         if (this.selectedIds.size === 0) {
@@ -219,10 +221,7 @@ class ChatHistoryStore {
 
             if (deletingActive) {
                 this.activeConversationId = null;
-                // Clear the assistant store's current chat
-                import('./assistant.svelte').then(({ assistantStore }) => {
-                    assistantStore.clearConversation();
-                });
+                this.onActiveConversationDeleted?.();
             }
 
             if (this.selectedIds.size === 0) {

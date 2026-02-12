@@ -149,8 +149,9 @@ async function findDartExecutable(): Promise<string | null> {
 async function getDartVersion(dartPath: string): Promise<string | null> {
   try {
     const result = await runCommand(dartPath, ['--version']);
+    const output = `${result.stdout}\n${result.stderr}`;
     // Output format: "Dart SDK version: 3.3.0 (stable) ..."
-    const match = result.stdout.match(/Dart SDK version:\s*(\d+\.\d+\.\d+)/);
+    const match = output.match(/Dart SDK version:\s*(\d+\.\d+\.\d+)/);
     return match ? match[1] : null;
   } catch {
     return null;

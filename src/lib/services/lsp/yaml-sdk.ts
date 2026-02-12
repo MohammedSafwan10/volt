@@ -189,7 +189,7 @@ async function runCommand(command: string, args: string[]): Promise<CommandResul
 
 async function fileExists(path: string): Promise<boolean> {
   try {
-    await invoke('file_exists', { path });
+    await invoke('get_file_info', { path });
     return true;
   } catch {
     return false;

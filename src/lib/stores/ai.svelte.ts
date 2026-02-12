@@ -7,6 +7,8 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { validateGeminiKey } from '$lib/services/ai/gemini';
+import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
 
 // Supported AI providers
 export type AIProvider = 'gemini' | 'openrouter';
@@ -175,10 +177,8 @@ class AISettingsStore {
       let result: ValidationResult;
 
       if (provider === 'gemini') {
-        const { validateGeminiKey } = await import('$lib/services/ai/gemini');
         result = await validateGeminiKey(key);
       } else if (provider === 'openrouter') {
-        const { validateOpenRouterKey } = await import('$lib/services/ai/openrouter');
         result = await validateOpenRouterKey(key);
       } else {
         result = { success: false, error: 'Unknown provider' };

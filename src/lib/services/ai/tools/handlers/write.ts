@@ -13,7 +13,31 @@ import { invoke } from '@tauri-apps/api/core';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from '$lib/stores/editor.svelte';
 import { fileService } from '$lib/services/file-service';
+import { setModelValue } from '$lib/services/monaco-models';
+import { notifyDocumentChanged as notifyTsDocumentChanged } from '$lib/services/lsp/typescript-sidecar';
+import { notifyEslintDocumentChanged } from '$lib/services/lsp/eslint-sidecar';
+import { notifySvelteDocumentChanged } from '$lib/services/lsp/svelte-sidecar';
+import { notifyHtmlDocumentChanged } from '$lib/services/lsp/html-sidecar';
+import { notifyCssDocumentChanged } from '$lib/services/lsp/css-sidecar';
+import { notifyJsonDocumentChanged } from '$lib/services/lsp/json-sidecar';
+import {
+  isDartLspRunning,
+  notifyDocumentChanged as notifyDartDocumentChanged,
+} from '$lib/services/lsp/dart-sidecar';
+import {
+  isYamlLspRunning,
+  notifyDocumentChanged as notifyYamlDocumentChanged,
+} from '$lib/services/lsp/yaml-sidecar';
+import {
+  isXmlLspRunning,
+  notifyDocumentChanged as notifyXmlDocumentChanged,
+} from '$lib/services/lsp/xml-sidecar';
+import {
+  isTailwindLspConnected,
+  notifyTailwindDocumentChanged,
+} from '$lib/services/lsp/tailwind-sidecar';
 import { resolvePath, extractErrorMessage, isSameOrSuffixPath, calculateDiffStats, type ToolResult } from '../utils';
+import { calculateChangedLines, findBestMatch, fixEscapedNewlines, validateSyntax } from './write-utils';
 
 interface PostEditProblem {
   id: string;
@@ -86,7 +110,6 @@ async function writeFileWithSync(path: string, content: string, expectedVersion?
 async function syncEditorWithDisk(path: string, normalizedPath: string, content: string): Promise<void> {
   try {
     // Update Monaco model directly (handles disposed models)
-    const { setModelValue } = await import('$lib/services/monaco-models');
     setModelValue(normalizedPath, content);
 
     // Reload in editor store
@@ -136,12 +159,7 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 1. Notify TypeScript/JavaScript/ESLint
     if (latestContent && ['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
       try {
-        // TypeScript
-        const { notifyDocumentChanged } = await import('$lib/services/lsp/typescript-sidecar');
-        await notifyDocumentChanged(absolutePath, latestContent);
-
-        // ESLint
-        const { notifyEslintDocumentChanged } = await import('$lib/services/lsp/eslint-sidecar');
+        await notifyTsDocumentChanged(absolutePath, latestContent);
         await notifyEslintDocumentChanged(absolutePath, latestContent);
       } catch {
         // Continue anyway
@@ -151,7 +169,6 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 2. Notify Svelte
     if (latestContent && ext === 'svelte') {
       try {
-        const { notifySvelteDocumentChanged } = await import('$lib/services/lsp/svelte-sidecar');
         await notifySvelteDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
@@ -159,7 +176,6 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 3. Notify HTML
     if (latestContent && ['html', 'htm'].includes(ext)) {
       try {
-        const { notifyHtmlDocumentChanged } = await import('$lib/services/lsp/html-sidecar');
         await notifyHtmlDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
@@ -167,7 +183,6 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 4. Notify CSS/SCSS/LESS
     if (latestContent && ['css', 'scss', 'less', 'sass'].includes(ext)) {
       try {
-        const { notifyCssDocumentChanged } = await import('$lib/services/lsp/css-sidecar');
         await notifyCssDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
@@ -175,7 +190,6 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 5. Notify JSON
     if (latestContent && ext === 'json') {
       try {
-        const { notifyJsonDocumentChanged } = await import('$lib/services/lsp/json-sidecar');
         await notifyJsonDocumentChanged(absolutePath, latestContent);
       } catch { }
     }
@@ -183,9 +197,8 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 6. Notify Dart LSP for Dart files and pubspec.yaml
     if (latestContent && (ext === 'dart' || absolutePath.toLowerCase().endsWith('pubspec.yaml') || absolutePath.toLowerCase().endsWith('analysis_options.yaml'))) {
       try {
-        const { notifyDocumentChanged, isDartLspRunning } = await import('$lib/services/lsp/dart-sidecar');
         if (isDartLspRunning()) {
-          await notifyDocumentChanged(absolutePath, latestContent);
+          await notifyDartDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
@@ -193,9 +206,8 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 7. Notify YAML LSP for YAML files
     if (latestContent && ['yaml', 'yml'].includes(ext)) {
       try {
-        const { notifyDocumentChanged, isYamlLspRunning } = await import('$lib/services/lsp/yaml-sidecar');
         if (isYamlLspRunning()) {
-          await notifyDocumentChanged(absolutePath, latestContent);
+          await notifyYamlDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
@@ -203,16 +215,14 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     // 8. Notify XML LSP for XML and plist files
     if (latestContent && ['xml', 'plist', 'xsd', 'xsl', 'xslt', 'svg'].includes(ext)) {
       try {
-        const { notifyDocumentChanged, isXmlLspRunning } = await import('$lib/services/lsp/xml-sidecar');
         if (isXmlLspRunning()) {
-          await notifyDocumentChanged(absolutePath, latestContent);
+          await notifyXmlDocumentChanged(absolutePath, latestContent);
         }
       } catch { }
     }
 
     // 9. Notify Tailwind
     try {
-      const { notifyTailwindDocumentChanged, isTailwindLspConnected } = await import('$lib/services/lsp/tailwind-sidecar');
       if (latestContent && isTailwindLspConnected()) {
         await notifyTailwindDocumentChanged(absolutePath, latestContent);
       }
@@ -270,26 +280,6 @@ async function getPostEditDiagnostics(absolutePath: string, relativePath: string
     inFlight,
   });
   return inFlight;
-}
-
-/**
- * Fix escaped newlines from AI model output
- * Sometimes the AI sends literal "\n" as text instead of actual newlines
- * This converts them back to real newlines
- */
-function fixEscapedNewlines(text: string): string {
-  // Only fix if the text contains literal \n but no actual newlines
-  // This avoids breaking content that legitimately has both
-  if (text.includes('\\n') && !text.includes('\n')) {
-    return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-  }
-  // Also handle case where there are very few real newlines but many escaped ones
-  const realNewlines = (text.match(/\n/g) || []).length;
-  const escapedNewlines = (text.match(/\\n/g) || []).length;
-  if (escapedNewlines > realNewlines * 3 && escapedNewlines > 5) {
-    return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-  }
-  return text;
 }
 
 /**
@@ -1037,128 +1027,6 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   };
 }
 
-// ============================================
-// Helper functions
-// ============================================
-
-/**
- * Find best match for a snippet in file content
- * Kiro-style: More tolerant matching with multiple fallback strategies
- */
-function findBestMatch(content: string, snippet: string): { index: number; length: number; similarity: number } | null {
-  // 1. Exact match (fastest)
-  const exactIndex = content.indexOf(snippet);
-  if (exactIndex !== -1) {
-    return { index: exactIndex, length: snippet.length, similarity: 1 };
-  }
-
-  // 2. Normalized match (handle CRLF and trim)
-  const normalizedSnippet = snippet.replace(/\r\n/g, '\n');
-  const normalizedContent = content.replace(/\r\n/g, '\n');
-  const normalizedIndex = normalizedContent.indexOf(normalizedSnippet);
-  if (normalizedIndex !== -1) {
-    return { index: normalizedIndex, length: normalizedSnippet.length, similarity: 0.99 };
-  }
-
-  // 3. Trimmed match (ignore leading/trailing whitespace on each line)
-  const trimmedSnippet = normalizedSnippet.split('\n').map(l => l.trim()).join('\n');
-  const trimmedContent = normalizedContent.split('\n').map(l => l.trim()).join('\n');
-  const trimmedIndex = trimmedContent.indexOf(trimmedSnippet);
-  if (trimmedIndex !== -1) {
-    // Find actual position in original content
-    const linesBefore = trimmedContent.slice(0, trimmedIndex).split('\n').length - 1;
-    const contentLines = normalizedContent.split('\n');
-    let actualIndex = 0;
-    for (let i = 0; i < linesBefore; i++) {
-      actualIndex += contentLines[i].length + 1;
-    }
-    // Find the actual length by counting lines in snippet
-    const snippetLineCount = trimmedSnippet.split('\n').length;
-    let actualLength = 0;
-    for (let i = linesBefore; i < linesBefore + snippetLineCount && i < contentLines.length; i++) {
-      actualLength += contentLines[i].length + 1;
-    }
-    actualLength = Math.max(1, actualLength - 1); // Remove trailing newline
-    return { index: actualIndex, length: actualLength, similarity: 0.95 };
-  }
-
-  // 4. Indentation-insensitive match (normalize all indentation)
-  const indentNormSnippet = normalizedSnippet.split('\n').map(l => l.replace(/^[\t ]+/, '')).join('\n');
-  const indentNormContent = normalizedContent.split('\n').map(l => l.replace(/^[\t ]+/, '')).join('\n');
-  const indentIndex = indentNormContent.indexOf(indentNormSnippet);
-  if (indentIndex !== -1) {
-    const linesBefore = indentNormContent.slice(0, indentIndex).split('\n').length - 1;
-    const contentLines = normalizedContent.split('\n');
-    let actualIndex = 0;
-    for (let i = 0; i < linesBefore; i++) {
-      actualIndex += contentLines[i].length + 1;
-    }
-    const snippetLineCount = indentNormSnippet.split('\n').length;
-    let actualLength = 0;
-    for (let i = linesBefore; i < linesBefore + snippetLineCount && i < contentLines.length; i++) {
-      actualLength += contentLines[i].length + 1;
-    }
-    actualLength = Math.max(1, actualLength - 1);
-    return { index: actualIndex, length: actualLength, similarity: 0.90 };
-  }
-
-  // 5. Fuzzy regex match (whitespace insensitive) - last resort
-  try {
-    const fuzzyRegex = buildFuzzyRegex(snippet);
-    const fuzzyMatch = fuzzyRegex.exec(content);
-    if (fuzzyMatch) {
-      return { index: fuzzyMatch.index, length: fuzzyMatch[0].length, similarity: 0.80 };
-    }
-  } catch {
-    // Regex might fail on complex patterns, ignore
-  }
-
-  return null;
-}
-
-/**
- * Build whitespace-insensitive regex
- */
-function buildFuzzyRegex(snippet: string): RegExp {
-  const parts = snippet.trim().split(/\s+/).filter(p => p.length > 0);
-  const pattern = parts.map(p => escapeRegex(p)).join('\\s+');
-  return new RegExp(pattern, 'm');
-}
-
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Validate syntax after edit
- * NOTE: Disabled by default - Kiro-style approach trusts the AI
- * Only warn, don't block edits
- */
-function validateSyntax(before: string, after: string, path: string): string | null {
-  // DISABLED: Don't block edits based on bracket validation
-  // This was causing too many false positives with valid code
-  // Let the LSP/diagnostics catch real errors after the edit
-  return null;
-
-  /* Original validation - kept for reference
-  const ext = path.split('.').pop()?.toLowerCase() || '';
-  const codeExts = ['js', 'ts', 'jsx', 'tsx', 'svelte', 'vue', 'json'];
-  if (!codeExts.includes(ext)) return null;
-
-  const beforeErrors = countBracketErrors(before);
-  const afterErrors = countBracketErrors(after);
-
-  if (beforeErrors === 0 && afterErrors > 0) {
-    return `Syntax error: unbalanced brackets. Edit NOT applied.`;
-  }
-  if (afterErrors > beforeErrors) {
-    return `Edit would add syntax errors (${beforeErrors} → ${afterErrors}). NOT applied.`;
-  }
-
-  return null;
-  */
-}
-
 /**
  * Write a plan file to .volt/plans/ directory
  */
@@ -1216,86 +1084,6 @@ export async function handleWritePlanFile(args: Record<string, unknown>): Promis
   };
 }
 
-/**
- * Count bracket imbalances
- */
-function countBracketErrors(content: string): number {
-  const stack: string[] = [];
-  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
-  let errors = 0;
-  let inString = false;
-  let stringChar = '';
-
-  for (let i = 0; i < content.length; i++) {
-    const char = content[i];
-    const prev = content[i - 1];
-
-    // Skip strings
-    if (!inString && (char === '"' || char === "'" || char === '`') && prev !== '\\') {
-      inString = true;
-      stringChar = char;
-      continue;
-    }
-    if (inString && char === stringChar && prev !== '\\') {
-      inString = false;
-      continue;
-    }
-    if (inString) continue;
-
-    // Check brackets
-    if ('([{'.includes(char)) {
-      stack.push(char);
-    } else if (')]}'.includes(char)) {
-      if (stack.pop() !== pairs[char]) errors++;
-    }
-  }
-
-  return errors + stack.length;
-}
-
-/**
- * Calculate the range of changed lines between before and after content
- */
-function calculateChangedLines(before: string, after: string): { firstChangedLine: number; lastChangedLine: number } {
-  const beforeLines = before.split('\n');
-  const afterLines = after.split('\n');
-
-  // Find first different line
-  let firstChangedLine = 1;
-  for (let i = 0; i < Math.min(beforeLines.length, afterLines.length); i++) {
-    if (beforeLines[i] !== afterLines[i]) {
-      firstChangedLine = i + 1;
-      break;
-    }
-    firstChangedLine = i + 2; // If all compared lines are equal, start after them
-  }
-
-  // Find last different line (from the end)
-  let lastChangedLine = afterLines.length;
-  let beforeEnd = beforeLines.length - 1;
-  let afterEnd = afterLines.length - 1;
-
-  while (beforeEnd >= firstChangedLine - 1 && afterEnd >= firstChangedLine - 1) {
-    if (beforeLines[beforeEnd] !== afterLines[afterEnd]) {
-      lastChangedLine = afterEnd + 1;
-      break;
-    }
-    beforeEnd--;
-    afterEnd--;
-    lastChangedLine = afterEnd + 1;
-  }
-
-  // Ensure valid range
-  if (lastChangedLine < firstChangedLine) {
-    lastChangedLine = firstChangedLine;
-  }
-
-  // Clamp to file bounds
-  firstChangedLine = Math.max(1, firstChangedLine);
-  lastChangedLine = Math.min(afterLines.length, Math.max(lastChangedLine, firstChangedLine));
-
-  return { firstChangedLine, lastChangedLine };
-}
 // ============================================================================
 // FORMAT FILE - Prettier formatting
 // ============================================================================
@@ -1377,3 +1165,4 @@ export async function handleFormatFile(args: Record<string, unknown>): Promise<T
     return { success: false, error: `Failed to write formatted file: ${extractErrorMessage(err)}` };
   }
 }
+

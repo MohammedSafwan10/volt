@@ -356,6 +356,27 @@ impl<R: Runtime> LspManager<R> {
     }
 
     /// Handle stdout from external LSP server (parse LSP framing)
+    fn mark_external_server_stopped(
+        app_handle: &AppHandle<R>,
+        server_id: &str,
+        status: &Arc<Mutex<LspServerStatus>>,
+        servers: &Arc<Mutex<HashMap<String, RunningServer>>>,
+        exit_code: i32,
+        error: Option<String>,
+    ) {
+        if let Ok(mut s) = status.lock() {
+            *s = LspServerStatus::Stopped;
+        }
+        if let Ok(mut servers_guard) = servers.lock() {
+            servers_guard.remove(server_id);
+        }
+        if let Some(err) = error {
+            let _ = app_handle.emit(&format!("lsp://{}//error", server_id), err);
+        }
+        let _ = app_handle.emit(&format!("lsp://{}//exit", server_id), exit_code);
+    }
+
+    /// Handle stdout from external LSP server (parse LSP framing)
     async fn handle_external_stdout(
         stdout: tokio::process::ChildStdout,
         app_handle: AppHandle<R>,
@@ -376,13 +397,14 @@ impl<R: Runtime> LspManager<R> {
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
                         // EOF - server exited
-                        if let Ok(mut s) = status.lock() {
-                            *s = LspServerStatus::Stopped;
-                        }
-                        if let Ok(mut servers_guard) = servers.lock() {
-                            servers_guard.remove(&server_id);
-                        }
-                        let _ = app_handle.emit(&format!("lsp://{}//exit", server_id), 0);
+                        Self::mark_external_server_stopped(
+                            &app_handle,
+                            &server_id,
+                            &status,
+                            &servers,
+                            0,
+                            None,
+                        );
                         return;
                     }
                     Ok(_) => {
@@ -395,7 +417,15 @@ impl<R: Runtime> LspManager<R> {
                         }
                         headers.push_str(&line);
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        Self::mark_external_server_stopped(
+                            &app_handle,
+                            &server_id,
+                            &status,
+                            &servers,
+                            -1,
+                            Some(format!("Failed reading external LSP headers: {}", err)),
+                        );
                         return;
                     }
                 }
@@ -412,7 +442,15 @@ impl<R: Runtime> LspManager<R> {
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        Self::mark_external_server_stopped(
+                            &app_handle,
+                            &server_id,
+                            &status,
+                            &servers,
+                            -1,
+                            Some(format!("Failed reading external LSP body: {}", err)),
+                        );
                         return;
                     }
                 }
@@ -558,10 +596,28 @@ impl<R: Runtime> LspManager<R> {
                 })?;
             }
             ServerChild::External { stdin_tx, .. } => {
-                // Send via channel (stdin writer task handles framing)
-                stdin_tx.try_send(message.to_string()).map_err(|e| LspError::SendFailed {
-                    message: format!("Failed to send to stdin channel: {}", e),
-                })?;
+                let stdin_tx = stdin_tx.clone();
+                drop(servers);
+
+                // Send via channel (stdin writer task handles framing).
+                // Fall back to blocking send when the channel is full, but do it
+                // outside the manager lock to avoid stalling unrelated LSP ops.
+                let msg = message.to_string();
+                match stdin_tx.try_send(msg) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        stdin_tx.blocking_send(msg).map_err(|e| LspError::SendFailed {
+                            message: format!("Failed to send to stdin channel: {}", e),
+                        })?;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(LspError::SendFailed {
+                            message: "Failed to send to stdin channel: channel closed".to_string(),
+                        });
+                    }
+                }
+
+                return Ok(());
             }
         }
 

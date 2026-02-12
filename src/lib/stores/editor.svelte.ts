@@ -4,7 +4,13 @@
  */
 
 import { readFile } from '$lib/services/file-system';
-import { disposeAllModels, disposeModel } from '$lib/services/monaco-models';
+import {
+  clearReviewHighlight,
+  disposeAllModels,
+  disposeModel,
+  setModelValue,
+  setSelection,
+} from '$lib/services/monaco-models';
 import { notifyFileClosed } from '$lib/services/lsp/client';
 import { activityStore } from './activity.svelte';
 import {
@@ -561,7 +567,6 @@ class EditorStore {
       ];
 
       // Also update the Monaco model so the editor shows the new content
-      const { setModelValue, clearReviewHighlight } = await import('$lib/services/monaco-models');
       setModelValue(normalizedPath, content);
 
       // Clear any AI edit highlights (the green blocks) on reload
@@ -640,7 +645,6 @@ class EditorStore {
     endLine: number;
     endColumn: number;
   }): Promise<void> {
-    const { setSelection } = await import('$lib/services/monaco-models');
     setSelection(path, range);
   }
 
@@ -670,7 +674,6 @@ class EditorStore {
     ];
 
     // Also update the Monaco model
-    const { setModelValue, clearReviewHighlight } = await import('$lib/services/monaco-models');
     setModelValue(normalizedPath, content);
     clearReviewHighlight(normalizedPath);
 

@@ -1,6 +1,14 @@
 import { problemsStore, type Problem } from '$lib/stores/problems.svelte';
 import { onTerminalData, onTerminalExit } from './terminal-client';
 
+let resolveProjectRootPath: (() => string | null) | null = null;
+
+export function setTerminalProblemMatcherProjectRootResolver(
+  resolver: (() => string | null) | null
+): void {
+  resolveProjectRootPath = resolver;
+}
+
 /**
  * TerminalProblemMatcher - Parses terminal output for errors and warnings
  * Pipes matched problems to the problemsStore
@@ -156,8 +164,7 @@ class TerminalProblemMatcher {
     }
 
     private async addProblem(info: any, source: string): Promise<void> {
-        const { projectStore } = await import('$lib/stores/project.svelte');
-        const rootPath = projectStore.rootPath;
+        const rootPath = resolveProjectRootPath?.() ?? null;
         if (!rootPath) return;
 
         // Resolve absolute path if relative

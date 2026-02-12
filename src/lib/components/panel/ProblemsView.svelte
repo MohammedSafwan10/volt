@@ -210,65 +210,112 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   function isFilterActive(filter: string): boolean {
     return problemsStore.severityFilter === filter;
   }
+
+  const showAnalyzing = $derived(
+    problemsStore.isUpdating && problemsStore.totalUnfilteredCount === 0,
+  );
+
+  function formatFileDirectory(filePath: string, fileName?: string): string {
+    const normalized = filePath.replace(/\\/g, "/");
+    const parts = normalized.split("/");
+    const fallbackName = parts[parts.length - 1] ?? normalized;
+    const currentFileName = fileName || fallbackName;
+    const withoutName = normalized.endsWith(currentFileName)
+      ? normalized.slice(0, Math.max(0, normalized.length - currentFileName.length))
+      : normalized;
+    return withoutName.replace(/\/$/, "");
+  }
 </script>
 
 <div class="problems-view">
-  <!-- Toolbar with filters and search -->
   <div class="problems-toolbar">
-    <div class="filter-buttons">
-      <button 
-        class="filter-btn" 
-        class:active={isFilterActive('all')}
-        onclick={() => handleFilterChange('all')}
+    <div class="toolbar-summary">
+      <span class="summary-pill total">{problemsStore.totalUnfilteredCount} total</span>
+      {#if problemsStore.errorCount > 0}
+        <span class="summary-pill error"
+          ><UIIcon name="error" size={12} /> {problemsStore.errorCount}</span
+        >
+      {/if}
+      {#if problemsStore.warningCount > 0}
+        <span class="summary-pill warning"
+          ><UIIcon name="warning" size={12} /> {problemsStore.warningCount}</span
+        >
+      {/if}
+      {#if problemsStore.infoCount > 0}
+        <span class="summary-pill info"
+          ><UIIcon name="info" size={12} /> {problemsStore.infoCount}</span
+        >
+      {/if}
+    </div>
+
+    <div class="filter-buttons" role="tablist" aria-label="Problem filters">
+      <button
+        class="filter-btn"
+        class:active={isFilterActive("all")}
+        onclick={() => handleFilterChange("all")}
         title="Show all"
       >
         All ({problemsStore.totalUnfilteredCount})
       </button>
-      <button 
-        class="filter-btn error" 
-        class:active={isFilterActive('error')}
-        onclick={() => handleFilterChange('error')}
+      <button
+        class="filter-btn error"
+        class:active={isFilterActive("error")}
+        onclick={() => handleFilterChange("error")}
         title="Show errors only"
       >
         <UIIcon name="error" size={12} /> {problemsStore.errorCount}
       </button>
-      <button 
-        class="filter-btn warning" 
-        class:active={isFilterActive('warning')}
-        onclick={() => handleFilterChange('warning')}
+      <button
+        class="filter-btn warning"
+        class:active={isFilterActive("warning")}
+        onclick={() => handleFilterChange("warning")}
         title="Show warnings only"
       >
         <UIIcon name="warning" size={12} /> {problemsStore.warningCount}
       </button>
-      <button 
-        class="filter-btn info" 
-        class:active={isFilterActive('info')}
-        onclick={() => handleFilterChange('info')}
+      <button
+        class="filter-btn info"
+        class:active={isFilterActive("info")}
+        onclick={() => handleFilterChange("info")}
         title="Show info only"
       >
         <UIIcon name="info" size={12} /> {problemsStore.infoCount}
       </button>
     </div>
-    
+
     <div class="search-box">
       <UIIcon name="search" size={14} />
-      <input 
-        type="text" 
-        placeholder="Filter problems..." 
+      <input
+        type="text"
+        placeholder="Filter problems..."
         value={problemsStore.searchQuery}
         oninput={handleSearch}
       />
       {#if problemsStore.searchQuery}
-        <button class="clear-search" onclick={() => problemsStore.setSearchQuery('')}>
+        <button
+          class="clear-search"
+          onclick={() => problemsStore.setSearchQuery("")}
+        >
           <UIIcon name="close" size={12} />
         </button>
       {/if}
     </div>
-    
-    {#if problemsStore.isUpdating}
+
+    {#if showAnalyzing}
       <div class="activity-indicator" title="Analyzing...">
         <div class="spinner"></div>
       </div>
+    {/if}
+
+    {#if problemsStore.totalCount > 0}
+      <button
+        class="fix-all-btn"
+        onclick={handleSendAllToAgent}
+        title="Fix all problems with AI"
+      >
+        <UIIcon name="sparkle" size={14} />
+        <span>Fix All with AI</span>
+      </button>
     {/if}
   </div>
 
@@ -289,44 +336,24 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       </p>
     </div>
   {:else}
-    <div class="problems-header">
-      <div class="header-left">
-        <span class="problem-count">
-          {#if problemsStore.errorCount > 0}
-            <span class="count-error"
-              ><UIIcon name="error" size={14} />
-              {problemsStore.errorCount}</span
-            >
-          {/if}
-          {#if problemsStore.warningCount > 0}
-            <span class="count-warning"
-              ><UIIcon name="warning" size={14} />
-              {problemsStore.warningCount}</span
-            >
-          {/if}
-          {#if problemsStore.infoCount > 0}
-            <span class="count-info"
-              ><UIIcon name="info" size={14} /> {problemsStore.infoCount}</span
-            >
-          {/if}
-        </span>
-      </div>
+    {@const visibleFilePaths = getVisibleFilePaths()}
 
-      <button
-        class="fix-all-btn"
-        onclick={handleSendAllToAgent}
-        title="Fix all problems with AI"
-      >
-        <UIIcon name="sparkle" size={14} />
-        <span>Fix All with AI</span>
-      </button>
+    <div class="results-meta">
+      Showing {problemsStore.totalCount} problem{problemsStore.totalCount === 1
+        ? ""
+        : "s"} across {visibleFilePaths.length} file{visibleFilePaths.length ===
+      1
+        ? ""
+        : "s"}
     </div>
 
     <div class="problems-list">
-      {#each getVisibleFilePaths() as filePath (filePath)}
+      {#each visibleFilePaths as filePath (filePath)}
         {@const problems = getVisibleProblemsForFile(filePath)}
         {@const counts = getFileCounts(problems)}
         {@const expanded = isExpanded(filePath)}
+        {@const fileName = problems[0]?.fileName || filePath.split(/[\\/]/).pop() || filePath}
+        {@const fileDirectory = formatFileDirectory(filePath, fileName)}
 
         <div class="file-group">
           <button
@@ -340,7 +367,12 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
                 size={14}
               />
             </span>
-            <span class="file-name">{problems[0]?.fileName || filePath}</span>
+            <span class="file-header-main">
+              <span class="file-name">{fileName}</span>
+              {#if fileDirectory}
+                <span class="file-path">{fileDirectory}</span>
+              {/if}
+            </span>
             <span class="file-counts">
               {#if counts.errors > 0}
                 <span class="count-badge error">{counts.errors}</span>
@@ -368,15 +400,21 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
                         size={14}
                       />
                     </span>
-                    <span class="problem-message">{problem.message}</span>
-                    <span class="problem-location"
-                      >[{problem.line}, {problem.column}]</span
-                    >
-                    {#if problem.code}
-                      <span class="problem-code"
-                        >{problem.source}({problem.code})</span
-                      >
-                    {/if}
+                    <span class="problem-content">
+                      <span class="problem-message">{problem.message}</span>
+                      <span class="problem-meta-line">
+                        <span class="problem-location"
+                          >Ln {problem.line}, Col {problem.column}</span
+                        >
+                        {#if problem.code}
+                          <span class="problem-code"
+                            >{problem.source} ({problem.code})</span
+                          >
+                        {:else}
+                          <span class="problem-code">{problem.source}</span>
+                        {/if}
+                      </span>
+                    </span>
                   </button>
                   <button
                     class="problem-action-btn"
@@ -400,35 +438,73 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
     background: var(--color-bg);
     overflow: hidden;
   }
-  
-  /* Toolbar with filters and search */
+
   .problems-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 12px;
+    padding: 6px 10px;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-bg-header);
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
   }
-  
+
+  .toolbar-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .summary-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg);
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .summary-pill.error {
+    color: var(--color-error);
+  }
+
+  .summary-pill.warning {
+    color: var(--color-warning);
+  }
+
+  .summary-pill.info {
+    color: var(--color-accent);
+  }
+
   .filter-buttons {
     display: flex;
     gap: 4px;
+    flex-shrink: 0;
   }
-  
+
   .filter-btn {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 3px 8px;
+    height: 22px;
+    padding: 0 8px;
     border: 1px solid transparent;
     border-radius: 4px;
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -443,7 +519,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     color: var(--color-accent);
     border-color: var(--color-accent);
   }
-  
+
   .filter-btn.error.active {
     background: rgba(255, 85, 85, 0.15);
     color: var(--color-error);
@@ -461,14 +537,15 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     color: var(--color-accent);
     border-color: var(--color-accent);
   }
-  
+
   .search-box {
     display: flex;
     align-items: center;
     gap: 6px;
     flex: 1;
-    max-width: 300px;
-    padding: 4px 8px;
+    min-width: 220px;
+    max-width: 420px;
+    padding: 3px 8px;
     border: 1px solid var(--color-border);
     border-radius: 4px;
     background: var(--color-bg);
@@ -484,7 +561,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     border: none;
     background: transparent;
     color: var(--color-text);
-    font-size: 12px;
+    font-size: 11px;
     outline: none;
   }
   
@@ -508,12 +585,13 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     background: var(--color-hover);
     color: var(--color-text);
   }
-  
+
   .activity-indicator {
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 4px;
+    flex-shrink: 0;
   }
   
   .spinner {
@@ -559,33 +637,28 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     text-align: center;
   }
 
-  .problems-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 12px;
+  .results-meta {
+    padding: 4px 10px;
     border-bottom: 1px solid var(--color-border);
-    background: var(--color-bg-header);
-  }
-
-  .header-left {
-    display: flex;
-    align-items: center;
+    color: var(--color-text-secondary);
+    font-size: 10px;
   }
 
   .fix-all-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 8px;
+    height: 22px;
+    padding: 0 8px;
     background: transparent;
     border: 1px solid var(--color-border);
     border-radius: 4px;
     color: var(--color-accent);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.1s ease;
+    flex-shrink: 0;
   }
 
   .fix-all-btn:hover {
@@ -593,39 +666,21 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     border-color: var(--color-accent);
   }
 
-  .problem-count {
+  .problems-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 8px 10px;
     display: flex;
-    gap: 12px;
-    font-size: 12px;
-  }
-
-  .count-error,
-  .count-warning,
-  .count-info {
-    display: inline-flex;
-    align-items: center;
+    flex-direction: column;
     gap: 6px;
   }
 
-  .count-error {
-    color: var(--color-error);
-  }
-
-  .count-warning {
-    color: var(--color-warning);
-  }
-
-  .count-info {
-    color: var(--color-accent);
-  }
-
-  .problems-list {
-    flex: 1;
-    overflow-y: auto;
-  }
-
   .file-group {
-    border-bottom: 1px solid var(--color-border);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--color-bg-sidebar);
   }
 
   .file-header {
@@ -633,11 +688,11 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 6px 12px;
+    padding: 6px 8px;
     background: var(--color-bg-sidebar);
     border: none;
     color: var(--color-text);
-    font-size: 12px;
+    font-size: 11px;
     text-align: left;
     cursor: pointer;
     transition: background 0.1s ease;
@@ -653,9 +708,25 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     width: 12px;
   }
 
-  .file-name {
+  .file-header-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     flex: 1;
+    gap: 2px;
+  }
+
+  .file-name {
     font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-path {
+    font-size: 9px;
+    color: var(--color-text-secondary);
+    opacity: 0.75;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -667,9 +738,9 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   }
 
   .count-badge {
-    padding: 1px 6px;
+    padding: 1px 5px;
     border-radius: 10px;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 500;
   }
 
@@ -685,43 +756,63 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   .problems-items {
     background: var(--color-bg);
+    border-top: 1px solid var(--color-border);
+    max-height: 220px;
+    overflow-y: auto;
   }
 
-  /* Row wrapper for item + action */
   .problem-item-row {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     width: 100%;
-    padding-right: 8px; /* Space for action button */
+    padding-right: 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  }
+
+  .problem-item-row:last-child {
+    border-bottom: none;
   }
 
   .problem-item-row:hover {
     background: var(--color-hover);
   }
 
-  /* Show action button on row hover only */
   .problem-item-row:hover .problem-action-btn {
     opacity: 1;
   }
 
   .problem-item {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
-    flex: 1; /* Take remaining space */
-    min-width: 0; /* Allow truncation */
-    padding: 4px 8px 4px 30px;
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px 6px 24px;
     background: transparent;
     border: none;
     color: var(--color-text);
-    font-size: 12px;
+    font-size: 11px;
     text-align: left;
     cursor: pointer;
   }
 
-  /* Remove hover on inner button as row handles it */
   .problem-item:hover {
     background: transparent;
+  }
+
+  .problem-content {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+    flex: 1;
+  }
+
+  .problem-meta-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
 
   .problem-action-btn {
@@ -778,12 +869,15 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     flex-shrink: 0;
     color: var(--color-text-secondary);
     font-family: monospace;
-    font-size: 11px;
+    font-size: 9px;
   }
 
   .problem-code {
-    flex-shrink: 0;
+    min-width: 0;
     color: var(--color-text-secondary);
-    font-size: 11px;
+    font-size: 9px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

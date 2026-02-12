@@ -22,9 +22,6 @@
   import {
     sendChat,
     streamChat,
-    type ChatMessage,
-    type ContentPart,
-    type FunctionResponsePart,
   } from "$lib/services/ai";
   import { getSystemPrompt } from "$lib/services/ai/prompts-v4";
   import {
@@ -33,7 +30,6 @@
   } from "$lib/services/ai/context";
   import {
     getAllToolsForMode,
-    getToolByName,
     validateToolCall as validateTool,
     executeToolCall,
     getToolCapabilities,
@@ -42,6 +38,42 @@
     type ToolResult,
   } from "$lib/services/ai/tools";
   import { resolvePath } from "$lib/services/ai/tools/utils";
+  import {
+    buildVerificationCommandGuidance,
+    getAdaptiveFileEditConcurrency,
+    getFailureSignature,
+    getToolIdempotencyKey,
+    hasStructuredCompletionReport,
+    isTerminalVerificationCommand,
+    isVerificationTool,
+    mapWithConcurrency,
+    normalizeQueueKey,
+    stableStringify,
+  } from "./panel/utils";
+  import { buildSummaryInput } from "./panel/summary-utils";
+  import {
+    getVerificationProfiles,
+    shouldRunAfterFileEdits,
+  } from "./panel/verification-profiles";
+  import { createStreamGuards } from "./panel/stream-guards";
+  import { toProviderMessages } from "./panel/provider-messages";
+  import {
+    addToolResultsToConversation,
+    waitForToolApprovals,
+    waitForToolCompletion,
+  } from "./panel/tool-loop-support";
+  import { getImageDimensions, readFileAsBase64 } from "./panel/image-utils";
+  import { saveConversationToHistory as persistConversationToHistory } from "./panel/conversation-persistence";
+  import { getMcpToolsInfo } from "./panel/mcp-tools";
+  import {
+    executeFileEditQueues,
+    executeQueuedNonFileTools,
+    type QueuedFileEditTool,
+    type QueuedNonFileTool,
+  } from "./panel/loop-executor";
+  import { processToolsNeedingApproval } from "./panel/approval-executor";
+  import { executeToolWithUpdates } from "./panel/tool-execution";
+  import { handleNoToolOutcome } from "./panel/loop-outcome";
   import MessageList from "./MessageList.svelte";
   import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
@@ -50,9 +82,11 @@
   import { readTextFile } from "@tauri-apps/plugin-fs";
   import { invoke } from "@tauri-apps/api/core";
   import {
-    } from "$lib/services/monaco-models";
+    getEditorSelection,
+  } from "$lib/services/monaco-models";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
   import { uiStore } from "$lib/stores/ui.svelte";
+  import { logOutput } from "$lib/stores/output.svelte";
 
   // Revert confirmation state
   let confirmRevertOpen = $state(false);
@@ -88,59 +122,6 @@
       lastConversationId = currentId;
     }
   });
-
-  function formatMessageForSummary(
-    msg: (typeof assistantStore.messages)[number],
-  ): string {
-    if (msg.role === "system") {
-      return `SYSTEM: ${msg.content}`;
-    }
-    if (msg.role === "tool") {
-      const toolLines = (msg.toolCalls || []).map((tc) => {
-        const output =
-          tc.output ??
-          (tc.data ? JSON.stringify(tc.data) : undefined) ??
-          tc.error ??
-          "No output";
-        return `TOOL ${tc.name} (${tc.status}): ${output}`;
-      });
-      return toolLines.join("\n");
-    }
-    if (msg.role === "assistant") {
-      return `ASSISTANT: ${msg.content || ""}`.trim();
-    }
-    return `USER: ${msg.content || ""}`.trim();
-  }
-
-  function buildSummaryInput(
-    messages: (typeof assistantStore.messages)[number][],
-    existingSummary?: string,
-  ): string {
-    const transcript = messages
-      .map((m) => formatMessageForSummary(m))
-      .filter(Boolean)
-      .join("\n");
-
-    const summaryHeader = existingSummary
-      ? `Existing summary (update it, do NOT repeat verbatim):\n${existingSummary}\n\n`
-      : "";
-
-    return (
-      `${summaryHeader}Summarize the conversation segment below in a structured, factual format.\n\n` +
-      `Format:\n` +
-      `Goals:\n- ...\n` +
-      `Key Decisions:\n- ...\n` +
-      `Files Changed:\n- path — what/why\n` +
-      `Open TODOs:\n- ...\n` +
-      `Constraints/Preferences:\n- ...\n` +
-      `Risks/Unknowns:\n- ...\n\n` +
-      `Rules:\n- Use facts only. If uncertain, write "Unknown".\n` +
-      `- Include file paths and tool outputs when relevant.\n` +
-      `- Keep it compact and precise.\n\n` +
-      `Conversation segment:\n${transcript}`
-    );
-  }
-
   async function autoSummarizeIfNeeded(
     selectedModel: string,
     controller: AbortController,
@@ -218,16 +199,6 @@
     }
   });
 
-  function normalizeQueueKey(path: string): string {
-    if (!path) return path;
-    const resolved = resolvePath(path);
-    const normalized = resolved.replace(/\\/g, "/");
-    if (/^[A-Za-z]:/.test(normalized)) {
-      return normalized.toLowerCase();
-    }
-    return normalized;
-  }
-
   function hasToolResultMessage(toolCallId: string): boolean {
     return assistantStore.messages.some(
       (msg) =>
@@ -248,263 +219,6 @@
     return () => window.removeEventListener("volt:assistant-send", onAssistantSend);
   });
 
-  function stableStringify(value: unknown): string {
-    if (value == null || typeof value !== "object") {
-      return JSON.stringify(value);
-    }
-    if (Array.isArray(value)) {
-      return `[${value.map((v) => stableStringify(v)).join(",")}]`;
-    }
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).sort();
-    return `{${keys
-      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
-      .join(",")}}`;
-  }
-
-  function getToolIdempotencyKey(
-    scopeId: string,
-    toolCallId: string,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): string {
-    return `${scopeId}:${toolCallId}:${toolName}:${stableStringify(args)}`;
-  }
-
-  function shouldRunAfterFileEdits(toolName: string): boolean {
-    if (toolName === "get_diagnostics" || toolName.startsWith("lsp_")) {
-      return true;
-    }
-
-    const tool = getToolByName(toolName);
-    const capabilities = getToolCapabilities(toolName);
-    if (
-      !tool ||
-      capabilities.isMutating ||
-      tool.category === "terminal" ||
-      tool.category === "browser"
-    ) {
-      return false;
-    }
-
-    return (
-      tool.category === "workspace_read" ||
-      tool.category === "workspace_search" ||
-      tool.category === "editor_context" ||
-      tool.category === "diagnostics" ||
-      capabilities.requiresWorkspacePathValidation
-    );
-  }
-
-  type VerificationProfile = {
-    id: string;
-    label: string;
-    commandPattern: RegExp;
-    suggestedCommands: string[];
-    requiresTerminalVerification: boolean;
-  };
-
-  function getWorkspaceRootFileNames(): Set<string> {
-    return new Set(
-      (projectStore.tree ?? [])
-        .map((node) => node.name?.toLowerCase?.() ?? "")
-        .filter(Boolean),
-    );
-  }
-
-  function getVerificationProfiles(): VerificationProfile[] {
-    const rootNames = getWorkspaceRootFileNames();
-    const has = (name: string) => rootNames.has(name.toLowerCase());
-
-    const profiles: VerificationProfile[] = [];
-
-    if (has("pubspec.yaml")) {
-      profiles.push({
-        id: "dart_flutter",
-        label: "Dart/Flutter",
-        commandPattern:
-          /\b(flutter\s+(analyze|test|build)|dart\s+(analyze|test))\b/i,
-        suggestedCommands: ["flutter analyze", "flutter test", "dart analyze"],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (
-      has("package.json") ||
-      has("pnpm-lock.yaml") ||
-      has("yarn.lock") ||
-      has("package-lock.json")
-    ) {
-      profiles.push({
-        id: "node_js_ts",
-        label: "Node/JS/TS",
-        commandPattern:
-          /\b((npm|pnpm|yarn|bun)\s+(run\s+)?(lint|test|build|typecheck|check)|vitest|jest|eslint|tsc(\s|$))\b/i,
-        suggestedCommands: ["npm run lint", "npm run test", "npm run build"],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (has("cargo.toml")) {
-      profiles.push({
-        id: "rust",
-        label: "Rust",
-        commandPattern: /\bcargo\s+(check|test|clippy|build)\b/i,
-        suggestedCommands: ["cargo check", "cargo test"],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (
-      has("pyproject.toml") ||
-      has("requirements.txt") ||
-      has("poetry.lock")
-    ) {
-      profiles.push({
-        id: "python",
-        label: "Python",
-        commandPattern:
-          /\b(pytest|python\s+-m\s+pytest|ruff\s+check|mypy|python\s+-m\s+unittest)\b/i,
-        suggestedCommands: ["pytest", "ruff check"],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (has("go.mod")) {
-      profiles.push({
-        id: "go",
-        label: "Go",
-        commandPattern: /\bgo\s+(test|vet|build)\b/i,
-        suggestedCommands: ["go test ./...", "go vet ./..."],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (has("pom.xml") || has("build.gradle") || has("build.gradle.kts")) {
-      profiles.push({
-        id: "java_jvm",
-        label: "Java/JVM",
-        commandPattern:
-          /\b(mvn\s+(test|verify|package)|gradle\s+(test|build)|\.\?\/gradlew\s+(test|build))\b/i,
-        suggestedCommands: ["mvn test", "gradle test"],
-        requiresTerminalVerification: true,
-      });
-    }
-
-    if (profiles.length === 0) {
-      profiles.push({
-        id: "generic",
-        label: "Generic",
-        commandPattern:
-          /\b(test|lint|build|check|typecheck|tsc|vitest|jest|pytest|cargo\s+check|cargo\s+test|eslint)\b/i,
-        suggestedCommands: ["run project checks/tests"],
-        requiresTerminalVerification: false,
-      });
-    }
-
-    return profiles;
-  }
-
-  function buildVerificationCommandGuidance(
-    profiles: VerificationProfile[],
-  ): string {
-    const suggestions = profiles
-      .flatMap((p) => p.suggestedCommands)
-      .filter((v, i, arr) => arr.indexOf(v) === i)
-      .slice(0, 4);
-    if (suggestions.length === 0) return "Run a relevant validation command.";
-    return `Run at least one relevant terminal verification command, for example: ${suggestions.map((s) => `\`${s}\``).join(", ")}.`;
-  }
-
-  function isTerminalVerificationCommand(
-    command: string,
-    profiles: VerificationProfile[],
-  ): boolean {
-    const cmd = command.trim().toLowerCase();
-    if (!cmd) return false;
-    return profiles.some((profile) => profile.commandPattern.test(cmd));
-  }
-
-  function isVerificationTool(
-    toolName: string,
-    args: Record<string, unknown>,
-    profiles: VerificationProfile[],
-  ): boolean {
-    if (toolName === "get_diagnostics" || toolName.startsWith("lsp_")) {
-      return true;
-    }
-    if (toolName === "run_command") {
-      return isTerminalVerificationCommand(String(args.command ?? ""), profiles);
-    }
-    if (
-      toolName === "browser_get_errors" ||
-      toolName === "browser_get_console_logs" ||
-      toolName === "browser_get_summary" ||
-      toolName === "browser_get_network_requests"
-    ) {
-      return true;
-    }
-    return false;
-  }
-
-  function hasStructuredCompletionReport(content: string): boolean {
-    const hasChanges =
-      /\b(changed|updated|modified|created|deleted|refactored|files?\s+(changed|updated|touched))\b/i.test(
-        content,
-      );
-    const hasVerification =
-      /\b(verify|verified|verification|diagnostic|diagnostics|test|tests|lint|build|check)\b/i.test(
-        content,
-      );
-    const hasRisks =
-      /\b(risk|risks|remaining|follow-?up|next steps?|limitations?)\b/i.test(
-        content,
-      );
-    return hasChanges && hasVerification && hasRisks;
-  }
-
-  function getFailureSignature(
-    toolName: string,
-    args: Record<string, unknown>,
-    result: ToolResult,
-  ): string | null {
-    if (result.success) return null;
-    const raw = String(result.error ?? result.output ?? "").trim().toLowerCase();
-    if (!raw) return null;
-    const condensed = raw.replace(/\s+/g, " ").slice(0, 220);
-    const pathHint = String(args.path ?? args.filePath ?? "").toLowerCase();
-    return `${toolName}:${pathHint}:${condensed}`;
-  }
-
-  function getAdaptiveFileEditConcurrency(queueCount: number): number {
-    if (queueCount >= 12) return 2;
-    if (queueCount >= 6) return 3;
-    return 4;
-  }
-
-  async function mapWithConcurrency<T, R>(
-    items: T[],
-    concurrency: number,
-    worker: (item: T, index: number) => Promise<R>,
-  ): Promise<R[]> {
-    if (items.length === 0) return [];
-    const bounded = Math.max(1, Math.min(concurrency, items.length));
-    const results: R[] = new Array(items.length);
-    let cursor = 0;
-
-    const runWorker = async (): Promise<void> => {
-      while (true) {
-        const index = cursor;
-        cursor += 1;
-        if (index >= items.length) return;
-        results[index] = await worker(items[index], index);
-      }
-    };
-
-    await Promise.all(Array.from({ length: bounded }, () => runWorker()));
-    return results;
-  }
-
   function recordToolResult(toolCall: ToolCall, result: ToolResult): void {
     if (hasToolResultMessage(toolCall.id)) return;
     assistantStore.addToolMessage({
@@ -518,150 +232,6 @@
       data: result.data,
     });
   }
-
-  function toProviderMessages(
-    messages: typeof assistantStore.messages,
-  ): ChatMessage[] {
-    const out: ChatMessage[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        out.push({ role: "system", content: msg.content });
-        continue;
-      }
-      // Handle tool messages - convert to function response
-      // These are the results of tool executions that need to go back to the model
-      if (msg.role === "tool" && msg.toolCalls && msg.toolCalls.length > 0) {
-        for (const tc of msg.toolCalls) {
-          const responsePart: FunctionResponsePart = {
-            type: "function_response",
-            id: tc.id,
-            name: tc.name,
-            response: {
-              success: tc.status === "completed",
-              output:
-                tc.output ??
-                (tc.data ? JSON.stringify(tc.data) : undefined) ??
-                tc.error ??
-                "No output",
-              error: tc.error ?? "",
-              meta: tc.meta ?? {},
-              data: tc.data,
-            },
-          };
-          out.push({
-            role: "user", // Function responses go as user role per Gemini API
-            content: "",
-            parts: [responsePart],
-          });
-        }
-        continue;
-      }
-
-      if (msg.role === "assistant") {
-        // CRITICAL: Include function calls in assistant message for multi-turn
-        // Gemini requires the model's function call to be in history before function response
-        const hasToolCalls =
-          msg.inlineToolCalls && msg.inlineToolCalls.length > 0;
-
-        if (hasToolCalls) {
-          // Build parts: text content + function calls
-          const parts: ContentPart[] = [];
-
-          // 1. Add text content if present
-          if (msg.content && msg.content.trim()) {
-            parts.push({ type: "text", text: msg.content });
-          }
-
-          // 2. Add function call parts - these tell Gemini what the model called
-          // CRITICAL: Include thoughtSignature for Gemini 3 models
-          if (msg.inlineToolCalls) {
-            for (const tc of msg.inlineToolCalls) {
-              parts.push({
-                type: "function_call",
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments,
-                // Preserve thought signature for Gemini 3 multi-turn function calling
-                thoughtSignature: tc.thoughtSignature,
-              });
-            }
-          }
-
-          out.push({ role: "assistant", content: msg.content, parts });
-        } else {
-          // No tool calls or thinking, just text content
-          out.push({ role: "assistant", content: msg.content });
-        }
-        continue;
-      }
-
-      if (msg.role !== "user") continue;
-
-      const attachments = msg.attachments ?? [];
-      const imageAttachments = attachments.filter(
-        (a) => a.type === "image",
-      ) as ImageAttachment[];
-      const elementAttachments = attachments.filter(
-        (a) => a.type === "element",
-      ) as ElementAttachment[];
-
-      // Build parts for multimodal or context-rich messages
-      const parts: ContentPart[] = [];
-
-      // 1. Add Smart Context first as reference (hidden from UI)
-      if (msg.smartContextBlock) {
-        // Wrap in XML tags to prevent "completion" hallucinations where the model
-        // treats the context as a sentence to finish.
-        parts.push({
-          type: "text",
-          text: `<system_context>\n${msg.smartContextBlock}\n</system_context>`,
-        });
-      }
-
-      // 1.5. Add Element Context (hidden from UI, shown as chip)
-      for (const el of elementAttachments) {
-        const elementContext = `<selected_element>
-Element: <${el.tagName}${el.selector ? ` selector="${el.selector}"` : ""}>
-HTML:
-\`\`\`html
-${el.html}
-\`\`\`
-CSS Properties:
-${Object.entries(el.css)
-  .map(([k, v]) => `- ${k}: ${v}`)
-  .join("\n")}
-Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Math.round(el.rect.x)}, ${Math.round(el.rect.y)})
-</selected_element>`;
-        parts.push({ type: "text", text: elementContext });
-      }
-
-      // 2. Add User Content
-      if (msg.content && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
-
-      // 3. Add Images
-      for (const img of imageAttachments) {
-        parts.push({ type: "image", mimeType: img.mimeType, data: img.data });
-      }
-
-      // If we only have text and no context/images, send simple content
-      if (
-        parts.length === 1 &&
-        parts[0].type === "text" &&
-        !msg.smartContextBlock
-      ) {
-        out.push({ role: "user", content: msg.content });
-      } else if (parts.length > 0) {
-        out.push({ role: "user", content: msg.content, parts });
-      }
-      continue;
-    }
-
-    return out;
-  }
-
   async function handleSend(): Promise<void> {
     // Use inputRef value as fallback in case store value is out of sync
     const content = (assistantStore.inputValue || inputRef?.value || "").trim();
@@ -694,20 +264,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       aiSettingsStore.modelPerMode[assistantStore.currentMode];
 
     // Get MCP tools info for system prompt
-    const { mcpStore } = await import("$lib/stores/mcp.svelte");
-    const mcpToolsInfo = mcpStore.tools.map(({ serverId, tool }) => {
-      const required = (tool.inputSchema as any)?.required || [];
-      const description = tool.description || `MCP tool from ${serverId}`;
-      const fullDesc =
-        required.length > 0
-          ? `${description} (Required: ${required.join(", ")})`
-          : description;
-      return {
-        serverId,
-        toolName: tool.name,
-        description: fullDesc,
-      };
-    });
+    const mcpToolsInfo = await getMcpToolsInfo();
 
     let systemPrompt = getSystemPrompt({
       mode: assistantStore.currentMode,
@@ -748,63 +305,11 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
    * Save the current conversation to persistent storage
    */
   async function saveConversationToHistory(): Promise<void> {
-    const conv = assistantStore.currentConversation;
-    if (!conv || conv.messages.length === 0) return;
-
-    try {
-      // Always try to create/update the conversation first
-      // The backend will handle upsert logic (ignore if exists)
-      try {
-        await chatHistoryStore.createConversation(
-          conv.id,
-          assistantStore.currentMode,
-        );
-        chatHistoryStore.activeConversationId = conv.id;
-      } catch (createErr) {
-        // Conversation might already exist, that's fine
-        console.log(
-          "[AssistantPanel] Conversation may already exist:",
-          createErr,
-        );
-      }
-
-      // Save each message
-      for (const msg of conv.messages) {
-        const metadata = JSON.stringify({
-          attachments: msg.attachments,
-          toolCalls: msg.toolCalls,
-          inlineToolCalls: msg.inlineToolCalls,
-          contentParts: msg.contentParts,
-          thinking: msg.thinking,
-          smartContextBlock: msg.smartContextBlock,
-          contextMentions: msg.contextMentions,
-          isSummary: msg.isSummary,
-        });
-
-        try {
-          await chatHistoryStore.saveMessage(conv.id, {
-            id: msg.id,
-            role: msg.role,
-            content: msg.content,
-            timestamp: msg.timestamp,
-            metadata,
-          });
-        } catch (msgErr) {
-          // Message might already exist (duplicate ID), skip
-          console.log("[AssistantPanel] Message may already exist:", msgErr);
-        }
-      }
-
-      console.log(
-        "[AssistantPanel] Saved conversation:",
-        conv.id,
-        "with",
-        conv.messages.length,
-        "messages",
-      );
-    } catch (err) {
-      console.error("[AssistantPanel] Failed to save conversation:", err);
-    }
+    await persistConversationToHistory(
+      chatHistoryStore,
+      assistantStore.currentConversation,
+      assistantStore.currentMode,
+    );
   }
 
   /**
@@ -843,7 +348,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     const isAgentMode = assistantStore.currentMode === "agent";
     const failureSignatureCounts = new Map<string, number>();
     const failureNudgedSignatures = new Set<string>();
-    const verificationProfiles = getVerificationProfiles();
+    const verificationProfiles = getVerificationProfiles(projectStore.tree ?? []);
     const terminalVerificationRequired = verificationProfiles.some(
       (p) => p.requiresTerminalVerification,
     );
@@ -889,72 +394,13 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     };
 
     // Streaming safety guards
-    let lastChunk = "";
-    let repeatedChunkCount = 0;
+    const streamGuards = createStreamGuards();
     const strictDelayTextForTools = false;
 
-    const shouldAbortForLeak = (text: string): boolean => {
-      const lower = text.toLowerCase();
-      return (
-        lower.includes("<system_context") ||
-        lower.includes("</system_context") ||
-        lower.includes("<smart_context") ||
-        lower.includes("</smart_context")
-      );
-    };
-
-    const isDegenerateRepeat = (chunk: string): boolean => {
-      const normalized = chunk.trim();
-      if (!normalized) return false;
-
-      if (normalized === lastChunk) {
-        repeatedChunkCount++;
-      } else {
-        lastChunk = normalized;
-        repeatedChunkCount = 1;
-      }
-
-      return repeatedChunkCount >= 6;
-    };
-
-    let lastLine = "";
-    let repeatedLineCount = 0;
-    const isDegenerateLineRepeat = (text: string): boolean => {
-      const lines = text
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const current = lines.length > 0 ? lines[lines.length - 1] : "";
-      if (!current) return false;
-
-      // Ignore very short lines (high false-positive risk)
-      if (current.length < 18) return false;
-
-      if (current === lastLine) {
-        repeatedLineCount++;
-      } else {
-        lastLine = current;
-        repeatedLineCount = 1;
-      }
-
-      if (repeatedLineCount >= 6) return true;
-
-      const lower = current.toLowerCase();
-      if (lower.startsWith("i'll also") || lower.startsWith("i will also")) {
-        const count = (text.toLowerCase().match(/\bi\s*'?ll\s+also\b/g) ?? [])
-          .length;
-        if (count >= 10) return true;
-      }
-
-      return false;
-    };
-
     // Log start of agent loop
-    import("$lib/stores/output.svelte").then((m) =>
-      m.logOutput(
-        "Volt",
-        `Agent: Starting tool loop (max ${maxIterations} iterations)`,
-      ),
+    logOutput(
+      "Volt",
+      `Agent: Starting tool loop (max ${maxIterations} iterations)`,
     );
 
     // Track if we just processed tool results - used to detect when model doesn't respond
@@ -979,9 +425,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       }
 
       if (controller.signal.aborted) {
-        import("$lib/stores/output.svelte").then((m) =>
-          m.logOutput("Volt", `Agent: Loop aborted at iteration ${iteration}`),
-        );
+        logOutput("Volt", `Agent: Loop aborted at iteration ${iteration}`);
         return;
       }
 
@@ -1001,22 +445,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         arguments: Record<string, unknown>;
         thoughtSignature?: string;
       }> = [];
-      const queuedNonFileTools: Array<{
-        id: string;
-        name: string;
-        args: Record<string, unknown>;
-        runAfterFileEdits: boolean;
-      }> = [];
+      const queuedNonFileTools: QueuedNonFileTool[] = [];
       // Queue for sequential file edits - edits to the same file run one after another
-      const fileEditQueues = new Map<
-        string,
-        Array<{
-          id: string;
-          name: string;
-          args: Record<string, unknown>;
-          queueIndex: number;
-        }>
-      >();
+      const fileEditQueues = new Map<string, QueuedFileEditTool[]>();
       // If the model emits an invalid tool call (e.g. missing required args/meta),
       // we must NOT leave it in a pending state (can deadlock approvals).
       const immediateResults: Array<{
@@ -1059,7 +490,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             if (suppressFurtherTextInThisTurn) {
               continue;
             }
-            if (shouldAbortForLeak(chunk.content)) {
+            if (streamGuards.shouldAbortForLeak(chunk.content)) {
               controller.abort();
               showToast({
                 message:
@@ -1074,7 +505,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               return;
             }
 
-            if (isDegenerateRepeat(chunk.content)) {
+            if (streamGuards.isDegenerateRepeat(chunk.content)) {
               if (!warnedAboutLooping) {
                 warnedAboutLooping = true;
                 showToast({
@@ -1087,7 +518,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
               continue;
             }
 
-            if (isDegenerateLineRepeat(iterationContent + chunk.content)) {
+            if (streamGuards.isDegenerateLineRepeat(iterationContent + chunk.content)) {
               if (!warnedAboutLooping) {
                 warnedAboutLooping = true;
                 showToast({
@@ -1341,87 +772,7 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
 
         // Reset repetition guard per iteration boundary so we don't over-trigger
         // on unrelated chunks in later iterations.
-        lastChunk = "";
-        repeatedChunkCount = 0;
-
-        const executeQueuedNonFileTools = (
-          toolsToRun: Array<{
-            id: string;
-            name: string;
-            args: Record<string, unknown>;
-            runAfterFileEdits: boolean;
-          }>,
-        ): Promise<
-          Array<{
-            id: string;
-            name: string;
-            result: ToolResult;
-          }>
-        > => {
-          for (const queued of toolsToRun) {
-            assistantStore.updateToolCallInMessage(msgId, queued.id, {
-              status: "running" as const,
-              startTime: Date.now(),
-            });
-          }
-
-          const promises = toolsToRun.map((queued) =>
-            executeToolCall(queued.name, queued.args, {
-              signal: controller.signal,
-              idempotencyKey: getToolIdempotencyKey(
-                toolRunScope,
-                queued.id,
-                queued.name,
-                queued.args,
-              ),
-            })
-              .then((result) => {
-                assistantStore.updateToolCallInMessage(msgId, queued.id, {
-                  status: result.success ? "completed" : "failed",
-                  output: result.output,
-                  error: result.error,
-                  meta: result.meta,
-                  data: result.data,
-                  endTime: Date.now(),
-                });
-                trackToolOutcome(queued.name, queued.args, result);
-                const signature = getFailureSignature(
-                  queued.name,
-                  queued.args,
-                  result,
-                );
-                if (signature) {
-                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-                  failureSignatureCounts.set(signature, count);
-                }
-                return { id: queued.id, name: queued.name, result };
-              })
-              .catch((err) => {
-                const error = err instanceof Error ? err.message : String(err);
-                assistantStore.updateToolCallInMessage(msgId, queued.id, {
-                  status: "failed",
-                  error,
-                  endTime: Date.now(),
-                });
-                const signature = getFailureSignature(
-                  queued.name,
-                  queued.args,
-                  { success: false, error },
-                );
-                if (signature) {
-                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-                  failureSignatureCounts.set(signature, count);
-                }
-                return {
-                  id: queued.id,
-                  name: queued.name,
-                  result: { success: false, error },
-                };
-              }),
-          );
-
-          return Promise.all(promises);
-        };
+        streamGuards.resetIteration();
 
         const hasQueuedFileEdits = fileEditQueues.size > 0;
         const immediateNonFileTools = hasQueuedFileEdits
@@ -1434,6 +785,22 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         // Run non-file tools that don't depend on fresh edits.
         const eagerResults = await executeQueuedNonFileTools(
           immediateNonFileTools,
+          {
+            executeToolCall,
+            signal: controller.signal,
+            toolRunScope,
+            getToolIdempotencyKey,
+            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
+              assistantStore,
+            ),
+            messageId: msgId,
+            trackToolOutcome,
+            getFailureSignature,
+            onFailureSignature: (signature) => {
+              const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+              failureSignatureCounts.set(signature, count);
+            },
+          },
         );
 
         // Execute file edits SEQUENTIALLY per file path
@@ -1443,133 +810,47 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         const fileEditConcurrency = getAdaptiveFileEditConcurrency(
           fileEditTasks.length,
         );
-        const fileEditResultsNested = await mapWithConcurrency(
+        const fileEditResults = await executeFileEditQueues(
           fileEditTasks,
           fileEditConcurrency,
-          async ([, edits]) => {
-            let previousFailed = false;
-            const results: Array<{
-              id: string;
-              name: string;
-              result: {
-                success: boolean;
-                output?: string;
-                error?: string;
-                meta?: any;
-              };
-            }> = [];
-
-            for (const edit of edits) {
-              // If a previous edit to this file failed, skip remaining edits
-              if (previousFailed) {
-                assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                  status: "failed",
-                  error: "Skipped: A previous edit to this file failed.",
-                  endTime: Date.now(),
-                  meta: { editPhase: "failed", queueIndex: edit.queueIndex },
-                });
-                results.push({
-                  id: edit.id,
-                  name: edit.name,
-                  result: {
-                    success: false,
-                    error: "Skipped: A previous edit to this file failed.",
-                  },
-                });
-                continue;
-              }
-
-              // Update UI to show writing in progress
-              assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                status: "running" as const,
-                startTime: Date.now(),
-                meta: { editPhase: "writing", queueIndex: edit.queueIndex },
-              });
-
-              try {
-                const isLastEditForPath = edit.queueIndex === edits.length;
-                const result = await executeToolCall(
-                  edit.name,
-                  {
-                    ...edit.args,
-                    postEditDiagnostics: isLastEditForPath,
-                  },
-                  {
-                    signal: controller.signal,
-                    idempotencyKey: getToolIdempotencyKey(
-                      toolRunScope,
-                      edit.id,
-                      edit.name,
-                      {
-                        ...edit.args,
-                        postEditDiagnostics: isLastEditForPath,
-                      },
-                    ),
-                  },
-                );
-
-                assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                  status: result.success ? "completed" : "failed",
-                  output: result.output,
-                  error: result.error,
-                  meta: {
-                    ...(result.meta || {}),
-                    editPhase: result.success ? "done" : "failed",
-                    queueIndex: edit.queueIndex,
-                  },
-                  data: result.data,
-                  endTime: Date.now(),
-                });
-                trackToolOutcome(edit.name, edit.args, result);
-                const signature = getFailureSignature(
-                  edit.name,
-                  edit.args,
-                  result,
-                );
-                if (signature) {
-                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-                  failureSignatureCounts.set(signature, count);
-                }
-
-                results.push({ id: edit.id, name: edit.name, result });
-
-                if (!result.success) {
-                  previousFailed = true;
-                }
-              } catch (err) {
-                const error = err instanceof Error ? err.message : String(err);
-                assistantStore.updateToolCallInMessage(msgId, edit.id, {
-                  status: "failed",
-                  error,
-                  endTime: Date.now(),
-                  meta: { editPhase: "failed", queueIndex: edit.queueIndex },
-                });
-                results.push({
-                  id: edit.id,
-                  name: edit.name,
-                  result: { success: false, error },
-                });
-                const signature = getFailureSignature(
-                  edit.name,
-                  edit.args,
-                  { success: false, error },
-                );
-                if (signature) {
-                  const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-                  failureSignatureCounts.set(signature, count);
-                }
-                previousFailed = true;
-              }
-            }
-
-            return results;
+          {
+            executeToolCall,
+            signal: controller.signal,
+            toolRunScope,
+            getToolIdempotencyKey,
+            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
+              assistantStore,
+            ),
+            messageId: msgId,
+            trackToolOutcome,
+            getFailureSignature,
+            onFailureSignature: (signature) => {
+              const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+              failureSignatureCounts.set(signature, count);
+            },
+            mapWithConcurrency,
           },
         );
-        const fileEditResults = fileEditResultsNested.flat();
 
         // Run diagnostics/LSP tools after file edits so they see latest state.
         const deferredResults = await executeQueuedNonFileTools(
           deferredNonFileTools,
+          {
+            executeToolCall,
+            signal: controller.signal,
+            toolRunScope,
+            getToolIdempotencyKey,
+            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
+              assistantStore,
+            ),
+            messageId: msgId,
+            trackToolOutcome,
+            getFailureSignature,
+            onFailureSignature: (signature) => {
+              const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+              failureSignatureCounts.set(signature, count);
+            },
+          },
         );
 
         // Combine all results
@@ -1584,222 +865,49 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           allEagerResults.length === 0 &&
           immediateResults.length === 0
         ) {
-          // Check if model only produced thinking but no actual response
-          // This can happen with Gemini thinking mode - model thinks but doesn't act
-          if (iterationThinking && !iterationContent.trim()) {
-            consecutiveEmptyResponses++;
+          const noToolOutcome = handleNoToolOutcome({
+            iteration,
+            iterationThinking,
+            iterationContent,
+            hadPlanModeViolationThisIteration,
+            hadMutatingEdits,
+            lastMutationIteration,
+            lastVerificationIteration,
+            terminalVerificationRequired,
+            lastTerminalVerificationIteration,
+            verificationCommandGuidance,
+            maxEmptyResponses: MAX_EMPTY_RESPONSES,
+            state: {
+              consecutiveEmptyResponses,
+              justProcessedToolResults,
+              planModeViolationNudgeCount,
+              verificationNudgeCount,
+              reportNudgeCount,
+              fullContent,
+              verificationGateStatus,
+              verificationGateMessage,
+            },
+            hasStructuredCompletionReport,
+            logOutput: (message) => logOutput("Volt", message),
+            addToolMessage: (payload) => assistantStore.addToolMessage(payload),
+            updateAssistantMessage: (content) =>
+              assistantStore.updateAssistantMessage(msgId, content, false),
+          });
 
-            import("$lib/stores/output.svelte").then((m) =>
-              m.logOutput(
-                "Volt",
-                `Agent: Model produced thinking but no response (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
-              ),
-            );
+          consecutiveEmptyResponses =
+            noToolOutcome.state.consecutiveEmptyResponses;
+          justProcessedToolResults = noToolOutcome.state.justProcessedToolResults;
+          planModeViolationNudgeCount =
+            noToolOutcome.state.planModeViolationNudgeCount;
+          verificationNudgeCount = noToolOutcome.state.verificationNudgeCount;
+          reportNudgeCount = noToolOutcome.state.reportNudgeCount;
+          fullContent = noToolOutcome.state.fullContent;
+          verificationGateStatus = noToolOutcome.state.verificationGateStatus;
+          verificationGateMessage = noToolOutcome.state.verificationGateMessage;
 
-            // Check if we've hit max empty responses
-            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
-              import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput(
-                  "Volt",
-                  `Agent: Too many empty responses, stopping.`,
-                ),
-              );
-              assistantStore.updateAssistantMessage(
-                msgId,
-                fullContent ||
-                  "I apologize, but I'm having trouble generating a response. Please try rephrasing your request.",
-                false,
-              );
-              return;
-            }
-
-            // Add a continuation prompt to encourage the model to respond
-            assistantStore.addToolMessage({
-              id: `thinking_continue_${Date.now()}`,
-              name: "_system_continuation",
-              arguments: {},
-              status: "completed",
-              output:
-                "You completed your reasoning but didn't provide a response or take action. Based on your thinking, please now either: (1) call the appropriate tool to execute your plan, or (2) provide a text response to the user. Do NOT remain silent after thinking.",
-            });
-
-            continue; // Continue to next iteration
-          }
-
-          // Check if model said it would do something but stopped without calling tools
-          // This happens when Gemini stream ends prematurely before emitting tool call
-          // Detect phrases like "I'll", "I will", "First,", "Let me" followed by action words
-          const incompleteActionPatterns = [
-            /\b(i'll|i will|let me|first,?\s*i'll|first,?\s*i will)\s+(update|edit|modify|change|fix|add|create|search|find|read|write|replace)/i,
-            /\bfirst,?\s*(i'll|i will|let me)\b/i,
-            /\b(updating|editing|modifying|searching|reading)\s+the\s+/i,
-          ];
-          const looksIncomplete = incompleteActionPatterns.some((p) =>
-            p.test(iterationContent),
-          );
-
-          if (hadPlanModeViolationThisIteration) {
-            if (planModeViolationNudgeCount < 3) {
-              planModeViolationNudgeCount++;
-              assistantStore.addToolMessage({
-                id: `plan_mode_guard_${Date.now()}`,
-                name: "_system_plan_mode_guard",
-                arguments: {},
-                status: "completed",
-                output:
-                  'You are in PLAN mode. Do NOT call write/edit/terminal tools. Use read/search tools to understand code, then either (a) provide a plan in chat, or (b) call "write_plan_file" once with the final plan.',
-              });
-              continue;
-            }
-          }
-
-          if (looksIncomplete && iterationContent.trim()) {
-            consecutiveEmptyResponses++;
-
-            import("$lib/stores/output.svelte").then((m) =>
-              m.logOutput(
-                "Volt",
-                `Agent: Model said it would act but stopped without tool call (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
-              ),
-            );
-
-            // Check if we've hit max empty responses
-            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
-              import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput(
-                  "Volt",
-                  `Agent: Too many incomplete actions, stopping.`,
-                ),
-              );
-              assistantStore.updateAssistantMessage(
-                msgId,
-                (fullContent + iterationContent) +
-                  "\n\n(Stream ended unexpectedly. Please try again.)",
-                false,
-              );
-              return;
-            }
-
-            // Add a continuation prompt to nudge the model to actually call the tool
-            assistantStore.addToolMessage({
-              id: `incomplete_action_${Date.now()}`,
-              name: "_system_continuation",
-              arguments: {},
-              status: "completed",
-              output:
-                "You said you would take an action but the stream ended before you called any tools. Please NOW call the tool you mentioned. Do not describe what you will do - actually call the tool using function calling.",
-            });
-
-            continue; // Continue to next iteration
-          }
-
-          // Check if we just processed tool results but model didn't respond
-          // This happens when Gemini decides to stop after seeing tool results
-          if (justProcessedToolResults && !iterationContent.trim()) {
-            consecutiveEmptyResponses++;
-
-            import("$lib/stores/output.svelte").then((m) =>
-              m.logOutput(
-                "Volt",
-                `Agent: Model didn't respond after tool results (${consecutiveEmptyResponses}/${MAX_EMPTY_RESPONSES}), prompting continuation...`,
-              ),
-            );
-
-            // Check if we've hit max empty responses
-            if (consecutiveEmptyResponses >= MAX_EMPTY_RESPONSES) {
-              import("$lib/stores/output.svelte").then((m) =>
-                m.logOutput(
-                  "Volt",
-                  `Agent: Too many empty responses after tools, stopping.`,
-                ),
-              );
-              assistantStore.updateAssistantMessage(
-                msgId,
-                fullContent ||
-                  "The tools completed but I couldn't generate a summary. Please check the tool results above.",
-                false,
-              );
-              return;
-            }
-
-            // Add a continuation prompt to encourage the model to respond
-            // This mimics how other AI IDEs handle silent completions
-            assistantStore.addToolMessage({
-              id: `continue_${Date.now()}`,
-              name: "_system_continuation",
-              arguments: {},
-              status: "completed",
-              output:
-                "The tool execution has completed. You MUST now provide a response to the user explaining what happened. If the task succeeded, summarize the result. If it failed, explain why and suggest next steps. Do NOT remain silent.",
-            });
-
-            justProcessedToolResults = false;
-            continue; // Continue to next iteration
-          }
-
-          const pendingVerification =
-            hadMutatingEdits &&
-            lastMutationIteration > 0 &&
-            (lastVerificationIteration < lastMutationIteration ||
-              (terminalVerificationRequired &&
-                lastTerminalVerificationIteration < lastMutationIteration));
-          if (pendingVerification) {
-            verificationGateStatus = "required";
-            verificationGateMessage = "Waiting for diagnostics/tests/runtime checks";
-            if (verificationNudgeCount < 3) {
-              verificationNudgeCount++;
-              assistantStore.addToolMessage({
-                id: `verification_required_${Date.now()}`,
-                name: "_system_verification_required",
-                arguments: {},
-                status: "completed",
-                output:
-                  `Before finalizing, you MUST verify your edits. Run: (1) get_diagnostics, (2) terminal verification: ${verificationCommandGuidance}, and (3) browser runtime checks for frontend changes (browser_get_errors/browser_get_summary). Then report results.`,
-              });
-              continue;
-            }
-            assistantStore.updateAssistantMessage(
-              msgId,
-              fullContent +
-                "\n\n⚠️ Verification gate not satisfied: edits were made but required verification steps did not complete.",
-              false,
-            );
-            return;
-          }
-
-          if (
-            hadMutatingEdits &&
-            !hasStructuredCompletionReport(fullContent) &&
-            reportNudgeCount < 2
-          ) {
-            reportNudgeCount++;
-            assistantStore.addToolMessage({
-              id: `report_required_${Date.now()}`,
-              name: "_system_report_required",
-              arguments: {},
-              status: "completed",
-              output:
-                "Provide a structured completion report with exactly these sections: What changed, Verification run, Remaining risks.",
-            });
+          if (noToolOutcome.decision === "continue") {
             continue;
           }
-
-          // Successful completion with content
-          fullContent += iterationContent;
-          if (hadMutatingEdits) {
-            verificationGateStatus = "verified";
-            verificationGateMessage = "Verification passed";
-          } else {
-            verificationGateStatus = "idle";
-            verificationGateMessage = "No verification gate";
-          }
-          import("$lib/stores/output.svelte").then((m) =>
-            m.logOutput(
-              "Volt",
-              `Agent: Task completed successfully after ${iteration} iterations.`,
-            ),
-          );
-          assistantStore.updateAssistantMessage(msgId, fullContent, false);
           return;
         }
 
@@ -1824,258 +932,39 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
             msg.id === msgId ? { ...msg, isStreaming: false } : msg,
           );
 
-          // Separate terminal commands from other tools for sequential processing
-          const terminalTools = toolsNeedingApproval.filter((tc) =>
-            isTerminalToolName(tc.name) && getToolCapabilities(tc.name).requiresApproval,
-          );
-          const otherTools = toolsNeedingApproval.filter(
-            (tc) =>
-              !(isTerminalToolName(tc.name) && getToolCapabilities(tc.name).requiresApproval),
-          );
-
-          // Process non-terminal tools in parallel (old behavior)
-          if (otherTools.length > 0) {
-            const approvalsResolved = await waitForToolApprovals(
-              msgId,
-              otherTools.map((tc) => tc.id),
-              controller.signal,
-            );
-            if (controller.signal.aborted || !approvalsResolved) return;
-
-            for (const tc of otherTools) {
-              let currentMsg = assistantStore.messages.find((m) => m.id === msgId);
-              let currentToolCall = currentMsg?.inlineToolCalls?.find(
-                (t) => t.id === tc.id,
-              );
-
-              if (currentToolCall?.status === "running") {
-                const completed = await waitForToolCompletion(
-                  msgId,
-                  tc.id,
-                  controller.signal,
-                );
-                if (!completed) return;
-                currentMsg = assistantStore.messages.find((m) => m.id === msgId);
-                currentToolCall = currentMsg?.inlineToolCalls?.find(
-                  (t) => t.id === tc.id,
-                );
-              }
-
-              if (
-                currentToolCall?.status === "completed" ||
-                currentToolCall?.status === "failed"
-              ) {
-                // Already executed inline; skip re-execution to avoid duplicates.
-                continue;
-              }
-
-              if (currentToolCall?.status === "cancelled") {
-                toolResults.push({
-                  id: tc.id,
-                  name: tc.name,
-                  result: {
-                    success: false,
-                    error: "Tool execution denied by user",
-                  },
-                });
-                continue;
-              }
-
-              assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                status: "running",
-                startTime: Date.now(),
-              });
-
-              try {
-                const result = await executeToolCall(tc.name, tc.arguments, {
-                  signal: controller.signal,
-                  idempotencyKey: getToolIdempotencyKey(
-                    toolRunScope,
-                    tc.id,
-                    tc.name,
-                    tc.arguments,
-                  ),
-                });
-                toolResults.push({ id: tc.id, name: tc.name, result });
-                assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                  status: result.success ? "completed" : "failed",
-                  output: result.output,
-                  error: result.error,
-                  meta: result.meta,
-                  data: result.data,
-                  endTime: Date.now(),
-                  streamingProgress: undefined,
-                });
-                trackToolOutcome(tc.name, tc.arguments, result);
-
-                
-              } catch (err) {
-                const error = err instanceof Error ? err.message : String(err);
-                toolResults.push({
-                  id: tc.id,
-                  name: tc.name,
-                  result: { success: false, error },
-                });
-                assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                  status: "failed",
-                  error,
-                  endTime: Date.now(),
-                });
-              }
-            }
-          }
-
-          // Process terminal commands SEQUENTIALLY (Kiro-style)
-          // Wait for approval → execute → wait for next approval → execute...
-          let previousTerminalFailed = false;
-          for (const tc of terminalTools) {
-            let currentMsg = assistantStore.messages.find(
-              (m) => m.id === msgId,
-            );
-            let currentToolCall = currentMsg?.inlineToolCalls?.find(
-              (t) => t.id === tc.id,
-            );
-
-            if (
-              currentToolCall?.status === "completed" ||
-              currentToolCall?.status === "failed"
-            ) {
-              // Already executed inline; skip re-execution.
-              continue;
-            }
-
-            // If previous terminal command failed, skip remaining
-            if (previousTerminalFailed) {
-              assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                status: "failed",
-                error: "Skipped: A previous command failed.",
-                endTime: Date.now(),
-              });
-              toolResults.push({
-                id: tc.id,
-                name: tc.name,
-                result: {
-                  success: false,
-                  error: "Skipped: A previous command failed.",
-                },
-              });
-              continue;
-            }
-
-            // Wait for THIS specific tool's approval
-            const approvalResolved = await waitForToolApprovals(
-              msgId,
-              [tc.id],
-              controller.signal,
-            );
-            if (controller.signal.aborted || !approvalResolved) return;
-
-            currentMsg = assistantStore.messages.find((m) => m.id === msgId);
-            currentToolCall = currentMsg?.inlineToolCalls?.find(
-              (t) => t.id === tc.id,
-            );
-
-            if (currentToolCall?.status === "running") {
-              const completed = await waitForToolCompletion(
-                msgId,
-                tc.id,
-                controller.signal,
-              );
-              if (!completed) return;
-              currentMsg = assistantStore.messages.find((m) => m.id === msgId);
-              currentToolCall = currentMsg?.inlineToolCalls?.find(
-                (t) => t.id === tc.id,
-              );
-            }
-
-            if (
-              currentToolCall?.status === "completed" ||
-              currentToolCall?.status === "failed"
-            ) {
-              // Already executed inline; skip re-execution.
-              continue;
-            }
-
-            if (currentToolCall?.status === "cancelled") {
-              toolResults.push({
-                id: tc.id,
-                name: tc.name,
-                result: {
-                  success: false,
-                  error: "Tool execution denied by user",
-                },
-              });
-              previousTerminalFailed = true; // Stop subsequent commands if user denies
-              continue;
-            }
-
-            // Execute this terminal command
-            assistantStore.updateToolCallInMessage(msgId, tc.id, {
-              status: "running",
-              startTime: Date.now(),
-            });
-
-            try {
-              const result = await executeToolCall(tc.name, tc.arguments, {
-                signal: controller.signal,
-                idempotencyKey: getToolIdempotencyKey(
-                  toolRunScope,
-                  tc.id,
-                  tc.name,
-                  tc.arguments,
-                ),
-              });
-              toolResults.push({ id: tc.id, name: tc.name, result });
-              assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                status: result.success ? "completed" : "failed",
-                output: result.output,
-                error: result.error,
-                meta: result.meta,
-                data: result.data,
-                endTime: Date.now(),
-              });
-              trackToolOutcome(tc.name, tc.arguments, result);
-              const signature = getFailureSignature(
-                tc.name,
-                tc.arguments,
-                result,
-              );
-              if (signature) {
+          const approvalsProcessed = await processToolsNeedingApproval(
+            msgId,
+            toolsNeedingApproval,
+            toolResults,
+            {
+              isTerminalToolName,
+              getToolCapabilities,
+              waitForToolApprovals,
+              waitForToolCompletion,
+              getMessages: () => assistantStore.messages,
+              updateToolCallInMessage:
+                assistantStore.updateToolCallInMessage.bind(assistantStore),
+              executeToolCall,
+              getToolIdempotencyKey,
+              toolRunScope,
+              signal: controller.signal,
+              trackToolOutcome,
+              getFailureSignature,
+              onFailureSignature: (signature) => {
                 const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
                 failureSignatureCounts.set(signature, count);
-              }
-
-              if (!result.success) {
-                previousTerminalFailed = true;
-              }
-            } catch (err) {
-              const error = err instanceof Error ? err.message : String(err);
-              toolResults.push({
-                id: tc.id,
-                name: tc.name,
-                result: { success: false, error },
-              });
-              assistantStore.updateToolCallInMessage(msgId, tc.id, {
-                status: "failed",
-                error,
-                endTime: Date.now(),
-              });
-              const signature = getFailureSignature(
-                tc.name,
-                tc.arguments,
-                { success: false, error },
-              );
-              if (signature) {
-                const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-                failureSignatureCounts.set(signature, count);
-              }
-              previousTerminalFailed = true;
-            }
-          }
+              },
+            },
+          );
+          if (!approvalsProcessed) return;
         }
 
         // Add ALL results to conversation as special tool messages
-        addToolResultsToConversation(allToolCalls, toolResults);
+        addToolResultsToConversation(
+          allToolCalls,
+          toolResults,
+          assistantStore.addToolMessage.bind(assistantStore),
+        );
 
         for (const [signature, count] of failureSignatureCounts.entries()) {
           if (count < 3 || failureNudgedSignatures.has(signature)) continue;
@@ -2105,11 +994,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
         const isRetryable =
           /network|timeout|connection|interrupted|503|502|504|429/i.test(msg);
 
-        import("$lib/stores/output.svelte").then((m) =>
-          m.logOutput(
-            "Volt",
-            `Agent Loop Error (iteration ${iteration}): ${msg}`,
-          ),
+        logOutput(
+          "Volt",
+          `Agent Loop Error (iteration ${iteration}): ${msg}`,
         );
 
         // If retryable and we have content, try to continue
@@ -2119,11 +1006,9 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
           recoveryRetryCount < MAX_RECOVERY_RETRIES
         ) {
           recoveryRetryCount++;
-          import("$lib/stores/output.svelte").then((m) =>
-            m.logOutput(
-              "Volt",
-              `Retryable error detected, attempting to continue... (${recoveryRetryCount}/${MAX_RECOVERY_RETRIES})`,
-            ),
+          logOutput(
+            "Volt",
+            `Retryable error detected, attempting to continue... (${recoveryRetryCount}/${MAX_RECOVERY_RETRIES})`,
           );
 
           // Add a system message to help model recover
@@ -2161,159 +1046,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
   }
 
   /**
-   * Add tool results to the conversation for the next API call
-   */
-  function addToolResultsToConversation(
-    toolCalls: Array<{
-      id: string;
-      name: string;
-      arguments: Record<string, unknown>;
-    }>,
-    results: Array<{
-      id: string;
-      name: string;
-      result: ToolResult;
-    }>,
-  ): void {
-    // We need to add both the assistant's function calls and the user's function responses
-    // to maintain proper conversation structure for Gemini
-
-    // Then add a "tool" message with the results that will be converted to functionResponse
-    for (const result of results) {
-      const tc = toolCalls.find((t) => t.id === result.id);
-      if (!tc) continue;
-
-      // Add as a tool message - toProviderMessages will convert this
-      assistantStore.addToolMessage({
-        id: result.id,
-        name: result.name,
-        arguments: tc.arguments,
-        status: result.result.success ? "completed" : "failed",
-        output: result.result.output,
-        error: result.result.error,
-        meta: result.result.meta,
-        data: result.result.data,
-      });
-    }
-  }
-
-  /**
-   * Wait for user to approve or deny tools that require approval
-   * Polls the tool status until all are resolved (not 'pending')
-   */
-  function waitForToolApprovals(
-    messageId: string,
-    toolIds: string[],
-    signal: AbortSignal,
-    maxWaitMs = 10 * 60 * 1000,
-  ): Promise<boolean> {
-    return new Promise((resolve) => {
-      const startedAt = Date.now();
-      let finished = false;
-      const finish = (ok: boolean): void => {
-        if (finished) return;
-        finished = true;
-        clearInterval(checkInterval);
-        signal.removeEventListener("abort", onAbort);
-        resolve(ok);
-      };
-
-      const onAbort = (): void => finish(false);
-
-      // Faster polling for snappier UX (50ms instead of 100ms)
-      const checkInterval = setInterval(() => {
-        // Check if aborted
-        if (signal.aborted) {
-          finish(false);
-          return;
-        }
-
-        if (Date.now() - startedAt > maxWaitMs) {
-          for (const toolId of toolIds) {
-            assistantStore.updateToolCallInMessage(messageId, toolId, {
-              status: "failed",
-              error: `Approval timed out after ${Math.round(maxWaitMs / 1000)}s`,
-              endTime: Date.now(),
-            });
-          }
-          finish(false);
-          return;
-        }
-
-        // Find the message and check tool statuses
-        const msg = assistantStore.messages.find((m) => m.id === messageId);
-        if (!msg?.inlineToolCalls) {
-          finish(false);
-          return;
-        }
-
-        // Check if all tools needing approval have been resolved
-        const allResolved = toolIds.every((toolId) => {
-          const tool = msg.inlineToolCalls?.find((t) => t.id === toolId);
-          // Resolved means not 'pending' anymore
-          return tool && tool.status !== "pending";
-        });
-
-        if (allResolved) {
-          finish(true);
-        }
-      }, 50); // Check every 50ms for snappier response
-
-      // Also listen for abort
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  /**
-   * Wait for a running inline tool execution to finish.
-   * Prevents duplicate execution in the main tool loop.
-   */
-  function waitForToolCompletion(
-    messageId: string,
-    toolId: string,
-    signal: AbortSignal,
-    maxWaitMs = 5 * 60 * 1000,
-  ): Promise<boolean> {
-    return new Promise((resolve) => {
-      const startedAt = Date.now();
-      let finished = false;
-      const finish = (ok: boolean): void => {
-        if (finished) return;
-        finished = true;
-        clearInterval(checkInterval);
-        signal.removeEventListener("abort", onAbort);
-        resolve(ok);
-      };
-      const onAbort = (): void => finish(false);
-
-      const checkInterval = setInterval(() => {
-        if (signal.aborted) {
-          finish(false);
-          return;
-        }
-
-        if (Date.now() - startedAt > maxWaitMs) {
-          assistantStore.updateToolCallInMessage(messageId, toolId, {
-            status: "failed",
-            error: `Execution timed out after ${Math.round(maxWaitMs / 1000)}s`,
-            endTime: Date.now(),
-          });
-          finish(false);
-          return;
-        }
-
-        const msg = assistantStore.messages.find((m) => m.id === messageId);
-        const tool = msg?.inlineToolCalls?.find((t) => t.id === toolId);
-        if (!tool || tool.status !== "running") {
-          finish(true);
-        }
-      }, 50);
-
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  /**
    * Execute a tool call and update its status
    * Supports streaming progress for file write operations
    */
@@ -2321,52 +1053,16 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     toolCall: ToolCall,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    assistantStore.updateToolCall(toolCall.id, {
-      status: "running",
-      startTime: Date.now(),
+    return executeToolWithUpdates({
+      toolCall,
+      signal,
+      idScope: assistantStore.currentConversation?.id ?? "ad-hoc",
+      executeToolCall,
+      getToolIdempotencyKey,
+      updateToolCall: (toolCallId, patch) => {
+        assistantStore.updateToolCall(toolCallId, patch);
+      },
     });
-
-    try {
-      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
-        signal,
-        idempotencyKey: getToolIdempotencyKey(
-          assistantStore.currentConversation?.id ?? "ad-hoc",
-          toolCall.id,
-          toolCall.name,
-          toolCall.arguments,
-        ),
-      });
-
-      if (result.success) {
-        assistantStore.updateToolCall(toolCall.id, {
-          status: "completed",
-          output: result.output,
-          meta: result.meta,
-          endTime: Date.now(),
-          streamingProgress: undefined, // Clear progress on completion
-        });
-
-        
-      } else {
-        assistantStore.updateToolCall(toolCall.id, {
-          status: "failed",
-          error: result.error,
-          meta: result.meta,
-          endTime: Date.now(),
-          streamingProgress: undefined,
-        });
-      }
-      return result;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      assistantStore.updateToolCall(toolCall.id, {
-        status: "failed",
-        error: errorMsg,
-        endTime: Date.now(),
-        streamingProgress: undefined,
-      });
-      return { success: false, error: errorMsg };
-    }
   }
 
   function handleStop(): void {
@@ -2406,46 +1102,41 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
   }
 
   function handleAttachSelection(): void {
-    import("$lib/services/monaco-models")
-      .then(({ getEditorSelection }) => {
-        const selection = getEditorSelection();
-        if (selection && selection.text) {
-          // Use new attachment model with range
-          const result = assistantStore.attachSelection(
-            selection.text,
-            selection.path ?? undefined,
-            selection.range
-              ? {
-                  startLine: selection.range.startLineNumber,
-                  startCol: selection.range.startColumn,
-                  endLine: selection.range.endLineNumber,
-                  endCol: selection.range.endColumn,
-                }
-              : undefined,
-          );
+    const selection = getEditorSelection();
+    if (selection && selection.text) {
+      // Use new attachment model with range
+      const result = assistantStore.attachSelection(
+        selection.text,
+        selection.path ?? undefined,
+        selection.range
+          ? {
+              startLine: selection.range.startLineNumber,
+              startCol: selection.range.startColumn,
+              endLine: selection.range.endLineNumber,
+              endCol: selection.range.endColumn,
+            }
+          : undefined,
+      );
 
-          if (!result.success) {
-            showToast({
-              message: result.error ?? "Failed to attach selection",
-              type: "warning",
-            });
-            return;
-          }
+      if (!result.success) {
+        showToast({
+          message: result.error ?? "Failed to attach selection",
+          type: "warning",
+        });
+        return;
+      }
 
-          // Also add to legacy context
-          assistantStore.attachContext({
-            type: "selection",
-            path: selection.path ?? undefined,
-            content: selection.text,
-            label: `Selection from ${selection.path?.split("/").pop() ?? "editor"}`,
-          });
-        } else {
-          showToast({ message: "No text selected in editor", type: "warning" });
-        }
-      })
-      .catch(() => {
-        showToast({ message: "Failed to get selection", type: "error" });
+      // Also add to legacy context
+      assistantStore.attachContext({
+        type: "selection",
+        path: selection.path ?? undefined,
+        content: selection.text,
+        label: `Selection from ${selection.path?.split("/").pop() ?? "editor"}`,
       });
+      return;
+    }
+
+    showToast({ message: "No text selected in editor", type: "warning" });
   }
 
   /**
@@ -2562,42 +1253,6 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
     }
   }
 
-  /**
-   * Read a File as base64 string
-   */
-  function readFileAsBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // Remove data URL prefix (e.g., "data:image/png;base64,")
-        const base64 = result.split(",")[1];
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  /**
-   * Get image dimensions from base64 data
-   */
-  function getImageDimensions(
-    base64: string,
-    mimeType: string,
-  ): Promise<{ width: number; height: number } | undefined> {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        resolve({ width: img.width, height: img.height });
-      };
-      img.onerror = () => {
-        resolve(undefined);
-      };
-      img.src = `data:${mimeType};base64,${base64}`;
-    });
-  }
-
   function handleRemoveContext(index: number): void {
     assistantStore.removeContext(index);
   }
@@ -2707,43 +1362,18 @@ Dimensions: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} at (${Ma
       return;
     }
 
-    // Mark as running immediately for instant UI feedback
-    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-      status: "running",
-      startTime: Date.now(),
+    const result = await executeToolWithUpdates({
+      toolCall,
+      signal: assistantStore.abortController?.signal,
+      idScope: assistantStore.currentConversation?.id ?? "ad-hoc",
+      executeToolCall,
+      getToolIdempotencyKey,
+      updateToolCall: (toolCallId, patch) => {
+        assistantStore.updateToolCallInMessage(messageId, toolCallId, patch);
+      },
     });
 
-    // Execute the tool immediately (don't wait for tool loop)
-    try {
-      const result = await executeToolCall(toolCall.name, toolCall.arguments, {
-        signal: assistantStore.abortController?.signal,
-        idempotencyKey: getToolIdempotencyKey(
-          assistantStore.currentConversation?.id ?? "ad-hoc",
-          toolCall.id,
-          toolCall.name,
-          toolCall.arguments,
-        ),
-      });
-
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        status: result.success ? "completed" : "failed",
-        output: result.output,
-        error: result.error,
-        meta: result.meta,
-        data: result.data,
-        endTime: Date.now(),
-      });
-
-      recordToolResult(toolCall, result);
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
-        status: "failed",
-        error,
-        endTime: Date.now(),
-      });
-      recordToolResult(toolCall, { success: false, error });
-    }
+    recordToolResult(toolCall, result);
   }
 
   /**

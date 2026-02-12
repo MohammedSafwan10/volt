@@ -3,6 +3,7 @@
  */
 
 import { editorStore } from '$lib/stores/editor.svelte';
+import { getEditorSelection } from '$lib/services/monaco-models';
 import { truncateOutput, formatWithLineNumbers, type ToolResult } from '../utils';
 
 /**
@@ -29,8 +30,6 @@ export async function handleGetActiveFile(): Promise<ToolResult> {
  * Get selected text in editor
  */
 export async function handleGetSelection(): Promise<ToolResult> {
-  // Dynamic import to avoid circular dependency
-  const { getEditorSelection } = await import('$lib/services/monaco-models');
   const selection = getEditorSelection();
 
   if (!selection || !selection.text) {
@@ -58,7 +57,7 @@ export async function handleGetOpenFiles(): Promise<ToolResult> {
   const lines = openFiles.map(f => {
     const isActive = f.path === activeFile?.path;
     const modified = editorStore.isDirty(f.path) ? ' (modified)' : '';
-    return `${isActive ? '→ ' : '  '}${f.path}${modified}`;
+    return `${isActive ? '-> ' : '   '}${f.path}${modified}`;
   });
   
   return { 
@@ -66,3 +65,4 @@ export async function handleGetOpenFiles(): Promise<ToolResult> {
     output: `${openFiles.length} files open:\n${lines.join('\n')}` 
   };
 }
+

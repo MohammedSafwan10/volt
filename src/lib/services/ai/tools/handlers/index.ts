@@ -93,6 +93,16 @@ export {
  * Tool handler map - maps tool names to handlers
  */
 import type { ToolResult } from '../utils';
+import {
+  handleCommandStatus,
+  handleGetProcessOutput,
+  handleListProcesses,
+  handleReadTerminal,
+  handleRunCommand,
+  handleSendTerminalInput,
+  handleStartProcess,
+  handleStopProcess,
+} from './terminal';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
@@ -141,14 +151,14 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'write_plan_file': (args) => import('./write').then(m => m.handleWritePlanFile(args)),
 
   // Terminal
-  'run_command': (args) => import('./terminal').then(m => m.handleRunCommand(args)),
-  'start_process': (args) => import('./terminal').then(m => m.handleStartProcess(args)),
-  'stop_process': (args) => import('./terminal').then(m => m.handleStopProcess(args)),
-  'list_processes': () => import('./terminal').then(m => m.handleListProcesses()),
-  'get_process_output': (args) => import('./terminal').then(m => m.handleGetProcessOutput(args)),
-  'command_status': (args) => import('./terminal').then(m => m.handleCommandStatus(args)),
-  'read_terminal': (args) => import('./terminal').then(m => m.handleReadTerminal(args)),
-  'send_terminal_input': (args) => import('./terminal').then(m => m.handleSendTerminalInput(args)),
+  'run_command': (args) => handleRunCommand(args),
+  'start_process': (args) => handleStartProcess(args),
+  'stop_process': (args) => handleStopProcess(args),
+  'list_processes': () => handleListProcesses(),
+  'get_process_output': (args) => handleGetProcessOutput(args),
+  'command_status': (args) => handleCommandStatus(args),
+  'read_terminal': (args) => handleReadTerminal(args),
+  'send_terminal_input': (args) => handleSendTerminalInput(args),
 
   // Diagnostics
   'get_diagnostics': (args) => import('./diagnostics').then(m => m.handleGetDiagnostics(args)),

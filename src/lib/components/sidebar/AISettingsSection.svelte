@@ -4,6 +4,8 @@
   import UIIcon from '$lib/components/ui/UIIcon.svelte';
   import { onMount } from 'svelte';
   import { getModelConfig, formatContextSize } from '$lib/services/ai/models';
+  import { validateGeminiKey } from '$lib/services/ai/gemini';
+  import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
 
   let apiKeyInput = $state('');
   let showKey = $state(false);
@@ -57,7 +59,6 @@
     if (canValidateTyped) {
       // Validate the typed key directly
       if (aiSettingsStore.selectedProvider === 'gemini') {
-        const { validateGeminiKey } = await import('$lib/services/ai/gemini');
         const result = await validateGeminiKey(apiKeyInput);
         if (result.success) {
           showToast({ message: 'API key is valid!', type: 'success' });
@@ -65,7 +66,6 @@
           showToast({ message: result.error ?? 'Validation failed', type: 'error' });
         }
       } else if (aiSettingsStore.selectedProvider === 'openrouter') {
-        const { validateOpenRouterKey } = await import('$lib/services/ai/openrouter');
         const result = await validateOpenRouterKey(apiKeyInput);
         if (result.success) {
           showToast({ message: 'API key is valid!', type: 'success' });

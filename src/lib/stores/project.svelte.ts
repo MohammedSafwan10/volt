@@ -23,7 +23,10 @@ import {
   getIndexedRoot,
 } from '$lib/services/file-index';
 import { notifyFileChanges as notifyDartFileChanges, startDartLsp } from '$lib/services/lsp/dart-sidecar';
-import { terminalProblemMatcher } from '$lib/services/terminal-problem-matcher';
+import {
+  terminalProblemMatcher,
+  setTerminalProblemMatcherProjectRootResolver,
+} from '$lib/services/terminal-problem-matcher';
 import { fileService } from '$lib/services/file-service';
 import {
   startWatching as startFileWatching,
@@ -110,6 +113,7 @@ class ProjectStore {
 
   constructor() {
     this.loadRecentProjects();
+    setTerminalProblemMatcherProjectRootResolver(() => this.rootPath);
     // Init must be called manually by the app root to avoid HMR loops
   }
 

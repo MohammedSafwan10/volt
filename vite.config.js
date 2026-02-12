@@ -8,6 +8,21 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [tailwindcss(), sveltekit()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: /** @param {string} id */ (id) => {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("monaco-editor")) return "vendor-monaco";
+          if (id.includes("@xterm")) return "vendor-xterm";
+          if (id.includes("marked") || id.includes("svelte-streamdown")) {
+            return "vendor-markdown";
+          }
+          if (id.includes("@tauri-apps")) return "vendor-tauri";
+        },
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

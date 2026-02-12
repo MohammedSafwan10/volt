@@ -13,9 +13,11 @@
 
 import { Command } from '@tauri-apps/plugin-shell';
 import { projectStore } from '$lib/stores/project.svelte';
+import { editorStore } from '$lib/stores/editor.svelte';
 import { showToast } from '$lib/stores/toast.svelte';
 import { logOutput } from '$lib/stores/output.svelte';
 import { getFileInfoQuiet, writeFile, deletePathQuiet } from '$lib/services/file-system';
+import { getModelValue, setModelValue } from '$lib/services/monaco-models';
 
 /** File extensions that Prettier can format */
 const PRETTIER_EXTENSIONS = new Set([
@@ -226,10 +228,6 @@ export async function formatWithPrettier(
  * This is called from the command palette or menu
  */
 export async function formatCurrentDocument(): Promise<boolean> {
-  // Import dynamically to avoid circular dependencies
-  const { editorStore } = await import('$lib/stores/editor.svelte');
-  const { getModelValue, setModelValue } = await import('$lib/services/monaco-models');
-  
   const activeFile = editorStore.activeFile;
   if (!activeFile) {
     showToast({

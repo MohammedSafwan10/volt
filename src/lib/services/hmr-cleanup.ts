@@ -8,6 +8,8 @@
  * when Tauri event listeners from a previous page load are still active.
  */
 
+import { invoke } from '@tauri-apps/api/core';
+
 type CleanupFn = () => void | Promise<void>;
 
 // Registry of cleanup functions by service name
@@ -15,6 +17,21 @@ const cleanupRegistry = new Map<string, CleanupFn>();
 
 // Track if we've already set up the beforeunload handler
 let initialized = false;
+let backendWatchCleanupDone = false;
+
+/**
+ * Best-effort startup cleanup for stale backend watchers left from a previous
+ * reload/session. This prevents callback-id warning floods during dev reloads.
+ */
+export async function cleanupStaleBackendWatchers(): Promise<void> {
+  if (backendWatchCleanupDone) return;
+  backendWatchCleanupDone = true;
+
+  await Promise.allSettled([
+    invoke('stop_all_watch_commands'),
+    invoke('stop_all_file_watches'),
+  ]);
+}
 
 /**
  * Register a cleanup function for a service.

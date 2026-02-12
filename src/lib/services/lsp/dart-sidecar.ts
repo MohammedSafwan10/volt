@@ -23,6 +23,8 @@ import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sideca
 import { problemsStore, type Problem, type ProblemSeverity } from '$lib/stores/problems.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
 import { detectDartSdk, isDartAvailable, type DartSdkInfo } from './dart-sdk';
+import { readFileQuiet } from '$lib/services/file-system';
+import { getAllFiles } from '$lib/services/file-index';
 
 // Server instance tracking
 let dartServerTransport: LspTransport | null = null;
@@ -766,10 +768,6 @@ export async function startProjectWideAnalysis(): Promise<void> {
     console.log('[Dart LSP] Server not initialized, skipping project-wide analysis');
     return;
   }
-
-  // Use dynamic import for fileIndex to avoid circular deps
-  const { getAllFiles } = await import('$lib/services/file-index');
-  const { readFileQuiet } = await import('$lib/services/file-system');
 
   const allFiles = getAllFiles();
   const dartFiles = allFiles.filter(f => isDartLspFile(f.path));
