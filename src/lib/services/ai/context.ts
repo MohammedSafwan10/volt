@@ -750,8 +750,9 @@ async function discoverRelevantFiles(
     }
   }
 
-  // 3. Recent files
+  // 3. Recent files (scoped to current workspace)
   for (const recentPath of activityStore.recentPaths.slice(0, 15)) {
+    if (workspaceRoot && !recentPath.startsWith(workspaceRoot)) continue;
     if (alreadyIncluded.has(recentPath)) continue;
     if (isExcluded(recentPath)) continue;
     if (!isCodeFile(recentPath)) continue;
@@ -864,7 +865,13 @@ async function findFilesByKeywords(
 
 /** Get recent terminal output */
 function getTerminalContext(maxChars: number): string | undefined {
-  const sessions = terminalStore.sessions;
+  const workspaceRoot = projectStore.rootPath;
+  const sessions = terminalStore.sessions.filter(s => {
+    if (!workspaceRoot) return true;
+    const cwd = s.cwd || s.info.cwd || '';
+    return cwd.includes(workspaceRoot);
+  });
+
   if (sessions.length === 0) return undefined;
 
   let output = '';
@@ -885,7 +892,12 @@ function getTerminalContext(maxChars: number): string | undefined {
 /** Get diagnostic problems from the store */
 function getProblemsContext(maxChars: number): string | undefined {
   const problemsByFile = problemsStore.problemsByFile;
-  const files = Object.keys(problemsByFile);
+  const workspaceRoot = projectStore.rootPath;
+  const files = Object.keys(problemsByFile).filter(file => {
+    if (!workspaceRoot) return true;
+    return file.includes(workspaceRoot);
+  });
+
   if (files.length === 0) return undefined;
 
   let output = '';

@@ -13,7 +13,7 @@
 import type { AIMode } from '$lib/stores/ai.svelte';
 import { buildAskPrompt } from './prompt-ask';
 import { buildPlanPrompt } from './prompt-plan';
-export type AIProvider = 'gemini' | 'openrouter';
+export type AIProvider = 'gemini' | 'openrouter' | 'anthropic';
 
 export interface SystemPromptOptions {
   mode: AIMode;

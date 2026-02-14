@@ -6,7 +6,7 @@
 export interface ModelConfig {
   id: string;              // Full model ID (e.g., 'moonshotai/kimi-k2:free')
   name: string;            // Display name
-  provider: 'gemini' | 'openrouter';
+  provider: 'gemini' | 'openrouter' | 'anthropic';
   contextWindow: number;   // Total context window in tokens
   maxOutput: number;       // Max output tokens
   supportsTools: boolean;  // Function calling support
@@ -109,6 +109,26 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     maxOutput: 256000,
     supportsTools: true,
     free: true
+  },
+
+  // ============ Anthropic Models ============
+  'claude-opus-4-6|thinking': {
+    id: 'claude-opus-4-6|thinking',
+    name: 'Claude Opus 4.6 (thinking)',
+    provider: 'anthropic',
+    contextWindow: 1000000,
+    maxOutput: 128000,
+    supportsTools: true,
+    free: false
+  },
+  'claude-opus-4-6': {
+    id: 'claude-opus-4-6',
+    name: 'Claude Opus 4.6',
+    provider: 'anthropic',
+    contextWindow: 1000000,
+    maxOutput: 128000,
+    supportsTools: true,
+    free: false
   }
 };
 

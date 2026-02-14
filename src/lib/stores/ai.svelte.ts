@@ -9,9 +9,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { validateGeminiKey } from '$lib/services/ai/gemini';
 import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
+import { validateAnthropicKey } from '$lib/services/ai/anthropic';
 
 // Supported AI providers
-export type AIProvider = 'gemini' | 'openrouter';
+export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai';
 
 // AI operation modes
 export type AIMode = 'ask' | 'plan' | 'agent';
@@ -71,6 +72,47 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       'stepfun/step-3.5-flash:free'        // StepFun 3.5 Flash - 256K context
     ],
     defaultModel: 'qwen/qwen3-coder:free'
+  },
+  anthropic: {
+    id: 'anthropic',
+    name: 'Anthropic',
+    capabilities: {
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: true,
+      maxContextHint: 1000000
+    },
+    models: [
+      'claude-opus-4-6|thinking',
+      'claude-opus-4-6',
+      'claude-sonnet-4-5-20250929|thinking',
+      'claude-sonnet-4-5-20250929',
+      'claude-3-5-sonnet-latest',
+      'claude-3-5-opus-latest'
+    ],
+    defaultModel: 'claude-sonnet-4-5-20250929'
+  },
+  openai: {
+    id: 'openai',
+    name: 'OpenAI',
+    capabilities: {
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: true,
+      maxContextHint: 1000000
+    },
+    models: [
+      'gpt-5.2 pro|thinking',
+      'gpt-5.2 pro',
+      'gpt-5.2|thinking',
+      'gpt-5.2',
+      'gpt-5.1|thinking',
+      'gpt-5.1-chat-latest',
+      'gpt-5.3-codex',
+      'gpt-5-mini',
+      'gpt-5-nano'
+    ],
+    defaultModel: 'gpt-5.2'
   }
 };
 
@@ -83,7 +125,7 @@ export interface ValidationResult {
 // Non-secret preferences stored in localStorage
 interface AIPreferences {
   selectedProvider: AIProvider;
-  modelPerMode: Record<AIMode, string>;
+  selectedModels: Record<AIProvider, Record<AIMode, string>>;
 }
 
 const PREFS_STORAGE_KEY = 'volt.ai.preferences';
@@ -91,15 +133,40 @@ const PREFS_STORAGE_KEY = 'volt.ai.preferences';
 class AISettingsStore {
   selectedProvider = $state<AIProvider>('gemini');
 
-  modelPerMode = $state<Record<AIMode, string>>({
-    ask: 'gemini-3-pro-preview|thinking',
-    plan: 'gemini-3-pro-preview|thinking',
-    agent: 'gemini-3-pro-preview|thinking'
+  // Selection per provider to keep choices remembered
+  private selectedModels = $state<Record<AIProvider, Record<AIMode, string>>>({
+    gemini: {
+      ask: 'gemini-3-pro-preview|thinking',
+      plan: 'gemini-3-pro-preview|thinking',
+      agent: 'gemini-3-pro-preview|thinking'
+    },
+    openrouter: {
+      ask: 'qwen/qwen3-coder:free',
+      plan: 'qwen/qwen3-coder:free',
+      agent: 'qwen/qwen3-coder:free'
+    },
+    anthropic: {
+      ask: 'claude-sonnet-4-5-20250929',
+      plan: 'claude-sonnet-4-5-20250929',
+      agent: 'claude-sonnet-4-5-20250929'
+    },
+    openai: {
+      ask: 'gpt-5.2',
+      plan: 'gpt-5.2',
+      agent: 'gpt-5.2'
+    }
   });
+
+  // modelPerMode is now a getter reflecting the current provider's selection
+  get modelPerMode(): Record<AIMode, string> {
+    return this.selectedModels[this.selectedProvider];
+  }
 
   hasApiKey = $state<Record<AIProvider, boolean>>({
     gemini: false,
-    openrouter: false
+    openrouter: false,
+    anthropic: false,
+    openai: false
   });
 
   isValidating = $state(false);
@@ -145,17 +212,25 @@ class AISettingsStore {
   setModelForMode(mode: AIMode, model: string): void {
     const provider = PROVIDERS[this.selectedProvider];
     if (!provider.models.includes(model)) return;
-    this.modelPerMode = { ...this.modelPerMode, [mode]: model };
+
+    // Update the specific selection for this provider
+    this.selectedModels[this.selectedProvider] = {
+      ...this.selectedModels[this.selectedProvider],
+      [mode]: model
+    };
+
     this.savePreferences();
   }
 
   async saveApiKey(provider: AIProvider, key: string): Promise<void> {
-    await invoke('ai_set_api_key', { provider, apiKey: key });
-    this.hasApiKey = { ...this.hasApiKey, [provider]: !!key };
+    const trimmedKey = key.trim();
+    await invoke('ai_set_api_key', { provider, apiKey: trimmedKey });
+    this.hasApiKey = { ...this.hasApiKey, [provider]: !!trimmedKey };
   }
 
   async getApiKey(provider: AIProvider): Promise<string | null> {
-    return await invoke<string | null>('ai_get_api_key', { provider });
+    const key = await invoke<string | null>('ai_get_api_key', { provider });
+    return key?.trim() ?? null;
   }
 
   async removeApiKey(provider: AIProvider): Promise<void> {
@@ -180,6 +255,8 @@ class AISettingsStore {
         result = await validateGeminiKey(key);
       } else if (provider === 'openrouter') {
         result = await validateOpenRouterKey(key);
+      } else if (provider === 'anthropic') {
+        result = await validateAnthropicKey(key);
       } else {
         result = { success: false, error: 'Unknown provider' };
       }
@@ -205,37 +282,38 @@ class AISettingsStore {
       const raw = localStorage.getItem(PREFS_STORAGE_KEY);
       if (!raw) return;
 
-      const prefs = JSON.parse(raw) as Partial<AIPreferences>;
+      const prefs = JSON.parse(raw);
+      if (!prefs) return;
 
-      if (prefs.selectedProvider && PROVIDERS[prefs.selectedProvider]) {
-        this.selectedProvider = prefs.selectedProvider;
+      if (prefs.selectedProvider && PROVIDERS[prefs.selectedProvider as AIProvider]) {
+        this.selectedProvider = prefs.selectedProvider as AIProvider;
       }
 
-      if (prefs.modelPerMode) {
-        const stored = prefs.modelPerMode as unknown as Record<string, string>;
-        const askModel = stored.ask;
-        const planModel = stored.plan ?? stored.spec;
-        const agentModel = stored.agent;
+      // Handle old format (modelPerMode) and new format (selectedModels)
+      if (prefs.selectedModels) {
+        // New format: restore selection for each provider
+        const sm = prefs.selectedModels as Record<AIProvider, Record<AIMode, string>>;
+        for (const provider of Object.keys(PROVIDERS) as AIProvider[]) {
+          if (sm[provider]) {
+            this.selectedModels[provider] = {
+              ...this.selectedModels[provider],
+              ...sm[provider]
+            };
+          }
+        }
+      } else if (prefs.modelPerMode) {
+        // Backward compatibility: the legacy modelPerMode likely belonged to the then-selected provider
+        const mpm = prefs.modelPerMode as Record<string, string>;
+        const currentM = this.selectedModels[this.selectedProvider];
 
-        const normalizeModel = (model: string | undefined): string | undefined => {
-          if (!model) return undefined;
-          // Keep Gemini 3 models as-is
-          if (model.includes('gemini-3')) return model;
-          // Keep Gemini 2.5 models as-is
-          if (model.includes('gemini-2.5')) return model;
-          return model;
+        this.selectedModels[this.selectedProvider] = {
+          ask: mpm.ask || currentM.ask,
+          plan: mpm.plan || currentM.plan,
+          agent: mpm.agent || currentM.agent
         };
-
-        const ask = normalizeModel(askModel);
-        const plan = normalizeModel(planModel);
-        const agent = normalizeModel(agentModel);
-
-        if (ask) this.modelPerMode = { ...this.modelPerMode, ask };
-        if (plan) this.modelPerMode = { ...this.modelPerMode, plan };
-        if (agent) this.modelPerMode = { ...this.modelPerMode, agent };
       }
-    } catch {
-      // Ignore parse errors
+    } catch (err) {
+      console.warn('Failed to load AI preferences:', err);
     }
   }
 
@@ -245,7 +323,7 @@ class AISettingsStore {
     try {
       const prefs: AIPreferences = {
         selectedProvider: this.selectedProvider,
-        modelPerMode: this.modelPerMode
+        selectedModels: $state.snapshot(this.selectedModels)
       };
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
     } catch {

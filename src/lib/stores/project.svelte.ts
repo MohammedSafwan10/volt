@@ -42,6 +42,7 @@ import { editorStore } from './editor.svelte';
 import { gitStore } from './git.svelte';
 import type { FileEntry } from '$lib/types/files';
 import { invoke } from '@tauri-apps/api/core';
+import { clearContextCache } from '$lib/services/ai/context';
 
 // Tauri FS plugin for file watching
 import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
@@ -184,6 +185,7 @@ class ProjectStore {
     if (this.rootPath) {
       await this.stopLspServers();
       await cancelIndexing();
+      clearContextCache();
     }
 
     const entries = await listDirectory(path);
@@ -620,6 +622,9 @@ class ProjectStore {
 
     // Cancel file indexing and clear the index
     await clearIndex(false);
+
+    // Clear AI context caches
+    clearContextCache();
 
     // Clear all problems
     problemsStore.clearAll();

@@ -19,6 +19,7 @@ import type {
   ProviderCapabilities
 } from './types';
 import { getModelConfig } from './models';
+import { invoke, Channel } from '@tauri-apps/api/core';
 
 const OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
 
@@ -383,35 +384,34 @@ export const openRouterProvider: AIProvider = {
       openRouterRequest.tool_choice = 'auto';
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://volt.dev',
-        'X-Title': 'Volt IDE'
-      },
-      body: JSON.stringify(openRouterRequest),
-      signal
+    const channel = new Channel<string>();
+    const chunkQueue: string[] = [];
+    let resolveNext: ((v: string | null) => void) | null = null;
+    let isDone = false;
+    let error: any = null;
+
+    channel.onmessage = (chunk: string) => {
+      if (resolveNext) {
+        resolveNext(chunk);
+        resolveNext = null;
+      } else {
+        chunkQueue.push(chunk);
+      }
+    };
+
+    const invokePromise = invoke('openrouter_proxy_stream', {
+      body: openRouterRequest,
+      apiKey: apiKey.trim(),
+      onEvent: channel
+    }).then(() => {
+      isDone = true;
+      if (resolveNext) resolveNext(null);
+    }).catch(err => {
+      isDone = true;
+      error = err;
+      if (resolveNext) resolveNext(null);
     });
 
-    if (!response.ok) {
-      try {
-        const data = await response.json() as OpenRouterResponse;
-        yield { type: 'error', error: mapOpenRouterError(data.error) };
-      } catch {
-        yield { type: 'error', error: `HTTP ${response.status}: ${response.statusText}` };
-      }
-      return;
-    }
-
-    if (!response.body) {
-      yield { type: 'error', error: 'No response body' };
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
     let buffer = '';
 
     // Track tool calls being built up across chunks
@@ -419,83 +419,83 @@ export const openRouterProvider: AIProvider = {
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          // Emit any pending tool calls
-          for (const [, tc] of pendingToolCalls) {
-            try {
-              yield {
-                type: 'tool_call',
-                toolCall: {
-                  id: tc.id,
-                  name: tc.name,
-                  arguments: JSON.parse(tc.arguments)
-                }
-              };
-            } catch {
-              console.warn('[OpenRouter] Failed to parse tool call:', tc);
-            }
-          }
-          yield { type: 'done' };
+        let line: string | null = null;
+        if (chunkQueue.length > 0) {
+          line = chunkQueue.shift()!;
+        } else if (!isDone) {
+          line = await new Promise<string | null>(r => { resolveNext = r; });
+        } else {
           break;
         }
 
-        buffer += decoder.decode(value, { stream: true });
+        if (error) {
+          yield { type: 'error', error: String(error) };
+          return;
+        }
 
-        // Process SSE lines
-        let newlineIndex: number;
-        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
+        if (line === null) break;
 
-          if (!line || !line.startsWith('data:')) continue;
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr || jsonStr === '[DONE]') continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
 
-          try {
-            const data = JSON.parse(jsonStr) as OpenRouterResponse;
+        try {
+          const data = JSON.parse(jsonStr) as OpenRouterResponse;
 
-            if (data.error) {
-              yield { type: 'error', error: mapOpenRouterError(data.error) };
-              return;
-            }
-
-            if (data.choices && data.choices.length > 0) {
-              const choice = data.choices[0];
-              const delta = choice.delta;
-
-              if (delta?.content) {
-                yield { type: 'content', content: delta.content };
-              }
-
-              // Handle streaming tool calls
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const idx = tc.index;
-
-                  if (!pendingToolCalls.has(idx)) {
-                    pendingToolCalls.set(idx, {
-                      id: tc.id || `call_${Date.now()}_${idx}`,
-                      name: tc.function?.name || '',
-                      arguments: ''
-                    });
-                  }
-
-                  const pending = pendingToolCalls.get(idx)!;
-                  if (tc.function?.name) pending.name = tc.function.name;
-                  if (tc.function?.arguments) pending.arguments += tc.function.arguments;
-                }
-              }
-            }
-          } catch (err) {
-            console.warn('[OpenRouter] Failed to parse SSE chunk:', err, line);
+          if (data.error) {
+            yield { type: 'error', error: mapOpenRouterError(data.error) };
+            return;
           }
+
+          if (data.choices && data.choices.length > 0) {
+            const choice = data.choices[0];
+            const delta = choice.delta;
+
+            if (delta?.content) {
+              yield { type: 'content', content: delta.content };
+            }
+
+            // Handle streaming tool calls
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index;
+
+                if (!pendingToolCalls.has(idx)) {
+                  pendingToolCalls.set(idx, {
+                    id: tc.id || `call_${Date.now()}_${idx}`,
+                    name: tc.function?.name || '',
+                    arguments: ''
+                  });
+                }
+
+                const pending = pendingToolCalls.get(idx)!;
+                if (tc.function?.name) pending.name = tc.function.name;
+                if (tc.function?.arguments) pending.arguments += tc.function.arguments;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[OpenRouter] Failed to parse SSE chunk:', err, line);
         }
       }
     } finally {
-      reader.releaseLock();
+      // Final tool call emission if stream ended
+      for (const [, tc] of pendingToolCalls) {
+        try {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: tc.id,
+              name: tc.name,
+              arguments: JSON.parse(tc.arguments)
+            }
+          };
+        } catch { }
+      }
+      yield { type: 'done' };
+      await invokePromise;
     }
   },
 

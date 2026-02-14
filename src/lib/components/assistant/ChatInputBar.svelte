@@ -97,7 +97,6 @@
     if (base.includes("/")) {
       const parts = base.split("/");
       const modelPart = parts[parts.length - 1];
-      // Clean up the name
       let displayName = modelPart
         .replace(":free", "")
         .replace(/-/g, " ")
@@ -105,28 +104,49 @@
         .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
         .join(" ");
 
-      // Add (free) indicator
-      if (model.includes(":free")) {
-        displayName += " (free)";
-      }
+      if (model.includes(":free")) displayName += " (free)";
       return thinking ? `${displayName} (thinking)` : displayName;
     }
 
-    // Gemini 3 Flash
-    if (base === "gemini-3-flash-preview")
-      return thinking ? "Gemini 3 Flash (thinking)" : "Gemini 3 Flash";
+    // OpenAI GPT-5
+    if (base.startsWith("gpt-")) {
+      const name = base
+        .replace("gpt-5.2 pro", "GPT 5.2 Pro")
+        .replace("gpt-5.2", "GPT 5.2")
+        .replace("gpt-5.1-chat-latest", "GPT 5.1 (Instant)")
+        .replace("gpt-5.1", "GPT 5.1")
+        .replace("gpt-5.3-codex", "GPT 5.3 Codex")
+        .replace("gpt-5-mini", "GPT 5 Mini")
+        .replace("gpt-5-nano", "GPT 5 Nano")
+        .replace("gpt-4o", "GPT 4o");
+      return thinking ? `${name} (Thinking)` : name;
+    }
 
-    // Gemini 2.5 Flash
-    if (base === "gemini-2.5-flash")
-      return thinking ? "Gemini 2.5 Flash (thinking)" : "Gemini 2.5 Flash";
+    // Anthropic Claude
+    if (base.startsWith("claude-")) {
+      const name = base
+        .replace("claude-", "Claude ")
+        .replace("-4-6", " 4.6")
+        .replace("opus", "Opus")
+        .replace("sonnet-4-5-20250929", "Sonnet 4.5")
+        .replace("sonnet-latest", "3.5 Sonnet")
+        .replace("opus-latest", "3.5 Opus");
+      return thinking ? `${name} (Thinking)` : name;
+    }
 
-    // Fallback: capitalize and clean up
-    return (
-      (thinking ? base : model)
-        .replace("gemini-", "Gemini ")
-        .replace("-preview", "")
-        .replace(/-/g, " ") + (thinking ? " (thinking)" : "")
-    );
+    // Gemini
+    if (base.startsWith("gemini-")) {
+      const name = base
+        .replace("gemini-3-flash-preview", "Gemini 3 Flash")
+        .replace("gemini-2.5-flash", "Gemini 2.5 Flash")
+        .replace("gemini-2.0-flash-exp", "Gemini 2.0 Flash")
+        .replace("gemini-1.5-pro-latest", "Gemini 1.5 Pro")
+        .replace("gemini-1.5-flash-latest", "Gemini 1.5 Flash")
+        .replace("gemini-2.0-pro-exp-02-05", "Gemini 2.0 Pro");
+      return thinking ? `${name} (Thinking)` : name;
+    }
+
+    return thinking ? `${base} (thinking)` : base;
   }
 
   const modes: {
@@ -163,11 +183,7 @@
         const historyEntry = assistantStore.navigateHistory("up");
         if (historyEntry !== null) {
           e.preventDefault();
-          onInput(
-            historyEntry.content,
-            "history",
-            historyEntry.attachments,
-          );
+          onInput(historyEntry.content, "history", historyEntry.attachments);
           // Wait for DOM to update then move cursor to end
           setTimeout(() => {
             if (inputRef) {
@@ -188,11 +204,7 @@
         const historyEntry = assistantStore.navigateHistory("down");
         if (historyEntry !== null) {
           e.preventDefault();
-          onInput(
-            historyEntry.content,
-            "history",
-            historyEntry.attachments,
-          );
+          onInput(historyEntry.content, "history", historyEntry.attachments);
           setTimeout(() => {
             if (inputRef) {
               const len = inputRef.value.length;
@@ -548,7 +560,11 @@
           ? await readTextFile(droppedPath)
           : await file.text();
         const attachPath = droppedPath || file.name;
-        const result = assistantStore.attachFile(attachPath, content, file.name);
+        const result = assistantStore.attachFile(
+          attachPath,
+          content,
+          file.name,
+        );
         if (!result.success) {
           toastStore.show({
             type: "warning",
@@ -813,18 +829,28 @@
 
           {#if showModelMenu}
             <div class="model-menu" role="listbox">
-              {#each availableModels as model (model)}
-                <button
-                  class="model-option"
-                  class:active={currentModel === model}
-                  onclick={() => selectModel(model)}
-                  role="option"
-                  aria-selected={currentModel === model}
-                  type="button"
-                >
-                  {getModelDisplayName(model)}
-                </button>
-              {/each}
+              <div class="menu-header">
+                {PROVIDERS[aiSettingsStore.selectedProvider].name} Models
+              </div>
+              <div class="model-scroll">
+                {#each availableModels as model (model)}
+                  <button
+                    class="model-option"
+                    class:active={currentModel === model}
+                    onclick={() => selectModel(model)}
+                    role="option"
+                    aria-selected={currentModel === model}
+                    type="button"
+                  >
+                    <span class="option-label"
+                      >{getModelDisplayName(model)}</span
+                    >
+                    {#if currentModel === model}
+                      <span class="option-check">✓</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
             </div>
           {/if}
         </div>
@@ -895,8 +921,13 @@
     gap: 10px;
     min-width: 220px;
     padding: 10px 12px;
-    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-surface0)) 85%, var(--color-accent) 15%);
-    border: 1px dashed color-mix(in srgb, var(--color-accent) 70%, var(--color-border) 30%);
+    background: color-mix(
+      in srgb,
+      var(--color-bg-elevated, var(--color-surface0)) 85%,
+      var(--color-accent) 15%
+    );
+    border: 1px dashed
+      color-mix(in srgb, var(--color-accent) 70%, var(--color-border) 30%);
     border-radius: 8px;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
     color: var(--color-text);
@@ -1083,12 +1114,29 @@
     }
   }
 
-  .menu-title {
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-    opacity: 0.8;
+  .menu-header {
+    padding: 8px 14px 4px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-accent);
+    opacity: 0.9;
+  }
+
+  .model-scroll {
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+
+  /* Custom scrollbar for a sleeker look */
+  .model-scroll::-webkit-scrollbar {
+    width: 4px;
+  }
+  .model-scroll::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 4px;
   }
 
   .attach-option,
@@ -1096,11 +1144,11 @@
   .model-option {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     width: calc(100% - 12px);
-    margin: 2px 6px;
-    padding: 8px 12px;
-    font-size: 14px;
+    margin: 1px 6px;
+    padding: 6px 10px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--color-text);
     text-align: left;

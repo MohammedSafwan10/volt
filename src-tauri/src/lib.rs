@@ -20,7 +20,11 @@ use chat_history::{
     chat_list_conversations, chat_save_message, chat_search_conversations, chat_toggle_pin,
     chat_truncate_conversation, chat_update_mode, chat_update_title, ChatHistoryState,
 };
-use commands::ai::{ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key};
+use commands::ai::{
+    ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key, anthropic_proxy,
+    anthropic_proxy_stream, openai_proxy, openai_proxy_stream, openrouter_proxy,
+    openrouter_proxy_stream,
+};
 use commands::browser::{
     browser_add_bookmark, browser_back, browser_clear_history, browser_close,
     browser_content_extracted, browser_create, browser_element_selected, browser_execute_js,
@@ -62,7 +66,10 @@ use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
 };
-use commands::system::{get_env_var, get_system_info, run_command, start_watch_command, stop_watch_command, stop_all_watch_commands, list_watch_commands};
+use commands::system::{
+    get_env_var, get_system_info, list_watch_commands, run_command, start_watch_command,
+    stop_all_watch_commands, stop_watch_command,
+};
 use commands::terminal::{
     terminal_create, terminal_kill, terminal_kill_all, terminal_list, terminal_resize,
     terminal_write,
@@ -70,7 +77,7 @@ use commands::terminal::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    tauri::Builder::<tauri::Wry>::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -91,6 +98,12 @@ pub fn run() {
             ai_get_api_key,
             ai_has_api_key,
             ai_remove_api_key,
+            anthropic_proxy,
+            anthropic_proxy_stream,
+            openai_proxy,
+            openai_proxy_stream,
+            openrouter_proxy,
+            openrouter_proxy_stream,
             // Chat history persistence
             chat_create_conversation,
             chat_list_conversations,
@@ -257,7 +270,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 // Kill all terminals when window closes
                 let _ = terminal_kill_all();
-                
+
                 // Stop all LSP servers
                 let app = window.app_handle().clone();
                 let lsp_state: tauri::State<'_, LspManagerState<tauri::Wry>> = app.state();
@@ -266,7 +279,7 @@ pub fn run() {
                         let _ = manager.stop_all();
                     }
                 }
-                
+
                 // Stop all MCP servers (spawn async task)
                 let mcp_app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {

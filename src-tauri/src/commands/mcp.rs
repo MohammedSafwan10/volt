@@ -70,7 +70,9 @@ impl McpState {
 }
 
 impl Default for McpState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Serialize)]
@@ -102,10 +104,13 @@ struct McpServerEvent {
 }
 
 fn emit_state(app: &AppHandle, id: &str, state: &McpServerState) {
-    let _ = app.emit("mcp://server-state", McpServerEvent {
-        server_id: id.to_string(),
-        state: state.clone(),
-    });
+    let _ = app.emit(
+        "mcp://server-state",
+        McpServerEvent {
+            server_id: id.to_string(),
+            state: state.clone(),
+        },
+    );
 }
 
 async fn set_error(app: &AppHandle, mcp: &McpState, id: &str, err: &str) {
@@ -126,28 +131,48 @@ async fn send_req(
 ) -> Result<Value, String> {
     let id = REQUEST_ID.fetch_add(1, Ordering::SeqCst);
     let req = serde_json::to_string(&JsonRpcRequest {
-        jsonrpc: "2.0", id, method: method.to_string(), params
-    }).map_err(|e| e.to_string())?;
+        jsonrpc: "2.0",
+        id,
+        method: method.to_string(),
+        params,
+    })
+    .map_err(|e| e.to_string())?;
 
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    { pending.write().await.insert(id, resp_tx); }
+    {
+        pending.write().await.insert(id, resp_tx);
+    }
 
     tx.send(req).await.map_err(|e| e.to_string())?;
 
     match tokio::time::timeout(std::time::Duration::from_secs(timeout), resp_rx).await {
         Ok(Ok(r)) => {
             if let Some(e) = r.get("error") {
-                Err(format!("MCP: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or("error")))
-            } else { Ok(r) }
+                Err(format!(
+                    "MCP: {}",
+                    e.get("message").and_then(|m| m.as_str()).unwrap_or("error")
+                ))
+            } else {
+                Ok(r)
+            }
         }
         Ok(Err(_)) => Err("Channel closed".to_string()),
-        Err(_) => { pending.write().await.remove(&id); Err("Timeout".to_string()) }
+        Err(_) => {
+            pending.write().await.remove(&id);
+            Err("Timeout".to_string())
+        }
     }
 }
 
-async fn send_notif(tx: &mpsc::Sender<String>, method: &str, params: Option<Value>) -> Result<(), String> {
-    let msg = serde_json::to_string(&json!({"jsonrpc": "2.0", "method": method, "params": params.unwrap_or(json!({}))}))
-        .map_err(|e| e.to_string())?;
+async fn send_notif(
+    tx: &mpsc::Sender<String>,
+    method: &str,
+    params: Option<Value>,
+) -> Result<(), String> {
+    let msg = serde_json::to_string(
+        &json!({"jsonrpc": "2.0", "method": method, "params": params.unwrap_or(json!({}))}),
+    )
+    .map_err(|e| e.to_string())?;
     tx.send(msg).await.map_err(|e| e.to_string())
 }
 
@@ -158,7 +183,7 @@ pub async fn start_mcp_server(
     config: McpServerConfig,
 ) -> Result<McpServerState, String> {
     let mcp = app.state::<McpState>();
-    
+
     // Stop if running
     if mcp.servers.lock().await.contains_key(&server_id) {
         let _ = stop_mcp_server(app.clone(), server_id.clone()).await;
@@ -166,10 +191,16 @@ pub async fn start_mcp_server(
 
     // Set connecting
     let init_state = McpServerState {
-        id: server_id.clone(), name: server_id.clone(),
-        status: "connecting".to_string(), tools: vec![], error: None,
+        id: server_id.clone(),
+        name: server_id.clone(),
+        status: "connecting".to_string(),
+        tools: vec![],
+        error: None,
     };
-    mcp.states.write().await.insert(server_id.clone(), init_state.clone());
+    mcp.states
+        .write()
+        .await
+        .insert(server_id.clone(), init_state.clone());
     emit_state(&app, &server_id, &init_state);
 
     // Spawn process - handle Windows command resolution
@@ -186,15 +217,17 @@ pub async fn start_mcp_server(
     } else {
         config.command.clone()
     };
-    
+
     let mut cmd = Command::new(&cmd_name);
     cmd.args(&config.args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    
-    for (k, v) in &config.env { cmd.env(k, v); }
+
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
 
     #[cfg(windows)]
     {
@@ -207,14 +240,19 @@ pub async fn start_mcp_server(
     let stderr = child.stderr.take();
 
     let (tx, mut rx) = mpsc::channel::<String>(100);
-    let pending: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Arc::new(RwLock::new(HashMap::new()));
+    let pending: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // Stdin writer
     tokio::spawn(async move {
         let mut stdin: ChildStdin = stdin;
         while let Some(msg) = rx.recv().await {
-            if stdin.write_all(msg.as_bytes()).await.is_err() { break; }
-            if stdin.write_all(b"\n").await.is_err() { break; }
+            if stdin.write_all(msg.as_bytes()).await.is_err() {
+                break;
+            }
+            if stdin.write_all(b"\n").await.is_err() {
+                break;
+            }
             let _ = stdin.flush().await;
         }
     });
@@ -227,7 +265,10 @@ pub async fn start_mcp_server(
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.is_empty() {
-                    let _ = app2.emit("mcp://server-log", json!({"server_id": sid, "message": line}));
+                    let _ = app2.emit(
+                        "mcp://server-log",
+                        json!({"server_id": sid, "message": line}),
+                    );
                 }
             }
         });
@@ -240,7 +281,9 @@ pub async fn start_mcp_server(
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
                 if let Some(id) = resp.id {
                     if let Some(sender) = pending2.write().await.remove(&id) {
@@ -257,18 +300,32 @@ pub async fn start_mcp_server(
     });
 
     // Store
-    mcp.servers.lock().await.insert(server_id.clone(), McpProcess {
-        child, stdin_tx: tx.clone(), tools: vec![], pending: pending.clone(),
-    });
+    mcp.servers.lock().await.insert(
+        server_id.clone(),
+        McpProcess {
+            child,
+            stdin_tx: tx.clone(),
+            tools: vec![],
+            pending: pending.clone(),
+        },
+    );
 
     // Initialize - use longer timeout for remote/slow servers
-    if let Err(e) = send_req(&tx, &pending, "initialize", Some(json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {"tools": {}},
-        "clientInfo": {"name": "volt", "version": "1.0.0"}
-    })), 120).await {
+    if let Err(e) = send_req(
+        &tx,
+        &pending,
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "clientInfo": {"name": "volt", "version": "1.0.0"}
+        })),
+        300,
+    )
+    .await
+    {
         let error_msg = if e == "Timeout" {
-            format!("Server '{}' timed out during initialization (120s). Check network or server status.", server_id)
+            format!("Server '{}' timed out during initialization (300s). Check network or server status.", server_id)
         } else {
             e
         };
@@ -281,12 +338,21 @@ pub async fn start_mcp_server(
 
     // Get tools - use longer timeout for remote servers
     let tools: Vec<McpTool> = match send_req(&tx, &pending, "tools/list", None, 60).await {
-        Ok(r) => r.get("tools").and_then(|t| t.as_array())
-            .map(|arr| arr.iter().filter_map(|t| serde_json::from_value::<McpTool>(t.clone()).ok()).collect())
+        Ok(r) => r
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| serde_json::from_value::<McpTool>(t.clone()).ok())
+                    .collect()
+            })
             .unwrap_or_default(),
         Err(e) => {
             let error_msg = if e == "Timeout" {
-                format!("Server '{}' timed out listing tools (60s). Check network or server status.", server_id)
+                format!(
+                    "Server '{}' timed out listing tools (60s). Check network or server status.",
+                    server_id
+                )
             } else {
                 e
             };
@@ -297,11 +363,19 @@ pub async fn start_mcp_server(
 
     // Final state
     let final_state = McpServerState {
-        id: server_id.clone(), name: server_id.clone(),
-        status: "connected".to_string(), tools: tools.clone(), error: None,
+        id: server_id.clone(),
+        name: server_id.clone(),
+        status: "connected".to_string(),
+        tools: tools.clone(),
+        error: None,
     };
-    mcp.states.write().await.insert(server_id.clone(), final_state.clone());
-    if let Some(s) = mcp.servers.lock().await.get_mut(&server_id) { s.tools = tools; }
+    mcp.states
+        .write()
+        .await
+        .insert(server_id.clone(), final_state.clone());
+    if let Some(s) = mcp.servers.lock().await.get_mut(&server_id) {
+        s.tools = tools;
+    }
     emit_state(&app, &server_id, &final_state);
 
     Ok(final_state)
@@ -329,25 +403,48 @@ pub async fn stop_all_mcp_servers(app: AppHandle) -> Result<(), String> {
         let states = mcp.states.read().await;
         servers.keys().chain(states.keys()).cloned().collect()
     };
-    for id in ids { let _ = stop_mcp_server(app.clone(), id).await; }
+    for id in ids {
+        let _ = stop_mcp_server(app.clone(), id).await;
+    }
     mcp.states.write().await.clear();
     Ok(())
 }
 
 #[tauri::command]
-pub async fn call_mcp_tool(app: AppHandle, server_id: String, tool_name: String, arguments: Value) -> Result<Value, String> {
+pub async fn call_mcp_tool(
+    app: AppHandle,
+    server_id: String,
+    tool_name: String,
+    arguments: Value,
+) -> Result<Value, String> {
     let mcp = app.state::<McpState>();
     let (tx, pending) = {
         let servers = mcp.servers.lock().await;
-        let s = servers.get(&server_id).ok_or_else(|| format!("Server '{}' not found", server_id))?;
+        let s = servers
+            .get(&server_id)
+            .ok_or_else(|| format!("Server '{}' not found", server_id))?;
         (s.stdin_tx.clone(), s.pending.clone())
     };
-    send_req(&tx, &pending, "tools/call", Some(json!({"name": tool_name, "arguments": arguments})), 30).await
+    send_req(
+        &tx,
+        &pending,
+        "tools/call",
+        Some(json!({"name": tool_name, "arguments": arguments})),
+        30,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn get_mcp_servers(app: AppHandle) -> Result<Vec<McpServerState>, String> {
-    Ok(app.state::<McpState>().states.read().await.values().cloned().collect())
+    Ok(app
+        .state::<McpState>()
+        .states
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect())
 }
 
 #[tauri::command]
@@ -355,7 +452,9 @@ pub async fn get_mcp_tools(app: AppHandle) -> Result<Vec<(String, McpTool)>, Str
     let mcp = app.state::<McpState>();
     let mut all = Vec::new();
     for (id, s) in mcp.servers.lock().await.iter() {
-        for t in &s.tools { all.push((id.clone(), t.clone())); }
+        for t in &s.tools {
+            all.push((id.clone(), t.clone()));
+        }
     }
     Ok(all)
 }
@@ -363,7 +462,10 @@ pub async fn get_mcp_tools(app: AppHandle) -> Result<Vec<(String, McpTool)>, Str
 #[tauri::command]
 pub fn get_mcp_config_path() -> Result<String, String> {
     let home = dirs::home_dir().ok_or("No home dir")?;
-    Ok(home.join(".volt/settings/mcp.json").to_string_lossy().to_string())
+    Ok(home
+        .join(".volt/settings/mcp.json")
+        .to_string_lossy()
+        .to_string())
 }
 
 #[tauri::command]
@@ -371,8 +473,12 @@ pub fn ensure_mcp_config(default_content: String) -> Result<String, String> {
     let home = dirs::home_dir().ok_or("No home dir")?;
     let dir = home.join(".volt/settings");
     let path = dir.join("mcp.json");
-    if !dir.exists() { std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?; }
-    if !path.exists() { std::fs::write(&path, &default_content).map_err(|e| e.to_string())?; }
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    if !path.exists() {
+        std::fs::write(&path, &default_content).map_err(|e| e.to_string())?;
+    }
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -381,7 +487,9 @@ pub fn write_mcp_config(content: String) -> Result<(), String> {
     let home = dirs::home_dir().ok_or("No home dir")?;
     let dir = home.join(".volt/settings");
     let path = dir.join("mcp.json");
-    if !dir.exists() { std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?; }
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
     std::fs::write(&path, &content).map_err(|e| e.to_string())
 }
 
@@ -389,6 +497,8 @@ pub fn write_mcp_config(content: String) -> Result<(), String> {
 pub fn read_mcp_config() -> Result<String, String> {
     let home = dirs::home_dir().ok_or("No home dir")?;
     let path = home.join(".volt/settings/mcp.json");
-    if !path.exists() { return Err("Config not found".to_string()); }
+    if !path.exists() {
+        return Err("Config not found".to_string());
+    }
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }

@@ -19,10 +19,7 @@
   import { projectStore } from "$lib/stores/project.svelte";
   import { showToast } from "$lib/stores/toast.svelte";
   import { aiSettingsStore, type AIMode } from "$lib/stores/ai.svelte";
-  import {
-    sendChat,
-    streamChat,
-  } from "$lib/services/ai";
+  import { sendChat, streamChat } from "$lib/services/ai";
   import { getSystemPrompt } from "$lib/services/ai/prompts-v4";
   import {
     getSmartContext,
@@ -39,22 +36,15 @@
   } from "$lib/services/ai/tools";
   import { resolvePath } from "$lib/services/ai/tools/utils";
   import {
-    buildVerificationCommandGuidance,
     getAdaptiveFileEditConcurrency,
     getFailureSignature,
     getToolIdempotencyKey,
-    hasStructuredCompletionReport,
-    isTerminalVerificationCommand,
-    isVerificationTool,
     mapWithConcurrency,
     normalizeQueueKey,
     stableStringify,
   } from "./panel/utils";
   import { buildSummaryInput } from "./panel/summary-utils";
-  import {
-    getVerificationProfiles,
-    shouldRunAfterFileEdits,
-  } from "./panel/verification-profiles";
+  import { shouldRunAfterFileEdits } from "./panel/verification-profiles";
   import { createStreamGuards } from "./panel/stream-guards";
   import { toProviderMessages } from "./panel/provider-messages";
   import {
@@ -81,9 +71,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { readTextFile } from "@tauri-apps/plugin-fs";
   import { invoke } from "@tauri-apps/api/core";
-  import {
-    getEditorSelection,
-  } from "$lib/services/monaco-models";
+  import { getEditorSelection } from "$lib/services/monaco-models";
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
   import { uiStore } from "$lib/stores/ui.svelte";
   import { logOutput } from "$lib/stores/output.svelte";
@@ -97,12 +85,6 @@
     label: string;
     mimeType: "image/png" | "image/jpeg" | "image/webp";
   } | null>(null);
-  let verificationGateStatus = $state<"idle" | "required" | "verified">(
-    "idle",
-  );
-  let verificationGateMessage = $state("No verification gate");
-
-  // Focus the input when panel opens
   let inputRef: HTMLTextAreaElement | undefined = $state();
 
   const CONTEXT_WARN_PCT = 80;
@@ -216,7 +198,8 @@
       void handleSend();
     };
     window.addEventListener("volt:assistant-send", onAssistantSend);
-    return () => window.removeEventListener("volt:assistant-send", onAssistantSend);
+    return () =>
+      window.removeEventListener("volt:assistant-send", onAssistantSend);
   });
 
   function recordToolResult(toolCall: ToolCall, result: ToolResult): void {
@@ -323,9 +306,12 @@
     controller: AbortController,
     maxIterations = 30, // Increased from 20 to handle complex tasks like Kiro
   ): Promise<void> {
-    verificationGateStatus = "idle";
-    verificationGateMessage = "No verification gate";
     const msgId = assistantStore.addAssistantMessage("", true);
+    const isPlanMode = assistantStore.currentMode === "plan";
+    const isAgentMode = assistantStore.currentMode === "agent";
+    const failureNudgedSignatures = new Set<string>();
+    let planModeViolationNudgeCount = 0;
+
     let fullContent = "";
     let iteration = 0;
     let hasToolsInConversation = false;
@@ -338,60 +324,7 @@
     const MAX_EMPTY_RESPONSES = 3;
     let recoveryRetryCount = 0;
     const MAX_RECOVERY_RETRIES = 2;
-    let hadMutatingEdits = false;
-    let lastMutationIteration = 0;
-    let lastVerificationIteration = 0;
-    let verificationNudgeCount = 0;
-    let reportNudgeCount = 0;
-    let planModeViolationNudgeCount = 0;
-    const isPlanMode = assistantStore.currentMode === "plan";
-    const isAgentMode = assistantStore.currentMode === "agent";
     const failureSignatureCounts = new Map<string, number>();
-    const failureNudgedSignatures = new Set<string>();
-    const verificationProfiles = getVerificationProfiles(projectStore.tree ?? []);
-    const terminalVerificationRequired = verificationProfiles.some(
-      (p) => p.requiresTerminalVerification,
-    );
-    const verificationCommandGuidance =
-      buildVerificationCommandGuidance(verificationProfiles);
-    let lastTerminalVerificationIteration = 0;
-
-    const trackToolOutcome = (
-      toolName: string,
-      args: Record<string, unknown>,
-      result: ToolResult,
-    ): void => {
-      if (!result.success) return;
-      const capabilities = getToolCapabilities(toolName);
-      if (capabilities.isMutating) {
-        hadMutatingEdits = true;
-        lastMutationIteration = iteration;
-        verificationGateStatus = "required";
-        verificationGateMessage = "Verification required after edits";
-      }
-      if (
-        toolName === "run_command" &&
-        isTerminalVerificationCommand(
-          String(args.command ?? ""),
-          verificationProfiles,
-        )
-      ) {
-        lastTerminalVerificationIteration = iteration;
-      }
-      if (isVerificationTool(toolName, args, verificationProfiles)) {
-        lastVerificationIteration = iteration;
-        if (
-          hadMutatingEdits &&
-          lastMutationIteration > 0 &&
-          lastVerificationIteration >= lastMutationIteration &&
-          (!terminalVerificationRequired ||
-            lastTerminalVerificationIteration >= lastMutationIteration)
-        ) {
-          verificationGateStatus = "verified";
-          verificationGateMessage = "Verification passed";
-        }
-      }
-    };
 
     // Streaming safety guards
     const streamGuards = createStreamGuards();
@@ -518,7 +451,11 @@
               continue;
             }
 
-            if (streamGuards.isDegenerateLineRepeat(iterationContent + chunk.content)) {
+            if (
+              streamGuards.isDegenerateLineRepeat(
+                iterationContent + chunk.content,
+              )
+            ) {
               if (!warnedAboutLooping) {
                 warnedAboutLooping = true;
                 showToast({
@@ -613,7 +550,8 @@
             const isPlanModeViolation =
               isPlanMode &&
               (isTerminalToolName(toolCallName) ||
-                (capabilities.isMutating && toolCallName !== "write_plan_file"));
+                (capabilities.isMutating &&
+                  toolCallName !== "write_plan_file"));
             const resolvedValidationError = validation.valid
               ? undefined
               : isPlanModeViolation
@@ -697,7 +635,8 @@
               const capabilities = getToolCapabilities(toolCallName);
               const isFileEdit = isFileMutatingTool(toolCallName);
               const isTerminalCommand =
-                isTerminalToolName(toolCallName) && capabilities.requiresApproval;
+                isTerminalToolName(toolCallName) &&
+                capabilities.requiresApproval;
               const rawFilePath = isFileEdit
                 ? String(toolCallArgs.path || "")
                 : "";
@@ -729,8 +668,7 @@
               } else {
                 // Non-file-edit, non-terminal tools are queued and executed in phases.
                 // Diagnostics/LSP tools are deferred until file edits complete.
-                const runAfterFileEdits =
-                  shouldRunAfterFileEdits(toolCallName);
+                const runAfterFileEdits = shouldRunAfterFileEdits(toolCallName);
 
                 queuedNonFileTools.push({
                   id: toolCallId,
@@ -765,7 +703,11 @@
           );
         }
 
-        if (isAgentMode && toolCallSeenThisIteration && iterationContent.trim()) {
+        if (
+          isAgentMode &&
+          toolCallSeenThisIteration &&
+          iterationContent.trim()
+        ) {
           // Drop pre-tool narration for cleaner, trustworthy execution flow.
           iterationContent = "";
         }
@@ -790,12 +732,11 @@
             signal: controller.signal,
             toolRunScope,
             getToolIdempotencyKey,
-            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
-              assistantStore,
-            ),
+            updateToolCallInMessage:
+              assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
-            trackToolOutcome,
             getFailureSignature,
+            trackToolOutcome: () => {},
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -818,12 +759,11 @@
             signal: controller.signal,
             toolRunScope,
             getToolIdempotencyKey,
-            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
-              assistantStore,
-            ),
+            updateToolCallInMessage:
+              assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
-            trackToolOutcome,
             getFailureSignature,
+            trackToolOutcome: () => {},
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -840,12 +780,11 @@
             signal: controller.signal,
             toolRunScope,
             getToolIdempotencyKey,
-            updateToolCallInMessage: assistantStore.updateToolCallInMessage.bind(
-              assistantStore,
-            ),
+            updateToolCallInMessage:
+              assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
-            trackToolOutcome,
             getFailureSignature,
+            trackToolOutcome: () => {},
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -870,24 +809,13 @@
             iterationThinking,
             iterationContent,
             hadPlanModeViolationThisIteration,
-            hadMutatingEdits,
-            lastMutationIteration,
-            lastVerificationIteration,
-            terminalVerificationRequired,
-            lastTerminalVerificationIteration,
-            verificationCommandGuidance,
             maxEmptyResponses: MAX_EMPTY_RESPONSES,
             state: {
               consecutiveEmptyResponses,
               justProcessedToolResults,
               planModeViolationNudgeCount,
-              verificationNudgeCount,
-              reportNudgeCount,
               fullContent,
-              verificationGateStatus,
-              verificationGateMessage,
             },
-            hasStructuredCompletionReport,
             logOutput: (message) => logOutput("Volt", message),
             addToolMessage: (payload) => assistantStore.addToolMessage(payload),
             updateAssistantMessage: (content) =>
@@ -896,14 +824,11 @@
 
           consecutiveEmptyResponses =
             noToolOutcome.state.consecutiveEmptyResponses;
-          justProcessedToolResults = noToolOutcome.state.justProcessedToolResults;
+          justProcessedToolResults =
+            noToolOutcome.state.justProcessedToolResults;
           planModeViolationNudgeCount =
             noToolOutcome.state.planModeViolationNudgeCount;
-          verificationNudgeCount = noToolOutcome.state.verificationNudgeCount;
-          reportNudgeCount = noToolOutcome.state.reportNudgeCount;
           fullContent = noToolOutcome.state.fullContent;
-          verificationGateStatus = noToolOutcome.state.verificationGateStatus;
-          verificationGateMessage = noToolOutcome.state.verificationGateMessage;
 
           if (noToolOutcome.decision === "continue") {
             continue;
@@ -948,8 +873,8 @@
               getToolIdempotencyKey,
               toolRunScope,
               signal: controller.signal,
-              trackToolOutcome,
               getFailureSignature,
+              trackToolOutcome: () => {},
               onFailureSignature: (signature) => {
                 const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
                 failureSignatureCounts.set(signature, count);
@@ -985,19 +910,12 @@
       } catch (err) {
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "Unknown error";
-        if (hadMutatingEdits) {
-          verificationGateStatus = "required";
-          verificationGateMessage = "Verification incomplete due to error";
-        }
 
         // Kiro-style: Check if this is a retryable error
         const isRetryable =
           /network|timeout|connection|interrupted|503|502|504|429/i.test(msg);
 
-        logOutput(
-          "Volt",
-          `Agent Loop Error (iteration ${iteration}): ${msg}`,
-        );
+        logOutput("Volt", `Agent Loop Error (iteration ${iteration}): ${msg}`);
 
         // If retryable and we have content, try to continue
         if (
@@ -1406,7 +1324,8 @@
       plan.relativePath ||
       `.volt/plans/${plan.filename.endsWith(".md") ? plan.filename : `${plan.filename}.md`}`;
     const attachmentPath = plan.absolutePath || guessedRelativePath;
-    const resolvedPlanPath = plan.absolutePath || resolvePath(guessedRelativePath);
+    const resolvedPlanPath =
+      plan.absolutePath || resolvePath(guessedRelativePath);
     let latestPlanContent = plan.content;
 
     // Prefer current on-disk plan so Agent executes the latest edited version.
@@ -1475,23 +1394,6 @@
       </div>
       <span class="header-title" title={currentChatTitle}>
         {currentChatTitle}
-      </span>
-      <span
-        class="verification-gate"
-        class:required={verificationGateStatus === "required"}
-        class:verified={verificationGateStatus === "verified"}
-        title={verificationGateMessage}
-      >
-        {#if verificationGateStatus === "required"}
-          <UIIcon name="warning" size={11} />
-          <span>Verification Required</span>
-        {:else if verificationGateStatus === "verified"}
-          <UIIcon name="check" size={11} />
-          <span>Verified</span>
-        {:else}
-          <UIIcon name="info" size={11} />
-          <span>Idle</span>
-        {/if}
       </span>
     </div>
     <div class="header-actions">
@@ -1745,40 +1647,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .verification-gate {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: 2px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-    background: color-mix(in srgb, var(--color-surface0) 86%, transparent);
-    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  }
-
-  .verification-gate.required {
-    color: var(--color-warning);
-    background: color-mix(in srgb, var(--color-warning) 12%, transparent);
-    border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
-  }
-
-  .verification-gate.verified {
-    color: var(--color-success, #22c55e);
-    background: color-mix(
-      in srgb,
-      var(--color-success, #22c55e) 12%,
-      transparent
-    );
-    border-color: color-mix(
-      in srgb,
-      var(--color-success, #22c55e) 35%,
-      transparent
-    );
   }
 
   .header-actions {

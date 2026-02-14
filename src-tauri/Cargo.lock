@@ -5653,6 +5653,7 @@ name = "volt"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "chromiumoxide",
  "chrono",
  "dirs 5.0.1",
