@@ -46,6 +46,29 @@ impl Default for CdpManager {
 }
 
 impl CdpManager {
+    fn extract_origin(url: &str) -> Option<String> {
+        let scheme_idx = url.find("://")?;
+        let rest = &url[scheme_idx + 3..];
+        let host_end = rest.find('/').unwrap_or(rest.len());
+        let authority = &rest[..host_end];
+        if authority.is_empty() {
+            return None;
+        }
+        Some(format!("{}://{}", &url[..scheme_idx], authority))
+    }
+
+    fn is_ignored_volt_page(url: &str) -> bool {
+        // Volt host app pages (dev/prod) should not be treated as browser targets by default.
+        url.starts_with("tauri://")
+            || url.starts_with("about:")
+            || url.starts_with("http://tauri.localhost")
+            || url.starts_with("https://tauri.localhost")
+            || url.starts_with("http://localhost:1420")
+            || url.starts_with("http://127.0.0.1:1420")
+            || url.starts_with("http://localhost:1421")
+            || url.starts_with("http://127.0.0.1:1421")
+    }
+
     pub fn new() -> Self {
         Self {
             browser: Arc::new(RwLock::new(None)),
@@ -156,9 +179,15 @@ impl CdpManager {
         let page = if let Some(url) = target_url {
             // Find page with matching URL
             let mut found_page = None;
+            let target_origin = Self::extract_origin(url);
             for p in pages {
                 if let Ok(Some(page_url)) = p.url().await {
-                    if page_url.contains(url) {
+                    let same_url = page_url == url || page_url.starts_with(url);
+                    let same_origin = match (&target_origin, Self::extract_origin(&page_url)) {
+                        (Some(target), Some(page_origin)) => target == &page_origin,
+                        _ => false,
+                    };
+                    if same_url || same_origin {
                         found_page = Some(p);
                         break;
                     }
@@ -166,22 +195,18 @@ impl CdpManager {
             }
             found_page.ok_or_else(|| format!("No page found with URL containing: {}", url))?
         } else {
-            // Find first page that's NOT Volt's main window (tauri://localhost)
-            // The browser webview will have http://localhost:XXXX or similar
+            // Find first page that's not Volt's own app shell.
             let mut found_page = None;
             for p in pages {
                 if let Ok(Some(page_url)) = p.url().await {
-                    // Skip Volt's main window and about:blank
-                    if !page_url.starts_with("tauri://") && 
-                       !page_url.starts_with("about:") &&
-                       !page_url.is_empty() {
+                    if !page_url.is_empty() && !Self::is_ignored_volt_page(&page_url) {
                         tracing::info!("CDP: Found browser page: {}", page_url);
                         found_page = Some(p);
                         break;
                     }
                 }
             }
-            found_page.ok_or("No browser page found (only Volt main window detected)")?
+            found_page.ok_or("No browser page found (only Volt host windows detected)")?
         };
 
         *self.page.write().await = Some(page);
@@ -1076,10 +1101,12 @@ impl CdpManager {
                     if let Ok(result) = page.evaluate(picker_check).await {
                         if result.value().and_then(|v| v.as_bool()) != Some(true) {
                             // Picker was cancelled
+                            let _ = app_clone.emit("browser://select-mode", false);
                             break;
                         }
                     }
                 } else {
+                    let _ = app_clone.emit("browser://select-mode", false);
                     break;
                 }
             }

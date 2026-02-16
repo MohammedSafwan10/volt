@@ -2,6 +2,16 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
+  "remote": {
+    "urls": [
+      "http://localhost:*",
+      "https://localhost:*",
+      "http://127.0.0.1:*",
+      "https://127.0.0.1:*",
+      "http://0.0.0.0:*",
+      "https://0.0.0.0:*"
+    ]
+  },
   "windows": [
     "main",
     "volt-browser"

@@ -1246,6 +1246,28 @@ pub async fn browser_devtools_performance<R: Runtime>(
     Ok(())
 }
 
+/// Called from injected script with application diagnostics snapshot
+#[allow(dead_code)]
+#[tauri::command]
+pub async fn browser_devtools_application<R: Runtime>(
+    app: AppHandle<R>,
+    snapshot: serde_json::Value,
+) -> Result<(), String> {
+    let _ = app.emit("browser://application", snapshot);
+    Ok(())
+}
+
+/// Called from injected script with a single security issue event
+#[allow(dead_code)]
+#[tauri::command]
+pub async fn browser_devtools_security_issue<R: Runtime>(
+    app: AppHandle<R>,
+    issue: serde_json::Value,
+) -> Result<(), String> {
+    let _ = app.emit("browser://security-issue", issue);
+    Ok(())
+}
+
 /// Get console messages from state
 #[allow(dead_code)]
 #[tauri::command]

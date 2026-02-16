@@ -75,7 +75,11 @@ struct TerminalSession {
     killer: Box<dyn ChildKiller + Send + Sync>,
     pid: u32,
     killed: bool,
+    output_history: String,
 }
+
+const MAX_SCROLLBACK_CHARS: usize = 1_000_000;
+const DEFAULT_SCROLLBACK_QUERY_CHARS: usize = 250_000;
 
 fn close_terminal_input(session: &mut TerminalSession) {
     let _ = std::mem::replace(&mut session.writer, Box::new(std::io::sink()));
@@ -265,6 +269,7 @@ fn create_terminal_sync(
                 killer,
                 pid,
                 killed: false,
+                output_history: String::new(),
             },
         );
     }
@@ -358,6 +363,17 @@ fn create_terminal_sync(
                 Ok(n) => {
                     // Convert to string (lossy for non-UTF8 terminal output)
                     let data = String::from_utf8_lossy(&buffer[..n]).to_string();
+
+                    // Persist scrollback so frontend can rehydrate after reload/HMR.
+                    if let Ok(mut mgr) = manager_clone.lock() {
+                        if let Some(session) = mgr.sessions.get_mut(&terminal_id_clone) {
+                            session.output_history.push_str(&data);
+                            if session.output_history.len() > MAX_SCROLLBACK_CHARS {
+                                let overflow = session.output_history.len() - MAX_SCROLLBACK_CHARS;
+                                session.output_history.drain(..overflow);
+                            }
+                        }
+                    }
 
                     // Emit data event
                     let _ = app_clone.emit(
@@ -563,6 +579,34 @@ pub fn terminal_list() -> Result<Vec<TerminalInfo>, TerminalError> {
         .collect();
 
     Ok(terminals)
+}
+
+/// Fetch terminal scrollback for frontend rehydration after reload/HMR.
+#[tauri::command]
+pub fn terminal_get_scrollback(
+    terminal_id: String,
+    max_chars: Option<usize>,
+) -> Result<String, TerminalError> {
+    let manager = get_terminal_manager();
+    let mgr = lock_manager(&manager)?;
+
+    let session = mgr
+        .sessions
+        .get(&terminal_id)
+        .ok_or_else(|| TerminalError::NotFound {
+            terminal_id: terminal_id.clone(),
+        })?;
+
+    let limit = max_chars
+        .unwrap_or(DEFAULT_SCROLLBACK_QUERY_CHARS)
+        .min(MAX_SCROLLBACK_CHARS);
+
+    let full = &session.output_history;
+    if full.len() <= limit {
+        return Ok(full.clone());
+    }
+
+    Ok(full[full.len() - limit..].to_string())
 }
 
 /// Kill all active terminals

@@ -219,21 +219,30 @@ pub async fn openai_proxy_stream(
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
 
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|err| format!("Error while reading OpenAI stream: {err}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.extend_from_slice(&chunk);
 
-        while let Some(newline_idx) = buffer.find('\n') {
-            let line = buffer[..newline_idx].to_string();
-            buffer = buffer[newline_idx + 1..].to_string();
-
-            if !line.trim().is_empty() {
-                on_event
-                    .send(line)
-                    .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+        while let Some(i) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=i).collect();
+            if let Ok(line) = String::from_utf8(line_bytes) {
+                if !line.trim().is_empty() {
+                    on_event
+                        .send(line)
+                        .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+                }
             }
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer).to_string();
+        if !line.trim().is_empty() {
+            on_event
+                .send(line)
+                .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
         }
     }
 
@@ -305,21 +314,122 @@ pub async fn openrouter_proxy_stream(
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
 
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|err| format!("Error while reading OpenRouter stream: {err}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.extend_from_slice(&chunk);
 
-        while let Some(newline_idx) = buffer.find('\n') {
-            let line = buffer[..newline_idx].to_string();
-            buffer = buffer[newline_idx + 1..].to_string();
-
-            if !line.trim().is_empty() {
-                on_event
-                    .send(line)
-                    .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+        while let Some(i) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=i).collect();
+            if let Ok(line) = String::from_utf8(line_bytes) {
+                if !line.trim().is_empty() {
+                    on_event
+                        .send(line)
+                        .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+                }
             }
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer).to_string();
+        if !line.trim().is_empty() {
+            on_event
+                .send(line)
+                .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn gemini_proxy(body: Value, api_key: String, model: String) -> Result<Value, String> {
+    let client = reqwest::Client::new();
+    let api_key = api_key.trim();
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model
+    );
+
+    let response = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to reach Gemini: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Gemini error (Status {status}): {text}"));
+    }
+
+    let json: Value = response
+        .json()
+        .await
+        .map_err(|err| format!("Failed to parse Gemini response: {err}"))?;
+
+    Ok(json)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn gemini_proxy_stream(
+    body: Value,
+    api_key: String,
+    model: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let api_key = api_key.trim();
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+        model
+    );
+
+    let response = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to send streaming request to Gemini: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Gemini streaming error (Status {status}): {text}"));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|err| format!("Error while reading Gemini stream: {err}"))?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(i) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=i).collect();
+            if let Ok(line) = String::from_utf8(line_bytes) {
+                if !line.trim().is_empty() {
+                    on_event
+                        .send(line)
+                        .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+                }
+            }
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer).to_string();
+        if !line.trim().is_empty() {
+            on_event
+                .send(line)
+                .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
         }
     }
 
