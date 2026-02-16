@@ -391,6 +391,16 @@
     await projectStore.expandFolder(node, 2);
   }
 
+  async function revealInNativeExplorer(path: string): Promise<void> {
+    closeContextMenu();
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(path);
+    } catch {
+      showToast({ message: "Failed to reveal in file explorer", type: "error" });
+    }
+  }
+
   function closeContextMenu(): void {
     contextOpen = false;
     contextNode = null;
@@ -1256,9 +1266,27 @@
         <UIIcon name="refresh" size={16} />
         <span>Refresh</span>
       </button>
+      <button
+        class="context-item"
+        role="menuitem"
+        type="button"
+        onclick={() => projectStore.rootPath && void revealInNativeExplorer(projectStore.rootPath)}
+      >
+        <UIIcon name="folder-open" size={16} />
+        <span>Reveal Project in File Explorer</span>
+      </button>
     {/if}
 
     {#if contextNode}
+      <button
+        class="context-item"
+        role="menuitem"
+        type="button"
+        onclick={() => contextNode && void revealInNativeExplorer(contextNode.path)}
+      >
+        <UIIcon name="folder-open" size={16} />
+        <span>Reveal in File Explorer</span>
+      </button>
       <button
         class="context-item"
         role="menuitem"

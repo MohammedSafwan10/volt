@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   interface Props {
     direction: 'horizontal' | 'vertical';
     size: number;
@@ -49,6 +50,34 @@
     isDragging = false;
   }
 
+  function forceStopDragging(): void {
+    if (!isDragging) return;
+    isDragging = false;
+  }
+
+  function handleGlobalEscape(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      forceStopDragging();
+    }
+  }
+
+  function handleWindowBlur(): void {
+    forceStopDragging();
+  }
+
+  function handleMouseLeaveDocument(e: MouseEvent): void {
+    // relatedTarget null means pointer left the window/document.
+    if (!e.relatedTarget) {
+      forceStopDragging();
+    }
+  }
+
+  function handleVisibilityChange(): void {
+    if (document.visibilityState !== 'visible') {
+      forceStopDragging();
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (direction === 'horizontal') {
       if (e.key === 'ArrowLeft') {
@@ -76,16 +105,35 @@
     if (isDragging) {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('blur', handleWindowBlur);
+      document.addEventListener('mouseleave', handleMouseLeaveDocument);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      document.addEventListener('keydown', handleGlobalEscape);
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
 
       return () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
+        window.removeEventListener('blur', handleWindowBlur);
+        document.removeEventListener('mouseleave', handleMouseLeaveDocument);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        document.removeEventListener('keydown', handleGlobalEscape);
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
       };
     }
+  });
+
+  onDestroy(() => {
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+    window.removeEventListener('blur', handleWindowBlur);
+    document.removeEventListener('mouseleave', handleMouseLeaveDocument);
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    document.removeEventListener('keydown', handleGlobalEscape);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
   });
 </script>
 

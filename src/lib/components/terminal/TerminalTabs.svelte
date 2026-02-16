@@ -8,6 +8,8 @@
 	let isCreating = $state(false);
 	let railWidth = $state(160);
 	let resizing = false;
+	let resizeStartX = 0;
+	let resizeStartWidth = 0;
 	let layoutRef: HTMLDivElement | undefined = $state();
 
 	const RAIL_WIDTH_KEY = 'volt.terminal.railWidth';
@@ -29,13 +31,21 @@
 			// ignore storage errors
 		}
 
-		if (terminalStore.sessions.length === 0) {
-			void createFirstTerminal();
-		}
+		void (async () => {
+			await terminalStore.ensureSynced();
+			if (terminalStore.sessions.length === 0) {
+				await createFirstTerminal();
+			}
+		})();
 
 		return () => {
 			window.removeEventListener('mousemove', handleResizeMove);
 			window.removeEventListener('mouseup', stopResize);
+			window.removeEventListener('blur', stopResize);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
+			document.removeEventListener('keydown', handleResizeEscape);
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
 		};
 	});
 
@@ -73,16 +83,22 @@
 	function startResize(e: MouseEvent): void {
 		e.preventDefault();
 		resizing = true;
+		resizeStartX = e.clientX;
+		resizeStartWidth = railWidth;
 		window.addEventListener('mousemove', handleResizeMove);
 		window.addEventListener('mouseup', stopResize);
+		window.addEventListener('blur', stopResize);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+		document.addEventListener('keydown', handleResizeEscape);
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
 	}
 
 	function handleResizeMove(e: MouseEvent): void {
 		if (!resizing) return;
 		const rect = layoutRef?.getBoundingClientRect();
 		if (!rect) return;
-		const localRight = rect.right;
-		const next = localRight - e.clientX;
+		const next = resizeStartWidth + (resizeStartX - e.clientX);
 		const dynamicMax = Math.max(RAIL_MIN_WIDTH, Math.min(RAIL_MAX_WIDTH, rect.width - 140));
 		railWidth = Math.max(RAIL_MIN_WIDTH, Math.min(dynamicMax, next));
 	}
@@ -92,10 +108,27 @@
 		resizing = false;
 		window.removeEventListener('mousemove', handleResizeMove);
 		window.removeEventListener('mouseup', stopResize);
+		window.removeEventListener('blur', stopResize);
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		document.removeEventListener('keydown', handleResizeEscape);
+		document.body.style.cursor = '';
+		document.body.style.userSelect = '';
 		try {
 			localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
 		} catch {
 			// ignore storage errors
+		}
+	}
+
+	function handleVisibilityChange(): void {
+		if (document.visibilityState !== 'visible') {
+			stopResize();
+		}
+	}
+
+	function handleResizeEscape(e: KeyboardEvent): void {
+		if (e.key === 'Escape') {
+			stopResize();
 		}
 	}
 

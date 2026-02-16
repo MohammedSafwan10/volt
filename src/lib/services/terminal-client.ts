@@ -104,6 +104,22 @@ export async function listTerminals(): Promise<TerminalInfo[]> {
 }
 
 /**
+ * Read backend scrollback for an active terminal.
+ * Used to rehydrate terminal output after frontend reload/HMR.
+ */
+export async function getTerminalScrollback(
+	terminalId: string,
+	maxChars = 250_000
+): Promise<string> {
+	try {
+		return await invoke<string>('terminal_get_scrollback', { terminalId, maxChars });
+	} catch (error) {
+		console.error('Terminal scrollback error:', error);
+		return '';
+	}
+}
+
+/**
  * Kill all terminals via Tauri invoke
  */
 export async function killAllTerminals(): Promise<boolean> {
@@ -341,11 +357,11 @@ export class TerminalSession {
 
 	private dataBuffer: string[] = [];
 	private dataBufferChars = 0;
-	private static readonly MAX_BUFFER_CHARS = 100_000;
+	private static readonly MAX_BUFFER_CHARS = 1_000_000;
 
 	private outputHistory: string[] = [];
 	private outputHistoryChars = 0;
-	private static readonly MAX_OUTPUT_HISTORY_CHARS = 50_000;
+	private static readonly MAX_OUTPUT_HISTORY_CHARS = 1_000_000;
 
 	private cleanOutputHistory: string[] = [];
 	private cleanOutputHistoryChars = 0;
@@ -417,6 +433,14 @@ export class TerminalSession {
 			if (this.onDataCallback) this.onDataCallback(filteredDisplay);
 			else this.bufferData(filteredDisplay);
 		}
+	}
+
+	/**
+	 * Rehydrate in-memory buffers from backend scrollback after reload/HMR.
+	 */
+	public hydrateScrollback(rawData: string): void {
+		if (!rawData) return;
+		this.handleDataEvent({ terminalId: this.id, data: rawData });
 	}
 
 	public handleExitEvent(payload: TerminalExitEvent): void {
@@ -643,5 +667,9 @@ export async function createTerminalSession(cwd?: string, cols?: number, rows?: 
 export async function createTerminalSessionFromInfo(info: TerminalInfo): Promise<TerminalSession> {
 	const session = new TerminalSession(info);
 	await session.startListening();
+	const scrollback = await getTerminalScrollback(info.terminalId);
+	if (scrollback) {
+		session.hydrateScrollback(scrollback);
+	}
 	return session;
 }

@@ -417,14 +417,16 @@ export class LspTransport {
 
   /**
    * Send a health ping to the server
-   * Uses $/cancelRequest with a fake ID - this is fast and doesn't trigger warnings
+   * Uses backend process-level liveness check to avoid false negatives from
+   * language-specific request errors (e.g. unsupported workspace/symbol).
    */
   private async sendHealthPing(): Promise<void> {
-    await this.sendRequestWithTimeout(
-      'workspace/symbol',
-      { query: '__volt_health_check__' },
-      this.healthConfig.timeoutMs
-    );
+    const running = await invoke<boolean>('lsp_is_server_running', {
+      serverId: this.serverId,
+    });
+    if (!running) {
+      throw new Error(`LSP server not running: ${this.serverId}`);
+    }
   }
 
   /**
