@@ -7,6 +7,7 @@
    * Kiro-style: Only shows approval for the FIRST pending terminal command
    */
   import { UIIcon, type UIIconName } from "$lib/components/ui";
+  import { onMount } from "svelte";
   import { editorStore } from "$lib/stores/editor.svelte";
   import { projectStore } from "$lib/stores/project.svelte";
   import { projectDiagnostics } from "$lib/services/project-diagnostics";
@@ -37,16 +38,72 @@
   }: Props = $props();
 
   let expanded = $state(false);
+  let screenshotExpanded = $state(false);
 
-  // Auto-expand when screenshot data arrives
-  $effect(() => {
-    if (
-      toolCall.name === "browser_screenshot" &&
-      toolCall.data?.image_base64 &&
-      !expanded
-    ) {
-      expanded = true;
+  const EXPANDED_KEY_PREFIX = "assistant.tool.expanded:";
+  const SCREENSHOT_KEY_PREFIX = "assistant.tool.screenshot.expanded:";
+
+  function getPersistedKey(prefix: string): string {
+    return `${prefix}${toolCall.id}:${toolCall.name}`;
+  }
+
+  function loadExpandedState(): void {
+    try {
+      const raw = localStorage.getItem(getPersistedKey(EXPANDED_KEY_PREFIX));
+      expanded = raw === "true";
+    } catch {
+      expanded = false;
     }
+  }
+
+  function persistExpandedState(next: boolean): void {
+    try {
+      localStorage.setItem(getPersistedKey(EXPANDED_KEY_PREFIX), next ? "true" : "false");
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function loadScreenshotExpandedState(): void {
+    try {
+      const raw = localStorage.getItem(getPersistedKey(SCREENSHOT_KEY_PREFIX));
+      screenshotExpanded = raw === "true";
+    } catch {
+      screenshotExpanded = false;
+    }
+  }
+
+  function persistScreenshotExpandedState(next: boolean): void {
+    try {
+      localStorage.setItem(getPersistedKey(SCREENSHOT_KEY_PREFIX), next ? "true" : "false");
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function toggleExpanded(event?: Event): void {
+    if (event) event.stopPropagation();
+    const next = !expanded;
+    expanded = next;
+    persistExpandedState(next);
+  }
+
+  function setExpanded(next: boolean, event?: Event): void {
+    if (event) event.stopPropagation();
+    expanded = next;
+    persistExpandedState(next);
+  }
+
+  function toggleScreenshotExpanded(event?: Event): void {
+    if (event) event.stopPropagation();
+    const next = !screenshotExpanded;
+    screenshotExpanded = next;
+    persistScreenshotExpandedState(next);
+  }
+
+  onMount(() => {
+    loadExpandedState();
+    loadScreenshotExpandedState();
   });
 
   // Format output with clickable URLs (global handler in layout opens them in browser)
@@ -127,6 +184,28 @@
     // Diagnostics
     run_check: "Ran check",
     get_diagnostics: "Got diagnostics",
+    // Browser
+    browser_navigate: "Navigated browser",
+    browser_click: "Clicked element",
+    browser_type: "Typed text",
+    browser_wait_for: "Waited for element",
+    browser_scroll: "Scrolled page",
+    browser_screenshot: "Captured screenshot",
+    browser_get_console_logs: "Got console logs",
+    browser_get_errors: "Got browser errors",
+    browser_get_network_requests: "Got network requests",
+    browser_get_network_request_details: "Got request details",
+    browser_get_performance: "Got performance metrics",
+    browser_get_selected_element: "Got selected element",
+    browser_get_summary: "Got browser summary",
+    browser_get_application_storage: "Got application storage",
+    browser_get_security_report: "Got security report",
+    browser_propose_action: "Proposed actions",
+    browser_preview_action: "Previewed action",
+    browser_execute_action: "Executed action",
+    browser_get_element: "Got element",
+    browser_get_elements: "Got elements",
+    browser_evaluate: "Evaluated script",
   };
 
   // Tool icons - using valid UIIconName values
@@ -169,6 +248,28 @@
     // Diagnostics
     run_check: "search",
     get_diagnostics: "warning",
+    // Browser
+    browser_navigate: "globe",
+    browser_click: "target",
+    browser_type: "pencil",
+    browser_wait_for: "clock",
+    browser_scroll: "arrow-right",
+    browser_screenshot: "screenshot",
+    browser_get_console_logs: "console",
+    browser_get_errors: "error",
+    browser_get_network_requests: "link",
+    browser_get_network_request_details: "link",
+    browser_get_performance: "bolt",
+    browser_get_selected_element: "target",
+    browser_get_summary: "globe",
+    browser_get_application_storage: "files",
+    browser_get_security_report: "warning",
+    browser_propose_action: "sparkle",
+    browser_preview_action: "info",
+    browser_execute_action: "play",
+    browser_get_element: "target",
+    browser_get_elements: "target",
+    browser_evaluate: "code",
   };
 
   const statusIcons: Record<ToolCallStatus, UIIconName> = {
@@ -186,6 +287,7 @@
     | "edit"
     | "terminal"
     | "diagnostic"
+    | "browser"
     | "other";
 
   const toolCategories: Record<string, ToolCategory> = {
@@ -226,6 +328,28 @@
     // Diagnostics
     run_check: "diagnostic",
     get_diagnostics: "diagnostic",
+    // Browser
+    browser_navigate: "browser",
+    browser_click: "browser",
+    browser_type: "browser",
+    browser_wait_for: "browser",
+    browser_scroll: "browser",
+    browser_screenshot: "browser",
+    browser_get_console_logs: "browser",
+    browser_get_errors: "browser",
+    browser_get_network_requests: "browser",
+    browser_get_network_request_details: "browser",
+    browser_get_performance: "browser",
+    browser_get_selected_element: "browser",
+    browser_get_summary: "browser",
+    browser_get_application_storage: "browser",
+    browser_get_security_report: "browser",
+    browser_propose_action: "browser",
+    browser_preview_action: "browser",
+    browser_execute_action: "browser",
+    browser_get_element: "browser",
+    browser_get_elements: "browser",
+    browser_evaluate: "browser",
   };
 
   function getToolCategory(): ToolCategory {
@@ -316,6 +440,63 @@
       }
       case "run_check":
         return args.checkType ? String(args.checkType) : "";
+      case "browser_navigate": {
+        const url = args.url ? String(args.url) : "";
+        if (!url) return "";
+        try {
+          return new URL(url).hostname;
+        } catch {
+          return url.slice(0, 36);
+        }
+      }
+      case "browser_click":
+      case "browser_wait_for":
+      case "browser_get_element":
+      case "browser_get_elements":
+        return args.selector ? String(args.selector).slice(0, 40) : "";
+      case "browser_type": {
+        const selector = args.selector ? String(args.selector).slice(0, 24) : "focused";
+        const text = args.text ? String(args.text) : "";
+        return `${selector} · ${text.length} chars`;
+      }
+      case "browser_scroll":
+        return args.selector
+          ? String(args.selector).slice(0, 30)
+          : `${Number(args.x || 0)}, ${Number(args.y || 0)} px`;
+      case "browser_screenshot":
+        return args.selector
+          ? `element: ${String(args.selector).slice(0, 24)}`
+          : args.full_page
+            ? "full page"
+            : "viewport";
+      case "browser_get_console_logs":
+        return args.level ? `level: ${String(args.level)}` : "latest logs";
+      case "browser_get_errors":
+        return "javascript errors";
+      case "browser_get_network_requests":
+        return args.failed_only ? "failed requests" : "recent requests";
+      case "browser_get_network_request_details":
+        return args.request_id ? `id: ${String(args.request_id).slice(0, 16)}` : "request details";
+      case "browser_get_performance":
+        return "page metrics";
+      case "browser_get_selected_element":
+        return "devtools selection";
+      case "browser_get_summary":
+        return "runtime snapshot";
+      case "browser_get_application_storage":
+        return "storage/cookies/indexeddb";
+      case "browser_get_security_report":
+        return "security diagnostics";
+      case "browser_propose_action":
+        return args.intent ? String(args.intent).slice(0, 40) : "guided actions";
+      case "browser_preview_action":
+        return args.action_id ? String(args.action_id).slice(0, 24) : "action preview";
+      case "browser_execute_action":
+        return args.action_id ? String(args.action_id).slice(0, 24) : "action execute";
+      case "browser_evaluate":
+        return args.expression
+          ? String(args.expression).replace(/\s+/g, " ").slice(0, 36)
+          : "";
       default:
         return "";
     }
@@ -347,6 +528,7 @@
   const isTerminalTool = $derived(
     isTerminalToolName(toolCall.name),
   );
+  const isBrowserTool = $derived(toolCall.name.startsWith("browser_"));
 
   // For terminal commands, only show approval if this is the first pending one (Kiro-style)
   const shouldShowApproval = $derived(
@@ -479,6 +661,26 @@
       removed: typeof stats.removed === "number" ? stats.removed : 0,
     };
   });
+
+  function getDisplayOutput(rawOutput: string): string {
+    if (!isBrowserTool) return rawOutput;
+
+    if (toolCall.name === "browser_screenshot") {
+      try {
+        const parsed = JSON.parse(rawOutput) as Record<string, unknown>;
+        if ("image_base64" in parsed) {
+          parsed.image_base64 = "[omitted]";
+        }
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        return rawOutput.replace(/"image_base64"\s*:\s*"[^"]+"/g, '"image_base64":"[omitted]"');
+      }
+    }
+
+    return rawOutput.length > 4000
+      ? `${rawOutput.slice(0, 4000)}\n... [truncated ${rawOutput.length - 4000} chars]`
+      : rawOutput;
+  }
 </script>
 
 <div
@@ -492,7 +694,7 @@
     <div class="terminal-tool-container" class:expanded>
       <button
         class="terminal-header"
-        onclick={() => (expanded = !expanded)}
+        onclick={toggleExpanded}
         aria-expanded={expanded}
         type="button"
       >
@@ -545,7 +747,7 @@
     <!-- Standard tool display -->
     <button
       class="tool-header"
-      onclick={() => (expanded = !expanded)}
+      onclick={toggleExpanded}
       aria-expanded={expanded}
       type="button"
     >
@@ -565,6 +767,9 @@
         <span class="tool-name" class:loading-text={isRunning}
           >{getToolDisplayName()}</span
         >
+        {#if isBrowserTool}
+          <span class="tool-kind-badge">Browser</span>
+        {/if}
         {#if isRunning}
           <span class="live-indicator" aria-label="Tool is running"
             >Working…</span
@@ -633,13 +838,11 @@
                 role="button"
                 tabindex="0"
                 onclick={(e) => {
-                  e.stopPropagation();
-                  expanded = true;
+                  setExpanded(true, e);
                 }}
                 onkeydown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    expanded = true;
+                    setExpanded(true, e);
                   }
                 }}
               >
@@ -810,7 +1013,7 @@
           <div class="detail-section">
             <span class="detail-label">Output:</span>
             <pre class="detail-output">{@html formatOutputWithLinks(
-                toolCall.output,
+                getDisplayOutput(toolCall.output),
               )}</pre>
           </div>
         {:else if isRunning}
@@ -827,17 +1030,32 @@
 
       {#if toolCall.data?.image_base64}
         <div class="detail-section">
-          <span class="detail-label">Screenshot:</span>
-          <div class="screenshot-container">
-            <img
-              src="data:image/png;base64,{toolCall.data.image_base64}"
-              alt="Browser screenshot"
-              class="screenshot-image"
-            />
-          </div>
+          <button
+            class="screenshot-header"
+            type="button"
+            onclick={toggleScreenshotExpanded}
+            aria-expanded={screenshotExpanded}
+          >
+            <span class="detail-label">Screenshot:</span>
+            <span class="screenshot-toggle">
+              <UIIcon
+                name={screenshotExpanded ? "chevron-down" : "chevron-right"}
+                size={12}
+              />
+              <span>{screenshotExpanded ? "Hide" : "Show"}</span>
+            </span>
+          </button>
+          {#if screenshotExpanded}
+            <div class="screenshot-container">
+              <img
+                src="data:image/png;base64,{toolCall.data.image_base64}"
+                alt="Browser screenshot"
+                class="screenshot-image"
+              />
+            </div>
+          {/if}
         </div>
       {/if}
-
       {#if toolCall.error}
         <div class="detail-section error">
           <span class="detail-label">Error:</span>
@@ -849,6 +1067,46 @@
 </div>
 
 <style>
+  .screenshot-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--color-text-secondary);
+    background: transparent;
+    padding: 0;
+  }
+
+  .screenshot-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .screenshot-header:hover {
+    color: var(--color-text);
+  }
+
+  .screenshot-header:hover .screenshot-toggle {
+    color: var(--color-accent);
+  }
+
+  .screenshot-container {
+    margin-top: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+  }
+
+  .screenshot-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    max-height: 300px;
+    object-fit: contain;
+    background: var(--color-bg);
+  }
   /* Inline tool call - transparent/minimal like Cursor */
   .inline-tool-call {
     margin: 4px 0;
@@ -1027,6 +1285,11 @@
     color: var(--color-text-secondary);
     border-color: var(--color-border);
   }
+  .tool-icon.category-browser {
+    color: #7dd3fc;
+    border-color: color-mix(in srgb, #7dd3fc 35%, var(--color-border));
+    background: color-mix(in srgb, #0ea5e9 10%, var(--color-bg-input));
+  }
 
   .tool-icon.spinning :global(svg) {
     animation: spin 1s linear infinite;
@@ -1054,6 +1317,16 @@
     opacity: 0.9;
     letter-spacing: 0.2px;
     white-space: nowrap;
+  }
+  .tool-kind-badge {
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    color: #7dd3fc;
+    border: 1px solid color-mix(in srgb, #7dd3fc 35%, var(--color-border));
+    border-radius: 999px;
+    padding: 2px 6px;
+    background: color-mix(in srgb, #0ea5e9 10%, transparent);
   }
 
   .loading-text {

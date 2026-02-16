@@ -19,7 +19,7 @@
   import { projectStore } from "$lib/stores/project.svelte";
   import { showToast } from "$lib/stores/toast.svelte";
   import { aiSettingsStore, type AIMode } from "$lib/stores/ai.svelte";
-  import { sendChat, streamChat } from "$lib/services/ai";
+  import { streamChat } from "$lib/services/ai";
   import { getSystemPrompt } from "$lib/services/ai/prompts-v4";
   import {
     getSmartContext,
@@ -29,6 +29,7 @@
     getAllToolsForMode,
     validateToolCall as validateTool,
     executeToolCall,
+    normalizeToolName,
     getToolCapabilities,
     isFileMutatingTool,
     isTerminalTool as isTerminalToolName,
@@ -43,10 +44,10 @@
     normalizeQueueKey,
     stableStringify,
   } from "./panel/utils";
-  import { buildSummaryInput } from "./panel/summary-utils";
+  import { autoSummarizeIfNeeded } from "./panel/auto-summarize";
   import { shouldRunAfterFileEdits } from "./panel/verification-profiles";
   import { createStreamGuards } from "./panel/stream-guards";
-  import { toProviderMessages } from "./panel/provider-messages";
+  import { createStreamingTextBuffer } from "./panel/streaming-text-buffer";
   import {
     addToolResultsToConversation,
     waitForToolApprovals,
@@ -64,6 +65,7 @@
   import { processToolsNeedingApproval } from "./panel/approval-executor";
   import { executeToolWithUpdates } from "./panel/tool-execution";
   import { handleNoToolOutcome } from "./panel/loop-outcome";
+  import { compileProviderMessages } from "./panel/compile-provider-messages";
   import MessageList from "./MessageList.svelte";
   import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
   import ChatInputBar from "./ChatInputBar.svelte";
@@ -75,6 +77,12 @@
   import { chatHistoryStore } from "$lib/stores/chat-history.svelte";
   import { uiStore } from "$lib/stores/ui.svelte";
   import { logOutput } from "$lib/stores/output.svelte";
+  import { terminalStore } from "$lib/stores/terminal.svelte";
+  import { gitStore } from "$lib/stores/git.svelte";
+  import { agentTelemetryStore } from "$lib/stores/agent-telemetry.svelte";
+  import { buildRuntimeContextBlock } from "$lib/services/ai/runtime-context";
+  import { ToolRepetitionDetector } from "./panel/tool-repetition";
+  import './AssistantPanel.css';
 
   // Revert confirmation state
   let confirmRevertOpen = $state(false);
@@ -87,12 +95,6 @@
   } | null>(null);
   let inputRef: HTMLTextAreaElement | undefined = $state();
 
-  const CONTEXT_WARN_PCT = 80;
-  const CONTEXT_SUMMARY_PCT = 90;
-  const SUMMARY_KEEP_MESSAGES = 12;
-  const SUMMARY_MAX_TOKENS = 1200;
-  const SUMMARY_TEMPERATURE = 0.2;
-
   let hasContextWarned = $state(false);
   let isAutoSummarizing = $state(false);
   let lastConversationId: string | null = null;
@@ -104,81 +106,20 @@
       lastConversationId = currentId;
     }
   });
-  async function autoSummarizeIfNeeded(
-    selectedModel: string,
-    controller: AbortController,
-  ): Promise<void> {
-    if (isAutoSummarizing) return;
-
-    const usage = assistantStore.getContextUsage(selectedModel);
-
-    if (
-      usage.percentage >= CONTEXT_WARN_PCT &&
-      usage.percentage < CONTEXT_SUMMARY_PCT
-    ) {
-      if (!hasContextWarned) {
-        hasContextWarned = true;
-        showToast({
-          message: "Context nearing limit — auto-summary will run soon.",
-          type: "warning",
-        });
-      }
-      return;
-    }
-
-    if (usage.percentage < CONTEXT_SUMMARY_PCT) return;
-
-    const summaryMsg = assistantStore.messages.find(
-      (m) => m.role === "system" && m.isSummary,
-    );
-
-    const nonSystem = assistantStore.messages.filter(
-      (m) => m.role !== "system",
-    );
-    if (nonSystem.length <= SUMMARY_KEEP_MESSAGES) return;
-
-    const toSummarize = nonSystem.slice(0, -SUMMARY_KEEP_MESSAGES);
-    if (toSummarize.length < 4) return;
-
-    isAutoSummarizing = true;
-    showToast({ message: "Compressing older context…", type: "info" });
-
-    try {
-      const summaryInput = buildSummaryInput(toSummarize, summaryMsg?.content);
-
-      const response = await sendChat(
-        {
-          messages: [{ role: "user", content: summaryInput }],
-          temperature: SUMMARY_TEMPERATURE,
-          maxTokens: SUMMARY_MAX_TOKENS,
-        },
-        assistantStore.currentMode,
-        controller.signal,
-      );
-
-      const summaryText = response.content?.trim();
-      if (!summaryText) {
-        showToast({
-          message: "Auto-summary failed (empty result).",
-          type: "error",
-        });
-        return;
-      }
-
-      assistantStore.summarizeConversation(summaryText, SUMMARY_KEEP_MESSAGES);
-      showToast({ message: "Summary updated.", type: "success" });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast({ message: `Auto-summary failed: ${msg}`, type: "error" });
-    } finally {
-      isAutoSummarizing = false;
-    }
-  }
-
   $effect(() => {
     if (assistantStore.panelOpen && inputRef) {
       setTimeout(() => inputRef?.focus(), 50);
     }
+  });
+
+  const isAssistantBusy = $derived.by(() => {
+    if (assistantStore.isStreaming) return true;
+    return (
+      assistantStore.agentLoopState === "running" ||
+      assistantStore.agentLoopState === "waiting_tool" ||
+      assistantStore.agentLoopState === "waiting_approval" ||
+      assistantStore.agentLoopState === "completing"
+    );
   });
 
   function hasToolResultMessage(toolCallId: string): boolean {
@@ -215,6 +156,46 @@
       data: result.data,
     });
   }
+
+  function shouldRequireEditConfirmation(userInput: string, mode: AIMode): boolean {
+    if (mode !== "agent") return false;
+    const text = userInput.trim().toLowerCase();
+    if (!text) return false;
+
+    const explicitImplementIntent =
+      /\b(implement|apply|patch|edit|modify|refactor|update|change|fix|add|create|remove|delete|write code|make it|do it|go ahead|proceed)\b/i.test(
+        text,
+      );
+    if (explicitImplementIntent) return false;
+
+    const ideationIntent =
+      /\b(what can|how can|ideas?|suggest|recommend|improve|better|enhance|optimi[sz]e|review)\b/i.test(
+        text,
+      );
+    return ideationIntent;
+  }
+
+  function shouldTreatAsConversationOnly(userInput: string, mode: AIMode): boolean {
+    if (mode !== "agent") return false;
+    const text = userInput.trim().toLowerCase();
+    if (!text) return false;
+    const normalized = text.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+
+    const greetingOnly =
+      /^(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|hola|namaste)$/.test(
+        normalized,
+      );
+    const capabilityAsk =
+      /^(what can you do|wht can u do|what do you do|who are you|introduce yourself)$/.test(
+        normalized,
+      );
+    const hasExecutionIntent =
+      /\b(fix|implement|edit|change|update|create|build|run|debug|analyze|search|read file|open|check)\b/i.test(
+        text,
+      );
+    return (greetingOnly || capabilityAsk) && !hasExecutionIntent;
+  }
+
   async function handleSend(): Promise<void> {
     // Use inputRef value as fallback in case store value is out of sync
     const content = (assistantStore.inputValue || inputRef?.value || "").trim();
@@ -226,7 +207,7 @@
     ]);
 
     // Cancel any existing stream (cancel-by-default policy)
-    if (assistantStore.isStreaming) {
+    if (isAssistantBusy) {
       assistantStore.stopStreaming();
     }
 
@@ -256,6 +237,40 @@
       workspaceRoot: projectStore.rootPath ?? undefined,
       mcpTools: mcpToolsInfo.length > 0 ? mcpToolsInfo : undefined,
     });
+    const requireEditConfirmation = shouldRequireEditConfirmation(
+      content,
+      assistantStore.currentMode,
+    );
+    const conversationOnlyTurn = shouldTreatAsConversationOnly(
+      content,
+      assistantStore.currentMode,
+    );
+    if (requireEditConfirmation) {
+      systemPrompt +=
+        "\n\nIntent guard: The user is asking for analysis/suggestions. Do NOT call file-mutating tools yet. First provide recommendations and ask for explicit confirmation before making code edits.";
+    }
+    if (conversationOnlyTurn) {
+      systemPrompt +=
+        "\n\nConversation guard: This user turn is greeting/capabilities chat. Do NOT perform proactive workspace scans or tool calls. Respond briefly and ask what concrete task they want next.";
+    }
+
+    const runtimeContextBlock = buildRuntimeContextBlock({
+      workspaceRoot: projectStore.rootPath,
+      terminals: terminalStore.sessions.map((session) => ({
+        id: session.id,
+        cwd: session.cwd || session.info.cwd,
+        label: terminalStore.getSessionLabel(session.id),
+      })),
+      git: {
+        isRepo: gitStore.isRepo,
+        branch: gitStore.status?.branch ?? null,
+        staged: gitStore.status?.staged.length ?? 0,
+        unstaged: gitStore.status?.unstaged.length ?? 0,
+        untracked: gitStore.status?.untracked.length ?? 0,
+        conflicted: gitStore.status?.conflicted.length ?? 0,
+      },
+    });
+    systemPrompt = `${systemPrompt}\n\n---\n\n${runtimeContextBlock}`;
 
     // Gather smart context (Active file, open tabs, terminal, etc.)
     // This provides background context - AI will use tools for additional searching
@@ -268,12 +283,25 @@
     // Get tools for current mode (includes MCP tools in agent mode)
     const tools = getAllToolsForMode(assistantStore.currentMode);
 
-    // Auto-summary check (warn at 80%, summarize at 90%)
-    await autoSummarizeIfNeeded(selectedModel, controller);
+    const nextSummaryState = await autoSummarizeIfNeeded({
+      selectedModel,
+      controller,
+      state: {
+        hasContextWarned,
+        isAutoSummarizing,
+      },
+      assistantStore,
+      notify: showToast,
+    });
+    hasContextWarned = nextSummaryState.hasContextWarned;
+    isAutoSummarizing = nextSummaryState.isAutoSummarizing;
 
     // Tool loop: keep streaming until model finishes without tool calls
     try {
-      await runToolLoop(systemPrompt, tools, controller);
+      await runToolLoop(systemPrompt, selectedModel, tools, controller, 30, {
+        requireEditConfirmation,
+        conversationOnlyTurn,
+      });
     } finally {
       // Always reset streaming state when done
       assistantStore.isStreaming = false;
@@ -302,14 +330,20 @@
    */
   async function runToolLoop(
     systemPrompt: string,
+    modelId: string,
     tools: ReturnType<typeof getAllToolsForMode>,
     controller: AbortController,
-    maxIterations = 30, // Increased from 20 to handle complex tasks like Kiro
+    maxIterations = 60,
+    options?: {
+      requireEditConfirmation?: boolean;
+      conversationOnlyTurn?: boolean;
+    },
   ): Promise<void> {
     const msgId = assistantStore.addAssistantMessage("", true);
     const isPlanMode = assistantStore.currentMode === "plan";
     const isAgentMode = assistantStore.currentMode === "agent";
     const failureNudgedSignatures = new Set<string>();
+    const repetitionDetector = new ToolRepetitionDetector(3);
     let planModeViolationNudgeCount = 0;
 
     let fullContent = "";
@@ -317,13 +351,19 @@
     let hasToolsInConversation = false;
     const toolRunScope = crypto.randomUUID();
     const loopStartedAt = Date.now();
-    const MAX_LOOP_DURATION_MS = 8 * 60 * 1000;
+    let maxLoopDurationMs = 20 * 60 * 1000;
+    const HARD_MAX_ITERATIONS = 120;
+    const HARD_MAX_LOOP_DURATION_MS = 35 * 60 * 1000;
+    const PROGRESS_WINDOW_MS = 90 * 1000;
+    const MAX_BUDGET_EXTENSIONS = 3;
+    let budgetExtensions = 0;
+    let lastProgressAt = Date.now();
 
     // Kiro-style: Track consecutive empty responses to detect stuck model
     let consecutiveEmptyResponses = 0;
-    const MAX_EMPTY_RESPONSES = 3;
+    const MAX_EMPTY_RESPONSES = 6;
     let recoveryRetryCount = 0;
-    const MAX_RECOVERY_RETRIES = 2;
+    const MAX_RECOVERY_RETRIES = 4;
     const failureSignatureCounts = new Map<string, number>();
 
     // Streaming safety guards
@@ -335,34 +375,140 @@
       "Volt",
       `Agent: Starting tool loop (max ${maxIterations} iterations)`,
     );
+    assistantStore.setAgentLoopState("running", {
+      iteration: 0,
+      maxIterations,
+      startedAt: loopStartedAt,
+    });
 
     // Track if we just processed tool results - used to detect when model doesn't respond
     let justProcessedToolResults = false;
+    let completionNudgeCount = 0;
+    const MAX_COMPLETION_NUDGES = 3;
+    let editConfirmationNudgeCount = 0;
+    let conversationGuardNudgeCount = 0;
+    let pruneNotified = false;
+    const finalizeOutcome = (
+      outcome: "completed" | "failed" | "cancelled",
+      reason: string,
+      meta: Record<string, unknown> = {},
+    ): void => {
+      agentTelemetryStore.record({
+        type: "agent.completion.outcome",
+        timestamp: Date.now(),
+        outcome,
+        reason,
+        meta,
+      });
+    };
 
-    while (iteration < maxIterations) {
+    while (true) {
+      const canExtendBudget =
+        Date.now() - lastProgressAt <= PROGRESS_WINDOW_MS &&
+        budgetExtensions < MAX_BUDGET_EXTENSIONS;
+
+      if (iteration >= maxIterations) {
+        if (canExtendBudget) {
+          const previous = maxIterations;
+          maxIterations = Math.min(maxIterations + 20, HARD_MAX_ITERATIONS);
+          budgetExtensions++;
+          logOutput(
+            "Volt",
+            `Agent: Extended iteration budget ${previous} -> ${maxIterations} due to recent progress.`,
+          );
+        } else {
+          assistantStore.updateAssistantMessage(msgId, fullContent, false);
+          assistantStore.markAssistantMessageStreamState(
+            msgId,
+            "failed",
+            "Reached maximum iterations",
+          );
+          assistantStore.setAgentLoopState("failed", {
+            iteration: maxIterations,
+            reason: "max_iterations_reached",
+          });
+          finalizeOutcome("failed", "max_iterations_reached", {
+            iteration: maxIterations,
+          });
+          showToast({
+            message: "Tool loop reached maximum iterations",
+            type: "warning",
+          });
+          return;
+        }
+      }
+
       iteration++;
+      assistantStore.setAgentLoopState("running", {
+        iteration,
+        maxIterations,
+      });
 
-      if (Date.now() - loopStartedAt > MAX_LOOP_DURATION_MS) {
-        assistantStore.updateAssistantMessage(
-          msgId,
-          fullContent
-            ? `${fullContent}\n\n⚠️ Stopped: tool loop exceeded time budget (${Math.round(MAX_LOOP_DURATION_MS / 60000)} min).`
-            : `⚠️ Stopped: tool loop exceeded time budget (${Math.round(MAX_LOOP_DURATION_MS / 60000)} min).`,
-          false,
-        );
-        showToast({
-          message: "Tool loop timed out (time budget exceeded)",
-          type: "warning",
-        });
-        return;
+      if (Date.now() - loopStartedAt > maxLoopDurationMs) {
+        if (canExtendBudget) {
+          const previous = maxLoopDurationMs;
+          maxLoopDurationMs = Math.min(
+            maxLoopDurationMs + 4 * 60 * 1000,
+            HARD_MAX_LOOP_DURATION_MS,
+          );
+          budgetExtensions++;
+          logOutput(
+            "Volt",
+            `Agent: Extended time budget ${Math.round(previous / 60000)} -> ${Math.round(maxLoopDurationMs / 60000)} min due to recent progress.`,
+          );
+        } else {
+          assistantStore.setAgentLoopState("failed", {
+            reason: "time_budget_exceeded",
+            iteration,
+          });
+          assistantStore.markAssistantMessageStreamState(
+            msgId,
+            "failed",
+            "Tool loop exceeded time budget",
+          );
+          finalizeOutcome("failed", "time_budget_exceeded", { iteration });
+          assistantStore.updateAssistantMessage(
+            msgId,
+            fullContent
+              ? `${fullContent}\n\n⚠️ Stopped: tool loop exceeded time budget (${Math.round(maxLoopDurationMs / 60000)} min).`
+              : `⚠️ Stopped: tool loop exceeded time budget (${Math.round(maxLoopDurationMs / 60000)} min).`,
+            false,
+          );
+          showToast({
+            message: "Tool loop timed out (time budget exceeded)",
+            type: "warning",
+          });
+          return;
+        }
       }
 
       if (controller.signal.aborted) {
+        assistantStore.setAgentLoopState("cancelled", {
+          reason: "abort_signal",
+          iteration,
+        });
+        assistantStore.markAssistantMessageStreamState(
+          msgId,
+          "cancelled",
+          "Streaming cancelled",
+        );
+        finalizeOutcome("cancelled", "abort_signal", { iteration });
         logOutput("Volt", `Agent: Loop aborted at iteration ${iteration}`);
         return;
       }
 
-      const providerMessages = toProviderMessages(assistantStore.messages);
+      const compiledMessages = compileProviderMessages(
+        assistantStore.messages,
+        modelId,
+      );
+      const providerMessages = compiledMessages.messages;
+      if (compiledMessages.didPrune && !pruneNotified) {
+        pruneNotified = true;
+        logOutput(
+          "Volt",
+          `Agent: Context pruned to stay under token budget (${compiledMessages.estimatedTokens}/${compiledMessages.budgetTokens}).`,
+        );
+      }
 
       let iterationContent = "";
       let iterationThinking = "";
@@ -388,7 +534,9 @@
         name: string;
         result: ToolResult;
       }> = [];
+      const toolIdCounts = new Map<string, number>();
       let hadPlanModeViolationThisIteration = false;
+      let toolCallSeenThisIteration = false;
 
       try {
         // Reduce hallucinations: use conservative temperature defaults per mode.
@@ -399,10 +547,12 @@
               ? 0.2
               : 0.15;
 
-        // REMOVED: sawToolCallInThisTurn suppression - let text flow naturally after tool calls
-        let suppressFurtherTextInThisTurn = false;
-        let toolCallSeenThisIteration = false;
         let warnedAboutLooping = false;
+        const textBuffer = createStreamingTextBuffer({
+          intervalMs: 45,
+          sliceChars: 120,
+          onFlush: (text) => assistantStore.appendTextToMessage(msgId, text, true),
+        });
         // REMOVED: visibleCharBudget - show full responses like Kiro
 
         for await (const chunk of streamChat(
@@ -419,10 +569,6 @@
           if (controller.signal.aborted) return;
 
           if (chunk.type === "content" && chunk.content) {
-            // REMOVED: sawToolCallInThisTurn check - allow text after tool calls
-            if (suppressFurtherTextInThisTurn) {
-              continue;
-            }
             if (streamGuards.shouldAbortForLeak(chunk.content)) {
               controller.abort();
               showToast({
@@ -443,11 +589,10 @@
                 warnedAboutLooping = true;
                 showToast({
                   message:
-                    "Assistant output started repeating, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                    "Assistant output started repeating. Repeated chunks are being skipped.",
                   type: "warning",
                 });
               }
-              suppressFurtherTextInThisTurn = true;
               continue;
             }
 
@@ -460,11 +605,10 @@
                 warnedAboutLooping = true;
                 showToast({
                   message:
-                    "Assistant output started looping, so I suppressed further assistant text for this turn to prevent spam. Tool calls/results (if any) will still run.",
+                    "Assistant output started looping. Repeated chunks are being skipped.",
                   type: "warning",
                 });
               }
-              suppressFurtherTextInThisTurn = true;
               continue;
             }
 
@@ -472,28 +616,36 @@
             assistantStore.endThinkingPart(msgId);
 
             iterationContent += chunk.content;
-            // In Agent mode, keep text buffered until iteration completes.
-            // This enforces tool-first UX (avoid premature "done" summaries).
-            if (!isAgentMode) {
-              assistantStore.appendTextToMessage(msgId, chunk.content, true);
-            }
+            lastProgressAt = Date.now();
+            textBuffer.append(chunk.content);
           }
 
           // Handle thinking chunks - display INLINE (Cursor-style)
           if (chunk.type === "thinking" && chunk.thinking) {
             iterationThinking += chunk.thinking;
+            lastProgressAt = Date.now();
             // Append thinking inline to contentParts (creates new thinking block if needed)
             assistantStore.appendThinkingToMessage(msgId, chunk.thinking);
           }
 
           if (chunk.type === "tool_call" && chunk.toolCall) {
+            lastProgressAt = Date.now();
+            await textBuffer.flushNow();
             // End any active thinking part before adding tool call
             assistantStore.endThinkingPart(msgId);
             toolCallSeenThisIteration = true;
+            // Keep already-streamed text visible when tools begin.
+            // Tool cards are shown inline without retracting prior narration.
             hasToolsInConversation = true;
             const toolCallArgs = chunk.toolCall.arguments;
-            const toolCallName = chunk.toolCall.name;
-            const toolCallId = chunk.toolCall.id;
+            const toolCallName = normalizeToolName(chunk.toolCall.name);
+            const rawToolCallId =
+              (chunk.toolCall.id && chunk.toolCall.id.trim()) ||
+              `tool_${crypto.randomUUID().slice(0, 8)}`;
+            const seenCount = toolIdCounts.get(rawToolCallId) ?? 0;
+            toolIdCounts.set(rawToolCallId, seenCount + 1);
+            const toolCallId =
+              seenCount === 0 ? rawToolCallId : `${rawToolCallId}__${seenCount + 1}`;
             const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
 
             // DEDUPLICATION: Check if we already have this exact tool call in this iteration
@@ -537,7 +689,9 @@
                 output: "[Duplicate - skipped]",
                 endTime: Date.now(),
               };
-              assistantStore.addToolCallToMessage(msgId, skippedToolCall);
+              if (toolCallName !== "attempt_completion") {
+                assistantStore.addToolCallToMessage(msgId, skippedToolCall);
+              }
               continue;
             }
 
@@ -546,18 +700,33 @@
               toolCallArgs,
               assistantStore.currentMode,
             );
+            const isInternalCompletionTool = toolCallName === "attempt_completion";
             const capabilities = getToolCapabilities(toolCallName);
+            const editBlockedByIntentGuard =
+              options?.requireEditConfirmation === true &&
+              isFileMutatingTool(toolCallName);
+            const blockedByConversationGuard =
+              options?.conversationOnlyTurn === true &&
+              !(
+                toolCallName === "attempt_completion" ||
+                toolCallName === "ask_followup_question"
+              );
             const isPlanModeViolation =
               isPlanMode &&
               (isTerminalToolName(toolCallName) ||
                 (capabilities.isMutating &&
                   toolCallName !== "write_plan_file"));
-            const resolvedValidationError = validation.valid
-              ? undefined
+            const effectiveValidationError = blockedByConversationGuard
+              ? "Tool blocked: greeting/capabilities turns should not run proactive tools. Respond directly and wait for a concrete task."
+              : editBlockedByIntentGuard
+              ? "Edit blocked: user asked for suggestions/analysis. Ask for explicit confirmation before changing files."
               : isPlanModeViolation
                 ? `Tool "${toolCallName}" is not allowed in plan mode. In plan mode, use READ tools and optionally "write_plan_file" only.`
                 : (validation.error ?? "Invalid tool call");
-            const status: ToolCall["status"] = validation.valid
+            const status: ToolCall["status"] =
+              validation.valid &&
+              !editBlockedByIntentGuard &&
+              !blockedByConversationGuard
               ? "pending"
               : "failed";
             const toolCall: ToolCall = {
@@ -567,11 +736,16 @@
               status,
               requiresApproval: validation.requiresApproval,
               thoughtSignature: toolCallThoughtSignature,
-              error: resolvedValidationError,
-              endTime: validation.valid ? undefined : Date.now(),
+              error: effectiveValidationError,
+              endTime:
+                validation.valid && !editBlockedByIntentGuard
+                  ? undefined
+                  : Date.now(),
             };
 
-            assistantStore.addToolCallToMessage(msgId, toolCall);
+            if (!isInternalCompletionTool) {
+              assistantStore.addToolCallToMessage(msgId, toolCall);
+            }
 
             // Track every tool call (valid or invalid) so we can always attach a tool result
             // back to the model and keep Gemini's function-calling history consistent.
@@ -582,7 +756,11 @@
               thoughtSignature: toolCallThoughtSignature,
             });
 
-            if (!validation.valid) {
+            if (
+              !validation.valid ||
+              editBlockedByIntentGuard ||
+              blockedByConversationGuard
+            ) {
               if (isPlanModeViolation) {
                 hadPlanModeViolationThisIteration = true;
               }
@@ -592,9 +770,32 @@
                 name: toolCallName,
                 result: {
                   success: false,
-                  error: resolvedValidationError ?? "Invalid tool call",
+                  error: effectiveValidationError ?? "Invalid tool call",
                 },
               });
+
+              if (editBlockedByIntentGuard && editConfirmationNudgeCount < 2) {
+                editConfirmationNudgeCount++;
+                assistantStore.addToolMessage({
+                  id: `edit_confirm_guard_${Date.now()}`,
+                  name: "_system_edit_confirmation_guard",
+                  arguments: {},
+                  status: "completed",
+                  output:
+                    "The user asked for suggestions, not direct edits. Provide recommendations first and ask if they want you to implement changes.",
+                });
+              }
+              if (blockedByConversationGuard && conversationGuardNudgeCount < 2) {
+                conversationGuardNudgeCount++;
+                assistantStore.addToolMessage({
+                  id: `conversation_guard_${Date.now()}`,
+                  name: "_system_conversation_guard",
+                  arguments: {},
+                  status: "completed",
+                  output:
+                    "This turn is greeting/capabilities chat. Do not run workspace or browser tools; reply briefly and ask for the concrete task.",
+                });
+              }
 
               // CRITICAL: If a file-modifying tool fails validation, mark it so we can skip
               // running subsequent tools that might depend on it (like eslint after write_file)
@@ -606,6 +807,48 @@
                 (immediateResults as any).__fileModifyFailed = true;
               }
 
+              continue;
+            }
+
+            const repetitionCheck = repetitionDetector.recordAndShouldBlock(
+              toolCallName,
+              toolCallArgs,
+            );
+            if (repetitionCheck.blocked) {
+              immediateResults.push({
+                id: toolCallId,
+                name: toolCallName,
+                result: {
+                  success: false,
+                  error: `Blocked repetitive tool call signature after ${repetitionCheck.count} attempts in this turn.`,
+                  warnings: ["repetition_blocked"],
+                  meta: {
+                    signature: repetitionCheck.signature,
+                    threshold: repetitionCheck.threshold,
+                    count: repetitionCheck.count,
+                    code: "REPETITION_BLOCKED",
+                  },
+                },
+              });
+              assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                status: "failed",
+                error: `Blocked repetitive call (${repetitionCheck.count} > ${repetitionCheck.threshold}).`,
+                endTime: Date.now(),
+              });
+              assistantStore.addToolMessage({
+                id: `repetition_block_${Date.now()}`,
+                name: "_system_strategy_switch",
+                arguments: {},
+                status: "completed",
+                output:
+                  "Repeated tool signature detected and blocked. Choose a different strategy (different tool or different arguments).",
+              });
+              agentTelemetryStore.record({
+                type: "agent.tool.failure_signature",
+                timestamp: Date.now(),
+                toolName: toolCallName,
+                signature: repetitionCheck.signature,
+              });
               continue;
             }
 
@@ -687,9 +930,12 @@
           }
 
           if (chunk.type === "error") {
+            await textBuffer.flushNow();
             throw new Error(chunk.error || "Unknown streaming error");
           }
         }
+
+        await textBuffer.close();
 
         // Finalize thinking state when streaming ends
         // End any active inline thinking part
@@ -723,6 +969,21 @@
         const deferredNonFileTools = hasQueuedFileEdits
           ? queuedNonFileTools.filter((t) => t.runAfterFileEdits)
           : [];
+
+        if (
+          pendingToolCalls.length > 0 ||
+          immediateNonFileTools.length > 0 ||
+          deferredNonFileTools.length > 0 ||
+          hasQueuedFileEdits
+        ) {
+          assistantStore.setAgentLoopState("waiting_tool", {
+            iteration,
+            pendingToolCalls: pendingToolCalls.length,
+            eagerTools: immediateNonFileTools.length,
+            deferredTools: deferredNonFileTools.length,
+            fileQueues: fileEditQueues.size,
+          });
+        }
 
         // Run non-file tools that don't depend on fresh edits.
         const eagerResults = await executeQueuedNonFileTools(
@@ -833,6 +1094,92 @@
           if (noToolOutcome.decision === "continue") {
             continue;
           }
+          if (
+            noToolOutcome.decision === "complete" &&
+            isAgentMode &&
+            !options?.conversationOnlyTurn &&
+            completionNudgeCount < MAX_COMPLETION_NUDGES
+          ) {
+            completionNudgeCount++;
+            const latestVisibleContent = iterationContent.trim()
+              ? iterationContent
+              : noToolOutcome.state.fullContent;
+            if (latestVisibleContent) {
+              fullContent = latestVisibleContent;
+              assistantStore.setMessageContent(msgId, latestVisibleContent, true);
+            }
+            assistantStore.addToolMessage({
+              id: `completion_contract_${Date.now()}`,
+              name: "_system_completion_contract",
+              arguments: {},
+              status: "completed",
+              output:
+                'Agent mode requires explicit completion. If the task is done, call attempt_completion({ result: "final summary" }). If not done, continue with the next required tool calls.',
+            });
+            continue;
+          }
+          if (
+            noToolOutcome.decision === "complete" &&
+            isAgentMode &&
+            !options?.conversationOnlyTurn
+          ) {
+            assistantStore.updateAssistantMessage(
+              msgId,
+              `${fullContent}\n\n⚠️ Agent completion contract not satisfied. Please retry.`,
+              false,
+            );
+            assistantStore.markAssistantMessageStreamState(
+              msgId,
+              "failed",
+              "Completion contract missing attempt_completion",
+            );
+            assistantStore.setAgentLoopState("failed", {
+              iteration,
+              reason: "missing_attempt_completion",
+            });
+            finalizeOutcome("failed", "missing_attempt_completion", {
+              iteration,
+            });
+            return;
+          }
+          if (
+            noToolOutcome.decision === "complete" &&
+            isAgentMode &&
+            options?.conversationOnlyTurn
+          ) {
+            assistantStore.markAssistantMessageStreamState(msgId, "completed");
+            assistantStore.setAgentLoopState("completed", {
+              iteration,
+              reason: "conversation_only_completion",
+            });
+            finalizeOutcome("completed", "conversation_only_completion", {
+              iteration,
+            });
+            return;
+          }
+          if (noToolOutcome.decision === "complete") {
+            assistantStore.markAssistantMessageStreamState(msgId, "completed");
+            assistantStore.setAgentLoopState("completed", {
+              iteration,
+              reason: "content_only_completion",
+            });
+            finalizeOutcome("completed", "content_only_completion", {
+              iteration,
+            });
+          } else {
+            assistantStore.markAssistantMessageStreamState(
+              msgId,
+              "failed",
+              "No tool outcome requested loop return",
+            );
+            assistantStore.setAgentLoopState("failed", {
+              iteration,
+              reason: "no_tool_outcome_return",
+            });
+            finalizeOutcome("failed", "no_tool_outcome_return", {
+              iteration,
+            });
+          }
           return;
         }
 
@@ -846,6 +1193,50 @@
           name: string;
           result: ToolResult;
         }> = [...allEagerResults, ...immediateResults];
+        if (toolResults.length > 0) {
+          lastProgressAt = Date.now();
+        }
+
+        const uniqueResults = new Map<
+          string,
+          {
+            id: string;
+            name: string;
+            result: ToolResult;
+          }
+        >();
+        for (const entry of toolResults) {
+          uniqueResults.set(entry.id, entry);
+        }
+
+        for (const toolCall of allToolCalls) {
+          if (uniqueResults.has(toolCall.id)) continue;
+          uniqueResults.set(toolCall.id, {
+            id: toolCall.id,
+            name: toolCall.name,
+            result: {
+              success: false,
+              error:
+                "Tool call did not produce a response (contract violation).",
+              warnings: ["synthetic_response"],
+              meta: {
+                code: "TOOL_RESPONSE_MISSING",
+              },
+            },
+          });
+        }
+
+        const normalizedToolResults = allToolCalls
+          .map((toolCall) => uniqueResults.get(toolCall.id))
+          .filter(
+            (
+              entry,
+            ): entry is {
+              id: string;
+              name: string;
+              result: ToolResult;
+            } => Boolean(entry),
+          );
 
         const eagerIds = new Set(allEagerResults.map((r) => r.id));
         const toolsNeedingApproval = pendingToolCalls.filter(
@@ -853,14 +1244,15 @@
         );
 
         if (toolsNeedingApproval.length > 0) {
-          assistantStore.messages = assistantStore.messages.map((msg) =>
-            msg.id === msgId ? { ...msg, isStreaming: false } : msg,
-          );
+          assistantStore.setAgentLoopState("waiting_approval", {
+            iteration,
+            pendingApprovals: toolsNeedingApproval.length,
+          });
 
           const approvalsProcessed = await processToolsNeedingApproval(
             msgId,
             toolsNeedingApproval,
-            toolResults,
+            normalizedToolResults,
             {
               isTerminalToolName,
               getToolCapabilities,
@@ -881,13 +1273,43 @@
               },
             },
           );
-          if (!approvalsProcessed) return;
+          if (!approvalsProcessed) {
+            assistantStore.markAssistantMessageStreamState(
+              msgId,
+              "failed",
+              "Approval flow incomplete",
+            );
+            assistantStore.setAgentLoopState("failed", {
+              iteration,
+              reason: "approval_flow_incomplete",
+            });
+            finalizeOutcome("failed", "approval_flow_incomplete", {
+              iteration,
+            });
+            return;
+          }
+          assistantStore.setAgentLoopState("running", {
+            iteration,
+            resumedAfterApproval: true,
+          });
         }
+
+        const completionResult = normalizedToolResults.find(
+          (entry) => entry.name === "attempt_completion" && entry.result.success,
+        );
+        const visibleToolCalls = completionResult
+          ? allToolCalls.filter((entry) => entry.name !== "attempt_completion")
+          : allToolCalls;
+        const visibleToolResults = completionResult
+          ? normalizedToolResults.filter(
+              (entry) => entry.name !== "attempt_completion",
+            )
+          : normalizedToolResults;
 
         // Add ALL results to conversation as special tool messages
         addToolResultsToConversation(
-          allToolCalls,
-          toolResults,
+          visibleToolCalls,
+          visibleToolResults,
           assistantStore.addToolMessage.bind(assistantStore),
         );
 
@@ -904,12 +1326,62 @@
           });
         }
 
+        if (completionResult) {
+          assistantStore.setAgentLoopState("completing", {
+            iteration,
+            completionToolId: completionResult.id,
+          });
+          const completionCall = allToolCalls.find(
+            (entry) => entry.id === completionResult.id,
+          );
+          const completionText =
+            typeof completionCall?.arguments?.result === "string"
+              ? completionCall.arguments.result.trim()
+              : "";
+          if (completionText) {
+            fullContent = completionText;
+            assistantStore.updateAssistantMessage(msgId, fullContent, false);
+          }
+          assistantStore.markAssistantMessageStreamState(msgId, "completed");
+          assistantStore.setAgentLoopState("completed", {
+            iteration,
+            completionToolId: completionResult.id,
+          });
+          finalizeOutcome("completed", "attempt_completion", {
+            iteration,
+            completionToolId: completionResult.id,
+          });
+          logOutput(
+            "Volt",
+            `Agent: Completion accepted via attempt_completion at iteration ${iteration}.`,
+          );
+          return;
+        }
+
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
         justProcessedToolResults = true;
       } catch (err) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) {
+          assistantStore.markAssistantMessageStreamState(
+            msgId,
+            "cancelled",
+            "Streaming cancelled",
+          );
+          assistantStore.setAgentLoopState("cancelled", {
+            iteration,
+            reason: "abort_during_iteration",
+          });
+          finalizeOutcome("cancelled", "abort_during_iteration", {
+            iteration,
+          });
+          return;
+        }
         const msg = err instanceof Error ? err.message : "Unknown error";
+        const isInterrupted =
+          /interrupted|idle timeout|stream.*ended|before completion|cancelled/i.test(
+            msg,
+          );
 
         // Kiro-style: Check if this is a retryable error
         const isRetryable =
@@ -947,20 +1419,33 @@
         assistantStore.updateAssistantMessage(
           msgId,
           fullContent
-            ? `${fullContent}\n\n⚠️ Error: ${msg}`
-            : `⚠️ Error: ${msg}`,
+            ? isInterrupted
+              ? `${fullContent}\n\n⚠️ Stream interrupted before completion. Partial response kept.`
+              : `${fullContent}\n\n⚠️ Error: ${msg}`
+            : isInterrupted
+              ? "⚠️ Stream interrupted before completion. Partial response kept."
+              : `⚠️ Error: ${msg}`,
           false,
+        );
+        assistantStore.markAssistantMessageStreamState(
+          msgId,
+          isInterrupted ? "interrupted" : "failed",
+          msg,
+        );
+        assistantStore.setAgentLoopState("failed", {
+          iteration,
+          reason: isInterrupted ? "stream_interrupted" : "iteration_error",
+          error: msg,
+        });
+        finalizeOutcome(
+          "failed",
+          isInterrupted ? "stream_interrupted" : "iteration_error",
+          { iteration, error: msg },
         );
         showToast({ message: msg, type: "error" });
         return;
       }
     }
-
-    assistantStore.updateAssistantMessage(msgId, fullContent, false);
-    showToast({
-      message: "Tool loop reached maximum iterations",
-      type: "warning",
-    });
   }
 
   /**
@@ -1441,7 +1926,7 @@
     <MessageList
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
-      isStreaming={assistantStore.isStreaming}
+      isStreaming={isAssistantBusy}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
       onStartImplementation={handleStartImplementation}
@@ -1542,7 +2027,7 @@
     <ChatInputBar
       bind:inputRef
       value={assistantStore.inputValue}
-      isStreaming={assistantStore.isStreaming}
+      isStreaming={isAssistantBusy}
       currentMode={assistantStore.currentMode}
       onInput={(v, source, attachments) => {
         assistantStore.setInputValue(v, source);
@@ -1602,270 +2087,4 @@
   </div>
 {/if}
 
-<style>
-  .assistant-panel {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    background: var(--color-bg-panel);
-    border-left: 1px solid var(--color-border);
-    overflow: hidden;
-  }
 
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    background: var(--color-bg-header);
-    border-bottom: 1px solid var(--color-border);
-    flex-shrink: 0;
-    min-height: 36px;
-  }
-
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .header-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-text-secondary);
-  }
-
-  .header-title {
-    font-weight: 600;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--color-text);
-    max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-
-  .header-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 4px;
-    color: var(--color-text-secondary);
-    transition: all 0.15s ease;
-  }
-
-  .header-btn:hover {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
-  .header-btn:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: -2px;
-  }
-
-  .messages-area {
-    flex: 1;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .input-area {
-    background: transparent;
-    flex-shrink: 0;
-  }
-
-  .attached-context {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 8px 12px 0;
-  }
-
-  .context-chip {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 6px 3px 8px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    font-size: 11px;
-    color: var(--color-text-secondary);
-  }
-
-  .context-label {
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .context-remove {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    border-radius: 2px;
-    color: var(--color-text-secondary);
-    opacity: 0.7;
-    transition: all 0.15s ease;
-  }
-
-  .context-remove:hover {
-    opacity: 1;
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
-  /* Attachment previews (new model) */
-  .attachment-previews {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 8px 12px 0;
-  }
-
-  .attachment-preview {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 6px 4px 8px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    max-width: 200px;
-  }
-
-  .attachment-preview.is-image {
-    padding: 4px;
-  }
-
-  .attachment-thumbnail {
-    width: 32px;
-    height: 32px;
-    object-fit: cover;
-    border-radius: 4px;
-    flex-shrink: 0;
-  }
-
-  .attachment-info {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .attachment-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--color-text);
-  }
-
-  .attachment-meta {
-    font-size: 10px;
-    color: var(--color-text-disabled);
-  }
-
-  .attachment-remove {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    color: var(--color-text-secondary);
-    opacity: 0.7;
-    transition: all 0.15s ease;
-    flex-shrink: 0;
-  }
-
-  .attachment-remove:hover {
-    opacity: 1;
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-  /* Image Preview Modal */
-  .image-modal {
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    animation: fadeIn 0.2s ease;
-  }
-
-  .image-modal-content {
-    position: relative;
-    max-width: 90vw;
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .image-modal-img {
-    max-width: 100%;
-    max-height: 85vh;
-    object-fit: contain;
-    border-radius: 8px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-  }
-
-  .image-modal-close {
-    position: absolute;
-    top: -40px;
-    right: 0;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
-    transition: all 0.2s ease;
-  }
-
-  .image-modal-close:hover {
-    background: rgba(255, 255, 255, 0.2);
-    transform: scale(1.1);
-  }
-
-  .image-modal-label {
-    color: white;
-    font-size: 13px;
-    background: rgba(0, 0, 0, 0.5);
-    padding: 4px 12px;
-    border-radius: 20px;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-</style>

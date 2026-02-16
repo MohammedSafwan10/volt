@@ -19,13 +19,25 @@
   interface Props {
     message: AssistantMessage;
     msgIdx: number;
+    showStreamingFallback?: boolean;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
     elapsedTime?: string | null;
   }
 
-  let { message, msgIdx, onToolApprove, onToolDeny, elapsedTime }: Props =
+  let {
+    message,
+    msgIdx,
+    showStreamingFallback = false,
+    onToolApprove,
+    onToolDeny,
+    elapsedTime,
+  }: Props =
     $props();
+
+  const showStreaming = $derived(
+    Boolean(message.isStreaming || showStreamingFallback),
+  );
 
   // Track reverted tool calls
   let revertedIds = $state<Set<string>>(new Set());
@@ -104,7 +116,13 @@
   function buildContentPartsFromOffsets(
     msg: AssistantMessage,
   ): ContentPart[] | null {
-    if (!msg.content || !msg.inlineToolCalls?.length) return null;
+    if (!msg.inlineToolCalls?.length) return null;
+
+    // Tool-only assistant turns are valid (no narrative text).
+    // Render tool cards directly so they are visible live, not only after reload reconstruction.
+    if (!msg.content) {
+      return msg.inlineToolCalls.map((tc) => ({ type: "tool", toolCall: tc }));
+    }
 
     const toolCallsWithOffsets = msg.inlineToolCalls
       .map((tc) => ({ tc, offset: getToolTextOffset(tc) }))
@@ -142,6 +160,11 @@
     // Fallback: try to rebuild from offsets (for old messages without contentParts)
     const rebuilt = buildContentPartsFromOffsets(msg);
     if (rebuilt) return rebuilt;
+
+    // Last-chance fallback for live turns where contentParts was not yet materialized.
+    if (msg.inlineToolCalls?.length) {
+      return msg.inlineToolCalls.map((tc) => ({ type: "tool", toolCall: tc }));
+    }
     
     // Last resort: just the text content
     if (msg.content) return [{ type: "text", text: msg.content }];
@@ -515,7 +538,7 @@
   }
 </script>
 
-<article class="message-row assistant" class:streaming={message.isStreaming}>
+<article class="message-row assistant" class:streaming={showStreaming}>
   <div class="msg-body">
     <div class="activity-thread">
       <div class="activity-spine"></div>
@@ -618,7 +641,7 @@
               {/if}
             {:else if part.type === "text" && part.text.trim()}
               <div class="msg-content">
-                {#if message.isStreaming && i === contentParts.length - 1}
+                {#if showStreaming && i === contentParts.length - 1}
                   <Markdown content={part.text} /><span class="cursor"></span>
                 {:else}
                   <Markdown content={part.text} />
@@ -628,15 +651,15 @@
           </div>
         {/each}
 
-        {#if contentParts.length === 0 && message.isStreaming}
+        {#if contentParts.length === 0 && showStreaming}
           <div class="msg-content"><span class="cursor"></span></div>
         {/if}
       </div>
     </div>
 
-    {#if message.isStreaming}
+    {#if showStreaming}
       <StreamingStatus
-        isStreaming={message.isStreaming}
+        isStreaming={showStreaming}
         isThinking={message.isThinking || false}
         activeToolNames={message.inlineToolCalls
           ?.filter((tc) => tc.status === "running" || tc.status === "pending")
@@ -644,10 +667,26 @@
       />
     {/if}
 
-    {#if !message.isStreaming}
+    {#if !showStreaming}
       <div class="message-meta">
         <div class="meta-left">
           <span class="meta-time">{formatTime(message.timestamp)}</span>
+          {#if message.streamState === "interrupted"}
+            <span class="meta-pill warning" title={message.streamIssue || "Stream interrupted"}>
+              <UIIcon name="warning" size={12} />
+              <span>Interrupted</span>
+            </span>
+          {:else if message.streamState === "failed"}
+            <span class="meta-pill error" title={message.streamIssue || "Generation failed"}>
+              <UIIcon name="error" size={12} />
+              <span>Failed</span>
+            </span>
+          {:else if message.streamState === "cancelled"}
+            <span class="meta-pill" title={message.streamIssue || "Generation cancelled"}>
+              <UIIcon name="close" size={12} />
+              <span>Cancelled</span>
+            </span>
+          {/if}
           {#if elapsedTime}
             <span class="meta-pill" title="Generation time">
               <UIIcon name="clock" size={12} />
@@ -817,6 +856,16 @@
     background: rgba(255, 255, 255, 0.06);
     border-color: var(--color-accent);
     color: var(--color-text);
+  }
+
+  .meta-pill.warning {
+    border-color: color-mix(in srgb, #f59e0b 45%, var(--color-border));
+    color: #fbbf24;
+  }
+
+  .meta-pill.error {
+    border-color: color-mix(in srgb, #ef4444 45%, var(--color-border));
+    color: #f87171;
   }
 
   .meta-actions {

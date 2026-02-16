@@ -117,6 +117,7 @@
       void m.content;
       void m.thinking;
       void m.isStreaming;
+      void m.streamState;
       if (m.contentParts) {
         m.contentParts.forEach((p) => {
           if (p.type === "text") void p.text;
@@ -179,6 +180,15 @@
       }
     }
     return formatElapsedTime(message.timestamp, message.endTime);
+  }
+
+  function isLatestAssistantMessage(index: number): boolean {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        return i === index;
+      }
+    }
+    return false;
   }
 
   // Plan mode: check for plan file
@@ -253,6 +263,8 @@
           <AssistantMessageRow
             {message}
             {msgIdx}
+            showStreamingFallback={isStreaming &&
+              isLatestAssistantMessage(msgIdx)}
             {onToolApprove}
             {onToolDeny}
             elapsedTime={getMessageElapsedTime(message, msgIdx)}

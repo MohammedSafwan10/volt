@@ -12,17 +12,6 @@
 
   let expanded = $state(false);
 
-  // Auto-expand when screenshot data arrives
-  $effect(() => {
-    if (
-      toolCall.name === "browser_screenshot" &&
-      toolCall.data?.image_base64 &&
-      !expanded
-    ) {
-      expanded = true;
-    }
-  });
-
   const statusIcons: Record<
     ToolCallStatus,
     "spinner" | "error" | "close" | "clock" | undefined
