@@ -8,7 +8,9 @@ export const IMAGE_LIMITS = {
   allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'] as const,
 };
 
-const DEFAULT_CONTEXT_LIMIT = { inputTokens: 1_000_000, outputTokens: 8_192 };
+// Conservative fallback for unknown models.
+// Using 1M here hides overflow risk for many non-Gemini models.
+const DEFAULT_CONTEXT_LIMIT = { inputTokens: 128_000, outputTokens: 8_192 };
 
 export function getModelContextLimits(modelId: string): { inputTokens: number; outputTokens: number } {
   const config = getModelConfig(modelId);

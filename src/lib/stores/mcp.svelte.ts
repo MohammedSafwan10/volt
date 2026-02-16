@@ -6,7 +6,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { homeDir, join } from '@tauri-apps/api/path';
-import { readTextFile, watchImmediate } from '@tauri-apps/plugin-fs';
+import { readTextFile, watch } from '@tauri-apps/plugin-fs';
 import { showToast } from './toast.svelte';
 import { logOutput } from './output.svelte';
 import { registerCleanup } from '$lib/services/hmr-cleanup';
@@ -205,7 +205,7 @@ class McpStore {
 
     // Watch new workspace config
     try {
-      this.workspaceConfigWatcher = await watchImmediate(
+      this.workspaceConfigWatcher = await watch(
         this.workspaceConfigPath,
         async () => {
           console.log('[MCP] Workspace config changed, reloading...');
@@ -448,6 +448,14 @@ class McpStore {
     // Server state changes
     const unlistenState = await listen<McpServerEvent>('mcp://server-state', (event) => {
       const { server_id, state } = event.payload;
+      const prev = this.servers.get(server_id);
+      const prevTools = prev?.tools?.map((t) => t.name).join('|') ?? '';
+      const nextTools = state.tools?.map((t) => t.name).join('|') ?? '';
+      const unchanged =
+        prev?.status === state.status &&
+        (prev?.error ?? '') === (state.error ?? '') &&
+        prevTools === nextTools;
+      if (unchanged) return;
       console.log('[MCP] State event:', server_id, state.status);
       this.servers.set(server_id, state);
       // Force reactivity by creating new Map
@@ -513,7 +521,7 @@ class McpStore {
     // Watch workspace config (if in workspace, it can be watched)
     if (this.workspaceConfigPath) {
       try {
-        this.workspaceConfigWatcher = await watchImmediate(
+        this.workspaceConfigWatcher = await watch(
           this.workspaceConfigPath,
           async () => {
             logOutput('MCP', 'Workspace config changed, reloading...');

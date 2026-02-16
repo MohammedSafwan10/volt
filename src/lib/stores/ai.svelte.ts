@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { validateGeminiKey } from '$lib/services/ai/gemini';
 import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
 import { validateAnthropicKey } from '$lib/services/ai/anthropic';
+import { getModelConfig, upsertModelConfig, type ModelConfig } from '$lib/services/ai/models';
 
 // Supported AI providers
 export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai';
@@ -32,6 +33,17 @@ export interface ProviderConfig {
   capabilities: ProviderCapabilities;
   models: string[];
   defaultModel: string;
+}
+
+function isSupportedModel(provider: AIProvider, model: string): boolean {
+  return PROVIDERS[provider].models.includes(model);
+}
+
+function sanitizeModeModel(provider: AIProvider, mode: AIMode, model: string | undefined): string {
+  if (model && isSupportedModel(provider, model)) {
+    return model;
+  }
+  return PROVIDERS[provider].defaultModel;
 }
 
 // Available providers with their capabilities
@@ -68,7 +80,7 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       // Best free models with function calling support
       'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
       'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
-      'mistralai/devstral-2512:free',      // Devstral - coding focused
+      'mistralai/mistral-small-3.1-24b-instruct:free', // Mistral Small 3.1 - available free
       'stepfun/step-3.5-flash:free'        // StepFun 3.5 Flash - 256K context
     ],
     defaultModel: 'qwen/qwen3-coder:free'
@@ -186,6 +198,7 @@ class AISettingsStore {
         const hasKey = await invoke<boolean>('ai_has_api_key', { provider });
         this.hasApiKey = { ...this.hasApiKey, [provider]: hasKey };
       }
+      await this.syncOpenRouterModelMetadata();
       this.initialized = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -294,10 +307,12 @@ class AISettingsStore {
         // New format: restore selection for each provider
         const sm = prefs.selectedModels as Record<AIProvider, Record<AIMode, string>>;
         for (const provider of Object.keys(PROVIDERS) as AIProvider[]) {
-          if (sm[provider]) {
+          const providerModes = sm[provider];
+          if (providerModes) {
             this.selectedModels[provider] = {
-              ...this.selectedModels[provider],
-              ...sm[provider]
+              ask: sanitizeModeModel(provider, 'ask', providerModes.ask),
+              plan: sanitizeModeModel(provider, 'plan', providerModes.plan),
+              agent: sanitizeModeModel(provider, 'agent', providerModes.agent)
             };
           }
         }
@@ -307,9 +322,9 @@ class AISettingsStore {
         const currentM = this.selectedModels[this.selectedProvider];
 
         this.selectedModels[this.selectedProvider] = {
-          ask: mpm.ask || currentM.ask,
-          plan: mpm.plan || currentM.plan,
-          agent: mpm.agent || currentM.agent
+          ask: sanitizeModeModel(this.selectedProvider, 'ask', mpm.ask || currentM.ask),
+          plan: sanitizeModeModel(this.selectedProvider, 'plan', mpm.plan || currentM.plan),
+          agent: sanitizeModeModel(this.selectedProvider, 'agent', mpm.agent || currentM.agent)
         };
       }
     } catch (err) {
@@ -328,6 +343,59 @@ class AISettingsStore {
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
     } catch {
       // Ignore storage errors
+    }
+  }
+
+  /**
+   * Refresh OpenRouter model limits from live API metadata.
+   * Keeps context meter and max token budgeting aligned with current upstream routing.
+   */
+  private async syncOpenRouterModelMetadata(): Promise<void> {
+    const openRouterModels = PROVIDERS.openrouter.models;
+    if (openRouterModels.length === 0) return;
+
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/models', {
+        method: 'GET'
+      });
+      if (!response.ok) return;
+
+      const payload = await response.json() as {
+        data?: Array<{
+          id: string;
+          context_length?: number;
+          supported_parameters?: string[];
+          top_provider?: { max_completion_tokens?: number | null };
+          name?: string;
+        }>;
+      };
+      if (!Array.isArray(payload.data)) return;
+
+      const index = new Map(payload.data.map((m) => [m.id, m]));
+
+      for (const modelId of openRouterModels) {
+        const live = index.get(modelId);
+        if (!live || typeof live.context_length !== 'number') continue;
+
+        const existing = getModelConfig(modelId);
+        const maxOut = typeof live.top_provider?.max_completion_tokens === 'number'
+          ? live.top_provider.max_completion_tokens
+          : (existing?.maxOutput ?? 8192);
+
+        const updated: ModelConfig = {
+          id: modelId,
+          name: existing?.name ?? live.name ?? modelId,
+          provider: 'openrouter',
+          contextWindow: live.context_length,
+          maxOutput: maxOut,
+          supportsTools: Boolean(live.supported_parameters?.includes('tools')),
+          free: modelId.endsWith(':free')
+        };
+
+        upsertModelConfig(updated);
+      }
+    } catch {
+      // Best-effort metadata refresh: keep static defaults when offline/unavailable.
     }
   }
 }

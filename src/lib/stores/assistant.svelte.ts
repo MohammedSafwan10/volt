@@ -18,6 +18,11 @@ import { terminalStore } from '$lib/stores/terminal.svelte';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from './editor.svelte';
 import { chatHistoryStore } from './chat-history.svelte';
+import { agentTelemetryStore } from './agent-telemetry.svelte';
+import {
+  isValidLoopTransition,
+  type AgentLoopState,
+} from './assistant/loop-state';
 import {
   estimateTokensFromChars,
   generateChecksum,
@@ -108,6 +113,9 @@ export interface AssistantMessage {
   smartContextBlock?: string;
   // User-selected mentions from @ menu (shown as chips)
   contextMentions?: AttachedContext[];
+  // Streaming lifecycle truthfulness for partial/failed streams
+  streamState?: 'active' | 'completed' | 'interrupted' | 'cancelled' | 'failed';
+  streamIssue?: string;
 }
 
 // Conversation container
@@ -227,6 +235,8 @@ class AssistantStore {
   // Streaming state
   isStreaming = $state(false);
   abortController = $state<AbortController | null>(null);
+  agentLoopState = $state<AgentLoopState>('completed');
+  agentLoopMeta = $state<Record<string, unknown>>({});
 
   // Current tool calls being displayed
   activeToolCalls = $state<ToolCall[]>([]);
@@ -346,6 +356,8 @@ class AssistantStore {
           if (meta.thinking) base.thinking = meta.thinking;
           if (meta.smartContextBlock) base.smartContextBlock = meta.smartContextBlock;
           if (meta.contextMentions) base.contextMentions = meta.contextMentions;
+          if (meta.streamState) base.streamState = meta.streamState;
+          if (meta.streamIssue) base.streamIssue = meta.streamIssue;
         } catch (e) {
           console.warn('[AssistantStore] Failed to parse message metadata:', e);
         }
@@ -354,6 +366,12 @@ class AssistantStore {
       // If contentParts was restored from metadata, use it directly (already has correct order)
       // Only call normalizeContentParts if we need to ensure text exists
       if (base.contentParts && base.contentParts.length > 0) {
+        // Never restore active thinking state from persisted history.
+        // Active thinking is runtime-only and can get stuck after crashes/restarts.
+        base.contentParts = base.contentParts.map((part) =>
+          part.type === 'thinking' ? { ...part, isActive: false } : part
+        );
+
         // Already have properly ordered contentParts - don't normalize, just ensure text is included
         const hasTextPart = base.contentParts.some(p => p.type === 'text');
         if (!hasTextPart && base.content) {
@@ -464,6 +482,9 @@ class AssistantStore {
           base.contentParts = parts as ContentPart[];
         }
       }
+
+      base.isThinking = false;
+      base.isStreaming = false;
 
       return base;
     });
@@ -745,7 +766,8 @@ class AssistantStore {
       role: 'assistant',
       content,
       timestamp: Date.now(),
-      isStreaming
+      isStreaming,
+      streamState: isStreaming ? 'active' : 'completed',
     };
     this.messages = [...this.messages, message];
     this.enforceInMemoryBudget();
@@ -769,7 +791,13 @@ class AssistantStore {
       // Set endTime when streaming ends
       const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
       const contentParts = this.normalizeContentParts(msg.contentParts, content);
-      return { ...msg, content, isStreaming, endTime, contentParts };
+      const streamState =
+        isStreaming
+          ? 'active'
+          : msg.streamState === 'interrupted' || msg.streamState === 'cancelled' || msg.streamState === 'failed'
+            ? msg.streamState
+            : 'completed';
+      return { ...msg, content, isStreaming, endTime, contentParts, streamState };
     });
 
     // Also update in currentConversation
@@ -780,7 +808,13 @@ class AssistantStore {
           if (msg.id !== id) return msg;
           const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
           const contentParts = this.normalizeContentParts(msg.contentParts, content);
-          return { ...msg, content, isStreaming, endTime, contentParts };
+          const streamState =
+            isStreaming
+              ? 'active'
+              : msg.streamState === 'interrupted' || msg.streamState === 'cancelled' || msg.streamState === 'failed'
+                ? msg.streamState
+                : 'completed';
+          return { ...msg, content, isStreaming, endTime, contentParts, streamState };
         })
       };
     }
@@ -1084,6 +1118,8 @@ class AssistantStore {
         contextMentions: msg.contextMentions,
         isSummary: msg.isSummary || undefined, // Bug fix: was missing!
         endTime: msg.endTime,
+        streamState: msg.streamState,
+        streamIssue: msg.streamIssue,
       });
 
       await chatHistoryStore.saveMessage(convId, {
@@ -1120,7 +1156,13 @@ class AssistantStore {
           .map(p => (p as { type: 'text'; text: string }).text)
           .join('');
 
-        return { ...msg, contentParts: newParts, content: fullContent, isStreaming };
+        return {
+          ...msg,
+          contentParts: newParts,
+          content: fullContent,
+          isStreaming,
+          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+        };
       }
       return msg;
     });
@@ -1258,7 +1300,8 @@ class AssistantStore {
             ...msg,
             contentParts: content ? [{ type: 'text' as const, text: content }] : [],
             content,
-            isStreaming
+            isStreaming,
+            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
           };
         }
 
@@ -1268,16 +1311,49 @@ class AssistantStore {
             ...msg,
             contentParts: content ? [...parts, { type: 'text' as const, text: content }] : parts,
             content,
-            isStreaming
+            isStreaming,
+            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
           };
         }
 
         const idx = parts.length - 1 - lastTextIndex;
         const newParts = parts.map((p, i) => (i === idx && p.type === 'text') ? { type: 'text' as const, text: content } : p);
-        return { ...msg, contentParts: newParts, content, isStreaming };
+        return {
+          ...msg,
+          contentParts: newParts,
+          content,
+          isStreaming,
+          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+        };
       }
       return msg;
     });
+  }
+
+  markAssistantMessageStreamState(
+    messageId: string,
+    streamState: 'interrupted' | 'cancelled' | 'failed' | 'completed',
+    streamIssue?: string,
+  ): void {
+    const applyPatch = (msg: AssistantMessage): AssistantMessage =>
+      msg.id === messageId
+        ? {
+            ...msg,
+            isStreaming: false,
+            endTime: msg.endTime ?? Date.now(),
+            streamState,
+            streamIssue: streamIssue ?? msg.streamIssue,
+          }
+        : msg;
+
+    this.messages = this.messages.map(applyPatch);
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(applyPatch),
+      };
+    }
+    this.persistMessageToHistory(messageId, true);
   }
 
   /**
@@ -1586,11 +1662,41 @@ class AssistantStore {
       this.abortController = null;
     }
     this.isStreaming = false;
+    if (this.agentLoopState !== 'completed' && this.agentLoopState !== 'failed') {
+      this.agentLoopState = 'cancelled';
+    }
 
     // Mark any streaming messages as complete
     this.messages = this.messages.map(msg =>
-      msg.isStreaming ? { ...msg, isStreaming: false } : msg
+      msg.isStreaming
+        ? {
+            ...msg,
+            isStreaming: false,
+            streamState: msg.role === 'assistant' ? 'cancelled' : msg.streamState,
+            streamIssue: msg.role === 'assistant' ? (msg.streamIssue ?? 'User cancelled streaming') : msg.streamIssue,
+            endTime: msg.endTime ?? Date.now(),
+          }
+        : msg
     );
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map((msg) =>
+          msg.isStreaming
+            ? {
+                ...msg,
+                isStreaming: false,
+                streamState: msg.role === 'assistant' ? 'cancelled' : msg.streamState,
+                streamIssue:
+                  msg.role === 'assistant'
+                    ? (msg.streamIssue ?? 'User cancelled streaming')
+                    : msg.streamIssue,
+                endTime: msg.endTime ?? Date.now(),
+              }
+            : msg,
+        ),
+      };
+    }
 
     // Cancel any running tool calls
     this.activeToolCalls = this.activeToolCalls.map(tc =>
@@ -1598,6 +1704,48 @@ class AssistantStore {
         ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
         : tc
     );
+
+    // Force-close any active thinking blocks so UI never gets stuck on "Thinking..."
+    for (const msg of this.messages) {
+      if (msg.role === 'assistant') {
+        this.finalizeThinking(msg.id);
+      }
+    }
+  }
+
+  setAgentLoopState(state: AgentLoopState, meta: Record<string, unknown> = {}): void {
+    const previous = this.agentLoopState;
+    const previousTerminal =
+      previous === 'completed' || previous === 'failed' || previous === 'cancelled';
+    const nextTerminal =
+      state === 'completed' || state === 'failed' || state === 'cancelled';
+
+    // Once terminal, ignore non-terminal transitions from stale async work.
+    if (previousTerminal && !nextTerminal) {
+      console.debug('[AssistantStore] Ignoring stale loop state transition', {
+        from: previous,
+        to: state,
+        meta,
+      });
+      return;
+    }
+
+    if (!isValidLoopTransition(previous, state)) {
+      console.warn('[AssistantStore] Illegal loop state transition', { from: previous, to: state, meta });
+      if (!(state === 'failed' || state === 'cancelled' || state === 'running')) {
+        state = 'failed';
+        meta = { ...meta, illegalTransition: { from: previous, to: state } };
+      }
+    }
+    this.agentLoopState = state;
+    this.agentLoopMeta = { ...meta, at: Date.now() };
+    agentTelemetryStore.record({
+      type: 'agent.loop.state_transition',
+      timestamp: Date.now(),
+      from: previous,
+      to: state,
+      meta,
+    });
   }
 
   // Clear conversation
@@ -2063,6 +2211,7 @@ chatHistoryStore.setActiveConversationDeletedHandler(() => {
 
 // Export constants for use in components
 export { MIN_PANEL_WIDTH, MAX_PANEL_WIDTH };
+export type { AgentLoopState } from './assistant/loop-state';
 export {
   CONTEXT_LIMITS,
   getModelContextLimits,

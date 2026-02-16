@@ -115,8 +115,8 @@ class BrowserStore {
   private pendingBounds: BrowserBounds | null = null;
   private webviewCreated = false;
   private isCreatingWebview = false;
+  private isTogglingSelectMode = false;
   private lastSelectAt = 0;
-  private lastPickerToastAt = 0;
 
   private static STORAGE_KEY = 'volt-browser-url';
   private static BOOKMARKS_KEY = 'volt-browser-bookmarks';
@@ -208,6 +208,7 @@ class BrowserStore {
     this.stopLiveReload();
 
     try {
+      await this.disableSelectModeAfterPick();
       await invoke('browser_close');
     } catch (err) {
       console.error('[Browser] Close error:', err);
@@ -241,6 +242,8 @@ class BrowserStore {
         await invoke('browser_show');
         this.lastBounds = null;
       } else {
+        await this.disableSelectModeAfterPick();
+        this.mode = 'normal';
         await invoke('browser_hide');
       }
     } catch (err) {
@@ -545,12 +548,19 @@ class BrowserStore {
   // Element selection
   async toggleSelectMode(): Promise<void> {
     if (!this.isOpen) return;
+    if (this.isTogglingSelectMode) return;
+    this.isTogglingSelectMode = true;
     const newMode = this.mode === 'select' ? 'normal' : 'select';
     
     try {
       if (newMode === 'select') {
+        // Reset stale picker/highlight state before enabling
+        await this.disableSelectModeAfterPick();
+
         // Try CDP-based element picker first (more reliable)
         try {
+          const { connectCdpToBrowser } = await import('$lib/services/browser');
+          await connectCdpToBrowser(this.url);
           await invoke('cdp_enable_element_picker');
           this.mode = 'select';
         } catch (cdpErr) {
@@ -567,6 +577,8 @@ class BrowserStore {
       }
     } catch (err) {
       console.error('[Browser] Toggle select mode failed:', err);
+    } finally {
+      this.isTogglingSelectMode = false;
     }
   }
 
@@ -581,8 +593,10 @@ class BrowserStore {
 
   clearSelection(): void {
     this.selectedElement = null;
+    this.mode = 'normal';
     // Clear the highlight in the browser
     this.clearSelectionHighlight();
+    void this.disableSelectModeAfterPick();
   }
 
   private async disableSelectModeAfterPick(): Promise<void> {
@@ -797,17 +811,9 @@ class BrowserStore {
       const now = Date.now();
       if (now - this.lastSelectAt < 200) return;
       this.lastSelectAt = now;
-      const wasSelecting = this.mode === 'select';
       this.selectedElement = event.payload;
       this.mode = 'normal'; // Auto-exit select mode when element is picked
       void this.disableSelectModeAfterPick();
-      if (wasSelecting && now - this.lastPickerToastAt > 1200) {
-        this.lastPickerToastAt = now;
-        void (async () => {
-          const { showToast } = await import('./toast.svelte');
-          showToast({ message: 'Picker off', type: 'info' });
-        })();
-      }
     });
     this.unlisteners.push(unlistenSelect);
 

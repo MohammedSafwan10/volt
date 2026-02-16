@@ -20,11 +20,55 @@ class TerminalStore {
 	private aiCreatePromise: Promise<TerminalSession | null> | null = null;
 	private sessionLabels = $state<Record<string, string>>({});
 	private aiTerminalId = $state<string | null>(null);
+	private syncPromise: Promise<void> | null = null;
+	private startupSyncComplete = false;
 
 	constructor() {
-		this.syncWithBackend();
+		void this.syncWithBackendRetry(5, 250);
 		// Start terminal problem matcher (background service)
 		void terminalProblemMatcher.start();
+	}
+
+	private async syncWithBackendRetry(
+		maxAttempts = 3,
+		baseDelayMs = 200,
+	): Promise<void> {
+		if (this.syncPromise) {
+			await this.syncPromise;
+			return;
+		}
+
+		this.syncPromise = (async () => {
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				try {
+					await this.syncWithBackend();
+					// If we found sessions, no need for more retries.
+					if (this.sessions.length > 0) break;
+				} catch (err) {
+					console.warn('[TerminalStore] syncWithBackend attempt failed:', attempt, err);
+				}
+
+				if (attempt < maxAttempts) {
+					const delay = baseDelayMs * attempt;
+					await new Promise((resolve) => setTimeout(resolve, delay));
+				}
+			}
+		})();
+
+		try {
+			await this.syncPromise;
+		} finally {
+			this.syncPromise = null;
+			this.startupSyncComplete = true;
+		}
+	}
+
+	async ensureSynced(): Promise<void> {
+		if (this.startupSyncComplete) {
+			await this.syncWithBackend();
+			return;
+		}
+		await this.syncWithBackendRetry(4, 250);
 	}
 
 	private attachSession(session: TerminalSession, makeActive = false): void {
@@ -66,6 +110,10 @@ class TerminalStore {
 		}
 
 		this.createPromise = (async () => {
+			// Before creating a new session, reconcile with backend in case we are
+			// just after reload and missed rehydration.
+			await this.ensureSynced();
+
 			// Wait for project restoration to finish if it's currently loading
 			// and no explicit cwd was provided.
 			if (!cwd) {
