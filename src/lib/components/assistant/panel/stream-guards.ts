@@ -10,6 +10,39 @@ export function createStreamGuards(): StreamGuards {
   let repeatedChunkCount = 0;
   let lastLine = '';
   let repeatedLineCount = 0;
+  const paragraphWindow: string[] = [];
+  const paragraphCounts = new Map<string, number>();
+  const pairWindow: string[] = [];
+  const pairCounts = new Map<string, number>();
+
+  const normalizeForSignature = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[`*_>#-]/g, ' ')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const trackSignature = (
+    signature: string,
+    window: string[],
+    counts: Map<string, number>,
+    maxWindow: number,
+  ): number => {
+    if (!signature) return 0;
+    window.push(signature);
+    counts.set(signature, (counts.get(signature) ?? 0) + 1);
+
+    if (window.length > maxWindow) {
+      const removed = window.shift();
+      if (removed) {
+        const next = (counts.get(removed) ?? 1) - 1;
+        if (next <= 0) counts.delete(removed);
+        else counts.set(removed, next);
+      }
+    }
+    return counts.get(signature) ?? 0;
+  };
 
   const shouldAbortForLeak = (text: string): boolean => {
     const lower = text.toLowerCase();
@@ -54,10 +87,34 @@ export function createStreamGuards(): StreamGuards {
 
     if (repeatedLineCount >= 6) return true;
 
-    const lower = current.toLowerCase();
-    if (lower.startsWith("i'll also") || lower.startsWith('i will also')) {
-      const count = (text.toLowerCase().match(/\bi\s*'?ll\s+also\b/g) ?? []).length;
-      if (count >= 10) return true;
+    const paragraphs = text
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    // Generic anti-loop guard: if the same paragraph keeps reappearing in a short window,
+    // treat as degenerate stream regardless of specific wording.
+    const lastParagraph = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : '';
+    const paragraphSignature = normalizeForSignature(lastParagraph).slice(0, 220);
+    if (paragraphSignature.length >= 60) {
+      const seen = trackSignature(
+        paragraphSignature,
+        paragraphWindow,
+        paragraphCounts,
+        24,
+      );
+      if (seen >= 4) return true;
+    }
+
+    // Catch two-paragraph loop patterns (A+B repeated) that avoid single-line repeats.
+    if (paragraphs.length >= 2) {
+      const pairSignature = normalizeForSignature(
+        `${paragraphs[paragraphs.length - 2]}\n${paragraphs[paragraphs.length - 1]}`,
+      ).slice(0, 320);
+      if (pairSignature.length >= 120) {
+        const seen = trackSignature(pairSignature, pairWindow, pairCounts, 16);
+        if (seen >= 3) return true;
+      }
     }
 
     return false;
@@ -68,6 +125,10 @@ export function createStreamGuards(): StreamGuards {
     repeatedChunkCount = 0;
     lastLine = '';
     repeatedLineCount = 0;
+    paragraphWindow.length = 0;
+    paragraphCounts.clear();
+    pairWindow.length = 0;
+    pairCounts.clear();
   };
 
   return {

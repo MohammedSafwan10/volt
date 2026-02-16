@@ -25,6 +25,43 @@ export interface NoToolOutcomeInput {
 
 export type NoToolOutcomeDecision = 'continue' | 'return' | 'complete';
 
+function normalizeForDedupe(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeRepeatedTail(existing: string, incoming: string): string {
+  const trimmedIncoming = incoming.trim();
+  if (!trimmedIncoming) return "";
+  const normalizedExisting = normalizeForDedupe(existing);
+  const normalizedIncoming = normalizeForDedupe(trimmedIncoming);
+  if (!normalizedExisting || !normalizedIncoming) return trimmedIncoming;
+
+  // If the new segment is already the tail of what we have, don't append it again.
+  if (normalizedExisting.endsWith(normalizedIncoming)) {
+    return "";
+  }
+
+  // If incoming is composed of repeated lines, collapse contiguous duplicates.
+  const lines = trimmedIncoming
+    .split(/\n{2,}/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length <= 1) return trimmedIncoming;
+
+  const dedupedLines: string[] = [];
+  for (const line of lines) {
+    const previous = dedupedLines[dedupedLines.length - 1];
+    if (previous && normalizeForDedupe(previous) === normalizeForDedupe(line)) {
+      continue;
+    }
+    dedupedLines.push(line);
+  }
+  return dedupedLines.join("\n\n");
+}
+
 function looksLikeIncompleteAction(iterationContent: string): boolean {
   const incompleteActionPatterns = [
     /\b(i'll|i will|let me|first,?\s*i'll|first,?\s*i will)\s+(update|edit|modify|change|fix|add|create|search|find|read|write|replace)/i,
@@ -133,7 +170,8 @@ export function handleNoToolOutcome(
     return { decision: 'continue', state: next };
   }
 
-  next.fullContent += input.iterationContent;
+  const appendSegment = dedupeRepeatedTail(next.fullContent, input.iterationContent);
+  next.fullContent += appendSegment;
   input.logOutput(`Agent: Task completed successfully after ${input.iteration} iterations.`);
   input.updateAssistantMessage(next.fullContent);
   return { decision: 'complete', state: next };

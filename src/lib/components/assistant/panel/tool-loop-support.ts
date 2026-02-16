@@ -36,9 +36,14 @@ export function addToolResultsToConversation(
     data?: Record<string, unknown>;
   }) => void,
 ): void {
+  const resultById = new Map<string, ToolResultEntry>();
   for (const result of results) {
-    const toolCall = toolCalls.find((entry) => entry.id === result.id);
-    if (!toolCall) continue;
+    resultById.set(result.id, result);
+  }
+
+  for (const toolCall of toolCalls) {
+    const result = resultById.get(toolCall.id);
+    if (!result) continue;
 
     addToolMessage({
       id: result.id,
@@ -47,7 +52,10 @@ export function addToolResultsToConversation(
       status: result.result.success ? 'completed' : 'failed',
       output: result.result.output,
       error: result.result.error,
-      meta: result.result.meta,
+      meta: {
+        ...(result.result.meta ?? {}),
+        warnings: result.result.warnings ?? [],
+      },
       data: result.result.data,
     });
   }

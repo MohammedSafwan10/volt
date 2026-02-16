@@ -34,6 +34,9 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
             error: tc.error ?? '',
             meta: tc.meta ?? {},
             data: tc.data,
+            warnings: Array.isArray((tc.meta as any)?.warnings)
+              ? (tc.meta as any).warnings
+              : [],
           },
         };
         out.push({

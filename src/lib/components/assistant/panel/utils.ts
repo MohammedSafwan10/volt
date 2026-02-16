@@ -77,7 +77,9 @@ export function isVerificationTool(
     toolName === 'browser_get_errors' ||
     toolName === 'browser_get_console_logs' ||
     toolName === 'browser_get_summary' ||
-    toolName === 'browser_get_network_requests'
+    toolName === 'browser_get_network_requests' ||
+    toolName === 'browser_get_application_storage' ||
+    toolName === 'browser_get_security_report'
   ) {
     return true;
   }
