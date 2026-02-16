@@ -83,6 +83,57 @@ function extractPort(command: string): number | null {
   return null;
 }
 
+function normalizeLoopbackHost(url: string): string {
+  return url
+    .replace('0.0.0.0', 'localhost')
+    .replace('[::]', 'localhost')
+    .replace('::1', 'localhost');
+}
+
+function extractLocalhostUrls(text: string): string[] {
+  if (!text) return [];
+  const urls = new Set<string>();
+
+  const direct = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]|::1)(?::\d{2,5})?(?:\/[^\s"'<>]*)?/gi) || [];
+  for (const url of direct) urls.add(normalizeLoopbackHost(url));
+
+  const hostPort = text.match(/\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]|::1):\d{2,5}(?:\/[^\s"'<>]*)?/gi) || [];
+  for (const hp of hostPort) urls.add(normalizeLoopbackHost(`http://${hp}`));
+
+  return [...urls];
+}
+
+function inferDefaultDevPort(command: string): number | null {
+  const cmd = command.toLowerCase();
+  if (/\bnext\s+dev\b/.test(cmd)) return 3000;
+  if (/\breact-scripts\s+start\b/.test(cmd)) return 3000;
+  if (/\bng\s+serve\b/.test(cmd)) return 4200;
+  if (/\bnuxt\s+dev\b/.test(cmd)) return 3000;
+  if (/\bastro\s+dev\b/.test(cmd)) return 4321;
+  if (/\bvite\b/.test(cmd) || /\b(?:npm|pnpm|yarn)\s+(run\s+)?dev\b/.test(cmd)) return 5173;
+  return null;
+}
+
+function inferDevServerUrl(command: string): string | null {
+  const explicit = extractPort(command);
+  if (explicit) return `http://localhost:${explicit}`;
+  const inferred = inferDefaultDevPort(command);
+  return inferred ? `http://localhost:${inferred}` : null;
+}
+
+function updateProcessDetectedUrl(process: BackgroundProcess, output: string): BackgroundProcess {
+  const detectedFromOutput = extractLocalhostUrls(output)[0];
+  const detectedUrl =
+    detectedFromOutput ||
+    process.detectedUrl ||
+    inferDevServerUrl(process.command) ||
+    undefined;
+
+  const next: BackgroundProcess = { ...process, detectedUrl };
+  processStore.set(process.processId, next);
+  return next;
+}
+
 function findRunningDevServer(command: string, cwd?: string): BackgroundProcess | null {
   const normalized = normalizeCommand(command);
   const desiredPort = extractPort(command);
@@ -108,7 +159,8 @@ function trackDetachedProcess(command: string, cwd: string | undefined, terminal
     startTime: Date.now(),
     status: 'running',
     terminalId,
-    port: extractPort(command) ?? undefined
+    port: extractPort(command) ?? undefined,
+    detectedUrl: inferDevServerUrl(command) ?? undefined,
   };
   processes.set(processId, proc);
 
@@ -164,9 +216,13 @@ interface BackgroundProcess {
   status: 'running' | 'stopped' | 'unknown';
   terminalId?: string;
   port?: number;
+  detectedUrl?: string;
 }
 
 const STORAGE_KEY = 'volt.ai.processes';
+const STALE_ORPHAN_PROCESS_AGE_MS = 2 * 60 * 60 * 1000; // 2h
+const STOPPED_PROCESS_RETENTION_MS = 24 * 60 * 60 * 1000; // 24h
+const MAX_TRACKED_PROCESSES = 200;
 
 class ProcessStore {
   private _processes = new Map<number, BackgroundProcess>();
@@ -187,14 +243,9 @@ class ProcessStore {
       this._nextProcessId = parsed.nextId || 1;
 
       for (const proc of parsed.processes) {
-        const terminalExists = proc.terminalId
-          ? terminalStore.sessions.some(s => s.id === proc.terminalId)
-          : false;
-
-        this._processes.set(proc.processId, {
-          ...proc,
-          status: terminalExists ? proc.status : 'unknown'
-        });
+        // Do not infer unknown/running here because terminal sessions may not be
+        // hydrated yet at module init; reconciliation is done lazily per tool call.
+        this._processes.set(proc.processId, { ...proc });
       }
     } catch {
       // Ignore parse errors, start fresh
@@ -246,6 +297,10 @@ class ProcessStore {
     return this._processes.values();
   }
 
+  entries(): IterableIterator<[number, BackgroundProcess]> {
+    return this._processes.entries();
+  }
+
   nextProcessId(): number {
     const id = this._nextProcessId++;
     this.save();
@@ -263,6 +318,57 @@ const processes = {
   get size() { return processStore.size; },
   values: () => processStore.values()
 };
+
+async function reconcileTrackedProcesses(): Promise<void> {
+  await terminalStore.syncWithBackend();
+
+  const now = Date.now();
+  const all = processStore.getAll();
+  const liveTerminalIds = new Set(terminalStore.sessions.map((s) => s.id));
+
+  for (const proc of all) {
+    const hasTerminal = proc.terminalId ? liveTerminalIds.has(proc.terminalId) : false;
+    const ageMs = now - proc.startTime;
+
+    if (proc.status === 'running' && !hasTerminal) {
+      // Orphaned running process: likely stale persisted state after reload/crash.
+      // Keep briefly as unknown, then auto-stop.
+      if (ageMs > STALE_ORPHAN_PROCESS_AGE_MS) {
+        processStore.set(proc.processId, { ...proc, status: 'stopped' });
+      } else {
+        processStore.set(proc.processId, { ...proc, status: 'unknown' });
+      }
+      continue;
+    }
+
+    if (proc.status === 'unknown' && hasTerminal) {
+      processStore.set(proc.processId, { ...proc, status: 'running' });
+    }
+  }
+
+  // Prune old stopped entries so the list doesn't grow forever.
+  const sorted = processStore
+    .getAll()
+    .sort((a, b) => b.startTime - a.startTime);
+
+  const keep = new Set<number>();
+  for (const proc of sorted) {
+    const ageMs = now - proc.startTime;
+    const keepByAge =
+      proc.status === 'running' ||
+      proc.status === 'unknown' ||
+      ageMs <= STOPPED_PROCESS_RETENTION_MS;
+    if (keepByAge && keep.size < MAX_TRACKED_PROCESSES) {
+      keep.add(proc.processId);
+    }
+  }
+
+  for (const [id] of processStore.entries()) {
+    if (!keep.has(id)) {
+      processStore.delete(id);
+    }
+  }
+}
 
 // ============================================
 // Tool Handlers
@@ -296,10 +402,16 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
         const running = findRunningDevServer(command, cwd);
         if (running?.terminalId) {
           terminalStore.setActive(running.terminalId);
+          const urlHint = running.detectedUrl ? ` URL: ${running.detectedUrl}.` : '';
           return {
             success: true,
-            output: `Dev server already running (process ${running.processId}) in terminal ${running.terminalId}. Reusing existing server.`,
-            meta: { reused: true, processId: running.processId, terminalId: running.terminalId }
+            output: `Dev server already running (process ${running.processId}) in terminal ${running.terminalId}.${urlHint} Reusing existing server.`,
+            meta: {
+              reused: true,
+              processId: running.processId,
+              terminalId: running.terminalId,
+              detectedUrl: running.detectedUrl,
+            }
           };
         }
       }
@@ -516,7 +628,6 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
 export async function handleStartProcess(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command);
   const cwd = args.cwd ? String(args.cwd) : undefined;
-  const processId = processStore.nextProcessId();
   const blockedReason = getBlockedCommandReason(command);
   if (blockedReason) {
     return {
@@ -530,6 +641,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
   }
 
   try {
+    await reconcileTrackedProcesses();
+
     if (isLikelyDevServer(command)) {
       const running = findRunningDevServer(command, cwd);
       if (running?.terminalId) {
@@ -545,6 +658,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     // Ensure terminal panel is open
     uiStore.openBottomPanelTab('terminal');
 
+    const processId = processStore.nextProcessId();
+
     // Create dedicated terminal for this process
     const session = await getProcessTerminal(processId, cwd);
     const terminalId = session.id;
@@ -557,7 +672,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
       startTime: Date.now(),
       status: 'running',
       terminalId,
-      port: extractPort(command) ?? undefined
+      port: extractPort(command) ?? undefined,
+      detectedUrl: inferDevServerUrl(command) ?? undefined,
     });
 
     // Handle process exit
@@ -590,11 +706,14 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     }
 
     const cleaned = session.getCleanOutputSince(startOffset);
+    const tracked = processStore.get(processId);
+    const updated = tracked ? updateProcessDetectedUrl(tracked, cleaned) : null;
+    const urlHint = updated?.detectedUrl ? `\nDetected URL: ${updated.detectedUrl}` : '';
 
     return {
       success: true,
-      output: `Started process ${processId} in terminal ${terminalId}.\n\nInitial Output:\n${cleaned || '(No output yet)'}`,
-      meta: { processId, terminalId }
+      output: `Started process ${processId} in terminal ${terminalId}.${urlHint}\n\nInitial Output:\n${cleaned || '(No output yet)'}`,
+      meta: { processId, terminalId, detectedUrl: updated?.detectedUrl }
     };
   } catch (err) {
     return { success: false, error: `Failed to start process: ${err}` };
@@ -606,6 +725,7 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
  */
 export async function handleStopProcess(args: Record<string, unknown>): Promise<ToolResult> {
   const processId = Number(args.processId);
+  await reconcileTrackedProcesses();
   const proc = processes.get(processId);
 
   if (!proc) {
@@ -613,18 +733,27 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
   }
 
   try {
+    let terminalClosed = false;
     if (proc.terminalId) {
       const session = terminalStore.sessions.find(s => s.id === proc.terminalId);
       if (session) {
         await session.write('\x03'); // Ctrl+C
+        terminalClosed = true;
       }
       // Kill the terminal entirely
       await terminalStore.killTerminal(proc.terminalId);
+      terminalClosed = true;
     }
 
     proc.status = 'stopped';
     processStore.set(processId, proc);
-    return { success: true, output: `Process ${processId} stopped and terminal closed.` };
+    if (terminalClosed) {
+      return { success: true, output: `Process ${processId} stopped and terminal closed.` };
+    }
+    return {
+      success: true,
+      output: `Process ${processId} marked stopped. Terminal was already gone (stale/orphan record).`
+    };
   } catch (err) {
     return { success: false, error: `Failed to stop process: ${err}` };
   }
@@ -634,19 +763,32 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
  * List all background processes
  */
 export async function handleListProcesses(): Promise<ToolResult> {
+  await reconcileTrackedProcesses();
+
   if (processes.size === 0) {
     return { success: true, output: 'No background processes tracked' };
   }
 
+  const processList = Array.from(processes.values()).sort((a, b) => b.startTime - a.startTime);
+  const runningCount = processList.filter((p) => p.status === 'running').length;
+  const unknownCount = processList.filter((p) => p.status === 'unknown').length;
+  const stoppedCount = processList.filter((p) => p.status === 'stopped').length;
+
   const lines = [];
-  for (const proc of processes.values()) {
+  for (const proc of processList) {
     const elapsed = Date.now() - proc.startTime;
-    lines.push(`[${proc.processId}] ${proc.status.toUpperCase()} - ${proc.command} (${formatDuration(elapsed)})`);
+    const url = proc.detectedUrl ? ` url=${proc.detectedUrl}` : '';
+    const orphan = proc.terminalId && !terminalStore.sessions.some((s) => s.id === proc.terminalId);
+    const orphanTag = orphan ? ' orphan=true' : '';
+    lines.push(
+      `[${proc.processId}] ${proc.status.toUpperCase()} - ${proc.command} (${formatDuration(elapsed)})${url}${orphanTag}`
+    );
   }
 
   return {
     success: true,
-    output: `Background processes:\n${lines.join('\n')}`
+    output: `Background processes (running=${runningCount}, unknown=${unknownCount}, stopped=${stoppedCount}):\n${lines.join('\n')}`,
+    meta: { runningCount, unknownCount, stoppedCount, total: processList.length }
   };
 }
 
@@ -656,6 +798,7 @@ export async function handleListProcesses(): Promise<ToolResult> {
 export async function handleGetProcessOutput(args: Record<string, unknown>): Promise<ToolResult> {
   const processId = Number(args.processId);
   const maxLines = Number(args.maxLines) || 100;
+  await reconcileTrackedProcesses();
   const proc = processes.get(processId);
 
   if (!proc) {
@@ -671,17 +814,19 @@ export async function handleGetProcessOutput(args: Record<string, unknown>): Pro
       return { success: false, error: 'Process terminal no longer exists' };
     }
 
-    const cleaned = session.getRecentCleanOutput(maxLines * 200); // Rough estimate for lines
+    const cleaned = session.getRecentCleanOutput(maxLines * 400); // Larger window for URL recovery
     const lines = cleaned.split('\n');
     const recent = lines.slice(-maxLines).join('\n');
+    const updated = updateProcessDetectedUrl(proc, cleaned);
 
     const { text, truncated } = truncateOutput(recent);
+    const urlHint = updated.detectedUrl ? `\n\nDetected URL: ${updated.detectedUrl}` : '';
 
     return {
       success: true,
-      output: text || '(No output yet)',
+      output: (text || '(No output yet)') + urlHint,
       truncated,
-      meta: { processId, status: proc.status }
+      meta: { processId, status: updated.status, detectedUrl: updated.detectedUrl }
     };
   } catch (err) {
     return { success: false, error: `Failed to get output: ${extractErrorMessage(err)}` };
@@ -753,6 +898,7 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
   const waitSeconds = typeof args.wait === 'number' ? Math.min(Math.max(0, args.wait), 60) : 0;
   const sinceOffset = typeof args.since === 'number' ? Math.max(0, args.since) : 0;
   const maxLines = Number(args.maxLines) || 200;
+  await reconcileTrackedProcesses();
 
   const proc = processes.get(processId);
   if (!proc) {
@@ -772,11 +918,11 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
   }
 
   // Helper: get output since offset
-  const getOutput = (): { text: string; newOffset: number } => {
-    const fullOutput = session.getRecentCleanOutput(maxLines * 200);
+  const getOutput = (): { text: string; newOffset: number; fullOutput: string } => {
+    const fullOutput = session.getRecentCleanOutput(maxLines * 400);
     const sliced = sinceOffset > 0 ? fullOutput.slice(sinceOffset) : fullOutput;
     const lines = sliced.split('\n').slice(-maxLines).join('\n');
-    return { text: lines, newOffset: sinceOffset + sliced.length };
+    return { text: lines, newOffset: sinceOffset + sliced.length, fullOutput };
   };
 
   // If wait > 0, poll for new output or process exit
@@ -800,14 +946,18 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
   }
 
   // Get final output
-  const { text, newOffset } = getOutput();
+  const { text, newOffset, fullOutput } = getOutput();
+  const updated = updateProcessDetectedUrl(proc, fullOutput);
   const elapsed = Date.now() - proc.startTime;
 
-  let output = `Process ${processId} (${proc.command}): ${proc.status.toUpperCase()} (${formatDuration(elapsed)})`;
+  let output = `Process ${processId} (${proc.command}): ${updated.status.toUpperCase()} (${formatDuration(elapsed)})`;
   if (text.trim()) {
     output += `\n\n${text}`;
   } else {
     output += '\n\n(No new output)';
+  }
+  if (updated.detectedUrl) {
+    output += `\n\nDetected URL: ${updated.detectedUrl}`;
   }
 
   return {
@@ -815,7 +965,8 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
     output,
     meta: {
       processId,
-      status: proc.status,
+      status: updated.status,
+      detectedUrl: updated.detectedUrl,
       offset: newOffset,
       elapsed,
     }

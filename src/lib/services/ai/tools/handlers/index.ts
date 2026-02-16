@@ -59,6 +59,11 @@ export {
   handleGetToolMetrics
 } from './diagnostics';
 
+// Workflow tools
+export {
+  handleAttemptCompletion
+} from './workflow';
+
 // LSP Code Intelligence tools
 export {
   handleLspGoToDefinition,
@@ -78,6 +83,11 @@ export {
   browser_get_performance,
   browser_get_selected_element,
   browser_get_summary,
+  browser_get_application_storage,
+  browser_get_security_report,
+  browser_propose_action,
+  browser_preview_action,
+  browser_execute_action,
   browser_screenshot,
   browser_navigate,
   browser_click,
@@ -107,11 +117,15 @@ import {
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
 function browserResult(result: unknown, success = true, error?: string): ToolResult {
+  const warnings =
+    result && typeof result === 'object' && Array.isArray((result as any).warnings)
+      ? ((result as any).warnings as unknown[]).filter((item): item is string => typeof item === 'string')
+      : [];
   const output =
     typeof result === 'string'
       ? result
       : JSON.stringify(result, null, 2);
-  return { success, output, data: result, error };
+  return { success, output, data: result, error, warnings };
 }
 
 export const toolHandlers: Record<string, ToolHandler> = {
@@ -163,6 +177,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   // Diagnostics
   'get_diagnostics': (args) => import('./diagnostics').then(m => m.handleGetDiagnostics(args)),
   'get_tool_metrics': () => import('./diagnostics').then(m => m.handleGetToolMetrics()),
+  'attempt_completion': (args) => import('./workflow').then(m => m.handleAttemptCompletion(args)),
 
   // LSP Code Intelligence
   'lsp_go_to_definition': (args) => import('./lsp').then(m => m.handleLspGoToDefinition(args)),
@@ -175,9 +190,15 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'browser_get_console_logs': (args) => import('./browser').then(m => m.browser_get_console_logs(args as any).then(r => browserResult(r, true))),
   'browser_get_errors': (args) => import('./browser').then(m => m.browser_get_errors(args as any).then(r => browserResult(r, true))),
   'browser_get_network_requests': (args) => import('./browser').then(m => m.browser_get_network_requests(args as any).then(r => browserResult(r, true))),
-  'browser_get_performance': () => import('./browser').then(m => m.browser_get_performance().then(r => browserResult(r, true))),
+  'browser_get_network_request_details': (args) => import('./browser').then(m => m.browser_get_network_request_details(args as any).then(r => browserResult(r, true))),
+  'browser_get_performance': (args) => import('./browser').then(m => m.browser_get_performance(args as any).then(r => browserResult(r, true))),
   'browser_get_selected_element': () => import('./browser').then(m => m.browser_get_selected_element().then(r => browserResult(r, true))),
   'browser_get_summary': () => import('./browser').then(m => m.browser_get_summary().then(r => browserResult(r, true))),
+  'browser_get_application_storage': (args) => import('./browser').then(m => m.browser_get_application_storage(args as any).then(r => browserResult(r, true))),
+  'browser_get_security_report': (args) => import('./browser').then(m => m.browser_get_security_report(args as any).then(r => browserResult(r, true))),
+  'browser_propose_action': (args) => import('./browser').then(m => m.browser_propose_action(args as any).then(r => browserResult(r, true))),
+  'browser_preview_action': (args) => import('./browser').then(m => m.browser_preview_action(args as any).then(r => browserResult(r, r.success))),
+  'browser_execute_action': (args) => import('./browser').then(m => m.browser_execute_action(args as any).then(r => browserResult(r, r.success))),
   'browser_navigate': (args) => import('./browser').then(m => m.browser_navigate(args as any).then(r => browserResult(r, r.success, r.error))),
   'browser_click': (args) => import('./browser').then(m => m.browser_click(args as any).then(r => browserResult(r, r.success, r.error))),
   'browser_type': (args) => import('./browser').then(m => m.browser_type(args as any).then(r => browserResult(r, r.success, r.error))),
