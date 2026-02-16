@@ -81,6 +81,8 @@ interface OpenRouterChoice {
   delta?: {
     role?: string;
     content?: string | null;
+    reasoning?: string | null;
+    reasoning_content?: string | null;
     tool_calls?: Array<{
       index: number;
       id?: string;
@@ -455,6 +457,20 @@ export const openRouterProvider: AIProvider = {
 
             if (delta?.content) {
               yield { type: 'content', content: delta.content };
+            }
+
+            // Some OpenRouter models stream reasoning in separate fields.
+            // Surface it as thinking so UI does not appear "stuck" while reasoning streams.
+            if (delta?.reasoning) {
+              yield { type: 'thinking', thinking: delta.reasoning };
+            }
+            if (delta?.reasoning_content) {
+              yield { type: 'thinking', thinking: delta.reasoning_content };
+            }
+
+            // Some upstream providers only send final message content in stream events.
+            if (!delta?.content && typeof choice.message?.content === 'string' && choice.message.content.length > 0) {
+              yield { type: 'content', content: choice.message.content };
             }
 
             // Handle streaming tool calls

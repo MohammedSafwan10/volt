@@ -433,7 +433,7 @@ After starting, use "get_process_output" to check status.`,
   },
   {
     name: 'list_processes',
-    description: 'List all background processes started by start_process.',
+    description: 'List all background processes started by start_process, including detected localhost URL when available.',
     parameters: {
       type: 'object',
       properties: {}
@@ -444,7 +444,7 @@ After starting, use "get_process_output" to check status.`,
   },
   {
     name: 'get_process_output',
-    description: 'Read output from a background process. Use to check if dev server started successfully or to debug errors.',
+    description: 'Read output from a background process. Also returns detected localhost URL (if present in output) to make browser navigation reliable.',
     parameters: {
       type: 'object',
       properties: {
@@ -539,6 +539,35 @@ Better than get_process_output for monitoring: waits for new output instead of r
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
   },
+  {
+    name: 'get_file_info',
+    description: 'Get file metadata (exists, type, size, modified time).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File or directory path' }
+      },
+      required: ['path']
+    },
+    category: 'workspace_read',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'attempt_completion',
+    description: 'Declare the task complete with a final user-facing result summary. Agent mode loop exits only after this succeeds.',
+    parameters: {
+      type: 'object',
+      properties: {
+        result: { type: 'string', description: 'Final user-facing result in plain language' },
+        summary: { type: 'string', description: 'Optional short summary for completion metadata' }
+      },
+      required: ['result']
+    },
+    category: 'diagnostics',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
 
   // ============================================
   // BROWSER DEVTOOLS (AI can access browser data via CDP)
@@ -579,11 +608,32 @@ Better than get_process_output for monitoring: waits for new output instead of r
       type: 'object',
       properties: {
         limit: { type: 'number', description: 'Max requests to return (default: 50)' },
+        offset: { type: 'number', description: 'Result offset for pagination (default: 0)' },
         method: { type: 'string', description: 'Filter by HTTP method (GET, POST, etc.)' },
+        method_in: { type: 'array', items: { type: 'string' }, description: 'Filter by multiple methods' },
         status: { type: 'number', description: 'Filter by status code' },
+        status_in: { type: 'array', items: { type: 'number' }, description: 'Filter by multiple status codes' },
         failed_only: { type: 'boolean', description: 'Only show failed requests' },
-        url_contains: { type: 'string', description: 'Filter by URL substring' }
+        only_errors: { type: 'boolean', description: 'Alias for failed_only' },
+        url_contains: { type: 'string', description: 'Filter by URL substring' },
+        min_duration_ms: { type: 'number', description: 'Only requests slower than this duration' },
+        sort_by: { type: 'string', description: 'Sort field: timestamp, duration, status, size' },
+        sort_order: { type: 'string', description: 'Sort order: asc, desc' }
       }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_network_request_details',
+    description: 'Get full details for a specific network request id (headers, bodies, timing).',
+    parameters: {
+      type: 'object',
+      properties: {
+        request_id: { type: 'string', description: 'Request id returned by browser_get_network_requests' }
+      },
+      required: ['request_id']
     },
     category: 'browser',
     requiresApproval: false,
@@ -594,7 +644,10 @@ Better than get_process_output for monitoring: waits for new output instead of r
     description: 'Get page performance metrics (load time, paint timing, resource count).',
     parameters: {
       type: 'object',
-      properties: {}
+      properties: {
+        window: { type: 'string', description: 'Capture window: 10s, 30s, 2m, session' },
+        include_events: { type: 'boolean', description: 'Include timeline events' }
+      }
     },
     category: 'browser',
     requiresApproval: false,
@@ -621,6 +674,80 @@ Better than get_process_output for monitoring: waits for new output instead of r
     category: 'browser',
     requiresApproval: false,
     allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_application_storage',
+    description: 'Get application diagnostics: localStorage/sessionStorage/cookies/indexedDB with sensitive values masked by default.',
+    parameters: {
+      type: 'object',
+      properties: {
+        area: { type: 'string', description: 'Filter area: localStorage, sessionStorage, cookies, indexeddb, all' },
+        search: { type: 'string', description: 'Filter by key/name substring' },
+        limit: { type: 'number', description: 'Max rows per section (default: 200)' },
+        include_sensitive: { type: 'boolean', description: 'Include sensitive raw values (default: false)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_get_security_report',
+    description: 'Get security diagnostics report from browser events (mixed content, CORS, CSP, TLS/cert hints).',
+    parameters: {
+      type: 'object',
+      properties: {
+        severity_in: { type: 'array', items: { type: 'string' }, description: 'Filter severities: low, medium, high' },
+        kind_in: { type: 'array', items: { type: 'string' }, description: 'Filter kinds: mixed-content, cors, csp, tls, cert, cookie-policy, other' },
+        limit: { type: 'number', description: 'Max issues to return (default: 200)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_propose_action',
+    description: 'Propose guided browser/devtools actions based on current diagnostics. Returns action ids for preview/execute.',
+    parameters: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', description: 'Optional goal, e.g. "fix network failures"' },
+        max_actions: { type: 'number', description: 'Maximum actions to return (default: 5)' }
+      }
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_preview_action',
+    description: 'Preview impact/risk for an action before execution and issue a short-lived approval token.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action_id: { type: 'string', description: 'Action id returned from browser_propose_action' }
+      },
+      required: ['action_id']
+    },
+    category: 'browser',
+    requiresApproval: false,
+    allowedModes: ['ask', 'plan', 'agent']
+  },
+  {
+    name: 'browser_execute_action',
+    description: 'Execute a previously previewed action. Requires approval token and user approval.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action_id: { type: 'string', description: 'Action id returned from browser_propose_action' },
+        approval_token: { type: 'string', description: 'Token from browser_preview_action' }
+      },
+      required: ['action_id', 'approval_token']
+    },
+    category: 'browser',
+    requiresApproval: true,
+    allowedModes: ['agent']
   },
   {
     name: 'browser_navigate',

@@ -51,6 +51,7 @@ const MUTATING_TOOL_OVERRIDES = new Set([
   'stop_process',
   'send_terminal_input',
   'browser_navigate',
+  'browser_execute_action',
   'browser_click',
   'browser_type',
   'browser_scroll',

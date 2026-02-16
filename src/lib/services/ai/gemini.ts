@@ -20,6 +20,7 @@ import type {
   ToolCall,
   ProviderCapabilities
 } from './types';
+import { invoke, Channel } from '@tauri-apps/api/core';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -32,17 +33,35 @@ function isGemini3Model(model: string): boolean {
   return model.includes('gemini-3');
 }
 
+function isGemini3ProModel(model: string): boolean {
+  return model.includes('gemini-3-pro');
+}
+
 /**
  * Build thinking config based on model series
+ * - Gemini 3 Pro: supports LOW/HIGH only (MINIMAL not supported)
+ * - Gemini 3 Flash: supports MINIMAL/LOW/MEDIUM/HIGH
  * - Gemini 2.5: uses thinkingBudget (0 to disable, -1 for unlimited)
- * - Gemini 3: uses thinkingLevel (HIGH, MEDIUM, LOW, MINIMAL)
  */
 function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThinkingConfig | undefined {
   if (isGemini3Model(model)) {
-    // Gemini 3 series: use thinkingLevel
+    // For Gemini 3, when thinking is "off" in Volt's model selector, omit thinkingConfig.
+    // This avoids INVALID_ARGUMENT on models that don't support MINIMAL (e.g. 3 Pro).
+    // Gemini will use default dynamic reasoning for the model.
+    if (!thinkingEnabled) return undefined;
+
+    // Gemini 3 Pro supports LOW/HIGH only.
+    if (isGemini3ProModel(model)) {
+      return {
+        includeThoughts: true,
+        thinkingLevel: 'HIGH'
+      };
+    }
+
+    // Gemini 3 Flash supports MINIMAL/LOW/MEDIUM/HIGH.
     return {
-      includeThoughts: thinkingEnabled,
-      thinkingLevel: thinkingEnabled ? 'HIGH' : 'MINIMAL'
+      includeThoughts: true,
+      thinkingLevel: 'HIGH'
     };
   }
 
@@ -424,239 +443,179 @@ export const geminiProvider: AIProvider = {
     const { model, thinkingEnabled } = parseGeminiModel(request.model);
     const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
-    const geminiRequest: GeminiRequest = {
-      contents: toGeminiContents(request.messages)
+    const geminiBody = {
+      contents: toGeminiContents(request.messages),
+      generationConfig: {
+        maxOutputTokens: request.maxTokens ?? 8192,
+        stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
+        topK: 40,
+        topP: 0.95
+      } as any,
+      tools: undefined as GeminiTool[] | undefined,
+      toolConfig: undefined as any
     };
 
-    // Add system instruction if provided (camelCase for REST API)
     if (request.systemPrompt) {
-      geminiRequest.systemInstruction = {
+      (geminiBody as GeminiRequest).systemInstruction = {
         parts: [{ text: request.systemPrompt }]
       } as any;
     }
 
-    // Add tools if provided
     if (request.tools && request.tools.length > 0) {
-      geminiRequest.tools = toGeminiTools(request.tools);
-      // Use AUTO mode - model decides when to call functions
-      // This allows the model to respond with text when appropriate
-      // but still use tools when needed
-      geminiRequest.toolConfig = {
+      geminiBody.tools = toGeminiTools(request.tools);
+      geminiBody.toolConfig = {
         functionCallingConfig: {
           mode: 'AUTO'
         }
       };
     }
 
-    // Add generation config with high output limit (Gemini supports up to 65,536)
-    geminiRequest.generationConfig = {
-      maxOutputTokens: request.maxTokens ?? 8192,
-      stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
-      topK: 40,
-      topP: 0.95
-    };
-
     if (request.temperature !== undefined) {
-      geminiRequest.generationConfig.temperature = request.temperature;
+      geminiBody.generationConfig.temperature = request.temperature;
     }
 
-    // Always add thinkingConfig to generationConfig
-    geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
+    geminiBody.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify(geminiRequest),
-      signal
-    });
+    try {
+      const data = await invoke<GeminiResponse>('gemini_proxy', {
+        body: geminiBody,
+        apiKey: apiKey,
+        model: model
+      });
 
-    const data = await response.json() as GeminiResponse;
-
-    if (!response.ok || data.error) {
-      throw new Error(mapGeminiError(data.error));
-    }
-
-    if (!data.candidates || data.candidates.length === 0) {
-      throw new Error('No response from Gemini');
-    }
-
-    const candidate = data.candidates[0];
-    const toolCalls = extractToolCalls(candidate);
-
-    // Extract text content
-    let content = '';
-    for (const part of candidate.content.parts) {
-      if (part.text) {
-        content += part.text;
+      if (data.error) {
+        throw new Error(mapGeminiError(data.error));
       }
-    }
 
-    // Map finish reason
-    let finishReason: ChatResponse['finishReason'] = 'stop';
-    if (toolCalls.length > 0) {
-      finishReason = 'tool_calls';
-    } else if (candidate.finishReason === 'MAX_TOKENS') {
-      finishReason = 'length';
-    }
+      if (!data.candidates || data.candidates.length === 0) {
+        throw new Error('No response from Gemini');
+      }
 
-    return {
-      content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason,
-      usage: data.usageMetadata ? {
-        promptTokens: data.usageMetadata.promptTokenCount,
-        completionTokens: data.usageMetadata.candidatesTokenCount,
-        totalTokens: data.usageMetadata.totalTokenCount
-      } : undefined
-    };
+      const candidate = data.candidates[0];
+      const toolCalls = extractToolCalls(candidate);
+
+      let content = '';
+      if (candidate.content && candidate.content.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.text) {
+            content += part.text;
+          }
+        }
+      }
+
+      let finishReason: ChatResponse['finishReason'] = 'stop';
+      if (toolCalls.length > 0) {
+        finishReason = 'tool_calls';
+      } else if (candidate.finishReason === 'MAX_TOKENS') {
+        finishReason = 'length';
+      }
+
+      return {
+        content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        finishReason,
+        usage: data.usageMetadata ? {
+          promptTokens: data.usageMetadata.promptTokenCount,
+          completionTokens: data.usageMetadata.candidatesTokenCount,
+          totalTokens: data.usageMetadata.totalTokenCount
+        } : undefined
+      };
+    } catch (err: any) {
+      throw new Error(`Gemini error: ${err.message || String(err)}`);
+    }
   },
 
   async *streamChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const { model, thinkingEnabled } = parseGeminiModel(request.model);
-    const url = `${GEMINI_API_BASE}/models/${model}:streamGenerateContent?alt=sse`;
 
-    const geminiRequest: GeminiRequest = {
-      contents: toGeminiContents(request.messages)
+    const geminiBody = {
+      contents: toGeminiContents(request.messages),
+      generationConfig: {
+        maxOutputTokens: request.maxTokens ?? 65536,
+        stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
+        topK: 40,
+        topP: 0.95
+      } as any,
+      tools: undefined as GeminiTool[] | undefined,
+      toolConfig: undefined as any
     };
 
-    // Add system instruction if provided (camelCase for REST API)
     if (request.systemPrompt) {
-      geminiRequest.systemInstruction = {
+      (geminiBody as GeminiRequest).systemInstruction = {
         parts: [{ text: request.systemPrompt }]
       } as any;
     }
 
-    // Add tools if provided
     if (request.tools && request.tools.length > 0) {
-      geminiRequest.tools = toGeminiTools(request.tools);
-      // Use AUTO mode - model decides when to call functions
-      // This allows the model to respond with text when appropriate
-      // but still use tools when needed
-      geminiRequest.toolConfig = {
+      geminiBody.tools = toGeminiTools(request.tools);
+      geminiBody.toolConfig = {
         functionCallingConfig: {
           mode: 'AUTO'
         }
       };
     }
 
-    // Add generation config with high output limit for streaming
-    geminiRequest.generationConfig = {
-      maxOutputTokens: request.maxTokens ?? 65536, // Gemini supports up to 65,536 - use max for agentic tasks
-      stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
-      topK: 40,
-      topP: 0.95
+    if (request.temperature !== undefined) {
+      geminiBody.generationConfig.temperature = request.temperature;
+    }
+
+    geminiBody.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
+
+    const chunkQueue: string[] = [];
+    let resolveNext: ((val: string | null) => void) | null = null;
+    let isDone = false;
+    let error: Error | null = null;
+
+    const onEvent = new Channel<string>();
+    onEvent.onmessage = (message) => {
+      chunkQueue.push(message);
+      if (resolveNext) {
+        const resolve = resolveNext;
+        resolveNext = null;
+        resolve(chunkQueue.shift()!);
+      }
     };
 
-    if (request.temperature !== undefined) {
-      geminiRequest.generationConfig.temperature = request.temperature;
-    }
-
-    // Always add thinkingConfig to generationConfig
-    geminiRequest.generationConfig.thinkingConfig = buildThinkingConfig(model, thinkingEnabled);
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify(geminiRequest),
-      signal
+    const invokePromise = invoke('gemini_proxy_stream', {
+      body: geminiBody,
+      apiKey: apiKey,
+      model: model,
+      onEvent
+    }).then(() => {
+      isDone = true;
+      if (resolveNext) resolveNext(null);
+    }).catch(err => {
+      error = err;
+      if (resolveNext) resolveNext(null);
     });
 
-    if (!response.ok) {
-      // Try to parse error response
-      try {
-        const data = await response.json() as GeminiResponse;
-        yield { type: 'error', error: mapGeminiError(data.error) };
-      } catch {
-        yield { type: 'error', error: `HTTP ${response.status}: ${response.statusText}` };
-      }
-      return;
-    }
-
-    if (!response.body) {
-      yield { type: 'error', error: 'No response body' };
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    // Keepalive timeout - if no data received for this long, consider connection dead
-    // Kiro-style: detect stalled connections
-    const KEEPALIVE_TIMEOUT_MS = 60000; // 60 seconds
-    let lastDataTime = Date.now();
+    const yieldedToolCalls = new Set<string>();
 
     try {
-      let result: ReadableStreamReadResult<Uint8Array> | undefined;
-
       while (true) {
-        try {
-          // Race between read and timeout (Kiro-style keepalive detection)
-          const readPromise = reader.read();
-          const timeoutPromise = new Promise<{ timeout: true }>((resolve) => {
-            const remaining = KEEPALIVE_TIMEOUT_MS - (Date.now() - lastDataTime);
-            if (remaining <= 0) {
-              resolve({ timeout: true });
-            } else {
-              setTimeout(() => resolve({ timeout: true }), remaining);
-            }
-          });
-
-          const raceResult = await Promise.race([readPromise, timeoutPromise]);
-
-          if ('timeout' in raceResult) {
-            console.warn('[Gemini] Stream timeout - no data received for', KEEPALIVE_TIMEOUT_MS, 'ms');
-            yield { type: 'error', error: 'Connection timeout - no response from server.' };
-            break;
-          }
-
-          result = raceResult;
-          lastDataTime = Date.now(); // Reset keepalive timer
-        } catch (err: any) {
-          // Ignore abort errors (user stopped generation)
-          const isAbort = err?.name === 'AbortError' || err?.message?.includes('aborted');
-          if (isAbort) {
-            break;
-          }
-          console.error('[Gemini] Stream read error:', err);
-          yield { type: 'error', error: 'Connection interrupted while streaming.' };
+        let line: string | null = null;
+        if (chunkQueue.length > 0) {
+          line = chunkQueue.shift()!;
+        } else if (!isDone) {
+          line = await new Promise<string | null>(r => { resolveNext = r; });
+        } else {
           break;
         }
 
-        if (!result) break;
-
-        const { done, value } = result;
-
-        if (done) {
-          if (buffer.trim()) {
-            yield* processSSELine(buffer);
-          }
-          yield { type: 'done' };
-          break;
+        if (error) {
+          yield { type: 'error', error: String(error) };
+          return;
         }
 
-        buffer += decoder.decode(value, { stream: true });
+        if (line === null) break;
 
-        // Handle Gemini's SSE format which can use \n\n or \n as separators
-        let newlineIndex: number;
-        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
-
-          if (line) {
-            yield* processSSELine(line);
-          }
-        }
+        yield* processSSELine(line);
       }
     } finally {
-      reader.releaseLock();
+      await invokePromise;
     }
+
+    yield { type: 'done' };
 
     function* processSSELine(line: string): Generator<StreamChunk> {
       if (line.startsWith('data:')) {
@@ -674,9 +633,6 @@ export const geminiProvider: AIProvider = {
           if (data.candidates && data.candidates.length > 0) {
             const candidate = data.candidates[0];
 
-            // Handle block reasons (Safety, etc.)
-            // Note: STOP is a normal finish reason and should NOT terminate the stream early
-            // Only block on actual safety/content issues
             if (candidate.finishReason && ['SAFETY', 'OTHER', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(candidate.finishReason)) {
               yield { type: 'error', error: `Response blocked by Gemini safety filters (${candidate.finishReason}).` };
               return;
@@ -684,8 +640,20 @@ export const geminiProvider: AIProvider = {
 
             if (candidate.content && candidate.content.parts) {
               for (const part of candidate.content.parts) {
-                // Handle function calls first - they may have thoughtSignature but no text
                 if (part.functionCall) {
+                  // Deduplicate tool calls: Gemini sometimes sends the same call multiple times in a stream,
+                  // or the agent might hallucinate identical parallel calls. We only want one unique call per turn.
+                  // We use a simple JSON stream signature.
+                  const signature = JSON.stringify({
+                    n: part.functionCall.name,
+                    a: part.functionCall.args
+                  });
+
+                  if (yieldedToolCalls.has(signature)) {
+                    continue;
+                  }
+                  yieldedToolCalls.add(signature);
+
                   yield {
                     type: 'tool_call',
                     toolCall: {
@@ -695,10 +663,9 @@ export const geminiProvider: AIProvider = {
                       thoughtSignature: part.thoughtSignature
                     }
                   };
-                  continue; // Don't process text for this part
+                  continue;
                 }
 
-                // Skip empty text parts (with or without thought signature)
                 if (!part.text || !part.text.trim()) {
                   continue;
                 }

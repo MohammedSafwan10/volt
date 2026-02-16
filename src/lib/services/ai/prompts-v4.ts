@@ -13,14 +13,22 @@
 import type { AIMode } from '$lib/stores/ai.svelte';
 import { buildAskPrompt } from './prompt-ask';
 import { buildPlanPrompt } from './prompt-plan';
-export type AIProvider = 'gemini' | 'openrouter' | 'anthropic';
+import { buildCategoryToolGuidance } from './tool-guidance';
+import { joinPromptWithBudget } from './prompt-budget';
+export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai';
 
 export interface SystemPromptOptions {
   mode: AIMode;
   provider: AIProvider;
   model: string;
   workspaceRoot?: string;
-  mcpTools?: Array<{ serverId: string; toolName: string; description?: string }>;
+  mcpTools?: Array<{
+    serverId: string;
+    toolName: string;
+    description?: string;
+    required?: string[];
+    params?: string[];
+  }>;
 }
 
 // ============================================================================
@@ -40,6 +48,11 @@ You have FULL access to the user's codebase through tools.
 5. **TOOL HONESTY** - If you call tools, do NOT claim completion until tool results return. Say you are about to run tools, then summarize after results.
 6. **CODE SNIPPETS** - Avoid large code blocks in chat unless the user explicitly asks for code. When tools perform edits, summarize changes instead of pasting full code.
 7. **NO INTENT/RESULT HEADINGS** - Never output "Intent:" or "Result:" headings.
+8. **AGENT COMPLETION CONTRACT** - In agent mode, call \`attempt_completion({ result })\` exactly once when the task is truly done.
+9. **INTENT FIRST, TOOLS SECOND** - Classify user intent before any tool use:
+   - If the user message is meta-conversational/planning (e.g. "what next", "next?", "what should we do now", "explain"), answer directly first with concise next steps.
+   - Do NOT proactively call browser/terminal/file tools for these meta turns unless the user explicitly asks to run/check/change something.
+   - Use tools when the user asks for execution, debugging, verification, or code/file changes.
 
 # COMMUNICATION STYLE
 
@@ -158,7 +171,7 @@ Need to edit?
 Need to monitor process?
 ├── Wait for output? → command_status({ processId, wait: 10 })
 ├── Quick check? → get_process_output
-└── All processes? → list_processes
+└── All processes? → list_processes (prefer entries with detected localhost URL)
 \`\`\`
 `;
 
@@ -568,7 +581,8 @@ You have FULL access to all tools.
 - ONE str_replace per file per turn
 - ONE run_command per response
 - ALWAYS read before edit
-- ALWAYS verify after edit`;
+- ALWAYS verify after edit
+- End agent tasks with attempt_completion({ result: "..." }) once all required work is done`;
 
 // ============================================================================
 // DESIGN EXCELLENCE (Antigravity-inspired)
@@ -740,6 +754,7 @@ export function getSystemPrompt(options: SystemPromptOptions): string {
   const parts: string[] = [
     CORE_IDENTITY,
     TOOL_MASTERY,
+    buildCategoryToolGuidance('agent'),
     LARGE_PROJECT_STRATEGY,
     ANTI_HALLUCINATION,
     EDITING_MASTERY,
@@ -764,23 +779,43 @@ export function getSystemPrompt(options: SystemPromptOptions): string {
     parts.push(buildMcpSection(mcpTools));
   }
 
-  return parts.join('\n\n---\n\n');
+  return joinPromptWithBudget(parts, 24000);
 }
 
-export function buildMcpSection(mcpTools: Array<{ serverId: string; toolName: string; description?: string }>): string {
-  const byServer = new Map<string, Array<{ toolName: string; description?: string }>>();
+export function buildMcpSection(mcpTools: Array<{
+  serverId: string;
+  toolName: string;
+  description?: string;
+  required?: string[];
+  params?: string[];
+}>): string {
+  const byServer = new Map<string, Array<{
+    toolName: string;
+    description?: string;
+    required?: string[];
+    params?: string[];
+  }>>();
   for (const tool of mcpTools) {
     const existing = byServer.get(tool.serverId) || [];
-    existing.push({ toolName: tool.toolName, description: tool.description });
+    existing.push({
+      toolName: tool.toolName,
+      description: tool.description,
+      required: tool.required,
+      params: tool.params,
+    });
     byServer.set(tool.serverId, existing);
   }
 
-  let section = `# MCP TOOLS\n\nYou have access to ${mcpTools.length} external tools from MCP servers. These tools MUST be called with their exact required parameters.\n\n`;
+  let section = `# MCP TOOLS\n\nYou have access to ${mcpTools.length} external tools from MCP servers.\n\nMCP call rules:\n- Use exact tool names and exact parameter keys.\n- Never call an MCP tool with empty arguments when required fields exist.\n- If a required field is unknown, gather it first (search/read/browser), then call once with valid args.\n- Do not repeat the same invalid MCP call.\n\n`;
   for (const [serverId, tools] of byServer) {
     section += `### Server: ${serverId}\n`;
     for (const t of tools) {
       const toolFullName = `mcp_${serverId}_${t.toolName.replace(/-/g, '_')}`;
+      const required = (t.required && t.required.length > 0) ? t.required.join(', ') : 'none';
+      const params = (t.params && t.params.length > 0) ? t.params.join(', ') : 'none';
       section += `- **${toolFullName}**: ${t.description || 'No description provided.'}\n`;
+      section += `  Required: ${required}\n`;
+      section += `  Params: ${params}\n`;
     }
     section += '\n';
   }
@@ -809,6 +844,7 @@ export function isToolAllowedInMode(toolName: string, mode: AIMode): boolean {
     // Browser read-only tools
     'browser_get_console_logs', 'browser_get_errors', 'browser_get_network_requests',
     'browser_get_performance', 'browser_get_selected_element', 'browser_get_summary',
+    'browser_get_application_storage', 'browser_get_security_report',
     'browser_get_element', 'browser_get_elements'
   ];
   if (readOnly.includes(toolName)) return true;

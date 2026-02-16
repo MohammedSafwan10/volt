@@ -80,15 +80,26 @@ export async function* streamChat(
   // Retry configuration (like Kiro)
   const MAX_RETRIES = 3;
   const INITIAL_DELAY_MS = 1000;
+  const STREAM_IDLE_TIMEOUT_MS = 45_000;
 
   let lastError: string | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let hasYieldedContent = false;
+    let retryScheduledFromError = false;
     try {
-      let hasYieldedContent = false;
       let sawDone = false;
+      const streamIterator = provider
+        .streamChat({ ...request, model }, apiKey, signal)[Symbol.asyncIterator]();
 
-      for await (const chunk of provider.streamChat({ ...request, model }, apiKey, signal)) {
+      while (true) {
+        const next = await nextWithIdleTimeout(
+          streamIterator,
+          STREAM_IDLE_TIMEOUT_MS,
+          signal,
+        );
+        if (next.done) break;
+        const chunk = next.value;
         // If we get any content, reset retry state
         if (chunk.type === 'content' || chunk.type === 'tool_call' || chunk.type === 'thinking') {
           hasYieldedContent = true;
@@ -97,15 +108,24 @@ export async function* streamChat(
         // Check for retryable errors
         if (chunk.type === 'error') {
           const errorMsg = chunk.error || 'Unknown error';
+          if (isQuotaExhaustedError(errorMsg)) {
+            yield {
+              type: 'error',
+              error:
+                'Model quota exceeded (429 RESOURCE_EXHAUSTED). Please wait for quota reset or switch model/provider.',
+            };
+            return;
+          }
           const isRetryable = isRetryableError(errorMsg);
 
           // Only retry if we haven't yielded any content yet
           if (isRetryable && !hasYieldedContent && attempt < MAX_RETRIES) {
             lastError = errorMsg;
-            const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+            const delay = getRetryDelayMs(errorMsg, INITIAL_DELAY_MS * Math.pow(2, attempt - 1));
             console.warn(`[AI] Retryable error on attempt ${attempt}, retrying in ${delay}ms:`, errorMsg);
-            await sleep(delay);
-            break; // Break inner loop to retry
+            await sleep(delay, signal);
+            retryScheduledFromError = true;
+            break; // Break inner loop and continue outer retry loop
           }
 
           // Non-retryable or exhausted retries
@@ -122,30 +142,39 @@ export async function* streamChat(
         }
       }
 
-      // Normal successful completion should always include explicit done.
+      // Normal successful completion should include explicit done.
       if (sawDone) {
         return;
       }
 
-      // Stream ended unexpectedly without done/error.
-      // Retry if possible; otherwise surface a clear error.
+      // We already scheduled a retry due to an explicit error chunk.
+      // Avoid logging/triggering a second retry path as "No stream data received".
+      if (retryScheduledFromError) {
+        continue;
+      }
+
+      // If we already received partial content, avoid retrying the whole request.
+      // Retrying after partial output duplicates content in the UI/tool loop.
+      if (hasYieldedContent) {
+        console.warn('[AI] Stream ended without explicit done after partial output; treating as completed.');
+        yield { type: 'done' };
+        return;
+      }
+
+      // No data and no done/error: retry as transient upstream issue.
       if (attempt < MAX_RETRIES) {
         const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
-        const reason = hasYieldedContent
-          ? 'Stream interrupted before completion.'
-          : 'No stream data received.';
+        const reason = 'No stream data received.';
         lastError = reason;
         console.warn(`[AI] Stream ended early on attempt ${attempt}, retrying in ${delay}ms:`, reason);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
       yield {
         type: 'error',
         error:
           lastError ||
-          (hasYieldedContent
-            ? 'Streaming interrupted before completion.'
-            : 'No streaming response received.'),
+          'No streaming response received.',
       };
       return;
 
@@ -157,11 +186,20 @@ export async function* streamChat(
         return; // User cancelled, don't retry
       }
 
-      if (isRetryableError(errorMsg) && attempt < MAX_RETRIES) {
+      if (isQuotaExhaustedError(errorMsg)) {
+        yield {
+          type: 'error',
+          error:
+            'Model quota exceeded (429 RESOURCE_EXHAUSTED). Please wait for quota reset or switch model/provider.',
+        };
+        return;
+      }
+
+      if (isRetryableError(errorMsg) && !hasYieldedContent && attempt < MAX_RETRIES) {
         lastError = errorMsg;
-        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+        const delay = getRetryDelayMs(errorMsg, INITIAL_DELAY_MS * Math.pow(2, attempt - 1));
         console.warn(`[AI] Exception on attempt ${attempt}, retrying in ${delay}ms:`, errorMsg);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
 
@@ -198,11 +236,105 @@ function isRetryableError(error: string): boolean {
   return retryablePatterns.some(pattern => pattern.test(error));
 }
 
+function isQuotaExhaustedError(error: string): boolean {
+  const lower = error.toLowerCase();
+  return (
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota exceeded') ||
+    (lower.includes('status 429') && lower.includes('generativelanguage.googleapis.com'))
+  );
+}
+
 /**
  * Sleep helper for retry delays
  */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('Stream cancelled'));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error('Stream cancelled'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function getRetryDelayMs(error: string, fallbackMs: number): number {
+  // Gemini frequently returns "Please retry in 30.404132517s." or retryDelay fields.
+  const secondsMatch = error.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+  if (secondsMatch?.[1]) {
+    const parsed = Number(secondsMatch[1]);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.max(250, Math.round(parsed * 1000));
+    }
+  }
+
+  const millisMatch = error.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)ms/i);
+  if (millisMatch?.[1]) {
+    const parsed = Number(millisMatch[1]);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.max(250, Math.round(parsed));
+    }
+  }
+
+  return fallbackMs;
+}
+
+async function nextWithIdleTimeout<T>(
+  iterator: AsyncIterator<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<IteratorResult<T>> {
+  if (signal?.aborted) {
+    throw new Error('Stream cancelled');
+  }
+
+  return new Promise<IteratorResult<T>>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    };
+
+    const done = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            done(() =>
+              reject(
+                new Error(`Stream idle timeout after ${Math.round(timeoutMs / 1000)}s`),
+              ),
+            );
+          }, timeoutMs)
+        : null;
+
+    const onAbort = () => {
+      done(() => reject(new Error('Stream cancelled')));
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    iterator
+      .next()
+      .then((value) => done(() => resolve(value)))
+      .catch((err) => done(() => reject(err)));
+  });
 }
 
 /**

@@ -185,6 +185,7 @@ export interface ToolResult {
   truncated?: boolean;
   meta?: Record<string, any>;
   data?: any;
+  warnings?: string[];
   tool?: string;
   code?: string;
   retryable?: boolean;
@@ -197,6 +198,7 @@ export interface CanonicalToolResult {
   error: string;
   data: any;
   meta: Record<string, any>;
+  warnings: string[];
   tool: string;
   code: string;
   retryable: boolean;

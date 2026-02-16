@@ -12,11 +12,18 @@
 
 // Shared sections imported from prompts-v4
 import { ANTI_HALLUCINATION, LARGE_PROJECT_STRATEGY, CONTEXT_AWARENESS, PROVIDER_GEMINI, DESIGN_EXCELLENCE, buildMcpSection } from './prompts-v4';
+import { buildCategoryToolGuidance } from './tool-guidance';
 
 export interface PlanPromptOptions {
     provider: string;
     workspaceRoot?: string;
-    mcpTools?: Array<{ serverId: string; toolName: string; description?: string }>;
+    mcpTools?: Array<{
+        serverId: string;
+        toolName: string;
+        description?: string;
+        required?: string[];
+        params?: string[];
+    }>;
 }
 
 const PLAN_IDENTITY = `# VOLT AI — Plan Mode (Planning Assistant)
@@ -148,6 +155,7 @@ export function buildPlanPrompt(options: PlanPromptOptions): string {
     const parts: string[] = [
         PLAN_IDENTITY,
         PLAN_TOOLS,
+        buildCategoryToolGuidance('plan'),
         PLAN_STRUCTURE,
         LARGE_PROJECT_STRATEGY,
         ANTI_HALLUCINATION,

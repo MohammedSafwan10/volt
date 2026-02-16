@@ -9,18 +9,47 @@
  */
 
 import { projectStore } from '$lib/stores/project.svelte';
-import { getToolByName, isToolAllowed } from './definitions';
+import { getAllToolsForMode, getToolByName, isToolAllowed } from './definitions';
 import { validatePathInWorkspace, type ToolResult, type CanonicalToolResult } from './utils';
 import { toolHandlers } from './handlers';
 import { isMcpTool, executeMcpTool, isMcpToolAutoApproved, getMcpToolInfo } from './handlers/mcp';
 import type { AIMode } from '$lib/stores/ai.svelte';
 import { getToolCapabilities } from './capabilities';
 import { toolObservabilityStore } from '$lib/stores/tool-observability.svelte';
+import { agentTelemetryStore } from '$lib/stores/agent-telemetry.svelte';
 
 // Timeout for tool operations (30 seconds default)
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max
 const TERMINAL_TOOL_DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
+const HIDDEN_HANDLER_NAMES = new Set([
+  'apply_edit',
+  'delete_path',
+  'lsp_go_to_definition',
+  'lsp_find_references',
+  'lsp_get_hover',
+  'lsp_rename_symbol',
+]);
+const TOOL_MAX_ATTEMPTS: Record<string, number> = {
+  browser_get_console_logs: 3,
+  browser_get_errors: 3,
+  browser_get_network_requests: 3,
+  browser_get_network_request_details: 3,
+  browser_get_performance: 3,
+  browser_get_summary: 3,
+  browser_get_application_storage: 3,
+  browser_get_security_report: 3,
+};
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  command: 'run_command',
+  terminal_command: 'run_command',
+  shell_command: 'run_command',
+};
+
+export function normalizeToolName(toolName: string): string {
+  const trimmed = toolName.trim();
+  return TOOL_NAME_ALIASES[trimmed] ?? trimmed;
+}
 
 /**
  * Tool execution options
@@ -54,8 +83,9 @@ export function validateToolCall(
   args: Record<string, unknown>,
   mode: AIMode
 ): ToolValidation {
+  const canonicalToolName = normalizeToolName(toolName);
   // Check if it's an MCP tool
-  if (isMcpTool(toolName)) {
+  if (isMcpTool(canonicalToolName)) {
     // MCP tools are allowed in agent mode only
     if (mode !== 'agent') {
       return {
@@ -66,34 +96,36 @@ export function validateToolCall(
     }
 
     // Check if auto-approved
-    const requiresApproval = !isMcpToolAutoApproved(toolName);
+    const requiresApproval = !isMcpToolAutoApproved(canonicalToolName);
     return { valid: true, requiresApproval };
   }
 
   // Check if tool exists
-  const tool = getToolByName(toolName);
+  const tool = getToolByName(canonicalToolName);
   if (!tool) {
-    return { valid: false, error: `Unknown tool: ${toolName}`, requiresApproval: false };
+    const suggestion = suggestToolName(canonicalToolName, mode);
+    const suffix = suggestion ? ` Did you mean "${suggestion}"?` : '';
+    return { valid: false, error: `Unknown tool: ${canonicalToolName}.${suffix}`, requiresApproval: false };
   }
 
   // Check if tool is allowed in current mode
-  if (!isToolAllowed(toolName, mode)) {
+  if (!isToolAllowed(canonicalToolName, mode)) {
     return {
       valid: false,
-      error: `Tool "${toolName}" not allowed in ${mode} mode`,
+      error: `Tool "${canonicalToolName}" not allowed in ${mode} mode`,
       requiresApproval: false
     };
   }
 
   // Validate required parameters
-  const paramError = validateRequiredParams(toolName, args);
+  const paramError = validateRequiredParams(canonicalToolName, args);
   if (paramError) {
     return { valid: false, error: paramError, requiresApproval: false };
   }
 
   // Validate path is within workspace (if path param exists)
   const workspaceRoot = projectStore.rootPath;
-  const capabilities = getToolCapabilities(toolName);
+  const capabilities = getToolCapabilities(canonicalToolName);
   if (workspaceRoot && capabilities.requiresWorkspacePathValidation) {
     const pathsToValidate = collectPaths(args);
     for (const path of pathsToValidate) {
@@ -251,9 +283,26 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     case 'browser_get_performance':
     case 'browser_get_selected_element':
     case 'browser_get_summary':
+    case 'browser_get_application_storage':
+    case 'browser_get_security_report':
     case 'browser_screenshot':
     case 'browser_scroll':
       return null;
+
+    case 'browser_get_network_request_details':
+      return requireString('request_id');
+
+    case 'browser_propose_action':
+      return null;
+
+    case 'browser_preview_action':
+      return requireString('action_id');
+
+    case 'browser_execute_action': {
+      const actionErr = requireString('action_id');
+      if (actionErr) return actionErr;
+      return requireString('approval_token');
+    }
 
     case 'browser_navigate':
       return requireString('url');
@@ -281,9 +330,110 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     case 'get_tool_metrics':
       return null;
 
+    case 'attempt_completion':
+      return requireString('result');
+
     default:
-      return null;
+      return validateRequiredParamsFromSchema(toolName, args);
   }
+}
+
+function validateRequiredParamsFromSchema(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  const tool = getToolByName(toolName);
+  if (!tool) return null;
+
+  const schema = tool.parameters as Record<string, unknown>;
+  const required = schema.required;
+  if (!Array.isArray(required) || required.length === 0) return null;
+
+  for (const key of required) {
+    if (typeof key !== 'string') continue;
+    const value = args[key];
+    const missingString = typeof value === 'string' && value.trim().length === 0;
+    if (value === undefined || value === null || missingString) {
+      return `Missing "${key}"`;
+    }
+  }
+
+  return null;
+}
+
+export function getToolContractParity(): {
+  missingHandlers: string[];
+  orphanHandlers: string[];
+} {
+  const definedTools = new Set([
+    ...getAllToolsForMode('ask').map((tool) => tool.name),
+    ...getAllToolsForMode('plan').map((tool) => tool.name),
+    ...getAllToolsForMode('agent').map((tool) => tool.name),
+  ]);
+  const handlerTools = new Set(Object.keys(toolHandlers));
+
+  const missingHandlers = [...definedTools]
+    .filter((name) => !handlerTools.has(name) && !isMcpTool(name))
+    .sort();
+
+  const orphanHandlers = [...handlerTools]
+    .filter((name) => !definedTools.has(name) && !HIDDEN_HANDLER_NAMES.has(name) && !isMcpTool(name))
+    .sort();
+
+  return { missingHandlers, orphanHandlers };
+}
+
+function normalizeToolToken(value: string): string {
+  return value.toLowerCase().replace(/[-_\s]+/g, '');
+}
+
+function suggestToolName(toolName: string, mode: AIMode): string | null {
+  const available = getAllToolsForMode(mode).map((tool) => tool.name);
+  if (available.length === 0) return null;
+
+  const normalized = normalizeToolToken(toolName);
+  const exactNormalized = available.find((name) => normalizeToolToken(name) === normalized);
+  if (exactNormalized) return exactNormalized;
+
+  const prefixMatch = available.find((name) => name.startsWith(toolName) || toolName.startsWith(name));
+  if (prefixMatch) return prefixMatch;
+
+  let best: { name: string; distance: number } | null = null;
+  for (const candidate of available) {
+    const distance = levenshteinDistance(normalizeToolToken(candidate), normalized);
+    if (!best || distance < best.distance) {
+      best = { name: candidate, distance };
+    }
+  }
+
+  if (!best) return null;
+  return best.distance <= 6 ? best.name : null;
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix: number[][] = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  for (let i = 0; i < rows; i++) matrix[i][0] = i;
+  for (let j = 0; j < cols; j++) matrix[0][j] = j;
+
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  return matrix[rows - 1][cols - 1];
 }
 
 /**
@@ -294,8 +444,9 @@ export async function executeToolCall(
   args: Record<string, unknown>,
   options: ToolExecutionOptions = {}
 ): Promise<CanonicalToolResult> {
+  const canonicalToolName = normalizeToolName(toolName);
   const { signal, idempotencyKey } = options;
-  const signature = createToolSignature(toolName, args);
+  const signature = createToolSignature(canonicalToolName, args);
 
   purgeExpiredIdempotencyCache();
 
@@ -315,7 +466,7 @@ export async function executeToolCall(
       };
       toolObservabilityStore.record({
         timestamp: Date.now(),
-        toolName,
+        toolName: canonicalToolName,
         signature,
         idempotencyKey,
         durationMs: 0,
@@ -333,7 +484,7 @@ export async function executeToolCall(
     if (inFlight) {
       toolObservabilityStore.record({
         timestamp: Date.now(),
-        toolName,
+        toolName: canonicalToolName,
         signature,
         idempotencyKey,
         durationMs: 0,
@@ -348,7 +499,7 @@ export async function executeToolCall(
     }
   }
 
-  const executionPromise = executeToolCallInternal(toolName, args, {
+  const executionPromise = executeToolCallInternal(canonicalToolName, args, {
     signal,
     idempotencyKey,
     signature,
@@ -412,7 +563,7 @@ async function executeToolCallInternal(
   }
 
   const toolDef = getToolByName(toolName);
-  const maxAttempts = shouldRetryTool(toolName, toolDef) ? 2 : 1;
+  const maxAttempts = getToolMaxAttempts(toolName, toolDef);
   let attempt = 0;
   const execStarted = Date.now();
 
@@ -512,12 +663,16 @@ function normalizeToolResult(
   const output = baseOutput || (success ? '[ok]' : '');
   const code = success ? 'OK' : mapErrorCode(error);
   const retryable = success ? false : isRetryableError(error);
+  const warnings = Array.isArray(result.warnings)
+    ? result.warnings.filter((item): item is string => typeof item === 'string')
+    : [];
 
   return {
     success,
     output,
     error,
     data: result.data ?? null,
+    warnings,
     meta: {
       ...(result.meta ?? {}),
       idempotencyKey: context.idempotencyKey,
@@ -565,6 +720,16 @@ function shouldRetryTool(toolName: string, toolDef: ReturnType<typeof getToolByN
     category === 'diagnostics' ||
     category === 'editor_context' ||
     category === 'browser';
+}
+
+function getToolMaxAttempts(
+  toolName: string,
+  toolDef: ReturnType<typeof getToolByName>,
+): number {
+  if (!shouldRetryTool(toolName, toolDef)) return 1;
+  const configured = TOOL_MAX_ATTEMPTS[toolName];
+  if (typeof configured === 'number' && configured > 0) return configured;
+  return 2;
 }
 
 function shouldRetryResult(
@@ -628,10 +793,35 @@ function recordExecutionTelemetry(
     maxAttempts,
     replayed,
   });
+  agentTelemetryStore.record({
+    type: 'agent.tool.call',
+    timestamp: Date.now(),
+    toolName,
+    success: result.success,
+    durationMs,
+    code: result.code,
+    retryable: result.retryable,
+    signature,
+  });
+  if (!result.success) {
+    agentTelemetryStore.record({
+      type: 'agent.tool.failure_signature',
+      timestamp: Date.now(),
+      toolName,
+      signature,
+    });
+  }
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  const parity = getToolContractParity();
+  if (parity.missingHandlers.length > 0 || parity.orphanHandlers.length > 0) {
+    console.warn('[Tools] Contract parity warning', parity);
+  }
 }
 
 /**

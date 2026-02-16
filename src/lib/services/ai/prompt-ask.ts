@@ -7,11 +7,18 @@
 
 // Shared sections imported from prompts-v4
 import { ANTI_HALLUCINATION, LARGE_PROJECT_STRATEGY, CONTEXT_AWARENESS, PROVIDER_GEMINI, DESIGN_EXCELLENCE, buildMcpSection } from './prompts-v4';
+import { buildCategoryToolGuidance } from './tool-guidance';
 
 export interface AskPromptOptions {
     provider: string;
     workspaceRoot?: string;
-    mcpTools?: Array<{ serverId: string; toolName: string; description?: string }>;
+    mcpTools?: Array<{
+        serverId: string;
+        toolName: string;
+        description?: string;
+        required?: string[];
+        params?: string[];
+    }>;
 }
 
 const ASK_IDENTITY = `# VOLT AI — Ask Mode (Read-Only)
@@ -92,6 +99,7 @@ export function buildAskPrompt(options: AskPromptOptions): string {
     const parts: string[] = [
         ASK_IDENTITY,
         ASK_TOOLS,
+        buildCategoryToolGuidance('ask'),
         LARGE_PROJECT_STRATEGY,
         ANTI_HALLUCINATION,
         CONTEXT_AWARENESS,

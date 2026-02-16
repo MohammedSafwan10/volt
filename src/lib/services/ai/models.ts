@@ -6,7 +6,7 @@
 export interface ModelConfig {
   id: string;              // Full model ID (e.g., 'moonshotai/kimi-k2:free')
   name: string;            // Display name
-  provider: 'gemini' | 'openrouter' | 'anthropic';
+  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai';
   contextWindow: number;   // Total context window in tokens
   maxOutput: number;       // Max output tokens
   supportsTools: boolean;  // Function calling support
@@ -74,12 +74,14 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   },
 
   // ============ OpenRouter Free Models ============
-  'mistralai/devstral-2512:free': {
-    id: 'mistralai/devstral-2512:free',
-    name: 'Devstral',
+  'mistralai/mistral-small-3.1-24b-instruct:free': {
+    id: 'mistralai/mistral-small-3.1-24b-instruct:free',
+    name: 'Mistral Small 3.1 24B',
     provider: 'openrouter',
-    contextWindow: 262000,
-    maxOutput: 262000,
+    contextWindow: 128000,
+    // OpenRouter currently reports null max_completion_tokens for this free route.
+    // Keep a conservative cap to avoid over-requesting completion length.
+    maxOutput: 8192,
     supportsTools: true,
     free: true
   },
@@ -133,10 +135,22 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
 };
 
 /**
+ * Upsert model config at runtime (used for provider metadata refresh).
+ */
+export function upsertModelConfig(config: ModelConfig): void {
+  MODEL_REGISTRY[config.id] = config;
+}
+
+/**
  * Get model config by ID
  */
 export function getModelConfig(modelId: string): ModelConfig | undefined {
-  return MODEL_REGISTRY[modelId];
+  const exact = MODEL_REGISTRY[modelId];
+  if (exact) return exact;
+
+  // Treat "|thinking" as a view-level suffix and resolve to base model.
+  const base = modelId.replace(/\|thinking$/, '');
+  return MODEL_REGISTRY[base];
 }
 
 /**
@@ -170,6 +184,8 @@ export function formatContextSize(tokens: number): string {
 /**
  * Get all models for a provider
  */
-export function getModelsForProvider(provider: 'gemini' | 'openrouter'): ModelConfig[] {
+export function getModelsForProvider(
+  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai'
+): ModelConfig[] {
   return Object.values(MODEL_REGISTRY).filter(m => m.provider === provider);
 }
