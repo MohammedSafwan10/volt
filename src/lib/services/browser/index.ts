@@ -69,20 +69,44 @@ export async function initializeBrowserDevTools(): Promise<void> {
 export async function connectCdpToBrowser(browserUrl?: string): Promise<boolean> {
   const cdpAvailable = await cdp.isAvailable();
   if (!cdpAvailable) return false;
-  
-  // Wait a bit for WebView2 to start the CDP server
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  try {
-    // Pass the browser URL so CDP attaches to the correct page (not Volt's main window)
-    await cdp.autoConnect(browserUrl);
-    await cdp.enableConsole();
-    await cdp.enableNetwork();
-    return true;
-  } catch (err) {
-    console.warn('[Browser] CDP connection failed:', err);
-    return false;
+
+  // Retry because WebView2/CDP endpoint can lag behind webview creation/navigation.
+  const maxAttempts = 5;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) {
+      const delay = 300 * attempt;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    try {
+      const status = await cdp.getStatus();
+      if (!status.connected) {
+        await cdp.autoConnect(browserUrl);
+      } else {
+        // Already connected, but target may have changed after navigation.
+        await cdp.attachToPage(browserUrl);
+      }
+
+      await cdp.enableConsole();
+      await cdp.enableNetwork();
+      return true;
+    } catch (err) {
+      // Do NOT attach without URL filter; that can bind to Volt host page
+      // and leak IDE logs into browser diagnostics.
+      if (attempt === maxAttempts) {
+        const msg = String(err ?? '');
+        if (/No page found with URL containing/i.test(msg)) {
+          console.debug('[Browser] CDP target not ready for URL yet:', browserUrl);
+        } else {
+          console.warn('[Browser] CDP connection failed:', err);
+        }
+        return false;
+      }
+    }
   }
+
+  return false;
 }
 
 /**

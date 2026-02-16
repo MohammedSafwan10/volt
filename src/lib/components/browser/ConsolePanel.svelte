@@ -16,6 +16,9 @@
   let searchQuery = $state('');
   let autoScroll = $state(true);
   let listRef: HTMLDivElement | null = $state(null);
+  let stickToBottom = $state(true);
+  let lastRenderedCount = $state(0);
+  let renderLimit = $state<100 | 200 | 500>(200);
 
   // Filter logs
   const filteredLogs = $derived(() => {
@@ -32,13 +35,29 @@
     
     return logs;
   });
+  const visibleLogs = $derived(filteredLogs().slice(-renderLimit));
+
+  function isNearBottom(el: HTMLDivElement): boolean {
+    const threshold = 20;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= threshold;
+  }
+
+  function handleLogScroll(): void {
+    if (!listRef) return;
+    stickToBottom = isNearBottom(listRef);
+  }
 
   // Auto-scroll to bottom when new logs arrive
   $effect(() => {
-    if (autoScroll && listRef && filteredLogs().length > 0) {
+    const count = visibleLogs.length;
+    const hasNewRows = count > lastRenderedCount;
+    lastRenderedCount = count;
+
+    if (autoScroll && listRef && hasNewRows && stickToBottom) {
       requestAnimationFrame(() => {
         if (listRef) {
-          listRef.scrollTop = listRef.scrollHeight;
+          listRef.scrollTo({ top: listRef.scrollHeight });
         }
       });
     }
@@ -99,6 +118,16 @@
   function handleClear(): void {
     browserDevToolsStore.clearConsoleLogs();
   }
+
+  function toggleAutoScroll(): void {
+    autoScroll = !autoScroll;
+    if (!autoScroll || !listRef) return;
+    requestAnimationFrame(() => {
+      if (!listRef) return;
+      listRef.scrollTo({ top: listRef.scrollHeight });
+      stickToBottom = true;
+    });
+  }
 </script>
 
 <div class="console-panel">
@@ -118,6 +147,11 @@
         <option value="warn">Warnings</option>
         <option value="error">Errors</option>
         <option value="debug">Debug</option>
+      </select>
+      <select class="filter-select" bind:value={renderLimit} title="Visible rows">
+        <option value={100}>100 rows</option>
+        <option value={200}>200 rows</option>
+        <option value={500}>500 rows</option>
       </select>
       
       <div class="search-box">
@@ -150,9 +184,18 @@
         class="tool-btn" 
         class:active={autoScroll}
         title="Auto-scroll"
-        onclick={() => autoScroll = !autoScroll}
+        onclick={toggleAutoScroll}
       >
         <UIIcon name="chevron-down" size={14} />
+      </button>
+
+      <button
+        class="tool-btn"
+        class:active={browserDevToolsStore.isCapturing}
+        title={browserDevToolsStore.isCapturing ? 'Pause capture' : 'Resume capture'}
+        onclick={() => browserDevToolsStore.toggleCapturing()}
+      >
+        <UIIcon name={browserDevToolsStore.isCapturing ? 'pause' : 'play'} size={14} />
       </button>
       
       {#if onAskAI && browserDevToolsStore.errorCount > 0}
@@ -165,15 +208,15 @@
   </div>
 
   <!-- Log List -->
-  <div class="console-logs" bind:this={listRef}>
-    {#if filteredLogs().length === 0}
+  <div class="console-logs" bind:this={listRef} onscroll={handleLogScroll}>
+    {#if visibleLogs.length === 0}
       <div class="empty-state">
         <UIIcon name="console" size={24} />
         <span>No console logs yet</span>
         <span class="hint">Logs from the browser will appear here</span>
       </div>
     {:else}
-      {#each filteredLogs() as log (log.id)}
+      {#each visibleLogs as log (log.id)}
         <div class="log-entry {getLevelClass(log.level)}">
           <span class="log-icon">
             <UIIcon name={getLevelIcon(log.level)} size={12} />

@@ -9,9 +9,14 @@
   import { uiStore } from '$lib/stores/ui.svelte';
   import { browserDevToolsStore } from '$lib/stores/browser-devtools.svelte';
   import BrowserToolbar from './BrowserToolbar.svelte';
+  import ResizablePanel from '$lib/components/layout/ResizablePanel.svelte';
   import ElementInspector from './ElementInspector.svelte';
   import ElementInspectorPanel from './ElementInspectorPanel.svelte';
   import ConsolePanel from './ConsolePanel.svelte';
+  import NetworkPanel from './NetworkPanel.svelte';
+  import PerformancePanel from './PerformancePanel.svelte';
+  import ApplicationPanel from './ApplicationPanel.svelte';
+  import SecurityPanel from './SecurityPanel.svelte';
 
   interface Props {
     onAskAI?: (context: string) => void;
@@ -20,8 +25,8 @@
   let { onAskAI }: Props = $props();
 
   let containerRef: HTMLDivElement | null = $state(null);
+  let browserMainRef: HTMLDivElement | null = $state(null);
   let resizeObserver: ResizeObserver | null = null;
-  let mutationObserver: MutationObserver | null = null;
   let updateScheduled = false;
   let mounted = false;
   let lastBoundsStr = '';
@@ -31,7 +36,34 @@
   // DevTools panel state
   let showDevTools = $state(false);
   let devToolsHeight = $state(200);
-  let activeDevToolsTab = $state<'console' | 'network' | 'performance' | 'element'>('console');
+  let activeDevToolsTab = $state<'console' | 'network' | 'performance' | 'element' | 'application' | 'security'>('console');
+  const DEVTOOLS_HEIGHT_KEY = 'volt.browser.devtoolsHeight';
+  const DEVTOOLS_MIN_HEIGHT = 140;
+  const DEVTOOLS_DEFAULT_HEIGHT = 200;
+
+  function getDevToolsMaxHeight(): number {
+    const hostHeight = browserMainRef?.clientHeight ?? window.innerHeight;
+    return Math.max(220, hostHeight - 120);
+  }
+
+  function clampDevToolsHeight(height: number): number {
+    return Math.max(DEVTOOLS_MIN_HEIGHT, Math.min(getDevToolsMaxHeight(), Math.round(height)));
+  }
+
+  function persistDevToolsHeight(height: number): void {
+    try {
+      localStorage.setItem(DEVTOOLS_HEIGHT_KEY, String(height));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function handleDevToolsResize(height: number): void {
+    const next = clampDevToolsHeight(height);
+    if (next === devToolsHeight) return;
+    devToolsHeight = next;
+    persistDevToolsHeight(next);
+  }
   
   // Auto-show devtools element tab when element is selected
   $effect(() => {
@@ -49,10 +81,12 @@
     containerRef.offsetHeight;
     
     const rect = containerRef.getBoundingClientRect();
-    const scaleFactor = Math.max(0.5, Math.min(2.0, uiStore.zoomPercent / 100));
     
     // Ensure we have valid dimensions
     if (rect.width < 10 || rect.height < 10) return null;
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top) || !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) {
+      return null;
+    }
     
     // The Y position should account for toolbar height (~45px) plus any other UI.
     // Only block creation when the browser is not open yet; allow updates when open.
@@ -61,16 +95,18 @@
     }
     
     // Round to avoid subpixel issues and clamp to viewport
-    const viewportWidth = window.innerWidth * scaleFactor;
-    const viewportHeight = window.innerHeight * scaleFactor;
-    let x = Math.max(0, Math.round(rect.left * scaleFactor));
-    let y = Math.max(0, Math.round(rect.top * scaleFactor));
-    let width = Math.round(rect.width * scaleFactor);
-    let height = Math.round(rect.height * scaleFactor);
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const MIN_TOP_SAFE = 28; // keep native title/menu region unobstructed
+    let x = Math.max(0, Math.round(rect.left));
+    let y = Math.max(MIN_TOP_SAFE, Math.round(rect.top));
+    let width = Math.round(rect.width);
+    let height = Math.round(rect.height);
     if (x + width > viewportWidth) width = Math.max(0, viewportWidth - x);
     if (y + height > viewportHeight) height = Math.max(0, viewportHeight - y);
     
     const bounds = { x, y, width, height };
+    if (bounds.width < 20 || bounds.height < 20) return null;
     
     return bounds;
   }
@@ -127,6 +163,20 @@
 
   onMount(() => {
     mounted = true;
+
+    try {
+      const stored = localStorage.getItem(DEVTOOLS_HEIGHT_KEY);
+      if (stored) {
+        const parsed = Number(stored);
+        if (Number.isFinite(parsed)) {
+          devToolsHeight = clampDevToolsHeight(parsed);
+        }
+      } else {
+        devToolsHeight = clampDevToolsHeight(DEVTOOLS_DEFAULT_HEIGHT);
+      }
+    } catch {
+      devToolsHeight = clampDevToolsHeight(DEVTOOLS_DEFAULT_HEIGHT);
+    }
     
     // Initialize devtools store
     browserDevToolsStore.initialize();
@@ -147,18 +197,6 @@
       }
     }
 
-    // Setup mutation observer for DOM changes that might affect layout
-    mutationObserver = new MutationObserver(() => {
-      trackBoundsSource('mutationObserver');
-      scheduleUpdateBounds();
-    });
-    mutationObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['style', 'class']
-    });
-
     // Update bounds on window events
     window.addEventListener('resize', forceUpdateBounds);
     window.addEventListener('scroll', scheduleUpdateBounds, true);
@@ -169,7 +207,7 @@
         trackBoundsSource('interval');
         scheduleUpdateBounds();
       }
-    }, 500);
+    }, 1200);
     
     // Initial bounds update with multiple attempts
     setTimeout(forceUpdateBounds, 50);
@@ -181,7 +219,6 @@
       mounted = false;
       clearInterval(intervalId);
       resizeObserver?.disconnect();
-      mutationObserver?.disconnect();
       window.removeEventListener('resize', forceUpdateBounds);
       window.removeEventListener('scroll', scheduleUpdateBounds, true);
       if (boundsProfileTimer) {
@@ -231,6 +268,15 @@
     }
   });
 
+  // Keep height valid when container is resized.
+  $effect(() => {
+    const max = getDevToolsMaxHeight();
+    if (devToolsHeight > max) {
+      devToolsHeight = clampDevToolsHeight(devToolsHeight);
+      persistDevToolsHeight(devToolsHeight);
+    }
+  });
+
   // Recalculate bounds when UI zoom changes
   $effect(() => {
     void uiStore.zoomPercent;
@@ -245,7 +291,7 @@
 <div class="browser-panel">
   <BrowserToolbar onToggleDevTools={() => showDevTools = !showDevTools} {showDevTools} />
   
-  <div class="browser-main">
+  <div class="browser-main" bind:this={browserMainRef}>
     <div class="browser-content">
       <!-- Container for native webview positioning -->
       <div class="browser-view" bind:this={containerRef}>
@@ -305,6 +351,13 @@
 
     <!-- DevTools Panel -->
     {#if showDevTools}
+      <ResizablePanel
+        direction="vertical"
+        size={devToolsHeight}
+        minSize={DEVTOOLS_MIN_HEIGHT}
+        maxSize={getDevToolsMaxHeight()}
+        onResize={handleDevToolsResize}
+      />
       <div class="devtools-panel" style="height: {devToolsHeight}px">
         <div class="devtools-header">
           <div class="devtools-tabs">
@@ -349,6 +402,28 @@
               <UIIcon name="bolt" size={12} />
               <span>Performance</span>
             </button>
+            <button
+              class="devtools-tab"
+              class:active={activeDevToolsTab === 'application'}
+              onclick={() => activeDevToolsTab = 'application'}
+            >
+              <UIIcon name="files" size={12} />
+              <span>Application</span>
+              {#if browserDevToolsStore.applicationSnapshot}
+                <span class="badge active">{browserDevToolsStore.applicationSnapshot.storage_entries.length + browserDevToolsStore.applicationSnapshot.cookies.length}</span>
+              {/if}
+            </button>
+            <button
+              class="devtools-tab"
+              class:active={activeDevToolsTab === 'security'}
+              onclick={() => activeDevToolsTab = 'security'}
+            >
+              <UIIcon name="warning" size={12} />
+              <span>Security</span>
+              {#if browserDevToolsStore.securityHighCount > 0}
+                <span class="badge error">{browserDevToolsStore.securityHighCount}</span>
+              {/if}
+            </button>
           </div>
           <div class="devtools-actions">
             <button class="devtools-btn" title="Clear" onclick={() => browserDevToolsStore.clearAll()}>
@@ -379,15 +454,13 @@
               </div>
             {/if}
           {:else if activeDevToolsTab === 'network'}
-            <div class="placeholder">
-              <UIIcon name="globe" size={24} />
-              <span>Network panel coming soon</span>
-            </div>
+            <NetworkPanel {onAskAI} />
           {:else if activeDevToolsTab === 'performance'}
-            <div class="placeholder">
-              <UIIcon name="bolt" size={24} />
-              <span>Performance panel coming soon</span>
-            </div>
+            <PerformancePanel {onAskAI} />
+          {:else if activeDevToolsTab === 'application'}
+            <ApplicationPanel {onAskAI} />
+          {:else if activeDevToolsTab === 'security'}
+            <SecurityPanel {onAskAI} />
           {/if}
         </div>
       </div>

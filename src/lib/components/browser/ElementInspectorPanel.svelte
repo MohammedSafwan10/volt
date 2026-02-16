@@ -15,8 +15,12 @@
 
   let copied = $state<string | null>(null);
 
-  function copyToClipboard(text: string, type: string): void {
-    navigator.clipboard.writeText(text);
+  async function copyToClipboard(text: string, type: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
     copied = type;
     setTimeout(() => { copied = null; }, 1500);
   }

@@ -457,6 +457,136 @@ export const PERFORMANCE_CAPTURE_SCRIPT = `
 `;
 
 /**
+ * Application capture script - storage/cookies/indexedDB summary (best effort)
+ */
+export const APPLICATION_CAPTURE_SCRIPT = `
+(function() {
+  if (window.__voltAppInit) return;
+  window.__voltAppInit = true;
+
+  function collectStorage(storage, area) {
+    const out = [];
+    try {
+      if (!storage) return out;
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (!key) continue;
+        out.push({
+          area,
+          key,
+          value: storage.getItem(key) || ''
+        });
+      }
+    } catch {}
+    return out;
+  }
+
+  function collectCookies() {
+    const out = [];
+    try {
+      const raw = document.cookie || '';
+      raw.split(';').forEach((part) => {
+        const trimmed = part.trim();
+        if (!trimmed) return;
+        const idx = trimmed.indexOf('=');
+        if (idx < 0) {
+          out.push({ name: trimmed, value: '' });
+          return;
+        }
+        out.push({
+          name: trimmed.slice(0, idx).trim(),
+          value: trimmed.slice(idx + 1).trim()
+        });
+      });
+    } catch {}
+    return out;
+  }
+
+  async function collectIndexedDb() {
+    if (!window.indexedDB || typeof window.indexedDB.databases !== 'function') return [];
+    try {
+      const dbs = await window.indexedDB.databases();
+      return (dbs || []).map((db) => ({
+        name: db.name || 'unknown',
+        version: Number(db.version || 0)
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  window.__voltCaptureApplication = async function() {
+    if (!window.__TAURI__) return null;
+    const indexeddb = await collectIndexedDb();
+    const payload = {
+      origin: location.origin,
+      storage_entries: [
+        ...collectStorage(window.localStorage, 'localStorage'),
+        ...collectStorage(window.sessionStorage, 'sessionStorage')
+      ],
+      cookies: collectCookies(),
+      indexeddb,
+      captured_at: Date.now()
+    };
+    window.__TAURI__.core.invoke('browser_devtools_application', {
+      snapshot: payload
+    }).catch(() => {});
+    return payload;
+  };
+})();
+`;
+
+/**
+ * Security capture script - CSP + mixed-content hints from browser events
+ */
+export const SECURITY_CAPTURE_SCRIPT = `
+(function() {
+  if (window.__voltSecurityInit) return;
+  window.__voltSecurityInit = true;
+
+  function emitIssue(issue) {
+    if (!window.__TAURI__) return;
+    window.__TAURI__.core.invoke('browser_devtools_security_issue', {
+      issue
+    }).catch(() => {});
+  }
+
+  window.addEventListener('securitypolicyviolation', function(event) {
+    emitIssue({
+      kind: 'csp',
+      severity: 'high',
+      title: 'Content Security Policy violation',
+      description: event.violatedDirective || event.effectiveDirective || 'CSP violation',
+      url: event.blockedURI || location.href,
+      evidence: {
+        directive: event.effectiveDirective,
+        violated_directive: event.violatedDirective,
+        blocked_uri: event.blockedURI,
+        source_file: event.sourceFile,
+        line: event.lineNumber,
+        column: event.columnNumber
+      },
+      timestamp: Date.now()
+    });
+  }, true);
+
+  window.addEventListener('error', function(event) {
+    const msg = String(event?.message || '').toLowerCase();
+    if (!msg.includes('mixed content')) return;
+    emitIssue({
+      kind: 'mixed-content',
+      severity: 'high',
+      title: 'Mixed content blocked',
+      description: event.message || 'Mixed content blocked',
+      url: location.href,
+      evidence: { source: event.filename, line: event.lineno, column: event.colno },
+      timestamp: Date.now()
+    });
+  }, true);
+})();
+`;
+
+/**
  * Combined script that includes all devtools functionality
  */
 export const DEVTOOLS_FULL_SCRIPT = `
@@ -464,6 +594,8 @@ ${CONSOLE_CAPTURE_SCRIPT}
 ${ERROR_CAPTURE_SCRIPT}
 ${NETWORK_CAPTURE_SCRIPT}
 ${PERFORMANCE_CAPTURE_SCRIPT}
+${APPLICATION_CAPTURE_SCRIPT}
+${SECURITY_CAPTURE_SCRIPT}
 `;
 
 /**

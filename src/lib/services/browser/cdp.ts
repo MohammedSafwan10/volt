@@ -132,6 +132,39 @@ export interface CdpEvaluateResult {
   error: string | null;
 }
 
+export interface CdpApplicationStorageEntry {
+  area: 'localStorage' | 'sessionStorage';
+  key: string;
+  value: string;
+}
+
+export interface CdpApplicationCookieEntry {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: string;
+}
+
+export interface CdpApplicationIndexedDbSummary {
+  name: string;
+  version?: number;
+  object_store_count?: number;
+  object_store_names?: string[];
+}
+
+export interface CdpApplicationSnapshot {
+  origin: string;
+  storage_entries: CdpApplicationStorageEntry[];
+  cookies: CdpApplicationCookieEntry[];
+  indexeddb: CdpApplicationIndexedDbSummary[];
+  captured_at: number;
+  warnings?: string[];
+}
+
 // =============================================================================
 // CDP Client
 // =============================================================================
@@ -172,7 +205,16 @@ class CdpClient {
 
   /** Connect to CDP endpoint */
   async connect(wsUrl: string): Promise<void> {
-    return invoke('cdp_connect', { wsUrl });
+    try {
+      return await invoke('cdp_connect', { wsUrl });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('wsUrl')) {
+        // Compatibility fallback for older command arg mapping.
+        return invoke('cdp_connect', { ws_url: wsUrl } as unknown as Record<string, unknown>);
+      }
+      throw error;
+    }
   }
 
   /** Auto-connect to CDP - discovers URL and connects */
@@ -189,7 +231,16 @@ class CdpClient {
 
   /** Attach to a page/target */
   async attachToPage(targetId?: string): Promise<void> {
-    return invoke('cdp_attach_to_page', { targetId });
+    try {
+      return await invoke('cdp_attach_to_page', { targetId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('targetId')) {
+        // Compatibility fallback for older command arg mapping.
+        return invoke('cdp_attach_to_page', { target_id: targetId } as unknown as Record<string, unknown>);
+      }
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -370,6 +421,71 @@ class CdpClient {
   /** Get performance metrics */
   async getPerformance(): Promise<CdpPerformanceMetrics> {
     return invoke<CdpPerformanceMetrics>('cdp_get_performance');
+  }
+
+  /** Capture application storage/cookies/indexeddb summary from page context */
+  async getApplicationSnapshot(): Promise<CdpApplicationSnapshot> {
+    const expression = `(() => {
+      const toEntries = (storage, area) => {
+        const out = [];
+        if (!storage) return out;
+        for (let i = 0; i < storage.length; i++) {
+          const key = storage.key(i);
+          if (!key) continue;
+          let value = '';
+          try {
+            value = storage.getItem(key) ?? '';
+          } catch {}
+          out.push({ area, key, value });
+        }
+        return out;
+      };
+
+      const cookies = [];
+      try {
+        const raw = document.cookie || '';
+        for (const part of raw.split(';')) {
+          const trimmed = part.trim();
+          if (!trimmed) continue;
+          const eq = trimmed.indexOf('=');
+          if (eq < 0) {
+            cookies.push({ name: trimmed, value: '' });
+            continue;
+          }
+          const name = trimmed.slice(0, eq).trim();
+          const value = trimmed.slice(eq + 1).trim();
+          cookies.push({ name, value });
+        }
+      } catch {}
+
+      const warnings = [];
+      const indexeddb = [];
+      try {
+        if (!window.indexedDB || typeof window.indexedDB.databases !== 'function') {
+          warnings.push('IndexedDB API unavailable in this context.');
+        }
+      } catch {
+        warnings.push('Failed to inspect IndexedDB availability.');
+      }
+
+      return {
+        origin: location.origin,
+        storage_entries: [
+          ...toEntries(window.localStorage, 'localStorage'),
+          ...toEntries(window.sessionStorage, 'sessionStorage'),
+        ],
+        cookies,
+        indexeddb,
+        captured_at: Date.now(),
+        warnings,
+      };
+    })()`;
+
+    const result = await this.evaluate(expression);
+    if (!result.success || !result.value || typeof result.value !== 'object') {
+      throw new Error(result.error || 'Failed to capture application snapshot');
+    }
+    return result.value as CdpApplicationSnapshot;
   }
 
   // ---------------------------------------------------------------------------
