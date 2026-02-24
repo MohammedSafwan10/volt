@@ -22,9 +22,10 @@
   import { streamChat } from "$lib/services/ai";
   import { getSystemPrompt } from "$lib/services/ai/prompts-v4";
   import {
-    getSmartContext,
-    formatSmartContext,
-  } from "$lib/services/ai/context";
+    buildContextV2,
+    buildMinimalContextFallback,
+    formatContextV2,
+  } from "$lib/services/ai/context-v2";
   import {
     getAllToolsForMode,
     validateToolCall as validateTool,
@@ -40,12 +41,24 @@
     getAdaptiveFileEditConcurrency,
     getFailureSignature,
     getToolIdempotencyKey,
+    isVerificationTool,
     mapWithConcurrency,
     normalizeQueueKey,
     stableStringify,
   } from "./panel/utils";
   import { autoSummarizeIfNeeded } from "./panel/auto-summarize";
-  import { shouldRunAfterFileEdits } from "./panel/verification-profiles";
+  import {
+    classifyPlanningPhase,
+    getVerificationProfiles,
+    shouldRunAfterFileEdits,
+  } from "./panel/verification-profiles";
+  import { createToolLoopState } from "./panel/tool-loop-state";
+  import {
+    buildReadBeforeEditError,
+    getReadRequirement,
+    requiresReadBeforeEdit,
+  } from "./panel/tool-guards";
+  import { selectAutoVerificationAction } from "./panel/auto-verification";
   import { createStreamGuards } from "./panel/stream-guards";
   import { createStreamingTextBuffer } from "./panel/streaming-text-buffer";
   import {
@@ -65,6 +78,7 @@
   import { processToolsNeedingApproval } from "./panel/approval-executor";
   import { executeToolWithUpdates } from "./panel/tool-execution";
   import { handleNoToolOutcome } from "./panel/loop-outcome";
+  import { filterToolsForChat } from "./panel/tool-gating";
   import { compileProviderMessages } from "./panel/compile-provider-messages";
   import MessageList from "./MessageList.svelte";
   import ChatHistorySidebar from "./ChatHistorySidebar.svelte";
@@ -272,16 +286,57 @@
     });
     systemPrompt = `${systemPrompt}\n\n---\n\n${runtimeContextBlock}`;
 
-    // Gather smart context (Active file, open tabs, terminal, etc.)
-    // This provides background context - AI will use tools for additional searching
-    const smartContext = await getSmartContext(content);
-    const contextBlock = formatSmartContext(smartContext);
+    let contextBlock = "";
+    try {
+      const contextV2 = await buildContextV2({
+        query: content,
+        modelId: selectedModel,
+      });
+      contextBlock = formatContextV2(contextV2);
+      agentTelemetryStore.record({
+        type: "agent.context.build",
+        timestamp: Date.now(),
+        estimatedTokensUsed: contextV2.stats.estimatedTokensUsed,
+        snippetsSelected: contextV2.stats.snippetsSelected,
+        droppedCandidates: contextV2.stats.droppedCandidates,
+        staleVsFreshRatio:
+          contextV2.stats.freshSnippetCount > 0
+            ? Number(
+                (
+                  contextV2.stats.staleSnippetCount /
+                  contextV2.stats.freshSnippetCount
+                ).toFixed(2),
+              )
+            : contextV2.stats.staleSnippetCount > 0
+              ? 1
+              : 0,
+        buildLatencyMs: contextV2.stats.buildLatencyMs,
+        fallbackUsed: false,
+      });
+    } catch (error) {
+      console.warn("[AssistantPanel] Context V2 build failed, using minimal fallback:", error);
+      contextBlock = buildMinimalContextFallback(content);
+      agentTelemetryStore.record({
+        type: "agent.context.build",
+        timestamp: Date.now(),
+        estimatedTokensUsed: 0,
+        snippetsSelected: 0,
+        droppedCandidates: 0,
+        staleVsFreshRatio: 0,
+        buildLatencyMs: 0,
+        fallbackUsed: true,
+      });
+    }
 
     // Add user message with content AND smart context as reference
     assistantStore.addUserMessage(content, context, contextBlock);
 
     // Get tools for current mode (includes MCP tools in agent mode)
-    const tools = getAllToolsForMode(assistantStore.currentMode);
+    const tools = filterToolsForChat(
+      getAllToolsForMode(assistantStore.currentMode),
+      assistantStore.browserToolsEnabled,
+      content,
+    );
 
     const nextSummaryState = await autoSummarizeIfNeeded({
       selectedModel,
@@ -355,6 +410,7 @@
     const HARD_MAX_ITERATIONS = 120;
     const HARD_MAX_LOOP_DURATION_MS = 35 * 60 * 1000;
     const PROGRESS_WINDOW_MS = 90 * 1000;
+    const STREAM_STALL_TIMEOUT_MS = 45 * 1000;
     const MAX_BUDGET_EXTENSIONS = 3;
     let budgetExtensions = 0;
     let lastProgressAt = Date.now();
@@ -365,6 +421,59 @@
     let recoveryRetryCount = 0;
     const MAX_RECOVERY_RETRIES = 4;
     const failureSignatureCounts = new Map<string, number>();
+    const toolLoopState = createToolLoopState();
+    const touchedFilePaths = new Set<string>();
+    const strictReadBeforeEdit = isAgentMode;
+    const pathExistenceCache = new Map<string, boolean>();
+
+    const trackTouchedFile = (
+      toolName: string,
+      args: Record<string, unknown>,
+      result: ToolResult,
+    ): void => {
+      if (!result.success || !isFileMutatingTool(toolName)) return;
+      if (
+        toolName === "delete_file" ||
+        toolName === "rename_path" ||
+        toolName === "create_dir"
+      ) {
+        return;
+      }
+      const resultMeta = result.meta as Record<string, unknown> | undefined;
+      const fileEdit = resultMeta?.fileEdit as Record<string, unknown> | undefined;
+      const relativeFromMeta =
+        typeof fileEdit?.relativePath === "string" ? String(fileEdit.relativePath) : "";
+      if (relativeFromMeta) {
+        touchedFilePaths.add(relativeFromMeta);
+        return;
+      }
+      const argPath = typeof args.path === "string" ? args.path.trim() : "";
+      if (argPath) touchedFilePaths.add(argPath);
+    };
+
+    const trackToolOutcome = (
+      toolName: string,
+      args: Record<string, unknown>,
+      result: ToolResult,
+    ): void => {
+      toolLoopState.recordToolOutcome(toolName, args, result);
+      trackTouchedFile(toolName, args, result);
+    };
+
+    const doesPathExist = async (rawPath: string): Promise<boolean> => {
+      const key = normalizeQueueKey(rawPath);
+      if (pathExistenceCache.has(key)) {
+        return Boolean(pathExistenceCache.get(key));
+      }
+      try {
+        await invoke("get_file_info", { path: resolvePath(rawPath) });
+        pathExistenceCache.set(key, true);
+        return true;
+      } catch {
+        pathExistenceCache.set(key, false);
+        return false;
+      }
+    };
 
     // Streaming safety guards
     const streamGuards = createStreamGuards();
@@ -375,6 +484,28 @@
       "Volt",
       `Agent: Starting tool loop (max ${maxIterations} iterations)`,
     );
+    const loopLog = (
+      level: "info" | "warn" | "error",
+      event: string,
+      details: Record<string, unknown> = {},
+    ): void => {
+      const payload = {
+        event,
+        mode: assistantStore.currentMode,
+        modelId,
+        conversationId: assistantStore.currentConversation?.id ?? null,
+        iteration,
+        ...details,
+      };
+      if (level === "error") {
+        console.error("[AssistantLoop]", payload);
+      } else if (level === "warn") {
+        console.warn("[AssistantLoop]", payload);
+      } else {
+        console.info("[AssistantLoop]", payload);
+      }
+    };
+    loopLog("info", "loop_start", { maxIterations });
     assistantStore.setAgentLoopState("running", {
       iteration: 0,
       maxIterations,
@@ -439,6 +570,10 @@
       }
 
       iteration++;
+      loopLog("info", "iteration_start", {
+        maxIterations,
+        elapsedMs: Date.now() - loopStartedAt,
+      });
       assistantStore.setAgentLoopState("running", {
         iteration,
         maxIterations,
@@ -536,7 +671,10 @@
       }> = [];
       const toolIdCounts = new Map<string, number>();
       let hadPlanModeViolationThisIteration = false;
+      let warnedBrowserToolsDisabled = false;
+      let warnedReadBeforeEdit = false;
       let toolCallSeenThisIteration = false;
+      let stalledAbortReason: string | null = null;
 
       try {
         // Reduce hallucinations: use conservative temperature defaults per mode.
@@ -554,18 +692,30 @@
           onFlush: (text) => assistantStore.appendTextToMessage(msgId, text, true),
         });
         // REMOVED: visibleCharBudget - show full responses like Kiro
+        const stallWatchdog = setInterval(() => {
+          if (controller.signal.aborted) return;
+          const idleFor = Date.now() - lastProgressAt;
+          if (idleFor < STREAM_STALL_TIMEOUT_MS) return;
+          stalledAbortReason = `Stream stalled: no chunks for ${Math.round(STREAM_STALL_TIMEOUT_MS / 1000)}s.`;
+          controller.abort();
+        }, 1000);
+        let hasQueuedFileEdits = false;
+        let immediateNonFileTools: QueuedNonFileTool[] = [];
+        let deferredNonFileTools: QueuedNonFileTool[] = [];
+        let orderedImmediateNonFileTools: QueuedNonFileTool[] = [];
 
-        for await (const chunk of streamChat(
-          {
-            messages: providerMessages,
-            systemPrompt,
-            tools,
-            stream: true,
-            temperature,
-          },
-          assistantStore.currentMode,
-          controller.signal,
-        )) {
+        try {
+          for await (const chunk of streamChat(
+            {
+              messages: providerMessages,
+              systemPrompt,
+              tools,
+              stream: true,
+              temperature,
+            },
+            assistantStore.currentMode,
+            controller.signal,
+          )) {
           if (controller.signal.aborted) return;
 
           if (chunk.type === "content" && chunk.content) {
@@ -716,17 +866,53 @@
               (isTerminalToolName(toolCallName) ||
                 (capabilities.isMutating &&
                   toolCallName !== "write_plan_file"));
+            let readGuardError: string | null = null;
+            if (
+              strictReadBeforeEdit &&
+              validation.valid &&
+              !editBlockedByIntentGuard &&
+              !blockedByConversationGuard &&
+              !isPlanModeViolation &&
+              requiresReadBeforeEdit(toolCallName)
+            ) {
+              const requirement = getReadRequirement(toolCallName, toolCallArgs);
+              if (requirement) {
+                for (const requiredPath of requirement.paths) {
+                  if (
+                    requirement.allowIfTargetMissing &&
+                    !(await doesPathExist(requiredPath))
+                  ) {
+                    continue;
+                  }
+                  const freshness = toolLoopState.checkFreshRead(
+                    requiredPath,
+                    requirement.requiredKind,
+                  );
+                  if (!freshness.ok) {
+                    readGuardError = buildReadBeforeEditError(
+                      requiredPath,
+                      requirement.requiredKind,
+                    );
+                    break;
+                  }
+                }
+              }
+            }
+            const blockedByReadGuard = Boolean(readGuardError);
             const effectiveValidationError = blockedByConversationGuard
               ? "Tool blocked: greeting/capabilities turns should not run proactive tools. Respond directly and wait for a concrete task."
               : editBlockedByIntentGuard
               ? "Edit blocked: user asked for suggestions/analysis. Ask for explicit confirmation before changing files."
               : isPlanModeViolation
                 ? `Tool "${toolCallName}" is not allowed in plan mode. In plan mode, use READ tools and optionally "write_plan_file" only.`
+                : blockedByReadGuard
+                  ? (readGuardError ?? "Read-before-edit guard blocked this tool call.")
                 : (validation.error ?? "Invalid tool call");
             const status: ToolCall["status"] =
               validation.valid &&
               !editBlockedByIntentGuard &&
-              !blockedByConversationGuard
+              !blockedByConversationGuard &&
+              !blockedByReadGuard
               ? "pending"
               : "failed";
             const toolCall: ToolCall = {
@@ -738,7 +924,9 @@
               thoughtSignature: toolCallThoughtSignature,
               error: effectiveValidationError,
               endTime:
-                validation.valid && !editBlockedByIntentGuard
+                validation.valid &&
+                !editBlockedByIntentGuard &&
+                !blockedByReadGuard
                   ? undefined
                   : Date.now(),
             };
@@ -759,10 +947,35 @@
             if (
               !validation.valid ||
               editBlockedByIntentGuard ||
-              blockedByConversationGuard
+              blockedByConversationGuard ||
+              blockedByReadGuard ||
+              isPlanModeViolation
             ) {
+              loopLog("warn", "tool_blocked_or_invalid", {
+                toolName: toolCallName,
+                toolCallId,
+                blockedByReadGuard,
+                blockedByConversationGuard,
+                editBlockedByIntentGuard,
+                isPlanModeViolation,
+                validationError: validation.error ?? null,
+                effectiveValidationError,
+              });
               if (isPlanModeViolation) {
                 hadPlanModeViolationThisIteration = true;
+              }
+              if (
+                !validation.valid &&
+                toolCallName.startsWith("browser_") &&
+                !assistantStore.browserToolsEnabled &&
+                !warnedBrowserToolsDisabled
+              ) {
+                warnedBrowserToolsDisabled = true;
+                showToast({
+                  message:
+                    "Browser tools are off. Click the globe toggle in chat to enable.",
+                  type: "info",
+                });
               }
               // Feed an error tool result back to the model so the conversation stays consistent.
               immediateResults.push({
@@ -771,6 +984,11 @@
                 result: {
                   success: false,
                   error: effectiveValidationError ?? "Invalid tool call",
+                  meta: blockedByReadGuard
+                    ? {
+                        code: "READ_REQUIRED_BEFORE_EDIT",
+                      }
+                    : undefined,
                 },
               });
 
@@ -794,6 +1012,23 @@
                   status: "completed",
                   output:
                     "This turn is greeting/capabilities chat. Do not run workspace or browser tools; reply briefly and ask for the concrete task.",
+                });
+              }
+              if (blockedByReadGuard && !warnedReadBeforeEdit) {
+                warnedReadBeforeEdit = true;
+                showToast({
+                  message:
+                    "Edit blocked: AI must read the target file first (read-before-edit guard).",
+                  type: "info",
+                });
+                assistantStore.addToolMessage({
+                  id: `read_guard_${Date.now()}`,
+                  name: "_system_read_before_edit_guard",
+                  arguments: {},
+                  status: "completed",
+                  output:
+                    effectiveValidationError ??
+                    "Read-before-edit guard blocked a file mutation.",
                 });
               }
 
@@ -902,7 +1137,11 @@
                   queueIndex,
                 });
                 assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                  meta: { editPhase: "queued", queueIndex },
+                  meta: {
+                    editPhase: "queued",
+                    queueIndex,
+                    planningPhase: "edit",
+                  },
                 });
               } else if (isTerminalCommand) {
                 // Terminal commands are handled by the approval flow (toolsNeedingApproval)
@@ -922,7 +1161,17 @@
 
                 if (runAfterFileEdits) {
                   assistantStore.updateToolCallInMessage(msgId, toolCallId, {
-                    meta: { executionPhase: "after_file_edits" },
+                    meta: {
+                      executionPhase: "after_file_edits",
+                      planningPhase: "verify",
+                    },
+                  });
+                } else {
+                  assistantStore.updateToolCallInMessage(msgId, toolCallId, {
+                    meta: {
+                      executionPhase: "immediate",
+                      planningPhase: classifyPlanningPhase(toolCallName),
+                    },
                   });
                 }
               }
@@ -962,13 +1211,32 @@
         // on unrelated chunks in later iterations.
         streamGuards.resetIteration();
 
-        const hasQueuedFileEdits = fileEditQueues.size > 0;
-        const immediateNonFileTools = hasQueuedFileEdits
+        hasQueuedFileEdits = fileEditQueues.size > 0;
+        loopLog("info", "tool_stream_pass_complete", {
+          totalToolCalls: allToolCalls.length,
+          pendingToolCalls: pendingToolCalls.length,
+          immediateResultCount: immediateResults.length,
+          fileEditQueueCount: fileEditQueues.size,
+          nonFileQueueCount: queuedNonFileTools.length,
+        });
+        immediateNonFileTools = hasQueuedFileEdits
           ? queuedNonFileTools.filter((t) => !t.runAfterFileEdits)
           : queuedNonFileTools;
-        const deferredNonFileTools = hasQueuedFileEdits
+        deferredNonFileTools = hasQueuedFileEdits
           ? queuedNonFileTools.filter((t) => t.runAfterFileEdits)
           : [];
+        const planningPhaseRank = (toolName: string): number => {
+          const phase = classifyPlanningPhase(toolName);
+          if (phase === "discover") return 0;
+          if (phase === "read") return 1;
+          if (phase === "other") return 2;
+          if (phase === "verify") return 3;
+          return 4;
+        };
+        orderedImmediateNonFileTools = [...immediateNonFileTools].sort(
+          (a, b) =>
+            planningPhaseRank(a.name) - planningPhaseRank(b.name),
+        );
 
         if (
           pendingToolCalls.length > 0 ||
@@ -984,10 +1252,17 @@
             fileQueues: fileEditQueues.size,
           });
         }
+        } finally {
+          clearInterval(stallWatchdog);
+        }
+
+        if (stalledAbortReason) {
+          throw new Error(stalledAbortReason);
+        }
 
         // Run non-file tools that don't depend on fresh edits.
         const eagerResults = await executeQueuedNonFileTools(
-          immediateNonFileTools,
+          orderedImmediateNonFileTools,
           {
             executeToolCall,
             signal: controller.signal,
@@ -997,7 +1272,7 @@
               assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
             getFailureSignature,
-            trackToolOutcome: () => {},
+            trackToolOutcome,
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -1024,7 +1299,7 @@
               assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
             getFailureSignature,
-            trackToolOutcome: () => {},
+            trackToolOutcome,
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -1045,7 +1320,7 @@
               assistantStore.updateToolCallInMessage.bind(assistantStore),
             messageId: msgId,
             getFailureSignature,
-            trackToolOutcome: () => {},
+            trackToolOutcome,
             onFailureSignature: (signature) => {
               const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
               failureSignatureCounts.set(signature, count);
@@ -1053,11 +1328,122 @@
           },
         );
 
+        const verificationProfiles = getVerificationProfiles(projectStore.tree);
+        const explicitVerificationCalled = allToolCalls.some((entry) =>
+          isVerificationTool(
+            entry.name,
+            entry.arguments as Record<string, unknown>,
+            verificationProfiles,
+          ),
+        );
+        const fileEditsSucceeded = fileEditResults.some((entry) => entry.result.success);
+        const autoVerificationAction = selectAutoVerificationAction({
+          fileEditsSucceeded,
+          explicitVerificationCalled,
+          profiles: verificationProfiles,
+          cwd: projectStore.rootPath,
+        });
+        const autoVerificationResults: Array<{
+          id: string;
+          name: string;
+          result: ToolResult;
+        }> = [];
+
+        if (autoVerificationAction) {
+          const autoToolId = `auto_verify_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const autoToolCall: ToolCall = {
+            id: autoToolId,
+            name: autoVerificationAction.toolName,
+            arguments: autoVerificationAction.args,
+            status: "pending",
+          };
+          assistantStore.addToolCallToMessage(msgId, autoToolCall);
+          allToolCalls.push({
+            id: autoToolId,
+            name: autoVerificationAction.toolName,
+            arguments: autoVerificationAction.args,
+          });
+          assistantStore.updateToolCallInMessage(msgId, autoToolId, {
+            status: "running",
+            startTime: Date.now(),
+            meta: { autoVerification: true, reason: autoVerificationAction.reason },
+          });
+          try {
+            const result = await executeToolCall(
+              autoVerificationAction.toolName,
+              autoVerificationAction.args,
+              {
+                signal: controller.signal,
+                idempotencyKey: getToolIdempotencyKey(
+                  toolRunScope,
+                  autoToolId,
+                  autoVerificationAction.toolName,
+                  autoVerificationAction.args,
+                ),
+              },
+            );
+            assistantStore.updateToolCallInMessage(msgId, autoToolId, {
+              status: result.success ? "completed" : "failed",
+              output: result.output,
+              error: result.error,
+              meta: {
+                ...(result.meta || {}),
+                autoVerification: true,
+                reason: autoVerificationAction.reason,
+              },
+              data: result.data,
+              endTime: Date.now(),
+            });
+            trackToolOutcome(
+              autoVerificationAction.toolName,
+              autoVerificationAction.args,
+              result,
+            );
+            const signature = getFailureSignature(
+              autoVerificationAction.toolName,
+              autoVerificationAction.args,
+              result,
+            );
+            if (signature) {
+              const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
+              failureSignatureCounts.set(signature, count);
+            }
+            autoVerificationResults.push({
+              id: autoToolId,
+              name: autoVerificationAction.toolName,
+              result,
+            });
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            const result: ToolResult = {
+              success: false,
+              error: `Automatic verification failed: ${error}`,
+              warnings: ["auto_verification_failed"],
+              meta: {
+                code: "AUTO_VERIFICATION_FAILED",
+                autoVerification: true,
+              },
+            };
+            assistantStore.updateToolCallInMessage(msgId, autoToolId, {
+              status: "failed",
+              error: result.error,
+              meta: result.meta,
+              endTime: Date.now(),
+            });
+            autoVerificationResults.push({
+              id: autoToolId,
+              name: autoVerificationAction.toolName,
+              result,
+            });
+          }
+        }
+
         // Combine all results
         const allEagerResults = [
           ...eagerResults,
           ...fileEditResults,
           ...deferredResults,
+          ...autoVerificationResults,
         ];
 
         if (
@@ -1092,6 +1478,9 @@
           fullContent = noToolOutcome.state.fullContent;
 
           if (noToolOutcome.decision === "continue") {
+            loopLog("info", "no_tool_outcome_continue", {
+              reason: "handler_requested_continue",
+            });
             continue;
           }
           if (
@@ -1140,6 +1529,9 @@
             finalizeOutcome("failed", "missing_attempt_completion", {
               iteration,
             });
+            loopLog("error", "loop_failed", {
+              reason: "missing_attempt_completion",
+            });
             return;
           }
           if (
@@ -1155,6 +1547,9 @@
             finalizeOutcome("completed", "conversation_only_completion", {
               iteration,
             });
+            loopLog("info", "loop_completed", {
+              reason: "conversation_only_completion",
+            });
             return;
           }
           if (noToolOutcome.decision === "complete") {
@@ -1165,6 +1560,9 @@
             });
             finalizeOutcome("completed", "content_only_completion", {
               iteration,
+            });
+            loopLog("info", "loop_completed", {
+              reason: "content_only_completion",
             });
           } else {
             assistantStore.markAssistantMessageStreamState(
@@ -1178,6 +1576,9 @@
             });
             finalizeOutcome("failed", "no_tool_outcome_return", {
               iteration,
+            });
+            loopLog("error", "loop_failed", {
+              reason: "no_tool_outcome_return",
             });
           }
           return;
@@ -1237,6 +1638,143 @@
               result: ToolResult;
             } => Boolean(entry),
           );
+        loopLog("info", "tool_results_normalized", {
+          allToolCalls: allToolCalls.length,
+          normalizedResults: normalizedToolResults.length,
+        });
+
+        const completionCandidate = normalizedToolResults.find(
+          (entry) => entry.name === "attempt_completion" && entry.result.success,
+        );
+        if (completionCandidate && touchedFilePaths.size > 0) {
+          const touchedPaths = Array.from(touchedFilePaths);
+          try {
+            const diagnosticsGateResult = await executeToolCall(
+              "get_diagnostics",
+              { paths: touchedPaths },
+              {
+                signal: controller.signal,
+                idempotencyKey: getToolIdempotencyKey(
+                  toolRunScope,
+                  `completion_gate_${completionCandidate.id}`,
+                  "get_diagnostics",
+                  { paths: touchedPaths },
+                ),
+              },
+            );
+            const diagMeta = (diagnosticsGateResult.meta ??
+              {}) as Record<string, unknown>;
+            const errorCount = Number(diagMeta.errorCount ?? 0);
+            if (errorCount > 0) {
+              const gateMessage = `Completion blocked by diagnostics: ${errorCount} error(s) remain in touched files.`;
+              completionCandidate.result = {
+                ...completionCandidate.result,
+                success: false,
+                error: gateMessage,
+                meta: {
+                  ...(completionCandidate.result.meta ?? {}),
+                  code: "COMPLETION_BLOCKED_BY_DIAGNOSTICS",
+                  errorCount,
+                  touchedPaths,
+                },
+              };
+              assistantStore.updateToolCallInMessage(
+                msgId,
+                completionCandidate.id,
+                {
+                  status: "failed",
+                  error: gateMessage,
+                  endTime: Date.now(),
+                  meta: {
+                    code: "COMPLETION_BLOCKED_BY_DIAGNOSTICS",
+                    errorCount,
+                    touchedPaths,
+                  },
+                },
+              );
+              assistantStore.addToolMessage({
+                id: `completion_gate_${Date.now()}`,
+                name: "_system_completion_gate",
+                arguments: {},
+                status: "completed",
+                output:
+                  "Completion is blocked because edited files still have diagnostics errors. Fix errors in touched files, then call attempt_completion again.",
+              });
+            }
+          } catch {
+            // If diagnostics collection fails, keep current completion behavior.
+          }
+        }
+        if (completionCandidate) {
+          const unresolvedEditFailures = new Map<
+            string,
+            { toolName: string; error: string }
+          >();
+          for (const toolCall of allToolCalls) {
+            const toolResult = normalizedToolResults.find(
+              (entry) => entry.id === toolCall.id,
+            );
+            if (!toolResult || !isFileMutatingTool(toolCall.name)) continue;
+
+            const rawPath =
+              typeof toolCall.arguments?.path === "string"
+                ? String(toolCall.arguments.path).trim()
+                : typeof toolCall.arguments?.oldPath === "string"
+                  ? String(toolCall.arguments.oldPath).trim()
+                  : "";
+            const pathKey = rawPath || `__tool:${toolCall.name}`;
+
+            if (toolResult.result.success) {
+              unresolvedEditFailures.delete(pathKey);
+              continue;
+            }
+            unresolvedEditFailures.set(pathKey, {
+              toolName: toolCall.name,
+              error: String(
+                toolResult.result.error ??
+                  toolResult.result.output ??
+                  "Edit tool failed",
+              ),
+            });
+          }
+
+          if (unresolvedEditFailures.size > 0) {
+            const [firstPath] = Array.from(unresolvedEditFailures.keys());
+            const gateMessage =
+              "Completion blocked: unresolved edit failures remain. Fix failed edit tool calls before completing.";
+            completionCandidate.result = {
+              ...completionCandidate.result,
+              success: false,
+              error: gateMessage,
+              meta: {
+                ...(completionCandidate.result.meta ?? {}),
+                code: "COMPLETION_BLOCKED_BY_EDIT_FAILURES",
+                unresolvedEditFailures: Array.from(
+                  unresolvedEditFailures.entries(),
+                ).map(([path, info]) => ({
+                  path,
+                  toolName: info.toolName,
+                  error: info.error,
+                })),
+              },
+            };
+            assistantStore.updateToolCallInMessage(msgId, completionCandidate.id, {
+              status: "failed",
+              error: gateMessage,
+              endTime: Date.now(),
+              meta: {
+                code: "COMPLETION_BLOCKED_BY_EDIT_FAILURES",
+              },
+            });
+            assistantStore.addToolMessage({
+              id: `completion_edit_gate_${Date.now()}`,
+              name: "_system_completion_gate",
+              arguments: {},
+              status: "completed",
+              output: `Completion blocked because an edit failed (${firstPath}). Re-read the file and apply a corrected patch before calling attempt_completion again.`,
+            });
+          }
+        }
 
         const eagerIds = new Set(allEagerResults.map((r) => r.id));
         const toolsNeedingApproval = pendingToolCalls.filter(
@@ -1266,7 +1804,7 @@
               toolRunScope,
               signal: controller.signal,
               getFailureSignature,
-              trackToolOutcome: () => {},
+              trackToolOutcome,
               onFailureSignature: (signature) => {
                 const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
                 failureSignatureCounts.set(signature, count);
@@ -1351,6 +1889,10 @@
             iteration,
             completionToolId: completionResult.id,
           });
+          loopLog("info", "loop_completed", {
+            reason: "attempt_completion",
+            completionToolId: completionResult.id,
+          });
           logOutput(
             "Volt",
             `Agent: Completion accepted via attempt_completion at iteration ${iteration}.`,
@@ -1363,6 +1905,28 @@
         justProcessedToolResults = true;
       } catch (err) {
         if (controller.signal.aborted) {
+          if (stalledAbortReason) {
+            assistantStore.markAssistantMessageStreamState(
+              msgId,
+              "failed",
+              stalledAbortReason,
+            );
+            assistantStore.setAgentLoopState("failed", {
+              iteration,
+              reason: "stream_stalled",
+              error: stalledAbortReason,
+            });
+            finalizeOutcome("failed", "stream_stalled", {
+              iteration,
+              error: stalledAbortReason,
+            });
+            loopLog("error", "loop_failed", {
+              reason: "stream_stalled",
+              error: stalledAbortReason,
+            });
+            showToast({ message: stalledAbortReason, type: "warning" });
+            return;
+          }
           assistantStore.markAssistantMessageStreamState(
             msgId,
             "cancelled",
@@ -1375,9 +1939,15 @@
           finalizeOutcome("cancelled", "abort_during_iteration", {
             iteration,
           });
+          loopLog("warn", "loop_cancelled", {
+            reason: "abort_during_iteration",
+          });
           return;
         }
         const msg = err instanceof Error ? err.message : "Unknown error";
+        loopLog("error", "iteration_exception", {
+          error: msg,
+        });
         const isInterrupted =
           /interrupted|idle timeout|stream.*ended|before completion|cancelled/i.test(
             msg,
@@ -1470,6 +2040,16 @@
 
   function handleStop(): void {
     assistantStore.stopStreaming();
+  }
+
+  function handleQuickPrompt(prompt: string): void {
+    assistantStore.setInputValue(prompt, "user");
+    if (inputRef) {
+      inputRef.value = prompt;
+      const cursor = prompt.length;
+      inputRef.setSelectionRange(cursor, cursor);
+      inputRef.focus();
+    }
   }
 
   function handleModeChange(mode: AIMode): void {
@@ -1927,6 +2507,7 @@
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
       isStreaming={isAssistantBusy}
+      onQuickPrompt={handleQuickPrompt}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
       onStartImplementation={handleStartImplementation}

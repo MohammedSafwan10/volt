@@ -4,40 +4,95 @@
 
   interface Props {
     currentMode: AIMode;
+    onQuickPrompt?: (prompt: string) => void;
   }
 
-  let { currentMode }: Props = $props();
+  let { currentMode, onQuickPrompt }: Props = $props();
 
   const content = $derived.by(() => {
     switch (currentMode) {
       case "agent":
         return {
           title: "Agent Mode",
-          hint: "I can execute tasks, run commands, edit files, and help you build features.",
+          hint: "Run tasks across search, edits, and verification.",
           actions: [
-            { icon: "file-plus" as const, label: "Create a component" },
-            { icon: "pencil" as const, label: "Refactor this file" },
-            { icon: "terminal" as const, label: "Run tests" },
+            {
+              icon: "file-plus" as const,
+              label: "Create component",
+              desc: "Scaffold and wire a new reusable component.",
+              prompt:
+                "Create a new reusable component in this project. Follow existing patterns and verify after edits.",
+            },
+            {
+              icon: "pencil" as const,
+              label: "Refactor current file",
+              desc: "Improve structure without changing behavior.",
+              prompt:
+                "Refactor the currently active file for readability and maintainability without changing behavior.",
+            },
+            {
+              icon: "terminal" as const,
+              label: "Find and fix bugs",
+              desc: "Prioritize high-impact issues and patch them.",
+              prompt:
+                "Find the most important bugs in this workspace, fix them safely, and run verification after edits.",
+            },
           ],
         };
       case "plan":
         return {
           title: "Plan Mode",
-          hint: "Let me help you design and plan features with detailed specs.",
+          hint: "Create implementation-ready plans with clear milestones.",
           actions: [
-            { icon: "file" as const, label: "Design a feature" },
-            { icon: "code" as const, label: "Plan architecture" },
-            { icon: "search" as const, label: "Review requirements" },
+            {
+              icon: "file" as const,
+              label: "Design feature plan",
+              desc: "Scope, files, risks, and acceptance criteria.",
+              prompt:
+                "Design a full implementation plan for this feature request with scope, files to change, test plan, and rollout notes.",
+            },
+            {
+              icon: "code" as const,
+              label: "Architecture review",
+              desc: "Propose cleaner structure with tradeoffs.",
+              prompt:
+                "Review the current architecture and propose a better structure with tradeoffs and migration steps.",
+            },
+            {
+              icon: "search" as const,
+              label: "Requirement breakdown",
+              desc: "Convert goals into phased execution steps.",
+              prompt:
+                "Break down this requirement into clear phases, acceptance criteria, risks, and validation steps.",
+            },
           ],
         };
       default:
         return {
-          title: "How can I help?",
-          hint: "Ask me anything about your code. I can explain or help debug.",
+          title: "Ask Mode",
+          hint: "Quick explanations, debugging, and code understanding.",
           actions: [
-            { icon: "code" as const, label: "Explain this code" },
-            { icon: "warning" as const, label: "Fix a bug" },
-            { icon: "info" as const, label: "How does this work?" },
+            {
+              icon: "code" as const,
+              label: "Explain code",
+              desc: "Understand structure and logic fast.",
+              prompt:
+                "Explain the active file in simple terms: purpose, key functions, data flow, and possible issues.",
+            },
+            {
+              icon: "warning" as const,
+              label: "Debug issue",
+              desc: "Narrow root causes step by step.",
+              prompt:
+                "Help me debug this issue step by step. Start with likely root causes and how to confirm each one.",
+            },
+            {
+              icon: "info" as const,
+              label: "How it works",
+              desc: "Summarize architecture and runtime flow.",
+              prompt:
+                "How does this project work end-to-end? Summarize architecture, runtime flow, and key modules.",
+            },
           ],
         };
     }
@@ -45,152 +100,122 @@
 </script>
 
 <div class="empty-state">
-  <div class="welcome-container">
-    <div class="empty-icon {currentMode}">
-      {#if currentMode === 'agent'}
-        <!-- Custom Agent Icon: Technical Robot Head -->
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 8V4H8" />
-          <rect x="5" y="8" width="14" height="12" rx="2" />
-          <path d="M9 12h.01" />
-          <path d="M15 12h.01" />
-          <path d="M9 16h6" />
-        </svg>
-      {:else if currentMode === 'plan'}
-        <!-- Custom Plan Icon: Strategic Roadmap -->
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 3v18h18" />
-          <path d="M18 9l-5 5-2-2-4 4" />
-          <circle cx="18" cy="9" r="2" />
-        </svg>
-      {:else}
-        <!-- Custom Ask Icon: Clean Message Bubble -->
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          <path d="M12 10h.01" />
-        </svg>
-      {/if}
-    </div>
+  <header class="empty-header">
     <h3 class="empty-title">{content.title}</h3>
     <p class="empty-hint">{content.hint}</p>
-  </div>
+  </header>
 
-  <div class="quick-actions">
+  <section class="quick-actions" aria-label="Starter prompts">
     {#each content.actions as action (action.label)}
-      <button class="quick-action" type="button">
-        <div class="action-icon">
+      <button
+        class="quick-action"
+        type="button"
+        onclick={() => onQuickPrompt?.(action.prompt)}
+        title={action.prompt}
+      >
+        <div class="action-leading">
           <UIIcon name={action.icon} size={16} />
         </div>
-        <span class="action-label">{action.label}</span>
+        <div class="action-content">
+          <span class="action-label">{action.label}</span>
+          <span class="action-desc">{action.desc}</span>
+        </div>
+        <UIIcon name="arrow-right" size={14} />
       </button>
     {/each}
-  </div>
+  </section>
 </div>
 
 <style>
   .empty-state {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 60px 24px;
-    gap: 32px;
+    gap: 12px;
     flex: 1;
-    height: 100%;
+    padding: 14px 12px 10px;
+    max-width: 620px;
+    margin: 0 auto;
+    width: 100%;
   }
 
-  .welcome-container {
+  .empty-header {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 16px;
-  }
-
-  .empty-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 64px;
-    height: 64px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: var(--color-text-secondary);
-    margin-bottom: 8px;
-    transition: all 0.3s ease;
-  }
-
-  .empty-icon.agent {
-    background: rgba(var(--color-accent-rgb), 0.05);
-    border-color: rgba(var(--color-accent-rgb), 0.15);
-    color: var(--color-accent);
+    gap: 4px;
+    padding: 2px 2px 6px;
   }
 
   .empty-title {
-    font-size: 20px;
-    font-weight: 600;
-    color: #ffffff;
     margin: 0;
+    font-size: 18px;
+    line-height: 1.2;
     letter-spacing: -0.01em;
+    font-weight: 600;
+    color: var(--color-text);
   }
 
   .empty-hint {
-    font-size: 14px;
-    color: var(--color-text-secondary);
-    max-width: 320px;
     margin: 0;
-    line-height: 1.6;
-    opacity: 0.8;
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    line-height: 1.35;
   }
 
   .quick-actions {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 100%;
-    max-width: 280px;
   }
 
   .quick-action {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
-    font-size: 13.5px;
-    color: var(--color-text);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    text-align: left;
+    gap: 10px;
     width: 100%;
+    min-height: 54px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+    background: color-mix(in srgb, var(--color-surface0) 82%, transparent);
+    color: var(--color-text);
+    text-align: left;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
   }
 
   .quick-action:hover {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.1);
+    background: color-mix(in srgb, var(--color-surface1, var(--color-surface0)) 88%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   }
 
-  .action-icon {
+  .action-leading {
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
     color: var(--color-text-secondary);
-    opacity: 0.7;
+    flex: 0 0 auto;
   }
 
-  .quick-action:hover .action-icon {
-    color: var(--color-accent);
-    opacity: 1;
+  .action-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
   }
 
   .action-label {
-    flex: 1;
-    font-weight: 500;
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--color-text);
+  }
+
+  .action-desc {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    line-height: 1.2;
   }
 </style>

@@ -5,19 +5,18 @@
  * Only documents the tools actually available in Ask mode.
  */
 
-// Shared sections imported from prompts-v4
-import { ANTI_HALLUCINATION, LARGE_PROJECT_STRATEGY, CONTEXT_AWARENESS, PROVIDER_GEMINI, DESIGN_EXCELLENCE, buildMcpSection } from './prompts-v4';
+import { PROVIDER_GEMINI, buildMcpSection } from './prompt-shared';
 import { buildCategoryToolGuidance } from './tool-guidance';
 
 export interface AskPromptOptions {
-    provider: string;
+    provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai';
     workspaceRoot?: string;
     mcpTools?: Array<{
-        serverId: string;
-        toolName: string;
-        description?: string;
-        required?: string[];
-        params?: string[];
+      serverId: string;
+      toolName: string;
+      description?: string;
+      required?: string[];
+      params?: string[];
     }>;
 }
 
@@ -28,8 +27,8 @@ You are Volt, an AI code assistant in **Ask mode**. You help users understand co
 ## Core Rules
 
 1. **READ ONLY** — You can read files and search code, but you CANNOT modify anything.
-2. **No file editing** — Do NOT attempt str_replace, write_file, multi_replace, replace_lines, append_file, or any write tool.
-3. **No terminal** — Do NOT attempt run_command, start_process, or any terminal tool.
+2. **No file editing** — Do NOT attempt apply_patch or any write tool.
+3. **No terminal** — Do NOT attempt run_command.
 4. **No file creation** — Do NOT attempt to create or delete files.
 5. **Explain, don't execute** — If the user asks you to fix/change/add something, explain HOW they could do it (with code snippets in your response) but do NOT call editing tools.
 
@@ -56,40 +55,26 @@ You have access to READ-ONLY tools only. Use these to explore and understand cod
 ## Reading Files
 | Tool | When to Use |
 |------|-------------|
-| read_file | Read file content (specific line ranges) |
-| read_files | Read multiple files at once |
-| read_code | Smart reader — functions, classes by name. 100x smaller than read_file. |
-| file_outline | Structure only (functions, classes, types + line ranges). Use first on unfamiliar files. |
+| read_file | Read file content (use offset/limit for focused slices) |
+| list_dir | List directory contents when locating files |
 
 ## Searching
 | Tool | When to Use |
 |------|-------------|
 | workspace_search | Find text/patterns across the codebase |
-| find_files | Find files by name/pattern |
-| search_symbols | Find functions, classes, types by name |
-| get_file_tree | See project directory structure |
-| list_dir | List directory contents with sizes |
 
 ## Diagnostics
 | Tool | When to Use |
 |------|-------------|
 | get_diagnostics | Check TypeScript/lint errors in a file |
-| get_file_info | File metadata (size, modified date) |
-
-## Editor Context
-| Tool | When to Use |
-|------|-------------|
-| get_active_file | See what file the user has open |
-| get_selection | See what code the user has selected |
-| get_open_files | See all open editor tabs |
 
 ## Decision Tree
 
 \`\`\`
 User asks a question?
-├── About a specific file → read_code or file_outline, then explain
-├── About architecture → get_file_tree + read key files, then explain
-├── About a symbol → search_symbols + workspace_search, then explain
+├── About a specific file → read_file, then explain
+├── About architecture → list_dir + read key files, then explain
+├── About a symbol → workspace_search, then explain
 ├── About errors → get_diagnostics, then explain
 ├── Wants changes → Explain how (code snippets), suggest Agent mode
 └── General question → Answer from knowledge
@@ -100,10 +85,6 @@ export function buildAskPrompt(options: AskPromptOptions): string {
         ASK_IDENTITY,
         ASK_TOOLS,
         buildCategoryToolGuidance('ask'),
-        LARGE_PROJECT_STRATEGY,
-        ANTI_HALLUCINATION,
-        CONTEXT_AWARENESS,
-        DESIGN_EXCELLENCE,
     ];
 
     if (options.provider === 'gemini') {

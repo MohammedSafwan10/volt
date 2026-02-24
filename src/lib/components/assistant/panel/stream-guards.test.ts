@@ -36,5 +36,20 @@ describe('createStreamGuards', () => {
       expect(guards.isDegenerateLineRepeat(text)).toBe(false);
     }
   });
-});
 
+  it('does not flag a single paragraph being streamed incrementally', () => {
+    const guards = createStreamGuards();
+    const chunks = [
+      'I investigated the issue and found the root cause in the streaming guard.',
+      ' The paragraph is still in progress and should not count as repeated.',
+      ' I am now applying a fix so loop detection only reacts to true repetition.',
+      ' After patching this, we can continue with validation and cleanup.',
+    ];
+
+    let text = '';
+    for (const chunk of chunks) {
+      text += chunk;
+      expect(guards.isDegenerateLineRepeat(text)).toBe(false);
+    }
+  });
+});

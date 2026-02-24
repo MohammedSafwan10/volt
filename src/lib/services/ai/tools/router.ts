@@ -9,22 +9,33 @@
  */
 
 import { projectStore } from '$lib/stores/project.svelte';
-import { getAllToolsForMode, getToolByName, isToolAllowed } from './definitions';
-import { validatePathInWorkspace, type ToolResult, type CanonicalToolResult } from './utils';
+import { assistantStore } from '$lib/stores/assistant.svelte';
+import {
+  getAllToolsForMode,
+  getToolByName,
+  isToolAllowed,
+  RETIRED_TOOL_NAMES,
+} from './definitions';
+import { isBrowserToolBlocked } from './browser-gate';
+import {
+  normalizeToolOutputBudget,
+  validatePathInWorkspace,
+  type ToolResult,
+  type CanonicalToolResult,
+} from './utils';
 import { toolHandlers } from './handlers';
 import { isMcpTool, executeMcpTool, isMcpToolAutoApproved, getMcpToolInfo } from './handlers/mcp';
 import type { AIMode } from '$lib/stores/ai.svelte';
 import { getToolCapabilities } from './capabilities';
 import { toolObservabilityStore } from '$lib/stores/tool-observability.svelte';
 import { agentTelemetryStore } from '$lib/stores/agent-telemetry.svelte';
+import { afterToolHook, beforeToolHook } from './hooks';
 
 // Timeout for tool operations (30 seconds default)
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max
 const TERMINAL_TOOL_DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const HIDDEN_HANDLER_NAMES = new Set([
-  'apply_edit',
-  'delete_path',
   'lsp_go_to_definition',
   'lsp_find_references',
   'lsp_get_hover',
@@ -41,8 +52,6 @@ const TOOL_MAX_ATTEMPTS: Record<string, number> = {
   browser_get_security_report: 3,
 };
 const TOOL_NAME_ALIASES: Record<string, string> = {
-  command: 'run_command',
-  terminal_command: 'run_command',
   shell_command: 'run_command',
 };
 
@@ -84,6 +93,15 @@ export function validateToolCall(
   mode: AIMode
 ): ToolValidation {
   const canonicalToolName = normalizeToolName(toolName);
+  if (isBrowserToolBlocked(canonicalToolName, assistantStore.browserToolsEnabled)) {
+    return {
+      valid: false,
+      error:
+        'Browser tools are disabled. Enable Browser tools in chat (globe toggle) to use this tool.',
+      requiresApproval: false,
+    };
+  }
+
   // Check if it's an MCP tool
   if (isMcpTool(canonicalToolName)) {
     // MCP tools are allowed in agent mode only
@@ -103,9 +121,23 @@ export function validateToolCall(
   // Check if tool exists
   const tool = getToolByName(canonicalToolName);
   if (!tool) {
+    if (RETIRED_TOOL_NAMES.has(canonicalToolName)) {
+      return {
+        valid: false,
+        error: `Tool "${canonicalToolName}" was removed from strict profile. Use read_file/workspace_search/apply_patch/run_command equivalents.`,
+        requiresApproval: false,
+      };
+    }
     const suggestion = suggestToolName(canonicalToolName, mode);
     const suffix = suggestion ? ` Did you mean "${suggestion}"?` : '';
     return { valid: false, error: `Unknown tool: ${canonicalToolName}.${suffix}`, requiresApproval: false };
+  }
+  if (RETIRED_TOOL_NAMES.has(canonicalToolName)) {
+    return {
+      valid: false,
+      error: `Tool "${canonicalToolName}" was removed from strict profile. Use read_file/workspace_search/apply_patch/run_command equivalents.`,
+      requiresApproval: false,
+    };
   }
 
   // Check if tool is allowed in current mode
@@ -121,6 +153,19 @@ export function validateToolCall(
   const paramError = validateRequiredParams(canonicalToolName, args);
   if (paramError) {
     return { valid: false, error: paramError, requiresApproval: false };
+  }
+  if (
+    canonicalToolName === 'read_file' &&
+    (typeof args.start_line === 'number' ||
+      typeof args.end_line === 'number' ||
+      typeof args.startLine === 'number' ||
+      typeof args.endLine === 'number')
+  ) {
+    return {
+      valid: false,
+      error: 'read_file now requires Codex-style slice args: use "offset" and "limit" (line-based).',
+      requiresApproval: false,
+    };
   }
 
   // Validate path is within workspace (if path param exists)
@@ -174,160 +219,30 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     return `Missing "${key}"`;
   };
 
-  const requireArray = (key: string): string | null => {
-    if (Array.isArray(args[key]) && args[key].length > 0) return null;
-    return `Missing "${key}" (expected array)`;
-  };
-
   switch (toolName) {
     // Read tools
     case 'list_dir':
     case 'read_file':
     case 'get_file_info':
-    case 'file_outline':
       return requireString('path');
 
-    case 'read_files':
-      return requireArray('paths');
-
-    // Search tools
     case 'workspace_search':
-    case 'find_files':
-    case 'search_symbols':
       return requireString('query');
 
     // Write tools
-    case 'write_file':
-    case 'append_file': {
+    case 'apply_patch': {
       const pathErr = requireString('path');
       if (pathErr) return pathErr;
-      // Accept both 'text' and 'content'
-      const hasText = typeof args.text === 'string';
-      const hasContent = typeof args.content === 'string';
-      if (!hasText && !hasContent) return 'Missing "text"';
-      return null;
-    }
-
-    case 'str_replace':
-    case 'apply_edit': {
-      const pathErr = requireString('path');
-      if (pathErr) return pathErr;
-      // Accept both new and old param names
-      const hasOld = typeof args.oldStr === 'string' || typeof args.original_snippet === 'string';
-      const hasNew = typeof args.newStr === 'string' || typeof args.new_snippet === 'string';
-      if (!hasOld) return 'Missing "oldStr"';
-      if (!hasNew) return 'Missing "newStr"';
-      return null;
-    }
-
-    case 'create_dir':
-      return requireString('path');
-
-    case 'delete_file':
-    case 'delete_path': {
-      const pathErr = requireString('path');
-      if (pathErr) return pathErr;
-      return requireString('explanation');
-    }
-
-    case 'rename_path': {
-      const oldErr = requireString('oldPath');
-      if (oldErr) return oldErr;
-      return requireString('newPath');
-    }
-
-    case 'write_plan_file': {
-      const filenameErr = requireString('filename');
-      if (filenameErr) return filenameErr;
-      return requireString('content');
-    }
-
-    case 'replace_lines': {
-      const pathErr = requireString('path');
-      if (pathErr) return pathErr;
-      if (typeof args.start_line !== 'number') return 'Missing "start_line"';
-      if (typeof args.end_line !== 'number') return 'Missing "end_line"';
-      if (typeof args.content !== 'string') return 'Missing "content"';
-      return null;
-    }
-
-    case 'multi_replace': {
-      const pathErr = requireString('path');
-      if (pathErr) return pathErr;
-      if (!Array.isArray(args.edits) || args.edits.length === 0) return 'Missing "edits" (expected non-empty array)';
-      return null;
+      return requireString('patch');
     }
 
     // Terminal tools
     case 'run_command':
-    case 'start_process':
       return requireString('command');
 
-    case 'send_terminal_input':
-      return requireString('text');
-
-    case 'stop_process':
-    case 'get_process_output':
-    case 'command_status':
-      if (typeof args.processId !== 'number') return 'Missing "processId"';
-      return null;
-
-    case 'list_processes':
-    case 'read_terminal':
-      return null;
-
     // Browser tools - read-only
-    case 'browser_get_console_logs':
-    case 'browser_get_errors':
-    case 'browser_get_network_requests':
-    case 'browser_get_performance':
-    case 'browser_get_selected_element':
-    case 'browser_get_summary':
-    case 'browser_get_application_storage':
-    case 'browser_get_security_report':
-    case 'browser_screenshot':
-    case 'browser_scroll':
-      return null;
-
-    case 'browser_get_network_request_details':
-      return requireString('request_id');
-
-    case 'browser_propose_action':
-      return null;
-
-    case 'browser_preview_action':
-      return requireString('action_id');
-
-    case 'browser_execute_action': {
-      const actionErr = requireString('action_id');
-      if (actionErr) return actionErr;
-      return requireString('approval_token');
-    }
-
-    case 'browser_navigate':
-      return requireString('url');
-
-    case 'browser_click':
-    case 'browser_get_element':
-    case 'browser_wait_for':
-      return requireString('selector');
-
-    case 'browser_get_elements':
-      return requireString('selector');
-
-    case 'browser_type':
-      return requireString('text');
-
-    case 'browser_evaluate':
-      return requireString('expression');
-
     // No required params
-    case 'get_file_tree':
-    case 'get_active_file':
-    case 'get_selection':
-    case 'get_open_files':
     case 'get_diagnostics':
-    case 'get_tool_metrics':
       return null;
 
     case 'attempt_completion':
@@ -377,7 +292,14 @@ export function getToolContractParity(): {
     .sort();
 
   const orphanHandlers = [...handlerTools]
-    .filter((name) => !definedTools.has(name) && !HIDDEN_HANDLER_NAMES.has(name) && !isMcpTool(name))
+    .filter(
+      (name) =>
+        !definedTools.has(name) &&
+        !getToolByName(name) &&
+        !HIDDEN_HANDLER_NAMES.has(name) &&
+        !RETIRED_TOOL_NAMES.has(name) &&
+        !isMcpTool(name),
+    )
     .sort();
 
   return { missingHandlers, orphanHandlers };
@@ -531,6 +453,21 @@ async function executeToolCallInternal(
   options: ToolExecutionOptions & { signature: string }
 ): Promise<CanonicalToolResult> {
   const { signal, idempotencyKey, signature } = options;
+  if (RETIRED_TOOL_NAMES.has(toolName)) {
+    return normalizeToolResult(
+      toolName,
+      {
+        success: false,
+        error: `Tool "${toolName}" was removed from strict profile. Use read_file/workspace_search/apply_patch/run_command equivalents.`,
+      },
+      {
+        idempotencyKey,
+        signature,
+        attempt: 1,
+        maxAttempts: 1,
+      },
+    );
+  }
 
   if (isMcpTool(toolName)) {
     const startedAt = Date.now();
@@ -585,6 +522,13 @@ async function executeToolCallInternal(
     });
 
     try {
+      beforeToolHook({
+        toolName,
+        args,
+        attempt: attempt + 1,
+        maxAttempts,
+        startedAt: execStarted,
+      });
       const result = await Promise.race([
         handler(args),
         timeoutPromise,
@@ -594,6 +538,24 @@ async function executeToolCallInternal(
       const normalized = normalizeToolResult(toolName, result, {
         idempotencyKey,
         signature,
+        attempt: attempt + 1,
+        maxAttempts,
+      });
+      const hookOutcome = afterToolHook(
+        {
+          toolName,
+          args,
+          attempt: attempt + 1,
+          maxAttempts,
+          startedAt: execStarted,
+        },
+        normalized,
+      );
+      agentTelemetryStore.record({
+        type: 'agent.tool.hook',
+        timestamp: Date.now(),
+        toolName,
+        parseCategory: hookOutcome.parseCategory ?? 'none',
         attempt: attempt + 1,
         maxAttempts,
       });
@@ -661,15 +623,15 @@ function normalizeToolResult(
     ? (baseError || '')
     : (baseError || baseOutput || 'Tool execution failed');
   const output = baseOutput || (success ? '[ok]' : '');
+  const budgeted = normalizeToolOutputBudget(toolName, output);
   const code = success ? 'OK' : mapErrorCode(error);
   const retryable = success ? false : isRetryableError(error);
   const warnings = Array.isArray(result.warnings)
     ? result.warnings.filter((item): item is string => typeof item === 'string')
     : [];
-
   return {
     success,
-    output,
+    output: budgeted.output,
     error,
     data: result.data ?? null,
     warnings,
@@ -684,17 +646,24 @@ function normalizeToolResult(
     code,
     retryable,
     timestamp: Date.now(),
-    truncated: result.truncated,
+    truncated: result.truncated || budgeted.truncated,
   };
 }
 
 function mapErrorCode(error?: string): string {
   const message = (error ?? '').toLowerCase();
   if (!message) return 'ERROR';
+  if (message.includes('completion blocked by diagnostics')) return 'COMPLETION_BLOCKED_BY_DIAGNOSTICS';
+  if (message.includes('retry exhausted')) return 'EDIT_RETRY_EXHAUSTED';
+  if (message.includes('content changed on disk')) return 'EDIT_STALE_CONTENT';
   if (message.includes('timed out')) return 'TIMEOUT';
   if (message.includes('cancelled')) return 'CANCELLED';
   if (message.includes('no handler') || message.includes('unknown tool')) return 'TOOL_NOT_FOUND';
+  if (message.includes('removed from strict profile')) return 'TOOL_DEPRECATED';
   if (message.includes('missing')) return 'MISSING_PARAM';
+  if (message.includes('read-before-edit guard') || message.includes('read before edit')) {
+    return 'READ_REQUIRED_BEFORE_EDIT';
+  }
   if (message.includes('outside workspace')) return 'PATH_OUTSIDE_WORKSPACE';
   if (message.includes('not found')) return 'NOT_FOUND';
   if (message.includes('permission') || message.includes('denied')) return 'PERMISSION_DENIED';

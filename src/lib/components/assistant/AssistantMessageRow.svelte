@@ -550,8 +550,9 @@
               <!-- Inline thinking block (Cursor-style - minimal) -->
               <details
                 class="inline-thinking"
-                open={manualThinkingStates[thinkingKey] ??
-                  (autoExpandThinking ? part.isActive : false)}
+                open={part.isActive ||
+                  (manualThinkingStates[thinkingKey] ??
+                    (autoExpandThinking ? part.isActive : false))}
                 ontoggle={(e) => handleThinkingToggle(thinkingKey, e)}
               >
                 <summary class="thinking-header">

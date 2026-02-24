@@ -10,6 +10,10 @@ export function createStreamGuards(): StreamGuards {
   let repeatedChunkCount = 0;
   let lastLine = '';
   let repeatedLineCount = 0;
+  let lastParagraphSignature = '';
+  let lastPairSignature = '';
+  let lastParagraphCount = 0;
+  let lastPairParagraphCount = 0;
   const paragraphWindow: string[] = [];
   const paragraphCounts = new Map<string, number>();
   const pairWindow: string[] = [];
@@ -96,7 +100,12 @@ export function createStreamGuards(): StreamGuards {
     // treat as degenerate stream regardless of specific wording.
     const lastParagraph = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : '';
     const paragraphSignature = normalizeForSignature(lastParagraph).slice(0, 220);
-    if (paragraphSignature.length >= 60) {
+    const paragraphAdvanced = paragraphs.length > lastParagraphCount;
+    if (
+      paragraphSignature.length >= 60 &&
+      (paragraphSignature !== lastParagraphSignature || paragraphAdvanced)
+    ) {
+      lastParagraphSignature = paragraphSignature;
       const seen = trackSignature(
         paragraphSignature,
         paragraphWindow,
@@ -105,16 +114,23 @@ export function createStreamGuards(): StreamGuards {
       );
       if (seen >= 4) return true;
     }
+    lastParagraphCount = paragraphs.length;
 
     // Catch two-paragraph loop patterns (A+B repeated) that avoid single-line repeats.
     if (paragraphs.length >= 2) {
       const pairSignature = normalizeForSignature(
         `${paragraphs[paragraphs.length - 2]}\n${paragraphs[paragraphs.length - 1]}`,
       ).slice(0, 320);
-      if (pairSignature.length >= 120) {
+      const pairAdvanced = paragraphs.length > lastPairParagraphCount;
+      if (
+        pairSignature.length >= 120 &&
+        (pairSignature !== lastPairSignature || pairAdvanced)
+      ) {
+        lastPairSignature = pairSignature;
         const seen = trackSignature(pairSignature, pairWindow, pairCounts, 16);
         if (seen >= 3) return true;
       }
+      lastPairParagraphCount = paragraphs.length;
     }
 
     return false;
@@ -125,6 +141,10 @@ export function createStreamGuards(): StreamGuards {
     repeatedChunkCount = 0;
     lastLine = '';
     repeatedLineCount = 0;
+    lastParagraphSignature = '';
+    lastPairSignature = '';
+    lastParagraphCount = 0;
+    lastPairParagraphCount = 0;
     paragraphWindow.length = 0;
     paragraphCounts.clear();
     pairWindow.length = 0;

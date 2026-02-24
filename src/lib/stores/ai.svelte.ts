@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { validateGeminiKey } from '$lib/services/ai/gemini';
 import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
 import { validateAnthropicKey } from '$lib/services/ai/anthropic';
+import { validateOpenAIKey } from '$lib/services/ai/openai';
 import { getModelConfig, upsertModelConfig, type ModelConfig } from '$lib/services/ai/models';
 
 // Supported AI providers
@@ -270,6 +271,8 @@ class AISettingsStore {
         result = await validateOpenRouterKey(key);
       } else if (provider === 'anthropic') {
         result = await validateAnthropicKey(key);
+      } else if (provider === 'openai') {
+        result = await validateOpenAIKey(key);
       } else {
         result = { success: false, error: 'Unknown provider' };
       }

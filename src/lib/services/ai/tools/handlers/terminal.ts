@@ -917,28 +917,39 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
     };
   }
 
-  // Helper: get output since offset
-  const getOutput = (): { text: string; newOffset: number; fullOutput: string } => {
-    const fullOutput = session.getRecentCleanOutput(maxLines * 400);
-    const sliced = sinceOffset > 0 ? fullOutput.slice(sinceOffset) : fullOutput;
+  const maxChars = Math.max(maxLines * 400, 4000);
+
+  // Helper: get output since cursor offset from full stream history
+  const getOutput = (): {
+    text: string;
+    newOffset: number;
+    fullOutput: string;
+    truncatedBeforeOffset: boolean;
+  } => {
+    const { text: sliced, nextOffset, truncatedBeforeOffset } =
+      session.readCleanOutputSince(sinceOffset, maxChars * 4);
     const lines = sliced.split('\n').slice(-maxLines).join('\n');
-    return { text: lines, newOffset: sinceOffset + sliced.length, fullOutput };
+    const fullOutput = session.getRecentCleanOutput(maxChars);
+    return {
+      text: lines,
+      newOffset: nextOffset,
+      fullOutput,
+      truncatedBeforeOffset
+    };
   };
 
   // If wait > 0, poll for new output or process exit
   if (waitSeconds > 0) {
     const startTime = Date.now();
     const timeoutMs = waitSeconds * 1000;
-    const initialOutput = getOutput();
-    const initialLength = initialOutput.text.length;
+    const initialCursor = session.getCleanOutputCursor();
 
     while (Date.now() - startTime < timeoutMs) {
       // Check if process has stopped
       if (proc.status !== 'running') break;
 
       // Check for new output
-      const current = getOutput();
-      if (current.text.length > initialLength) break;
+      if (session.getCleanOutputCursor() > initialCursor) break;
 
       // Wait 500ms before next check
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -946,11 +957,14 @@ export async function handleCommandStatus(args: Record<string, unknown>): Promis
   }
 
   // Get final output
-  const { text, newOffset, fullOutput } = getOutput();
+  const { text, newOffset, fullOutput, truncatedBeforeOffset } = getOutput();
   const updated = updateProcessDetectedUrl(proc, fullOutput);
   const elapsed = Date.now() - proc.startTime;
 
   let output = `Process ${processId} (${proc.command}): ${updated.status.toUpperCase()} (${formatDuration(elapsed)})`;
+  if (truncatedBeforeOffset) {
+    output += '\n\n(Older output before the requested offset is no longer in memory.)';
+  }
   if (text.trim()) {
     output += `\n\n${text}`;
   } else {

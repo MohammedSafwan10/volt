@@ -1,5 +1,5 @@
 /**
- * Read tool handlers - read_file, read_files, list_dir, get_file_tree, get_file_info
+ * Read tool handlers - read_file, list_dir, and optional legacy readers
  * 
  * Kiro-style features:
  * - Explanation parameter for intelligent pruning
@@ -156,7 +156,7 @@ function pruneContent(content: string, explanation: string, maxLines = 300): {
 }
 
 /**
- * Read a single file with optional line range
+ * Read a single file with optional line slice
  * Kiro-style: includes line numbers, intelligent pruning based on explanation
  */
 export async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult> {
@@ -178,19 +178,21 @@ export async function handleReadFile(args: Record<string, unknown>): Promise<Too
 
   const totalLines = content.split('\n').length;
 
-  // Handle line range - accept both snake_case and camelCase
-  let startLine = Number(args.start_line ?? args.startLine) || 1;
-  let endLine = Number(args.end_line ?? args.endLine) || totalLines;
-
-  startLine = Math.max(1, startLine);
-  endLine = Math.min(endLine, totalLines);
+  const rawOffset = Number(args.offset);
+  const rawLimit = Number(args.limit);
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(2000, Math.max(1, Math.floor(rawLimit)))
+    : totalLines;
+  const startLine = Math.min(totalLines, offset + 1);
+  const endLine = Math.min(totalLines, startLine + limit - 1);
 
   let output = content;
   let wasPruned = false;
   let relevantRanges: Array<{ start: number; end: number }> = [];
 
-  if (startLine > 1 || endLine < totalLines) {
-    // Explicit line range requested - use it
+  if (offset > 0 || Number.isFinite(rawLimit)) {
+    // Explicit slice requested.
     const lines = content.split('\n');
     output = lines.slice(startLine - 1, endLine).join('\n');
   } else if (explanation) {

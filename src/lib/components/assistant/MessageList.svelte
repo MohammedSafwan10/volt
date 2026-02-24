@@ -20,6 +20,7 @@
     messages: AssistantMessage[];
     currentMode?: AIMode;
     isStreaming?: boolean;
+    onQuickPrompt?: (prompt: string) => void;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
     onStartImplementation?: (plan: {
@@ -35,6 +36,7 @@
     messages,
     currentMode = "ask",
     isStreaming = false,
+    onQuickPrompt,
     onToolApprove,
     onToolDeny,
     onStartImplementation,
@@ -248,7 +250,7 @@
     aria-live="polite"
   >
     {#if messages.length === 0}
-      <EmptyState {currentMode} />
+      <EmptyState {currentMode} {onQuickPrompt} />
     {:else}
       {#each messages as message, msgIdx (message.id)}
         {#if message.role === "user"}

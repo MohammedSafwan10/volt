@@ -18,6 +18,7 @@
   } from "$lib/stores/assistant.svelte";
   import type { Problem } from "$lib/stores/problems.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$lib/services/ai/tools";
+  import { RETIRED_TOOL_NAMES } from "$lib/services/ai/tools/definitions";
 
   interface Props {
     toolCall: ToolCall;
@@ -151,38 +152,13 @@
     workspace_search: "Searched workspace",
     list_dir: "Listed directory",
     read_file: "Read file",
-    read_files: "Read files",
-    get_file_info: "Got file info",
-    get_file_tree: "Got file tree",
-    find_files: "Found files",
-    search_symbols: "Searched symbols",
-    // Editor
-    get_active_file: "Got active file",
-    get_selection: "Got selection",
-    get_open_files: "Got open files",
     // File operations
-    write_file: "Wrote file",
-    append_file: "Appended to file",
-    str_replace: "Edited file",
-    apply_edit: "Edited file",
-    create_file: "Created file",
-    create_dir: "Created directory",
+    apply_patch: "Applied patch",
     delete_file: "Deleted file",
-    delete_path: "Deleted",
     rename_path: "Renamed",
     // Terminal - cleaner names
     run_command: "Run command",
-    start_process: "Start process",
-    stop_process: "Stopped process",
-    list_processes: "Listed processes",
-    get_process_output: "Got process output",
-    terminal_create: "Created terminal",
-    terminal_write: "Executed command",
-    terminal_kill: "Killed terminal",
-    terminal_get_output: "Got terminal output",
-    read_terminal: "Read terminal",
     // Diagnostics
-    run_check: "Ran check",
     get_diagnostics: "Got diagnostics",
     // Browser
     browser_navigate: "Navigated browser",
@@ -215,38 +191,13 @@
     workspace_search: "search",
     list_dir: "folder",
     read_file: "file",
-    read_files: "files",
-    get_file_info: "info",
-    get_file_tree: "files",
-    find_files: "search",
-    search_symbols: "symbol-class",
-    // Editor
-    get_active_file: "file",
-    get_selection: "code",
-    get_open_files: "files",
     // File operations
-    write_file: "pencil",
-    append_file: "file-plus",
-    str_replace: "pencil",
-    apply_edit: "pencil",
-    create_file: "file-plus",
-    create_dir: "folder-plus",
+    apply_patch: "pencil",
     delete_file: "trash",
-    delete_path: "trash",
     rename_path: "pencil",
     // Terminal
     run_command: "terminal",
-    start_process: "play",
-    stop_process: "stop",
-    list_processes: "files",
-    get_process_output: "terminal",
-    terminal_create: "terminal",
-    terminal_write: "terminal",
-    terminal_kill: "close",
-    terminal_get_output: "terminal",
-    read_terminal: "terminal",
     // Diagnostics
-    run_check: "search",
     get_diagnostics: "warning",
     // Browser
     browser_navigate: "globe",
@@ -296,37 +247,13 @@
     workspace_search: "search",
     list_dir: "search",
     read_file: "file",
-    read_files: "file",
-    get_file_info: "file",
-    get_file_tree: "search",
-    find_files: "search",
-    search_symbols: "search",
-    get_active_file: "file",
-    get_selection: "file",
-    get_open_files: "file",
     // Write/Edit
-    write_file: "edit",
-    append_file: "edit",
-    str_replace: "edit",
-    apply_edit: "edit",
-    create_file: "edit",
-    create_dir: "edit",
+    apply_patch: "edit",
     delete_file: "edit",
-    delete_path: "edit",
     rename_path: "edit",
     // Terminal
     run_command: "terminal",
-    start_process: "terminal",
-    stop_process: "terminal",
-    list_processes: "terminal",
-    get_process_output: "terminal",
-    terminal_create: "terminal",
-    terminal_write: "terminal",
-    terminal_kill: "terminal",
-    terminal_get_output: "terminal",
-    read_terminal: "terminal",
     // Diagnostics
-    run_check: "diagnostic",
     get_diagnostics: "diagnostic",
     // Browser
     browser_navigate: "browser",
@@ -352,41 +279,69 @@
     browser_evaluate: "browser",
   };
 
+  function canonicalToolName(name: string): string {
+    if (name === "apply_edit") return "apply_patch";
+    if (name === "delete_path") return "delete_file";
+    return name;
+  }
+
+  function isLegacyAliasName(name: string): boolean {
+    return name === "apply_edit" || name === "delete_path";
+  }
+
   function getToolCategory(): ToolCategory {
-    return toolCategories[toolCall.name] ?? "other";
+    return toolCategories[canonicalToolName(toolCall.name)] ?? "other";
   }
 
   // Get display name for tool
   function getToolDisplayName(): string {
-    return toolDisplayNames[toolCall.name] ?? toolCall.name;
+    const canonical = canonicalToolName(toolCall.name);
+    const label = toolDisplayNames[canonical] ?? canonical;
+    if (isLegacyAliasName(toolCall.name) || RETIRED_TOOL_NAMES.has(canonical)) {
+      return `${label} (legacy)`;
+    }
+    return label;
   }
 
   // Get icon for tool
   function getToolIcon(): UIIconName {
-    return toolIcons[toolCall.name] ?? "code";
+    return toolIcons[canonicalToolName(toolCall.name)] ?? "code";
   }
 
   // Get summary of what the tool is doing
   function getToolSummary(): string {
+    const toolName = canonicalToolName(toolCall.name);
     const args = toolCall.arguments;
     const resultMeta = toolCall.meta as Record<string, unknown> | undefined;
 
-    switch (toolCall.name) {
+    switch (toolName) {
       case "list_dir":
         return args.path ? String(args.path) : ".";
       case "read_file": {
         // No filename here - it will be in the pill
-        const startLine = args.startLine ? Number(args.startLine) : null;
-        const endLine = args.endLine ? Number(args.endLine) : null;
+        const offset =
+          typeof args.offset === "number"
+            ? Number(args.offset)
+            : resultMeta?.startLine
+              ? Number(resultMeta.startLine) - 1
+              : null;
+        const limit =
+          typeof args.limit === "number"
+            ? Number(args.limit)
+            : resultMeta?.endLine && resultMeta?.startLine
+              ? Number(resultMeta.endLine) - Number(resultMeta.startLine) + 1
+              : null;
         if (resultMeta?.startLine && resultMeta?.endLine) {
           return `#L${Number(resultMeta.startLine)}-${Number(resultMeta.endLine)}`;
         }
-        if (startLine && endLine) {
-          return `#L${startLine}-${endLine}`;
-        } else if (startLine) {
-          return `#L${startLine}+`;
-        } else if (endLine) {
-          return `#L1-${endLine}`;
+        if (offset !== null && limit !== null) {
+          const start = offset + 1;
+          const end = Math.max(start, start + limit - 1);
+          return `#L${start}-${end}`;
+        } else if (offset !== null) {
+          return `#L${offset + 1}+`;
+        } else if (limit !== null) {
+          return `#L1-${limit}`;
         }
 
         // Ghost snippet: first 30 chars of output if available
@@ -395,11 +350,6 @@
         }
         return "";
       }
-      case "read_files": {
-        const paths = args.paths as string[] | undefined;
-        if (!paths || paths.length === 0) return "";
-        return `${paths.length} files`;
-      }
       case "workspace_search": {
         const query = args.query ? String(args.query) : "";
         const pattern = args.includePattern
@@ -407,11 +357,8 @@
           : "";
         return query ? `"${query}"${pattern}` : "";
       }
-      case "write_file":
-      case "append_file":
-      case "create_file":
-      case "delete_path":
-      case "create_dir":
+      case "delete_file":
+      case "apply_patch":
         return "";
       case "rename_path":
         const oldP = String(args.oldPath || "")
@@ -423,23 +370,11 @@
         return oldP && newP ? `${oldP} → ${newP}` : "";
       case "run_command":
         return args.command ? String(args.command).slice(0, 50) : "";
-      case "start_process":
-        return args.command ? String(args.command).slice(0, 50) : "";
-      case "stop_process":
-        return args.processId ? `Process ${args.processId}` : "";
-      case "get_process_output":
-        return args.processId ? `Process ${args.processId}` : "";
-      case "list_processes":
-        return "";
-      case "terminal_write":
-        return args.command ? String(args.command).slice(0, 40) : "";
       case "get_diagnostics": {
         const paths = args.paths as string[] | undefined;
         if (!paths || paths.length === 0) return "all files";
         return `${paths.length} files`;
       }
-      case "run_check":
-        return args.checkType ? String(args.checkType) : "";
       case "browser_navigate": {
         const url = args.url ? String(args.url) : "";
         if (!url) return "";

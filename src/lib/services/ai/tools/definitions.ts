@@ -26,6 +26,10 @@ export interface VoltToolDefinition extends ToolDefinition {
   allowedModes: ('ask' | 'plan' | 'agent')[];
 }
 
+const VOLT_BROWSER_TOOLS_ENABLED = false;
+const VOLT_EDITOR_HELPERS_ENABLED = false;
+const VOLT_LEGACY_TOOLS_ENABLED = false;
+
 export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
   // READ TOOLS
@@ -46,14 +50,14 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read file contents. Use start_line/end_line for partial reads. Provide explanation for smarter content pruning.',
+    description: 'Read file contents. Prefer focused reads via offset/limit.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path, e.g. "src/app.ts"' },
-        start_line: { type: 'number', description: 'Start line (1-based)' },
-        end_line: { type: 'number', description: 'End line (inclusive)' },
-        explanation: { type: 'string', description: 'Why you need this file - helps prune irrelevant content' }
+        offset: { type: 'number', description: '0-based line offset (default: 0)' },
+        limit: { type: 'number', description: 'Number of lines to read from offset (default: full file, max 2000)' },
+        explanation: { type: 'string', description: 'Optional reason for focused extraction.' }
       },
       required: ['path']
     },
@@ -299,6 +303,24 @@ Example: multi_replace(path, [{oldStr: "foo", newStr: "bar"}, {oldStr: "baz", ne
         }
       },
       required: ['path', 'edits']
+    },
+    category: 'file_write',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'apply_patch',
+    description: `Apply a Codex patch (*** Begin Patch ... *** End Patch) atomically to one file.
+Only Codex patch grammar is accepted.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path' },
+        patch: { type: 'string', description: 'Unified-diff style hunks for this file' },
+        expected_version: { type: 'number', description: 'Optional optimistic version guard' },
+        postEditDiagnostics: { type: 'boolean', description: 'Run diagnostics after patch (default: true)' }
+      },
+      required: ['path', 'patch']
     },
     category: 'file_write',
     requiresApproval: false,
@@ -898,21 +920,20 @@ Better than get_process_output for monitoring: waits for new output instead of r
   }
 ];
 
-// Keep old tool names as aliases for backward compatibility
-const TOOL_ALIASES: Record<string, string> = {
-  'apply_edit': 'str_replace',
-  'delete_path': 'delete_file'
-};
-
 export function getToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
   return TOOL_DEFINITIONS
     .filter(tool => tool.allowedModes.includes(mode))
+    .filter((tool) => {
+      if (VOLT_BROWSER_TOOLS_ENABLED && VOLT_EDITOR_HELPERS_ENABLED && VOLT_LEGACY_TOOLS_ENABLED) {
+        return true;
+      }
+      return STRICT_CANONICAL_TOOL_NAMES.has(tool.name);
+    })
     .map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
 export function getToolByName(name: string): VoltToolDefinition | undefined {
-  const aliasedName = TOOL_ALIASES[name] || name;
-  return TOOL_DEFINITIONS.find(tool => tool.name === aliasedName);
+  return TOOL_DEFINITIONS.find(tool => tool.name === name);
 }
 
 export function doesToolRequireApproval(toolName: string): boolean {
@@ -928,3 +949,51 @@ export function getAllToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefiniti
   const mcpTools = mode === 'agent' ? getMcpToolDefinitions() : [];
   return [...builtInTools, ...mcpTools];
 }
+
+export const STRICT_CANONICAL_TOOL_NAMES = new Set<string>([
+  'list_dir',
+  'read_file',
+  'workspace_search',
+  'apply_patch',
+  'run_command',
+  'get_diagnostics',
+  'attempt_completion',
+]);
+
+export const RETIRED_TOOL_NAMES = new Set<string>([
+  'read_files',
+  'get_file_tree',
+  'read_code',
+  'file_outline',
+  'find_files',
+  'search_symbols',
+  'get_active_file',
+  'get_selection',
+  'get_open_files',
+  'write_file',
+  'append_file',
+  'str_replace',
+  'replace_lines',
+  'multi_replace',
+  'create_dir',
+  'delete_file',
+  'rename_path',
+  'format_file',
+  'start_process',
+  'stop_process',
+  'list_processes',
+  'get_process_output',
+  'command_status',
+  'read_terminal',
+  'send_terminal_input',
+  'write_plan_file',
+  'grep_files',
+  'view_image',
+  'update_plan',
+  'request_user_input',
+  'spawn_agent',
+  'send_input',
+  'resume_agent',
+  'wait',
+  'close_agent',
+]);

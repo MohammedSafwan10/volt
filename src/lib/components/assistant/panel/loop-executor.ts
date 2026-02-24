@@ -20,6 +20,25 @@ export interface ToolExecutionResult {
   result: ToolResult;
 }
 
+function isRetryableEditTool(name: string): boolean {
+  return (
+    name === 'str_replace' ||
+    name === 'multi_replace' ||
+    name === 'replace_lines' ||
+    name === 'apply_patch'
+  );
+}
+
+function isRetryableEditFailure(errorText: string): boolean {
+  const message = errorText.toLowerCase();
+  return (
+    message.includes('no match') ||
+    message.includes('content changed on disk') ||
+    message.includes('version conflict') ||
+    message.includes('patch apply failed')
+  );
+}
+
 interface NonFileExecutorDeps {
   executeToolCall: (
     name: string,
@@ -80,6 +99,14 @@ export async function executeQueuedNonFileTools(
         ),
       })
       .then((result) => {
+        if (!result.success) {
+          console.warn('[AssistantLoop] tool failed (non-file)', {
+            toolId: queued.id,
+            tool: queued.name,
+            error: result.error,
+            meta: result.meta,
+          });
+        }
         deps.updateToolCallInMessage(deps.messageId, queued.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
@@ -95,6 +122,11 @@ export async function executeQueuedNonFileTools(
       })
       .catch((err) => {
         const error = err instanceof Error ? err.message : String(err);
+        console.error('[AssistantLoop] tool crashed (non-file)', {
+          toolId: queued.id,
+          tool: queued.name,
+          error,
+        });
         deps.updateToolCallInMessage(deps.messageId, queued.id, {
           status: 'failed',
           error,
@@ -155,11 +187,11 @@ export async function executeFileEditQueues(
 
         try {
           const isLastEditForPath = edit.queueIndex === edits.length;
-          const args = {
+          const args: Record<string, unknown> = {
             ...edit.args,
             postEditDiagnostics: isLastEditForPath,
           };
-          const result = await deps.executeToolCall(edit.name, args, {
+          let result = await deps.executeToolCall(edit.name, args, {
             signal: deps.signal,
             idempotencyKey: deps.getToolIdempotencyKey(
               deps.toolRunScope,
@@ -168,6 +200,55 @@ export async function executeFileEditQueues(
               args,
             ),
           });
+          let retried = false;
+          if (
+            !result.success &&
+            isRetryableEditTool(edit.name) &&
+            isRetryableEditFailure(String(result.error ?? result.output ?? ''))
+          ) {
+            retried = true;
+            const retryArgs: Record<string, unknown> = {
+              ...args,
+              auto_retry_once: true,
+            };
+            const retryResult = await deps.executeToolCall(edit.name, retryArgs, {
+              signal: deps.signal,
+              idempotencyKey: deps.getToolIdempotencyKey(
+                deps.toolRunScope,
+                `${edit.id}:retry1`,
+                edit.name,
+                retryArgs,
+              ),
+            });
+            if (!retryResult.success) {
+              retryResult.error = `${retryResult.error ?? 'Retry exhausted'}\n\nRetry exhausted after one automatic re-read/retry attempt.`;
+              retryResult.meta = {
+                ...(retryResult.meta ?? {}),
+                code: 'EDIT_RETRY_EXHAUSTED',
+              };
+            } else {
+              retryResult.meta = {
+                ...(retryResult.meta ?? {}),
+                autoRetrySucceeded: true,
+              };
+            }
+            result = retryResult;
+            console.warn('[AssistantLoop] edit auto-retry', {
+              toolId: edit.id,
+              tool: edit.name,
+              retrySucceeded: retryResult.success,
+              error: retryResult.error,
+            });
+          }
+
+          if (!result.success) {
+            console.warn('[AssistantLoop] tool failed (file-edit)', {
+              toolId: edit.id,
+              tool: edit.name,
+              error: result.error,
+              meta: result.meta,
+            });
+          }
 
           deps.updateToolCallInMessage(deps.messageId, edit.id, {
             status: result.success ? 'completed' : 'failed',
@@ -177,6 +258,7 @@ export async function executeFileEditQueues(
               ...(result.meta || {}),
               editPhase: result.success ? 'done' : 'failed',
               queueIndex: edit.queueIndex,
+              autoRetried: retried,
             },
             data: result.data,
             endTime: Date.now(),
@@ -189,6 +271,11 @@ export async function executeFileEditQueues(
           if (!result.success) previousFailed = true;
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
+          console.error('[AssistantLoop] tool crashed (file-edit)', {
+            toolId: edit.id,
+            tool: edit.name,
+            error,
+          });
           deps.updateToolCallInMessage(deps.messageId, edit.id, {
             status: 'failed',
             error,

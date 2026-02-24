@@ -776,6 +776,20 @@
           {/if}
         </div>
 
+        <button
+          class="browser-tools-btn"
+          class:active={assistantStore.browserToolsEnabled}
+          onclick={() => assistantStore.toggleBrowserToolsEnabled()}
+          title={assistantStore.browserToolsEnabled
+            ? "Browser tools enabled: AI can inspect and automate the browser."
+            : "Browser tools disabled: AI cannot use browser actions until you enable this."}
+          aria-label="Toggle browser tools"
+          aria-pressed={assistantStore.browserToolsEnabled}
+          type="button"
+        >
+          <UIIcon name="globe" size={14} />
+        </button>
+
         <!-- Mode Selector Dropdown -->
         <div class="mode-dropdown-container">
           <button
@@ -1052,6 +1066,31 @@
     background: var(--color-hover);
     color: var(--color-text);
     border-color: var(--color-border);
+  }
+
+  .browser-tools-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    color: var(--color-text-secondary);
+    transition: all 0.1s ease;
+    border: 1px solid transparent;
+    background: transparent;
+  }
+
+  .browser-tools-btn:hover {
+    background: var(--color-hover);
+    color: var(--color-text);
+    border-color: var(--color-border);
+  }
+
+  .browser-tools-btn.active {
+    background: var(--color-accent-alpha);
+    color: var(--color-accent);
+    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
   }
 
   /* Dropdowns */

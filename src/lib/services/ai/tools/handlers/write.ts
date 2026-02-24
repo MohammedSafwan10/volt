@@ -1,5 +1,5 @@
 /**
- * File write tool handlers - write_file, append_file, str_replace, create_dir, delete_file, rename_path
+ * File write tool handlers - write_file, append_file, str_replace, apply_patch, create_dir, delete_file, rename_path
  * 
  * SaaS-Ready Architecture:
  * - Uses UnifiedFileService as single source of truth
@@ -12,7 +12,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from '$lib/stores/editor.svelte';
-import { fileService } from '$lib/services/file-service';
+import { fileService, type FileDocument } from '$lib/services/file-service';
 import { setModelValue } from '$lib/services/monaco-models';
 import { notifyDocumentChanged as notifyTsDocumentChanged } from '$lib/services/lsp/typescript-sidecar';
 import { notifyEslintDocumentChanged } from '$lib/services/lsp/eslint-sidecar';
@@ -38,6 +38,7 @@ import {
 } from '$lib/services/lsp/tailwind-sidecar';
 import { resolvePath, extractErrorMessage, isSameOrSuffixPath, calculateDiffStats, type ToolResult } from '../utils';
 import { calculateChangedLines, findBestMatch, fixEscapedNewlines, validateSyntax } from './write-utils';
+import { applyCodexPatch, parseCodexPatch } from './write-patch';
 
 interface PostEditProblem {
   id: string;
@@ -74,16 +75,13 @@ const postEditDiagnosticsCache = new Map<string, {
   inFlight?: Promise<PostEditDiagnosticsResult>;
 }>();
 
-/**
- * Read file using unified file service
- * Ensures we always get the latest content from single source of truth
- */
-async function readFileFresh(path: string): Promise<string> {
-  const doc = await fileService.read(path, true);  // Force refresh from disk
+
+async function readFileDocumentFresh(path: string): Promise<FileDocument> {
+  const doc = await fileService.read(path, true);
   if (!doc) {
     throw new Error(`File not found: ${path}`);
   }
-  return doc.content;
+  return doc;
 }
 
 /**
@@ -94,10 +92,16 @@ async function writeFileWithSync(path: string, content: string, expectedVersion?
   const result = await fileService.write(path, content, {
     expectedVersion,
     source: 'ai',
-    force: expectedVersion === undefined  // Force if no version check requested
+    force: expectedVersion === undefined  // Force only when no optimistic version is available
   });
 
   if (!result.success) {
+    if ((result.error ?? '').toLowerCase().includes('version conflict')) {
+      return {
+        success: false,
+        error: 'Content changed on disk; re-read file and retry.'
+      };
+    }
     return { success: false, error: result.error };
   }
 
@@ -295,9 +299,12 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
 
   // ALWAYS read fresh from disk to avoid stale cache issues
   let before = '';
+  let expectedVersion: number | undefined;
   let isNewFile = false;
   try {
-    before = await readFileFresh(path);
+    const beforeDoc = await readFileDocumentFresh(path);
+    before = beforeDoc.content;
+    expectedVersion = beforeDoc.version;
   } catch {
     isNewFile = true;
   }
@@ -323,7 +330,7 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   }
 
   // Write with verification and retry logic
-  const writeResult = await writeFileWithSync(path, content);
+  const writeResult = await writeFileWithSync(path, content, isNewFile ? undefined : expectedVersion);
   if (!writeResult.success) {
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
@@ -417,8 +424,11 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
 
   // ALWAYS read fresh from disk
   let existing = '';
+  let expectedVersion: number;
   try {
-    existing = await readFileFresh(path);
+    const existingDoc = await readFileDocumentFresh(path);
+    existing = existingDoc.content;
+    expectedVersion = existingDoc.version;
   } catch {
     return { success: false, error: `File not found: ${relativePath}. Use write_file to create.` };
   }
@@ -428,7 +438,7 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
   const newContent = existing + (needsNewline ? '\n' : '') + textToAppend;
 
   // Write with verification
-  const writeResult = await writeFileWithSync(path, newContent);
+  const writeResult = await writeFileWithSync(path, newContent, expectedVersion);
   if (!writeResult.success) {
     return { success: false, error: `Failed to append: ${writeResult.error}` };
   }
@@ -499,8 +509,11 @@ export async function handleStrReplace(args: Record<string, unknown>): Promise<T
 
   // ALWAYS read fresh from disk
   let content = '';
+  let expectedVersion: number;
   try {
-    content = await readFileFresh(path);
+    const contentDoc = await readFileDocumentFresh(path);
+    content = contentDoc.content;
+    expectedVersion = contentDoc.version;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -550,7 +563,7 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
   }
 
   // Write with verification
-  const writeResult = await writeFileWithSync(path, newContent);
+  const writeResult = await writeFileWithSync(path, newContent, expectedVersion);
   if (!writeResult.success) {
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
@@ -651,8 +664,11 @@ export async function handleMultiReplace(args: Record<string, unknown>): Promise
 
   // Read file fresh from disk
   let content = '';
+  let expectedVersion: number;
   try {
-    content = await readFileFresh(path);
+    const contentDoc = await readFileDocumentFresh(path);
+    content = contentDoc.content;
+    expectedVersion = contentDoc.version;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -718,7 +734,7 @@ export async function handleMultiReplace(args: Record<string, unknown>): Promise
   }
 
   // Write with verification
-  const writeResult = await writeFileWithSync(path, resultContent);
+  const writeResult = await writeFileWithSync(path, resultContent, expectedVersion);
   if (!writeResult.success) {
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
@@ -779,6 +795,113 @@ export async function handleMultiReplace(args: Record<string, unknown>): Promise
       },
       editCount: edits.length,
     }
+  };
+}
+
+/**
+ * Apply Codex patch hunks to one file atomically.
+ */
+export async function handleApplyPatch(args: Record<string, unknown>): Promise<ToolResult> {
+  const relativePath = String(args.path);
+  const path = resolvePath(relativePath);
+  const normalizedPath = path.replace(/\\/g, '/');
+  const patch = String(args.patch ?? '');
+  const expectedVersionArg =
+    typeof args.expected_version === 'number' && Number.isFinite(args.expected_version)
+      ? Math.floor(args.expected_version)
+      : undefined;
+
+  let contentDoc: FileDocument;
+  try {
+    contentDoc = await readFileDocumentFresh(path);
+  } catch {
+    return { success: false, error: `File not found: ${relativePath}` };
+  }
+
+  const before = contentDoc.content;
+  const expectedVersion = expectedVersionArg ?? contentDoc.version;
+  let parsedPatch: { path: string; hunks: Array<{ lines: Array<{ op: 'context' | 'remove' | 'add'; text: string }> }> };
+  try {
+    parsedPatch = parseCodexPatch(patch);
+  } catch (err) {
+    return { success: false, error: extractErrorMessage(err) };
+  }
+  if (parsedPatch.path !== relativePath) {
+    return {
+      success: false,
+      error: `Patch target mismatch: expected "${relativePath}" but patch references "${parsedPatch.path}".`,
+    };
+  }
+
+  let after: string;
+  try {
+    after = applyCodexPatch(before, parsedPatch.hunks);
+  } catch (err) {
+    return { success: false, error: extractErrorMessage(err) };
+  }
+
+  if (after === before) {
+    return { success: true, output: `No changes: ${relativePath}` };
+  }
+
+  const syntaxError = validateSyntax(before, after, relativePath);
+  if (syntaxError) {
+    return { success: false, error: syntaxError };
+  }
+
+  const writeResult = await writeFileWithSync(path, after, expectedVersion);
+  if (!writeResult.success) {
+    return { success: false, error: `Failed to write: ${writeResult.error}` };
+  }
+
+  await syncEditorWithDisk(path, normalizedPath, after);
+
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, after);
+  const diffStats = calculateDiffStats(before, after);
+  const diagnostics = args.postEditDiagnostics === false
+    ? EMPTY_DIAGNOSTICS
+    : await getPostEditDiagnostics(path, relativePath);
+
+  let output = `Applied ${parsedPatch.hunks.length} patch hunk${parsedPatch.hunks.length > 1 ? 's' : ''} to ${relativePath}`;
+  output += ` | +${diffStats.added} -${diffStats.removed} lines`;
+  if (diagnostics.errorCount > 0) {
+    output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? 's' : ''}`;
+  }
+
+  const aiErrors = diagnostics.problems.length > 0
+    ? `\n\n[ERRORS - fix these]:\n${diagnostics.problems
+      .filter((p) => p.severity === 'error')
+      .slice(0, 5)
+      .map((p) => `L${p.line}:${p.column} ${p.message}`)
+      .join('\n')}`
+    : '';
+
+  return {
+    success: true,
+    output: output + aiErrors,
+    meta: {
+      fileEdit: {
+        relativePath,
+        absolutePath: path,
+        beforeContent: before.length <= 100_000 ? before : null,
+        afterContent: after.length <= 100_000 ? after : null,
+        firstChangedLine,
+        lastChangedLine,
+        added: diffStats.added,
+        removed: diffStats.removed,
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+      },
+      diagnostics: {
+        errorCount: diagnostics.errorCount,
+        warningCount: diagnostics.warningCount,
+        fileCount: diagnostics.fileCount,
+        problems: diagnostics.problems,
+      },
+      patch: {
+        hunkCount: parsedPatch.hunks.length,
+      },
+    },
   };
 }
 
@@ -931,8 +1054,11 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
 
   // ALWAYS read fresh from disk
   let content = '';
+  let expectedVersion: number;
   try {
-    content = await readFileFresh(path);
+    const contentDoc = await readFileDocumentFresh(path);
+    content = contentDoc.content;
+    expectedVersion = contentDoc.version;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -971,7 +1097,7 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   }
 
   // Write with verification
-  const writeResult = await writeFileWithSync(path, resultContent);
+  const writeResult = await writeFileWithSync(path, resultContent, expectedVersion);
   if (!writeResult.success) {
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }

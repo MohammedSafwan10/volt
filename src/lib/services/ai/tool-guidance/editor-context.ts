@@ -6,5 +6,5 @@ Rules:
 - Use \`get_open_files\` to infer nearby dependencies and workflow context.
 
 Failure playbook:
-- If active file/selection is empty, do not guess; use \`find_files\` or ask for the target path.
+- If active file/selection is empty, do not guess; use \`list_dir\`/\`workspace_search\` or ask for the target path.
 - If context conflicts with user request, prioritize explicit user path and verify with read tools.`;

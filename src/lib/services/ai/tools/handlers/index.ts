@@ -32,6 +32,7 @@ export {
   handleWriteFile,
   handleAppendFile,
   handleStrReplace,
+  handleApplyPatch,
   handleMultiReplace,
   handleCreateDir,
   handleDeleteFile,
@@ -152,12 +153,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'write_file': (args) => import('./write').then(m => m.handleWriteFile(args)),
   'append_file': (args) => import('./write').then(m => m.handleAppendFile(args)),
   'str_replace': (args) => import('./write').then(m => m.handleStrReplace(args)),
-  'apply_edit': (args) => import('./write').then(m => m.handleStrReplace(args)), // alias
+  'apply_patch': (args) => import('./write').then(m => m.handleApplyPatch(args)),
   'multi_replace': (args) => import('./write').then(m => m.handleMultiReplace(args)),
   'replace_lines': (args) => import('./write').then(m => m.handleReplaceLines(args)),
   'create_dir': (args) => import('./write').then(m => m.handleCreateDir(args)),
   'delete_file': (args) => import('./write').then(m => m.handleDeleteFile(args)),
-  'delete_path': (args) => import('./write').then(m => m.handleDeleteFile(args)), // alias
   'rename_path': (args) => import('./write').then(m => m.handleRenamePath(args)),
   'format_file': (args) => import('./write').then(m => m.handleFormatFile(args)),
 

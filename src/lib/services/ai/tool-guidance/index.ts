@@ -48,17 +48,51 @@ function getRequiredArgs(parameters: Record<string, unknown>): string[] {
   return required.filter((x): x is string => typeof x === 'string');
 }
 
+function inferParamHint(paramSchema: unknown): string {
+  if (!paramSchema || typeof paramSchema !== 'object') return 'value';
+  const entry = paramSchema as Record<string, unknown>;
+  const type = typeof entry.type === 'string' ? entry.type : 'value';
+  if (type === 'string') return '"..."';
+  if (type === 'number' || type === 'integer') return '0';
+  if (type === 'boolean') return 'false';
+  if (type === 'array') return '[...]';
+  if (type === 'object') return '{...}';
+  return 'value';
+}
+
+function buildToolExample(
+  toolName: string,
+  requiredArgs: string[],
+  parameters: Record<string, unknown>,
+): string | null {
+  if (requiredArgs.length === 0) return `${toolName}()`;
+  const properties =
+    parameters.properties && typeof parameters.properties === 'object'
+      ? (parameters.properties as Record<string, unknown>)
+      : {};
+  const args = requiredArgs
+    .slice(0, 3)
+    .map((arg) => `${arg}: ${inferParamHint(properties[arg])}`);
+  return `${toolName}({ ${args.join(', ')} })`;
+}
+
 export function buildCategoryToolGuidance(mode: AIMode): string {
-  const byCategory = new Map<ToolCategory, Array<{ name: string; required: string[] }>>();
+  const byCategory = new Map<
+    ToolCategory,
+    Array<{ name: string; required: string[]; example: string | null }>
+  >();
 
   for (const tool of getToolsForMode(mode)) {
     const definition = getToolByName(tool.name);
     if (!definition) continue;
 
     const current = byCategory.get(definition.category) || [];
+    const parameters = tool.parameters as Record<string, unknown>;
+    const required = getRequiredArgs(parameters);
     current.push({
       name: tool.name,
-      required: getRequiredArgs(tool.parameters as Record<string, unknown>),
+      required,
+      example: buildToolExample(tool.name, required, parameters),
     });
     byCategory.set(definition.category, current);
   }
@@ -74,7 +108,8 @@ export function buildCategoryToolGuidance(mode: AIMode): string {
       .map((tool) => {
         const required =
           tool.required.length > 0 ? ` (required: ${tool.required.join(', ')})` : '';
-        return `- \`${tool.name}\`${required}`;
+        const example = tool.example ? ` e.g. \`${tool.example}\`` : '';
+        return `- \`${tool.name}\`${required}${example}`;
       })
       .join('\n');
 
@@ -85,4 +120,3 @@ export function buildCategoryToolGuidance(mode: AIMode): string {
 
   return parts.join('\n\n');
 }
-

@@ -2,6 +2,10 @@
  * ============================================================================
  * VOLT ADVANCED RAG CONTEXT ENGINE v3.0
  * ============================================================================
+ *
+ * LEGACY NOTE:
+ * This module is intentionally retained for reference/back-compat history.
+ * Active runtime context assembly now lives in context-v2.ts.
  * 
  * A production-grade context gathering system inspired by:
  * - Kiro: Sub-agents, semantic search, intelligent file discovery

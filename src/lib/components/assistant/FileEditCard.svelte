@@ -64,12 +64,12 @@
   const fileExt = $derived(filename.split(".").pop()?.toLowerCase() || "");
 
   const editMode = $derived.by(() => {
-    const name = toolCall.name;
+    const name = toolCall.name === "apply_edit" ? "str_replace" : toolCall.name;
     if (name === "write_file" || name === "create_file") return "Write";
     if (name === "append_file") return "Append";
+    if (name === "apply_patch") return "Patch";
     if (name === "replace_lines") return "Lines";
-    // apply_edit is alias of str_replace
-    if (name === "str_replace" || name === "apply_edit") return "Replace";
+    if (name === "str_replace") return "Replace";
     return "Edit";
   });
 

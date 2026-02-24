@@ -7,6 +7,13 @@ import { isFileError, getFileErrorMessage } from '$lib/types/files';
 
 // Maximum output size (100KB)
 export const MAX_OUTPUT_SIZE = 100 * 1024;
+const DEFAULT_TOOL_OUTPUT_CAP = 24 * 1024;
+const TOOL_OUTPUT_CAPS: Record<string, number> = {
+  read_file: 48 * 1024,
+  workspace_search: 40 * 1024,
+  run_command: 40 * 1024,
+  apply_patch: 24 * 1024,
+};
 
 /**
  * Truncate output if too large
@@ -204,4 +211,18 @@ export interface CanonicalToolResult {
   retryable: boolean;
   timestamp: number;
   truncated?: boolean;
+}
+
+export function normalizeToolOutputBudget(
+  toolName: string,
+  output: string,
+): { output: string; truncated: boolean } {
+  const limit = TOOL_OUTPUT_CAPS[toolName] ?? DEFAULT_TOOL_OUTPUT_CAP;
+  if (output.length <= limit) {
+    return { output, truncated: false };
+  }
+  return {
+    output: `${output.slice(0, limit)}\n\n[Output truncated by tool output policy]`,
+    truncated: true,
+  };
 }

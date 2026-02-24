@@ -1,5 +1,5 @@
 /**
- * Search tool handlers - workspace_search, find_files, search_symbols
+ * Search tool handlers - workspace_search and optional legacy search helpers
  * 
  * BETTER than Kiro:
  * - Smart result grouping by relevance
@@ -64,6 +64,13 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
       }>;
       totalMatches: number;
       truncated: boolean;
+      telemetry?: {
+        requestedEngine: string;
+        engine: string;
+        fallbackUsed: boolean;
+        fallbackReason?: string | null;
+        elapsedMs: number;
+      };
     }>('workspace_search', {
       options: {
         query,
@@ -97,6 +104,14 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
     const matchCount = result.totalMatches;
 
     lines.push(`Found ${matchCount} match${matchCount > 1 ? 'es' : ''} in ${fileCount} file${fileCount > 1 ? 's' : ''}`);
+    if (result.telemetry) {
+      const fallback = result.telemetry.fallbackUsed && result.telemetry.fallbackReason
+        ? `, fallback: ${result.telemetry.fallbackReason}`
+        : result.telemetry.fallbackUsed
+          ? ', fallback used'
+          : '';
+      lines.push(`Engine: ${result.telemetry.engine} (${result.telemetry.elapsedMs}ms${fallback})`);
+    }
     if (result.truncated) {
       lines.push('(results truncated)');
     }
@@ -172,7 +187,7 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
 
     // Add navigation hint
     lines.push('');
-    lines.push('Use read_file with start_line/end_line to see more context.');
+    lines.push('Use read_file with offset/limit to see focused context.');
 
     const { text, truncated } = truncateOutput(lines.join('\n'));
     return { success: true, output: text, truncated };
@@ -220,21 +235,59 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   }
 
   const workspaceRoot = projectStore.rootPath || '';
-
-  // Ensure index is ready and fresh (re-index if older than 5 minutes)
-  const maxAgeMs = 5 * 60 * 1000; // 5 minutes
-  const indexAge = getIndexAge();
-  const isStale = indexAge > maxAgeMs;
-
-  if (!isIndexReady() || isStale) {
-    if (workspaceRoot) {
-      await indexProject(workspaceRoot, true);
-    }
-  }
+  const includePattern = args.includePattern ? String(args.includePattern) : '';
+  const excludePattern = args.excludePattern ? String(args.excludePattern) : '';
+  const includeHidden = Boolean(args.includeHidden);
 
   try {
-    // Use the fuzzy search from file-index
-    const results = searchFiles(query, [], 25);
+    let results: Array<{ name: string; relativePath: string }>;
+    let engineLabel = 'legacy-index';
+    let fallbackNote = '';
+
+    try {
+      const rgResult = await invoke<{
+        files: string[];
+        totalFiles: number;
+        truncated: boolean;
+        engine: string;
+        fallbackUsed: boolean;
+        fallbackReason?: string | null;
+        elapsedMs: number;
+      }>('find_files_by_name', {
+        options: {
+          query,
+          rootPath: workspaceRoot,
+          includeHidden,
+          includePatterns: includePattern ? [includePattern] : [],
+          excludePatterns: excludePattern
+            ? [excludePattern, 'node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**']
+            : ['node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**'],
+          maxResults: 25,
+        }
+      });
+      engineLabel = rgResult.engine;
+      if (rgResult.fallbackUsed && rgResult.fallbackReason) {
+        fallbackNote = ` (fallback: ${rgResult.fallbackReason})`;
+      }
+      results = rgResult.files.map((relativePath) => ({
+        relativePath,
+        name: relativePath.split('/').pop() || relativePath,
+      }));
+    } catch {
+      // Ensure index is ready and fresh (re-index if older than 5 minutes)
+      const maxAgeMs = 5 * 60 * 1000; // 5 minutes
+      const indexAge = getIndexAge();
+      const isStale = indexAge > maxAgeMs;
+
+      if (!isIndexReady() || isStale) {
+        if (workspaceRoot) {
+          await indexProject(workspaceRoot, true);
+        }
+      }
+      results = searchFiles(query, [], 25);
+      engineLabel = 'legacy-index';
+      fallbackNote = ' (fallback: file index)';
+    }
 
     if (results.length === 0) {
       // Helpful suggestions
@@ -251,6 +304,7 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     // Format with file type indicators and grouping
     const lines: string[] = [];
     lines.push(`Found ${results.length} file${results.length > 1 ? 's' : ''} matching "${query}":`);
+    lines.push(`Engine: ${engineLabel}${fallbackNote}`);
     lines.push('');
 
     // Group by parent directory for easier scanning

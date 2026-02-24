@@ -1,5 +1,37 @@
-import { getToolCapabilities, getToolByName } from '$lib/services/ai/tools';
 import type { VerificationProfile } from './utils';
+
+export type PlanningPhase = 'discover' | 'read' | 'edit' | 'verify' | 'other';
+
+export function classifyPlanningPhase(toolName: string): PlanningPhase {
+  if (
+    toolName === 'workspace_search' ||
+    toolName === 'find_files' ||
+    toolName === 'search_symbols'
+  ) {
+    return 'discover';
+  }
+  if (
+    toolName === 'read_file' ||
+    toolName === 'read_files' ||
+    toolName === 'read_code' ||
+    toolName === 'file_outline' ||
+    toolName === 'get_file_tree' ||
+    toolName === 'list_dir' ||
+    toolName === 'get_file_info' ||
+    toolName === 'get_active_file' ||
+    toolName === 'get_selection' ||
+    toolName === 'get_open_files'
+  ) {
+    return 'read';
+  }
+  if (
+    toolName === 'get_diagnostics' ||
+    toolName.startsWith('lsp_')
+  ) {
+    return 'verify';
+  }
+  return 'other';
+}
 
 function getWorkspaceRootFileNames(nodes: Array<{ name?: string }> = []): Set<string> {
   return new Set(
@@ -10,28 +42,10 @@ function getWorkspaceRootFileNames(nodes: Array<{ name?: string }> = []): Set<st
 }
 
 export function shouldRunAfterFileEdits(toolName: string): boolean {
-  if (toolName === 'get_diagnostics' || toolName.startsWith('lsp_')) {
-    return true;
-  }
-
-  const tool = getToolByName(toolName);
-  const capabilities = getToolCapabilities(toolName);
-  if (
-    !tool ||
-    capabilities.isMutating ||
-    tool.category === 'terminal' ||
-    tool.category === 'browser'
-  ) {
-    return false;
-  }
-
-  return (
-    tool.category === 'workspace_read' ||
-    tool.category === 'workspace_search' ||
-    tool.category === 'editor_context' ||
-    tool.category === 'diagnostics' ||
-    capabilities.requiresWorkspacePathValidation
-  );
+  // Only verification-style tools should wait for file edits.
+  // Read/search/context tools must run before edits so read-before-edit evidence
+  // can be established in the same iteration.
+  return toolName === 'get_diagnostics' || toolName.startsWith('lsp_');
 }
 
 export function getVerificationProfiles(nodes: Array<{ name?: string }> = []): VerificationProfile[] {

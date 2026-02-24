@@ -203,6 +203,7 @@ const IN_MEMORY_KEEP_RECENT = 220;
 // Panel width storage key
 const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
 const PANEL_OPEN_KEY = 'volt.assistant.panelOpen';
+const BROWSER_TOOLS_ENABLED_KEY = 'volt.assistant.browserToolsEnabled';
 const CURRENT_CONV_ID_KEY = 'volt.assistant.currentConversationId';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
@@ -240,10 +241,12 @@ class AssistantStore {
 
   // Current tool calls being displayed
   activeToolCalls = $state<ToolCall[]>([]);
+  browserToolsEnabled = $state(false);
 
   constructor() {
     this.loadPanelWidth();
     this.loadPanelOpen();
+    this.loadBrowserToolsEnabled();
     this.initConversation();
     this.loadCurrentConversationId();
   }
@@ -582,6 +585,15 @@ class AssistantStore {
     const clamped = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width));
     this.panelWidth = clamped;
     this.savePanelWidth();
+  }
+
+  setBrowserToolsEnabled(enabled: boolean): void {
+    this.browserToolsEnabled = enabled;
+    this.saveBrowserToolsEnabled();
+  }
+
+  toggleBrowserToolsEnabled(): void {
+    this.setBrowserToolsEnabled(!this.browserToolsEnabled);
   }
 
   // Mode controls
@@ -1720,14 +1732,18 @@ class AssistantStore {
     const nextTerminal =
       state === 'completed' || state === 'failed' || state === 'cancelled';
 
-    // Once terminal, ignore non-terminal transitions from stale async work.
-    if (previousTerminal && !nextTerminal) {
-      console.debug('[AssistantStore] Ignoring stale loop state transition', {
-        from: previous,
-        to: state,
-        meta,
-      });
-      return;
+    // Terminal states need special handling:
+    // - Allow terminal -> running (new user turn starts).
+    // - Ignore all other terminal -> * transitions as stale async updates.
+    if (previousTerminal) {
+      if (state !== 'running') {
+        console.debug('[AssistantStore] Ignoring stale terminal loop transition', {
+          from: previous,
+          to: state,
+          meta,
+        });
+        return;
+      }
     }
 
     if (!isValidLoopTransition(previous, state)) {
@@ -1739,6 +1755,11 @@ class AssistantStore {
     }
     this.agentLoopState = state;
     this.agentLoopMeta = { ...meta, at: Date.now() };
+    console.info('[AssistantLoop] state', {
+      from: previous,
+      to: state,
+      meta,
+    });
     agentTelemetryStore.record({
       type: 'agent.loop.state_transition',
       timestamp: Date.now(),
@@ -1837,6 +1858,27 @@ class AssistantStore {
     }
   }
 
+  private loadBrowserToolsEnabled(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(BROWSER_TOOLS_ENABLED_KEY);
+      if (stored !== null) {
+        this.browserToolsEnabled = stored === 'true';
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private saveBrowserToolsEnabled(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(BROWSER_TOOLS_ENABLED_KEY, String(this.browserToolsEnabled));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
   private loadCurrentConversationId(): void {
     if (typeof window === 'undefined') return;
     try {
@@ -1864,7 +1906,7 @@ class AssistantStore {
 
   private async restoreLastConversation(id: string): Promise<void> {
     try {
-      const lastConvId = localStorage.getItem(CURRENT_CONV_ID_KEY);
+      const lastConvId = (id || localStorage.getItem(CURRENT_CONV_ID_KEY) || "").trim();
       if (lastConvId && lastConvId !== "undefined") {
         try {
           const conv = await invoke<Conversation>("chat_get_conversation", {
@@ -1882,7 +1924,13 @@ class AssistantStore {
             });
           }
         } catch (err) {
-          console.warn("[AssistantStore] Failed to restore last conversation:", err);
+          const message = String(err ?? '');
+          const isMissingConversation =
+            message.includes('Conversation not found') ||
+            message.includes('Query returned no rows');
+          if (!isMissingConversation) {
+            console.warn("[AssistantStore] Failed to restore last conversation:", err);
+          }
           localStorage.removeItem(CURRENT_CONV_ID_KEY);
         }
       }
