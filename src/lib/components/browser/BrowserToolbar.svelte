@@ -8,35 +8,35 @@
   interface Props {
     onToggleDevTools?: () => void;
     showDevTools?: boolean;
+    onOverlayMenuReserveChange?: (reserve: { top: number; right: number }) => void;
   }
 
-  let { onToggleDevTools, showDevTools = false }: Props = $props();
+  let { onToggleDevTools, showDevTools = false, onOverlayMenuReserveChange }: Props = $props();
 
   let urlInput = $state(browserStore.url);
   let inputFocused = $state(false);
   let showBookmarks = $state(false);
   let showMoreMenu = $state(false);
   let showResponsiveSubmenu = $state(false);
-
-  // Track if any dropdown is open
-  let anyDropdownOpen = $derived(showBookmarks || showMoreMenu);
+  const MORE_MENU_RIGHT_RESERVE = 300;
+  const BOOKMARKS_MENU_RIGHT_RESERVE = 380;
 
   $effect(() => {
     if (!inputFocused) urlInput = browserStore.url;
   });
 
-  // Hide/show webview when any dropdown opens/closes
   $effect(() => {
-    if (anyDropdownOpen) {
-      browserStore.hide();
-    } else {
-      browserStore.show();
-    }
+    const right = showMoreMenu
+      ? MORE_MENU_RIGHT_RESERVE
+      : showBookmarks
+        ? BOOKMARKS_MENU_RIGHT_RESERVE
+        : 0;
+    onOverlayMenuReserveChange?.({ top: 0, right });
   });
 
   // Close dropdowns when clicking outside
   $effect(() => {
-    if (!anyDropdownOpen) return;
+    if (!showBookmarks && !showMoreMenu) return;
     
     function handleClickOutside(e: MouseEvent) {
       const target = e.target as HTMLElement;
@@ -297,12 +297,24 @@
     padding: 8px 12px;
     background: var(--color-bg-panel);
     border-bottom: 1px solid var(--color-border);
+    position: relative;
+    z-index: 20;
+    overflow: visible;
   }
 
   .nav-group, .action-group {
     display: flex;
     align-items: center;
     gap: 2px;
+  }
+
+  .nav-group {
+    flex-shrink: 0;
+  }
+
+  .action-group {
+    flex-shrink: 0;
+    margin-left: 2px;
   }
 
   .btn {
@@ -348,6 +360,18 @@
     border-radius: 20px;
     min-width: 0;
     transition: all 0.2s ease;
+  }
+
+  @media (max-width: 920px) {
+    .nav-group .btn:nth-child(4) {
+      display: none;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .nav-group .btn:nth-child(2) {
+      display: none;
+    }
   }
 
   .url-bar:hover {

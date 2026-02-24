@@ -30,6 +30,9 @@
   let updateScheduled = false;
   let mounted = false;
   let lastBoundsStr = '';
+  let overlayMenuReserveTopPx = $state(0);
+  let overlayMenuReserveRightPx = $state(0);
+  let menuOverlayPaused = $state(false);
   let boundsUpdateCounts = $state<Record<string, number>>({});
   let boundsProfileTimer: ReturnType<typeof setTimeout> | null = null;
   
@@ -97,11 +100,30 @@
     // Round to avoid subpixel issues and clamp to viewport
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const MIN_TOP_SAFE = 28; // keep native title/menu region unobstructed
+    const menuBarBottom = document
+      .querySelector('.menu-bar')
+      ?.getBoundingClientRect().bottom;
+    const MIN_TOP_SAFE = Math.max(
+      32,
+      Math.round((menuBarBottom ?? 32) + 2),
+    );
     let x = Math.max(0, Math.round(rect.left));
     let y = Math.max(MIN_TOP_SAFE, Math.round(rect.top));
     let width = Math.round(rect.width);
     let height = Math.round(rect.height);
+
+    // Reserve visual space for toolbar dropdown menus so they are not obscured
+    // by the native child webview layer.
+    if (overlayMenuReserveTopPx > 0) {
+      const topReserve = Math.round(overlayMenuReserveTopPx);
+      y += topReserve;
+      height = Math.max(0, height - topReserve);
+    }
+
+    if (overlayMenuReserveRightPx > 0) {
+      const rightReserve = Math.round(overlayMenuReserveRightPx);
+      width = Math.max(0, width - rightReserve);
+    }
     if (x + width > viewportWidth) width = Math.max(0, viewportWidth - x);
     if (y + height > viewportHeight) height = Math.max(0, viewportHeight - y);
     
@@ -286,10 +308,49 @@
       setTimeout(forceUpdateBounds, 150);
     }
   });
+
+  // Recalculate bounds when toolbar menu reserve changes.
+  $effect(() => {
+    void overlayMenuReserveTopPx;
+    void overlayMenuReserveRightPx;
+    if (containerRef && mounted) {
+      setTimeout(forceUpdateBounds, 0);
+      setTimeout(forceUpdateBounds, 60);
+    }
+  });
+
+  // Prevent native child webview from overlaying app header menus.
+  // Child webviews can render above DOM dropdowns on Windows/WebView2.
+  $effect(() => {
+    const topMenuOpen = Boolean(uiStore.activeMenu);
+    if (!mounted || !browserStore.isOpen || !browserStore.isVisible) return;
+
+    if (topMenuOpen) {
+      if (!menuOverlayPaused) {
+        menuOverlayPaused = true;
+        void browserStore.hide();
+      }
+      return;
+    }
+
+    if (menuOverlayPaused) {
+      menuOverlayPaused = false;
+      void browserStore.show();
+      setTimeout(forceUpdateBounds, 0);
+      setTimeout(forceUpdateBounds, 80);
+    }
+  });
 </script>
 
 <div class="browser-panel">
-  <BrowserToolbar onToggleDevTools={() => showDevTools = !showDevTools} {showDevTools} />
+  <BrowserToolbar
+    onToggleDevTools={() => showDevTools = !showDevTools}
+    onOverlayMenuReserveChange={(reserve) => {
+      overlayMenuReserveTopPx = reserve.top;
+      overlayMenuReserveRightPx = reserve.right;
+    }}
+    {showDevTools}
+  />
   
   <div class="browser-main" bind:this={browserMainRef}>
     <div class="browser-content">
