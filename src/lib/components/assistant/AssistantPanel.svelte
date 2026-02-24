@@ -312,6 +312,14 @@
               : 0,
         buildLatencyMs: contextV2.stats.buildLatencyMs,
         fallbackUsed: false,
+        semanticCandidates: contextV2.stats.semanticCandidates,
+        semanticSelected: contextV2.stats.semanticSelected,
+        hybridDropped: contextV2.stats.hybridDropped,
+        semanticQueryMs: contextV2.stats.semanticQueryMs,
+        semanticIndexStalenessMs: contextV2.stats.semanticIndexStalenessMs,
+        semanticBackend: contextV2.stats.semanticBackend,
+        semanticModelLoadMs: contextV2.stats.semanticModelLoadMs,
+        semanticLastError: contextV2.stats.semanticLastError,
       });
     } catch (error) {
       console.warn("[AssistantPanel] Context V2 build failed, using minimal fallback:", error);
@@ -397,6 +405,8 @@
     const msgId = assistantStore.addAssistantMessage("", true);
     const isPlanMode = assistantStore.currentMode === "plan";
     const isAgentMode = assistantStore.currentMode === "agent";
+    const allowImplicitAgentCompletion =
+      aiSettingsStore.selectedProvider === "mistral";
     const failureNudgedSignatures = new Set<string>();
     const repetitionDetector = new ToolRepetitionDetector(3);
     let planModeViolationNudgeCount = 0;
@@ -410,7 +420,19 @@
     const HARD_MAX_ITERATIONS = 120;
     const HARD_MAX_LOOP_DURATION_MS = 35 * 60 * 1000;
     const PROGRESS_WINDOW_MS = 90 * 1000;
-    const STREAM_STALL_TIMEOUT_MS = 45 * 1000;
+    const STREAM_STALL_TIMEOUT_MS = (() => {
+      // Free/community models on OpenRouter can have long first-token latency.
+      // Keep a longer stall budget to avoid false aborts.
+      const isOpenRouter = aiSettingsStore.selectedProvider === "openrouter";
+      const model = modelId.toLowerCase();
+      const isFreeTierLike =
+        model.includes(":free") ||
+        model.includes("/free") ||
+        model.includes("flash");
+      if (isOpenRouter && isFreeTierLike) return 120 * 1000;
+      if (isOpenRouter) return 90 * 1000;
+      return 60 * 1000;
+    })();
     const MAX_BUDGET_EXTENSIONS = 3;
     let budgetExtensions = 0;
     let lastProgressAt = Date.now();
@@ -685,12 +707,31 @@
               ? 0.2
               : 0.15;
 
-        let warnedAboutLooping = false;
-        const textBuffer = createStreamingTextBuffer({
-          intervalMs: 45,
-          sliceChars: 120,
-          onFlush: (text) => assistantStore.appendTextToMessage(msgId, text, true),
-        });
+      let warnedAboutLooping = false;
+      const toNovelStreamDelta = (
+        existing: string,
+        incoming: string,
+      ): string => {
+        if (!incoming) return "";
+        if (!existing) return incoming;
+        if (existing.endsWith(incoming)) return "";
+        if (incoming.startsWith(existing)) {
+          return incoming.slice(existing.length);
+        }
+
+        const maxOverlap = Math.min(existing.length, incoming.length);
+        for (let overlap = maxOverlap; overlap >= 16; overlap--) {
+          if (existing.slice(-overlap) === incoming.slice(0, overlap)) {
+            return incoming.slice(overlap);
+          }
+        }
+        return incoming;
+      };
+      const textBuffer = createStreamingTextBuffer({
+        intervalMs: 45,
+        sliceChars: 120,
+        onFlush: (text) => assistantStore.appendTextToMessage(msgId, text, true),
+      });
         // REMOVED: visibleCharBudget - show full responses like Kiro
         const stallWatchdog = setInterval(() => {
           if (controller.signal.aborted) return;
@@ -762,12 +803,17 @@
               continue;
             }
 
+            const novelChunk = toNovelStreamDelta(iterationContent, chunk.content);
+            if (!novelChunk) {
+              continue;
+            }
+
             // End any active thinking part before adding text
             assistantStore.endThinkingPart(msgId);
 
-            iterationContent += chunk.content;
+            iterationContent += novelChunk;
             lastProgressAt = Date.now();
-            textBuffer.append(chunk.content);
+            textBuffer.append(novelChunk);
           }
 
           // Handle thinking chunks - display INLINE (Cursor-style)
@@ -1482,6 +1528,30 @@
               reason: "handler_requested_continue",
             });
             continue;
+          }
+          if (
+            noToolOutcome.decision === "complete" &&
+            isAgentMode &&
+            !options?.conversationOnlyTurn &&
+            allowImplicitAgentCompletion &&
+            noToolOutcome.state.fullContent.trim().length > 0
+          ) {
+            assistantStore.markAssistantMessageStreamState(msgId, "completed");
+            assistantStore.setAgentLoopState("completed", {
+              iteration,
+              reason: "implicit_content_completion",
+              provider: aiSettingsStore.selectedProvider,
+            });
+            finalizeOutcome("completed", "implicit_content_completion", {
+              iteration,
+              provider: aiSettingsStore.selectedProvider,
+              modelId,
+            });
+            loopLog("info", "loop_completed", {
+              reason: "implicit_content_completion",
+              provider: aiSettingsStore.selectedProvider,
+            });
+            return;
           }
           if (
             noToolOutcome.decision === "complete" &&
