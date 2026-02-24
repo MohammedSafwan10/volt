@@ -103,6 +103,10 @@ struct McpServerEvent {
     state: McpServerState,
 }
 
+fn log_mcp(server_id: &str, message: &str) {
+    eprintln!("[MCP:{}] {}", server_id, message);
+}
+
 fn emit_state(app: &AppHandle, id: &str, state: &McpServerState) {
     let _ = app.emit(
         "mcp://server-state",
@@ -183,6 +187,10 @@ pub async fn start_mcp_server(
     config: McpServerConfig,
 ) -> Result<McpServerState, String> {
     let mcp = app.state::<McpState>();
+    log_mcp(
+        &server_id,
+        &format!("starting '{}' {:?}", config.command, config.args),
+    );
 
     // Stop if running
     if mcp.servers.lock().await.contains_key(&server_id) {
@@ -234,7 +242,11 @@ pub async fn start_mcp_server(
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let msg = format!("Spawn failed: {}", e);
+        log_mcp(&server_id, &msg);
+        msg
+    })?;
     let stdin = child.stdin.take().ok_or("No stdin")?;
     let stdout = child.stdout.take().ok_or("No stdout")?;
     let stderr = child.stderr.take();
@@ -265,6 +277,7 @@ pub async fn start_mcp_server(
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.is_empty() {
+                    log_mcp(&sid, &format!("stderr: {}", line));
                     let _ = app2.emit(
                         "mcp://server-log",
                         json!({"server_id": sid, "message": line}),
@@ -284,18 +297,51 @@ pub async fn start_mcp_server(
             if line.is_empty() {
                 continue;
             }
-            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                if let Some(id) = resp.id {
-                    if let Some(sender) = pending2.write().await.remove(&id) {
-                        let result = match resp.error {
-                            Some(e) => json!({"error": {"code": e.code, "message": e.message}}),
-                            None => resp.result.unwrap_or(Value::Null),
-                        };
-                        let _ = sender.send(result);
+            match serde_json::from_str::<JsonRpcResponse>(&line) {
+                Ok(resp) => {
+                    if let Some(id) = resp.id {
+                        if let Some(sender) = pending2.write().await.remove(&id) {
+                            let result = match resp.error {
+                                Some(e) => json!({"error": {"code": e.code, "message": e.message}}),
+                                None => resp.result.unwrap_or(Value::Null),
+                            };
+                            let _ = sender.send(result);
+                        } else {
+                            log_mcp(&sid, &format!("stdout response for unknown id {}: {}", id, line));
+                        }
+                    } else {
+                        // Server notification or malformed response without id.
+                        let _ = app2.emit(
+                            "mcp://server-log",
+                            json!({"server_id": sid, "message": format!("stdout notification: {}", line)}),
+                        );
                     }
+                }
+                Err(_) => {
+                    // Many misconfigured servers log to stdout, which breaks JSON-RPC;
+                    // surface this clearly so users can diagnose timeouts.
+                    log_mcp(&sid, &format!("non-json stdout: {}", line));
+                    let _ = app2.emit(
+                        "mcp://server-log",
+                        json!({"server_id": sid, "message": format!("non-json stdout: {}", line)}),
+                    );
                 }
             }
         }
+        // Fail all pending RPCs immediately when process stdout closes so callers
+        // don't wait for long timeouts after the server has already exited.
+        {
+            let mut pending_map = pending2.write().await;
+            for (_id, sender) in pending_map.drain() {
+                let _ = sender.send(json!({
+                    "error": {
+                        "code": -32000,
+                        "message": format!("MCP server '{}' exited before responding", sid)
+                    }
+                }));
+            }
+        }
+        log_mcp(&sid, "stdout closed; server stopped");
         let _ = app2.emit("mcp://server-stopped", &sid);
     });
 
@@ -329,6 +375,7 @@ pub async fn start_mcp_server(
         } else {
             e
         };
+        log_mcp(&server_id, &format!("initialize failed: {}", error_msg));
         set_error(&app, &mcp, &server_id, &error_msg).await;
         let _ = stop_mcp_server(app.clone(), server_id.clone()).await;
         return Err(error_msg);
@@ -356,6 +403,7 @@ pub async fn start_mcp_server(
             } else {
                 e
             };
+            log_mcp(&server_id, &format!("tools/list failed: {}", error_msg));
             set_error(&app, &mcp, &server_id, &error_msg).await;
             return Err(error_msg);
         }
@@ -377,6 +425,10 @@ pub async fn start_mcp_server(
         s.tools = tools;
     }
     emit_state(&app, &server_id, &final_state);
+    log_mcp(
+        &server_id,
+        &format!("connected with {} tools", final_state.tools.len()),
+    );
 
     Ok(final_state)
 }
@@ -384,6 +436,7 @@ pub async fn start_mcp_server(
 #[tauri::command]
 pub async fn stop_mcp_server(app: AppHandle, server_id: String) -> Result<(), String> {
     let mcp = app.state::<McpState>();
+    log_mcp(&server_id, "stopping");
     if let Some(mut p) = mcp.servers.lock().await.remove(&server_id) {
         let _ = p.child.kill().await;
     }

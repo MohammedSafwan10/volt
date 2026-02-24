@@ -35,6 +35,15 @@
       "env": {},
       "disabled": true,
       "autoApprove": []
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "YOUR_BRAVE_API_KEY"
+      },
+      "disabled": true,
+      "autoApprove": []
     }
   }
 }`;

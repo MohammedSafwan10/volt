@@ -53,6 +53,10 @@ class McpStore {
   // Retry tracking for failed servers
   private retryAttempts = new Map<string, number>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private startPromises = new Map<string, Promise<void>>();
+  private initializePromise: Promise<void> | null = null;
+  private reloading = false;
+  private reloadQueued = false;
   private static readonly MAX_RETRY_ATTEMPTS = 3;
   private static readonly RETRY_DELAY_MS = 30000; // 30 seconds
 
@@ -130,6 +134,14 @@ class McpStore {
 
   /** Initialize MCP system (call once on app startup) */
   async initialize(workspacePath?: string): Promise<void> {
+    if (this.initializePromise) {
+      await this.initializePromise;
+      if (workspacePath && workspacePath !== this.currentWorkspace) {
+        await this.updateWorkspaceConfig(workspacePath);
+      }
+      return;
+    }
+
     if (this.initialized) {
       // Already initialized - just update workspace config if provided
       if (workspacePath && workspacePath !== this.currentWorkspace) {
@@ -138,6 +150,15 @@ class McpStore {
       return;
     }
 
+    this.initializePromise = this.initializeInternal(workspacePath);
+    try {
+      await this.initializePromise;
+    } finally {
+      this.initializePromise = null;
+    }
+  }
+
+  private async initializeInternal(workspacePath?: string): Promise<void> {
     logOutput('MCP', 'Initializing MCP system...');
     this.loading = true;
     this.currentWorkspace = workspacePath || null;
@@ -184,6 +205,7 @@ class McpStore {
 
   /** Update workspace config when project changes */
   private async updateWorkspaceConfig(workspacePath: string): Promise<void> {
+    const mergedBefore = JSON.stringify(this.mergedConfig);
     this.currentWorkspace = workspacePath;
 
     // Stop watching old workspace config
@@ -217,12 +239,25 @@ class McpStore {
       // File might not exist yet
     }
 
-    // Reload servers with new merged config
-    await this.reload();
+    // Reload only when merged config actually changed.
+    // This avoids stop/start thrash when opening a project that has no workspace MCP config.
+    const mergedAfter = JSON.stringify(this.mergedConfig);
+    if (mergedAfter !== mergedBefore) {
+      await this.reload();
+    } else {
+      logOutput('MCP', 'Workspace changed but MCP config unchanged, skipping reload');
+    }
   }
 
   /** Clean up on shutdown */
   async cleanup(): Promise<void> {
+    for (const timer of this.retryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
+    this.retryAttempts.clear();
+    this.startPromises.clear();
+
     // Stop all servers
     try {
       await invoke('stop_all_mcp_servers');
@@ -254,6 +289,13 @@ class McpStore {
 
   /** Reload all servers (after config change) */
   async reload(): Promise<void> {
+    if (this.reloading) {
+      this.reloadQueued = true;
+      logOutput('MCP', 'Reload already running, queued one follow-up reload');
+      return;
+    }
+
+    this.reloading = true;
     logOutput('MCP', 'Reloading MCP servers...');
     this.loading = true;
 
@@ -276,12 +318,30 @@ class McpStore {
       console.error('[MCP] Reload error:', error);
       showToast({ message: 'Failed to reload MCP servers', type: 'error' });
     } finally {
+      this.reloading = false;
       this.loading = false;
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.reload();
+      }
     }
   }
 
   /** Start a specific server */
   async startServer(serverId: string): Promise<void> {
+    const existing = this.startPromises.get(serverId);
+    if (existing) {
+      return existing;
+    }
+
+    const startPromise = this.startServerInternal(serverId).finally(() => {
+      this.startPromises.delete(serverId);
+    });
+    this.startPromises.set(serverId, startPromise);
+    return startPromise;
+  }
+
+  private async startServerInternal(serverId: string): Promise<void> {
     const config = this.mergedConfig.mcpServers?.[serverId];
     if (!config) {
       logOutput('MCP', `[ERROR] Server '${serverId}' not found in config`);
@@ -539,20 +599,25 @@ class McpStore {
     const config = this.mergedConfig;
     if (!config.mcpServers) return;
 
+    const isDefaultDisabledServer = (serverId: string, serverConfig: McpServerConfig): boolean =>
+      serverId === 'brave-search' && serverConfig.disabled === undefined;
+
     // First, populate all servers from config (including disabled ones)
     for (const [serverId, serverConfig] of Object.entries(config.mcpServers)) {
       if (!this.servers.has(serverId)) {
         this.servers.set(serverId, {
           id: serverId,
           name: serverId,
-          status: serverConfig.disabled ? 'stopped' : 'connecting',
+          status: serverConfig.disabled || isDefaultDisabledServer(serverId, serverConfig) ? 'stopped' : 'connecting',
           tools: [],
           error: undefined,
         });
       }
     }
 
-    const enabledServers = Object.entries(config.mcpServers).filter(([, cfg]) => !cfg.disabled);
+    const enabledServers = Object.entries(config.mcpServers).filter(
+      ([serverId, cfg]) => !(cfg.disabled || isDefaultDisabledServer(serverId, cfg))
+    );
 
     if (enabledServers.length === 0) {
       logOutput('MCP', 'No enabled servers to start');
