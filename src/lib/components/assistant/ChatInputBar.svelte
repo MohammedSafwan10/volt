@@ -146,6 +146,14 @@
       return thinking ? `${name} (Thinking)` : name;
     }
 
+    if (base.startsWith("devstral-") || base.startsWith("codestral-")) {
+      const name = base
+        .replace("devstral-latest", "Devstral (latest, v25.12)")
+        .replace("codestral-latest", "Codestral (latest, v25.08)")
+        .replace("devstral-medium-latest", "Devstral Medium (v25.07)");
+      return thinking ? `${name} (Thinking)` : name;
+    }
+
     return thinking ? `${base} (thinking)` : base;
   }
 
