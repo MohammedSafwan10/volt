@@ -1,12 +1,13 @@
+pub mod ai;
+pub mod browser;
 pub mod file_index;
 pub mod file_ops;
 pub mod file_watch;
 pub mod fs_scope;
 pub mod git;
-pub mod ai;
 pub mod lsp;
 pub mod mcp;
-pub mod browser;
 pub mod search;
+pub mod semantic_index;
 pub mod system;
 pub mod terminal;

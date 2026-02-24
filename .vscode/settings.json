@@ -1,4 +1,14 @@
 {
   "svelte.enable-ts-plugin": true,
-  "rust-analyzer.cargo.targetDir": "target/analyzer"
+  "rust-analyzer.cargo.targetDir": "target/analyzer",
+  "[markdown]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true,
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  }
 }

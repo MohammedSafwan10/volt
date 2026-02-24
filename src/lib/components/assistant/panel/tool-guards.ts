@@ -46,7 +46,11 @@ export function getReadRequirement(
     case 'apply_patch': {
       const path = typeof args.path === 'string' ? args.path.trim() : '';
       if (!path) return null;
-      return { paths: [path], requiredKind: 'read' };
+      return {
+        paths: [path],
+        requiredKind: 'read',
+        allowIfTargetMissing: true,
+      };
     }
     case 'rename_path': {
       const oldPath = typeof args.oldPath === 'string' ? args.oldPath.trim() : '';

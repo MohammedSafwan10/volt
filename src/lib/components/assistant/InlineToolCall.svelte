@@ -107,11 +107,21 @@
     loadScreenshotExpandedState();
   });
 
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   // Format output with clickable URLs (global handler in layout opens them in browser)
   function formatOutputWithLinks(text: string): string {
-    return text.replace(
+    const escaped = escapeHtml(text);
+    return escaped.replace(
       /(https?:\/\/[^\s<>"']+)/gi,
-      '<a href="$1" class="output-link">$1</a>',
+      '<a href="$1" class="output-link" rel="noopener noreferrer nofollow" target="_blank">$1</a>',
     );
   }
 
@@ -450,6 +460,42 @@
 
   const meta = $derived(getMeta());
   const summary = $derived(getToolSummary());
+  const searchTelemetry = $derived.by(() => {
+    const toolName = canonicalToolName(toolCall.name);
+    if (toolName !== "workspace_search" && toolName !== "find_files") return null;
+    const meta = (toolCall.meta as Record<string, unknown> | undefined) ?? {};
+    const telemetry = meta.searchTelemetry as
+      | {
+          engine?: string;
+          rgSource?: string;
+          fallbackUsed?: boolean;
+          fallbackReason?: string | null;
+          elapsedMs?: number;
+        }
+      | undefined;
+    if (!telemetry) return null;
+    return {
+      engine: telemetry.engine ?? "unknown",
+      rgSource: telemetry.rgSource ?? "none",
+      fallbackUsed: Boolean(telemetry.fallbackUsed),
+      fallbackReason: telemetry.fallbackReason ?? null,
+      elapsedMs: telemetry.elapsedMs ?? 0,
+    };
+  });
+  const searchEngineBadge = $derived.by(() => {
+    if (!searchTelemetry) return null;
+    const source = searchTelemetry.rgSource && searchTelemetry.rgSource !== "none"
+      ? `/${searchTelemetry.rgSource}`
+      : "";
+    return `${searchTelemetry.engine}${source}`;
+  });
+  const searchEngineTitle = $derived.by(() => {
+    if (!searchTelemetry) return "";
+    const fallback = searchTelemetry.fallbackUsed
+      ? `, fallback: ${searchTelemetry.fallbackReason ?? "used"}`
+      : "";
+    return `Search engine ${searchTelemetry.engine}${searchTelemetry.rgSource ? ` (${searchTelemetry.rgSource})` : ""}, ${searchTelemetry.elapsedMs}ms${fallback}`;
+  });
   const isRunning = $derived(toolCall.status === "running");
   const isPending = $derived(
     toolCall.status === "pending" && toolCall.requiresApproval,
@@ -812,6 +858,15 @@
               {isLineRange ? "#" + summary.split("#")[1] : summary}
             </span>
           {/if}
+        {/if}
+        {#if searchEngineBadge}
+          <span
+            class="tool-engine-badge"
+            class:warning={searchTelemetry?.fallbackUsed}
+            title={searchEngineTitle}
+          >
+            {searchEngineBadge}
+          </span>
         {/if}
       </div>
 
@@ -1432,6 +1487,23 @@
     opacity: 0.4;
     border-left: 1px solid rgba(255, 255, 255, 0.1);
     padding-left: 6px;
+  }
+
+  .tool-engine-badge {
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    padding: 2px 6px;
+    background: var(--color-bg-input);
+    white-space: nowrap;
+  }
+
+  .tool-engine-badge.warning {
+    color: var(--color-warning);
+    border-color: var(--color-warning);
   }
 
   .tool-progress {

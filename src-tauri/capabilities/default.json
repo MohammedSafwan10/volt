@@ -29,13 +29,69 @@
     "core:window:allow-set-position",
     "core:path:default",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$LOCALDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$CACHE/**"
+        },
+        {
+          "path": "$RESOURCE/**"
+        }
+      ]
+    },
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [
         {
-          "path": "**"
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$LOCALDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$CACHE/**"
+        },
+        {
+          "path": "$RESOURCE/**"
         }
       ]
     },
@@ -43,7 +99,31 @@
       "identifier": "fs:allow-write-text-file",
       "allow": [
         {
-          "path": "**"
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$LOCALDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$CACHE/**"
+        },
+        {
+          "path": "$RESOURCE/**"
         }
       ]
     },
@@ -51,7 +131,31 @@
       "identifier": "fs:allow-read-file",
       "allow": [
         {
-          "path": "**"
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$LOCALDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$CACHE/**"
+        },
+        {
+          "path": "$RESOURCE/**"
         }
       ]
     },
@@ -59,16 +163,35 @@
       "identifier": "fs:allow-exists",
       "allow": [
         {
-          "path": "**"
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$LOCALDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$CACHE/**"
+        },
+        {
+          "path": "$RESOURCE/**"
         }
       ]
     },
     "fs:allow-watch",
-    "fs:allow-unwatch",
-    "shell:allow-spawn",
-    "shell:allow-execute",
-    "shell:allow-kill",
-    "shell:allow-stdin-write",
-    "shell:allow-open"
+    "fs:allow-unwatch"
   ]
 }

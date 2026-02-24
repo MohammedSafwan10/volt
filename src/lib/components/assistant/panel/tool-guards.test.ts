@@ -20,6 +20,13 @@ describe('tool-guards', () => {
     expect(requirement?.requiredKind).toBe('read');
   });
 
+  it('allows apply_patch missing target bypass for new file creation', () => {
+    const requirement = getReadRequirement('apply_patch', { path: 'README.md' });
+    expect(requirement).not.toBeNull();
+    expect(requirement?.allowIfTargetMissing).toBe(true);
+    expect(requirement?.requiredKind).toBe('read');
+  });
+
   it('requires outline or read for delete', () => {
     const requirement = getReadRequirement('delete_file', { path: 'src/old.ts' });
     expect(requirement?.requiredKind).toBe('outline');

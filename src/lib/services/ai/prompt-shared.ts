@@ -1,4 +1,4 @@
-export type PromptProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai';
+export type PromptProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
 
 export interface McpToolInfo {
   serverId: string;

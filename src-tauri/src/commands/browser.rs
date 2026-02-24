@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    AppHandle, Emitter, Manager, Runtime, WebviewBuilder, WebviewUrl,
-    LogicalPosition, LogicalSize, Rect,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, WebviewBuilder,
+    WebviewUrl,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +137,8 @@ const BROWSER_LABEL: &str = "volt-browser";
 
 /// Element selection script to inject into the browser
 fn get_selector_script(enabled: bool) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function() {{
     if (!window.__voltSelectorInit) {{
         window.__voltSelectorInit = true;
@@ -277,7 +278,9 @@ fn get_selector_script(enabled: bool) -> String {
     }}
     window.__voltSetSelectMode({});
 }})();
-"#, enabled)
+"#,
+        enabled
+    )
 }
 
 /// Find in page script
@@ -285,11 +288,16 @@ fn get_find_script(query: &str, highlight: bool) -> String {
     if query.is_empty() {
         return r#"
             if (window.__voltFindCleanup) window.__voltFindCleanup();
-        "#.to_string();
+        "#
+        .to_string();
     }
-    
-    let escaped = query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
-    format!(r#"
+
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n");
+    format!(
+        r#"
 (function() {{
     if (window.__voltFindCleanup) window.__voltFindCleanup();
     
@@ -368,7 +376,10 @@ fn get_find_script(query: &str, highlight: bool) -> String {
         window.__TAURI__.core.invoke('browser_find_result', {{ count: matches.length }});
     }}
 }})();
-"#, escaped, if highlight { "true" } else { "false" })
+"#,
+        escaped,
+        if highlight { "true" } else { "false" }
+    )
 }
 
 /// Page content extraction script for AI
@@ -470,9 +481,7 @@ pub async fn browser_create<R: Runtime>(
         }
     }
 
-    let main_window = app
-        .get_window("main")
-        .ok_or("Main window not found")?;
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
 
     let webview_url = if url.starts_with("http://") || url.starts_with("https://") {
         WebviewUrl::External(url.parse().map_err(|e| format!("Invalid URL: {}", e))?)
@@ -531,7 +540,9 @@ pub async fn browser_close<R: Runtime>(
 ) -> Result<(), String> {
     if let Some(label) = state.webview_label.lock().unwrap().take() {
         if let Some(webview) = app.get_webview(&label) {
-            webview.close().map_err(|e| format!("Close failed: {}", e))?;
+            webview
+                .close()
+                .map_err(|e| format!("Close failed: {}", e))?;
         }
     }
     *state.current_url.lock().unwrap() = String::new();
@@ -573,7 +584,10 @@ pub async fn browser_navigate<R: Runtime>(
     };
 
     webview
-        .eval(&format!("window.location.href = '{}';", final_url.replace('\'', "\\'")))
+        .eval(&format!(
+            "window.location.href = '{}';",
+            final_url.replace('\'', "\\'")
+        ))
         .map_err(|e| format!("Navigate failed: {}", e))?;
 
     *state.current_url.lock().unwrap() = final_url.clone();
@@ -599,9 +613,16 @@ pub async fn browser_back<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("history.back();").map_err(|e| format!("Back failed: {}", e))?;
+    webview
+        .eval("history.back();")
+        .map_err(|e| format!("Back failed: {}", e))?;
     Ok(())
 }
 
@@ -611,9 +632,16 @@ pub async fn browser_forward<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("history.forward();").map_err(|e| format!("Forward failed: {}", e))?;
+    webview
+        .eval("history.forward();")
+        .map_err(|e| format!("Forward failed: {}", e))?;
     Ok(())
 }
 
@@ -623,9 +651,16 @@ pub async fn browser_reload<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("location.reload();").map_err(|e| format!("Reload failed: {}", e))?;
+    webview
+        .eval("location.reload();")
+        .map_err(|e| format!("Reload failed: {}", e))?;
     Ok(())
 }
 
@@ -635,9 +670,16 @@ pub async fn browser_hard_reload<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("location.reload(true);").map_err(|e| format!("Hard reload failed: {}", e))?;
+    webview
+        .eval("location.reload(true);")
+        .map_err(|e| format!("Hard reload failed: {}", e))?;
     Ok(())
 }
 
@@ -647,9 +689,16 @@ pub async fn browser_stop<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("window.stop();").map_err(|e| format!("Stop failed: {}", e))?;
+    webview
+        .eval("window.stop();")
+        .map_err(|e| format!("Stop failed: {}", e))?;
     Ok(())
 }
 
@@ -660,10 +709,17 @@ pub async fn browser_set_select_mode<R: Runtime>(
     state: tauri::State<'_, BrowserState>,
     enabled: bool,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
     let script = get_selector_script(enabled);
-    webview.eval(&script).map_err(|e| format!("Set select mode failed: {}", e))?;
+    webview
+        .eval(&script)
+        .map_err(|e| format!("Set select mode failed: {}", e))?;
     *state.select_mode.lock().unwrap() = enabled;
     let _ = app.emit("browser://select-mode", enabled);
     Ok(())
@@ -676,9 +732,16 @@ pub async fn browser_execute_js<R: Runtime>(
     state: tauri::State<'_, BrowserState>,
     script: String,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval(&script).map_err(|e| format!("Execute JS failed: {}", e))?;
+    webview
+        .eval(&script)
+        .map_err(|e| format!("Execute JS failed: {}", e))?;
     Ok(())
 }
 
@@ -689,15 +752,22 @@ pub async fn browser_set_bounds<R: Runtime>(
     state: tauri::State<'_, BrowserState>,
     bounds: BrowserBounds,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
 
     let rect = Rect {
         position: LogicalPosition::new(bounds.x, bounds.y).into(),
         size: LogicalSize::new(bounds.width, bounds.height).into(),
     };
-    
-    webview.set_bounds(rect).map_err(|e| format!("Set bounds failed: {}", e))?;
+
+    webview
+        .set_bounds(rect)
+        .map_err(|e| format!("Set bounds failed: {}", e))?;
     Ok(())
 }
 
@@ -707,7 +777,12 @@ pub async fn browser_hide<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
     webview.hide().map_err(|e| format!("Hide failed: {}", e))?;
     Ok(())
@@ -719,7 +794,12 @@ pub async fn browser_show<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
     webview.show().map_err(|e| format!("Show failed: {}", e))?;
     Ok(())
@@ -731,14 +811,21 @@ pub async fn browser_zoom_in<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<f64, String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     let mut zoom = state.zoom_level.lock().unwrap();
     *zoom = (*zoom + 0.1).min(3.0);
     let new_zoom = *zoom;
-    
-    webview.set_zoom(new_zoom).map_err(|e| format!("Zoom failed: {}", e))?;
+
+    webview
+        .set_zoom(new_zoom)
+        .map_err(|e| format!("Zoom failed: {}", e))?;
     let _ = app.emit("browser://zoom-changed", new_zoom);
     Ok(new_zoom)
 }
@@ -749,14 +836,21 @@ pub async fn browser_zoom_out<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<f64, String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     let mut zoom = state.zoom_level.lock().unwrap();
     *zoom = (*zoom - 0.1).max(0.25);
     let new_zoom = *zoom;
-    
-    webview.set_zoom(new_zoom).map_err(|e| format!("Zoom failed: {}", e))?;
+
+    webview
+        .set_zoom(new_zoom)
+        .map_err(|e| format!("Zoom failed: {}", e))?;
     let _ = app.emit("browser://zoom-changed", new_zoom);
     Ok(new_zoom)
 }
@@ -767,11 +861,18 @@ pub async fn browser_zoom_reset<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<f64, String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     *state.zoom_level.lock().unwrap() = 1.0;
-    webview.set_zoom(1.0).map_err(|e| format!("Zoom reset failed: {}", e))?;
+    webview
+        .set_zoom(1.0)
+        .map_err(|e| format!("Zoom reset failed: {}", e))?;
     let _ = app.emit("browser://zoom-changed", 1.0);
     Ok(1.0)
 }
@@ -783,12 +884,19 @@ pub async fn browser_set_zoom<R: Runtime>(
     state: tauri::State<'_, BrowserState>,
     level: f64,
 ) -> Result<f64, String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     let clamped = level.clamp(0.25, 3.0);
     *state.zoom_level.lock().unwrap() = clamped;
-    webview.set_zoom(clamped).map_err(|e| format!("Set zoom failed: {}", e))?;
+    webview
+        .set_zoom(clamped)
+        .map_err(|e| format!("Set zoom failed: {}", e))?;
     let _ = app.emit("browser://zoom-changed", clamped);
     Ok(clamped)
 }
@@ -801,10 +909,17 @@ pub async fn browser_find<R: Runtime>(
     query: String,
     highlight: bool,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
     let script = get_find_script(&query, highlight);
-    webview.eval(&script).map_err(|e| format!("Find failed: {}", e))?;
+    webview
+        .eval(&script)
+        .map_err(|e| format!("Find failed: {}", e))?;
     Ok(())
 }
 
@@ -814,9 +929,16 @@ pub async fn browser_find_next<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("if(window.__voltFindNext) window.__voltFindNext();").map_err(|e| format!("Find next failed: {}", e))?;
+    webview
+        .eval("if(window.__voltFindNext) window.__voltFindNext();")
+        .map_err(|e| format!("Find next failed: {}", e))?;
     Ok(())
 }
 
@@ -826,9 +948,16 @@ pub async fn browser_find_prev<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("if(window.__voltFindPrev) window.__voltFindPrev();").map_err(|e| format!("Find prev failed: {}", e))?;
+    webview
+        .eval("if(window.__voltFindPrev) window.__voltFindPrev();")
+        .map_err(|e| format!("Find prev failed: {}", e))?;
     Ok(())
 }
 
@@ -838,18 +967,22 @@ pub async fn browser_find_clear<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval("if(window.__voltFindCleanup) window.__voltFindCleanup();").map_err(|e| format!("Find clear failed: {}", e))?;
+    webview
+        .eval("if(window.__voltFindCleanup) window.__voltFindCleanup();")
+        .map_err(|e| format!("Find clear failed: {}", e))?;
     Ok(())
 }
 
 /// Find result callback
 #[tauri::command]
-pub async fn browser_find_result<R: Runtime>(
-    app: AppHandle<R>,
-    count: u32,
-) -> Result<(), String> {
+pub async fn browser_find_result<R: Runtime>(app: AppHandle<R>, count: u32) -> Result<(), String> {
     let _ = app.emit("browser://find-result", count);
     Ok(())
 }
@@ -860,9 +993,16 @@ pub async fn browser_extract_content<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval(get_extract_content_script()).map_err(|e| format!("Extract content failed: {}", e))?;
+    webview
+        .eval(get_extract_content_script())
+        .map_err(|e| format!("Extract content failed: {}", e))?;
     Ok(())
 }
 
@@ -882,9 +1022,16 @@ pub async fn browser_generate_code<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    webview.eval(get_generate_code_script()).map_err(|e| format!("Generate code failed: {}", e))?;
+    webview
+        .eval(get_generate_code_script())
+        .map_err(|e| format!("Generate code failed: {}", e))?;
     Ok(())
 }
 
@@ -976,9 +1123,7 @@ pub async fn browser_get_history(
 
 /// Clear browsing history
 #[tauri::command]
-pub async fn browser_clear_history(
-    state: tauri::State<'_, BrowserState>,
-) -> Result<(), String> {
+pub async fn browser_clear_history(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
     state.history.lock().unwrap().clear();
     Ok(())
 }
@@ -991,9 +1136,14 @@ pub async fn browser_set_responsive_mode<R: Runtime>(
     width: Option<u32>,
     height: Option<u32>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     match (width, height) {
         (Some(w), Some(h)) => {
             *state.responsive_mode.lock().unwrap() = Some((w, h));
@@ -1002,14 +1152,18 @@ pub async fn browser_set_responsive_mode<R: Runtime>(
                 r#"document.documentElement.style.cssText = 'width:{}px !important;max-width:{}px !important;margin:0 auto;box-shadow:0 0 20px rgba(0,0,0,0.3);';"#,
                 w, w
             );
-            webview.eval(&script).map_err(|e| format!("Set responsive mode failed: {}", e))?;
+            webview
+                .eval(&script)
+                .map_err(|e| format!("Set responsive mode failed: {}", e))?;
         }
         _ => {
             *state.responsive_mode.lock().unwrap() = None;
-            webview.eval("document.documentElement.style.cssText = '';").map_err(|e| format!("Clear responsive mode failed: {}", e))?;
+            webview
+                .eval("document.documentElement.style.cssText = '';")
+                .map_err(|e| format!("Clear responsive mode failed: {}", e))?;
         }
     }
-    
+
     let _ = app.emit("browser://responsive-mode-changed", (width, height));
     Ok(())
 }
@@ -1020,15 +1174,20 @@ pub async fn browser_open_devtools<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     #[cfg(debug_assertions)]
     webview.open_devtools();
-    
+
     #[cfg(not(debug_assertions))]
     let _ = webview;
-    
+
     Ok(())
 }
 
@@ -1049,9 +1208,14 @@ pub async fn browser_inject_devtools<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    let label = state.webview_label.lock().unwrap().clone().ok_or("Browser not open")?;
+    let label = state
+        .webview_label
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
-    
+
     // The actual script is passed from the frontend
     // This command just confirms the browser is ready
     let _ = webview;
@@ -1079,7 +1243,7 @@ pub async fn browser_devtools_console_log<R: Runtime>(
         line,
         timestamp,
     };
-    
+
     // Store in state (keep last 500)
     {
         let mut logs = state.console_messages.lock().unwrap();
@@ -1088,18 +1252,21 @@ pub async fn browser_devtools_console_log<R: Runtime>(
         }
         logs.push(log.clone());
     }
-    
+
     // Emit to frontend
-    let _ = app.emit("browser://console-log", serde_json::json!({
-        "level": log.level,
-        "message": log.message,
-        "args": args,
-        "source": log.source,
-        "line": log.line,
-        "column": column,
-        "timestamp": log.timestamp
-    }));
-    
+    let _ = app.emit(
+        "browser://console-log",
+        serde_json::json!({
+            "level": log.level,
+            "message": log.message,
+            "args": args,
+            "source": log.source,
+            "line": log.line,
+            "column": column,
+            "timestamp": log.timestamp
+        }),
+    );
+
     Ok(())
 }
 
@@ -1116,16 +1283,19 @@ pub async fn browser_devtools_js_error<R: Runtime>(
     error_type: String,
     timestamp: u64,
 ) -> Result<(), String> {
-    let _ = app.emit("browser://js-error", serde_json::json!({
-        "message": message,
-        "filename": filename,
-        "lineno": lineno,
-        "colno": colno,
-        "stack": stack,
-        "type": error_type,
-        "timestamp": timestamp
-    }));
-    
+    let _ = app.emit(
+        "browser://js-error",
+        serde_json::json!({
+            "message": message,
+            "filename": filename,
+            "lineno": lineno,
+            "colno": colno,
+            "stack": stack,
+            "type": error_type,
+            "timestamp": timestamp
+        }),
+    );
+
     Ok(())
 }
 
@@ -1152,7 +1322,7 @@ pub async fn browser_devtools_network_request<R: Runtime>(
         duration: None,
         timestamp,
     };
-    
+
     // Store in state (keep last 200)
     {
         let mut requests = state.network_requests.lock().unwrap();
@@ -1161,16 +1331,19 @@ pub async fn browser_devtools_network_request<R: Runtime>(
         }
         requests.push(request);
     }
-    
-    let _ = app.emit("browser://network-request", serde_json::json!({
-        "id": id,
-        "method": method,
-        "url": url,
-        "headers": headers,
-        "body": body,
-        "timestamp": timestamp
-    }));
-    
+
+    let _ = app.emit(
+        "browser://network-request",
+        serde_json::json!({
+            "id": id,
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "body": body,
+            "timestamp": timestamp
+        }),
+    );
+
     Ok(())
 }
 
@@ -1201,18 +1374,21 @@ pub async fn browser_devtools_network_response<R: Runtime>(
             }
         }
     }
-    
-    let _ = app.emit("browser://network-response", serde_json::json!({
-        "id": id,
-        "status": status,
-        "statusText": status_text,
-        "responseHeaders": response_headers,
-        "responseBody": response_body,
-        "duration": duration,
-        "size": size,
-        "error": error
-    }));
-    
+
+    let _ = app.emit(
+        "browser://network-response",
+        serde_json::json!({
+            "id": id,
+            "status": status,
+            "statusText": status_text,
+            "responseHeaders": response_headers,
+            "responseBody": response_body,
+            "duration": duration,
+            "size": size,
+            "error": error
+        }),
+    );
+
     Ok(())
 }
 
@@ -1231,18 +1407,21 @@ pub async fn browser_devtools_performance<R: Runtime>(
     js_heap_size: Option<u64>,
     timestamp: u64,
 ) -> Result<(), String> {
-    let _ = app.emit("browser://performance", serde_json::json!({
-        "domContentLoaded": dom_content_loaded,
-        "loadComplete": load_complete,
-        "firstPaint": first_paint,
-        "firstContentfulPaint": first_contentful_paint,
-        "largestContentfulPaint": largest_contentful_paint,
-        "totalResources": total_resources,
-        "totalSize": total_size,
-        "jsHeapSize": js_heap_size,
-        "timestamp": timestamp
-    }));
-    
+    let _ = app.emit(
+        "browser://performance",
+        serde_json::json!({
+            "domContentLoaded": dom_content_loaded,
+            "loadComplete": load_complete,
+            "firstPaint": first_paint,
+            "firstContentfulPaint": first_contentful_paint,
+            "largestContentfulPaint": largest_contentful_paint,
+            "totalResources": total_resources,
+            "totalSize": total_size,
+            "jsHeapSize": js_heap_size,
+            "timestamp": timestamp
+        }),
+    );
+
     Ok(())
 }
 
@@ -1297,9 +1476,7 @@ pub async fn browser_get_network_requests(
 /// Clear console messages
 #[allow(dead_code)]
 #[tauri::command]
-pub async fn browser_clear_console(
-    state: tauri::State<'_, BrowserState>,
-) -> Result<(), String> {
+pub async fn browser_clear_console(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
     state.console_messages.lock().unwrap().clear();
     Ok(())
 }
@@ -1307,9 +1484,7 @@ pub async fn browser_clear_console(
 /// Clear network requests
 #[allow(dead_code)]
 #[tauri::command]
-pub async fn browser_clear_network(
-    state: tauri::State<'_, BrowserState>,
-) -> Result<(), String> {
+pub async fn browser_clear_network(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
     state.network_requests.lock().unwrap().clear();
     Ok(())
 }

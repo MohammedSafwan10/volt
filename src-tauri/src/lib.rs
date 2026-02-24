@@ -22,15 +22,16 @@ use chat_history::{
 };
 use commands::ai::{
     ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key, anthropic_proxy,
-    anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, openai_proxy, openai_proxy_stream,
-    openrouter_proxy, openrouter_proxy_stream,
+    anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy,
+    mistral_proxy_stream, openai_proxy, openai_proxy_stream, openrouter_proxy,
+    openrouter_proxy_stream,
 };
 use commands::browser::{
     browser_add_bookmark, browser_back, browser_clear_history, browser_close,
     browser_content_extracted, browser_create, browser_devtools_application,
     browser_devtools_console_log, browser_devtools_js_error, browser_devtools_network_request,
-    browser_devtools_network_response, browser_devtools_performance, browser_devtools_security_issue,
-    browser_element_selected, browser_execute_js,
+    browser_devtools_network_response, browser_devtools_performance,
+    browser_devtools_security_issue, browser_element_selected, browser_execute_js,
     browser_extract_content, browser_find, browser_find_clear, browser_find_next,
     browser_find_prev, browser_find_result, browser_forward, browser_generate_code,
     browser_get_bookmarks, browser_get_history, browser_get_state, browser_hard_reload,
@@ -69,9 +70,14 @@ use commands::search::{
     cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
     workspace_search_stream, SearchManagerState,
 };
+use commands::semantic_index::{
+    semantic_index_compact, semantic_index_query, semantic_index_rebuild,
+    semantic_index_remove_paths, semantic_index_status, semantic_index_upsert_files,
+    SemanticIndexState,
+};
 use commands::system::{
-    get_env_var, get_system_info, list_watch_commands, run_command, start_watch_command,
-    stop_all_watch_commands, stop_watch_command,
+    get_env_var, get_system_info, list_watch_commands, open_path_scoped, run_command,
+    start_watch_command, stop_all_watch_commands, stop_watch_command,
 };
 use commands::terminal::{
     terminal_create, terminal_get_scrollback, terminal_kill, terminal_kill_all, terminal_list,
@@ -91,6 +97,7 @@ pub fn run() {
         .manage(GitProcessManager::default())
         .manage(FileIndexState::default())
         .manage(FileWatchState::default())
+        .manage(SemanticIndexState::default())
         .manage(McpState::default())
         .manage(BrowserState::default())
         .manage(CdpState::default())
@@ -109,6 +116,8 @@ pub fn run() {
             openrouter_proxy_stream,
             gemini_proxy,
             gemini_proxy_stream,
+            mistral_proxy,
+            mistral_proxy_stream,
             // Chat history persistence
             chat_create_conversation,
             chat_list_conversations,
@@ -243,6 +252,7 @@ pub fn run() {
             get_system_info,
             run_command,
             get_env_var,
+            open_path_scoped,
             start_watch_command,
             stop_watch_command,
             stop_all_watch_commands,
@@ -273,6 +283,13 @@ pub fn run() {
             cancel_index_workspace,
             clear_index_cache,
             get_index_status,
+            // Semantic indexing
+            semantic_index_upsert_files,
+            semantic_index_remove_paths,
+            semantic_index_query,
+            semantic_index_status,
+            semantic_index_rebuild,
+            semantic_index_compact,
             // File watching
             start_file_watch,
             stop_file_watch,

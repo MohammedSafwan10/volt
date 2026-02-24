@@ -4,7 +4,7 @@ import { createContextBudget } from './context-budget';
 
 describe('context-budget', () => {
   it('honors model limits and lane caps within total budget', () => {
-    const budget = createContextBudget('mistralai/mistral-small-3.1-24b-instruct:free');
+    const budget = createContextBudget('qwen/qwen3-coder:free');
 
     expect(budget.availableContextTokens).toBeGreaterThan(0);
     expect(budget.availableContextTokens).toBeLessThanOrEqual(48_000);
@@ -16,12 +16,12 @@ describe('context-budget', () => {
   });
 
   it('is deterministic for same model and options', () => {
-    const a = createContextBudget('mistralai/mistral-small-3.1-24b-instruct:free', {
+    const a = createContextBudget('qwen/qwen3-coder:free', {
       reserveOutputTokens: 6000,
       reserveSystemTokens: 5000,
       safetyTokens: 1200,
     });
-    const b = createContextBudget('mistralai/mistral-small-3.1-24b-instruct:free', {
+    const b = createContextBudget('qwen/qwen3-coder:free', {
       reserveOutputTokens: 6000,
       reserveSystemTokens: 5000,
       safetyTokens: 1200,

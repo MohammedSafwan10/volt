@@ -1,6 +1,8 @@
 # Volt — local-first IDE (Tauri + Svelte)
 
-Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **SvelteKit + TypeScript** frontend. It is **agent-first**, local, and optimized for native performance with on-demand language intelligence.
+Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **SvelteKit +
+TypeScript** frontend. It is **agent-first**, local, and optimized for native performance with
+on-demand language intelligence.
 
 ## What Works Today (High Level)
 
@@ -11,20 +13,24 @@ Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **
 - Terminal: integrated PTY terminal sessions
 - Git (MVP): status/stage/commit/branches/diff/discard with cancellation
 - LSPs (on-demand): TS/JS, Svelte, HTML, CSS, JSON, Tailwind, ESLint, plus Dart, YAML, XML
-- Assistant: tool-driven agent (read/search/write/terminal/lsp/browser) with approvals and chat history
+- Assistant: tool-driven agent (read/search/write/terminal/lsp/browser) with approvals and chat
+  history
 - Built-in Browser: native webview panel with devtools, element picker, and CDP automation (Windows)
 - MCP: external tool servers integrated into the agent tool system
 
 ## Supported Languages & LSPs (Summary)
 
-- **Dart / Flutter** — Dart Analysis Server (`dart language-server`) — diagnostics, go-to-def, hover, completions, rename, formatting (requires Dart/Flutter SDK)
+- **Dart / Flutter** — Dart Analysis Server (`dart language-server`) — diagnostics, go-to-def,
+  hover, completions, rename, formatting (requires Dart/Flutter SDK)
 - **YAML** — `yaml-language-server` — schema validation, completions, formatting
-- **XML** — LemMinX (native binary or JAR via Java) — validation and completions for AndroidManifest.xml, Info.plist, XSD, etc.
+- **XML** — LemMinX (native binary or JAR via Java) — validation and completions for
+  AndroidManifest.xml, Info.plist, XSD, etc.
 - **TypeScript / JavaScript** — TypeScript Language Server (full TS/JS features)
 - **Svelte** — Svelte Language Server
 - **HTML / CSS / JSON / Tailwind / ESLint** — corresponding LSPs for web development
 
-> LSP servers start on-demand when you open files that need them; this keeps Volt lightweight and responsive.
+> LSP servers start on-demand when you open files that need them; this keeps Volt lightweight and
+> responsive.
 
 ## Repo Layout
 
@@ -38,11 +44,15 @@ Volt is a fast, VS Code-like desktop IDE built with **Tauri v2 (Rust)** and a **
 - Node.js (recommended: current LTS)
 - Rust toolchain (stable)
 - Tauri prerequisites for your OS (Windows requires WebView2)
-- **Dart / Flutter SDK** — required to enable Dart LSP for Flutter projects (install Flutter to get Dart)
-- **yaml-language-server** — install via npm if you want YAML LSP support: `npm install -g yaml-language-server`
-- **Java 11+** (optional) or LemMinX native binary — required if you want XML LSP via the LemMinX JAR
+- **Dart / Flutter SDK** — required to enable Dart LSP for Flutter projects (install Flutter to get
+  Dart)
+- **yaml-language-server** — install via npm if you want YAML LSP support:
+  `npm install -g yaml-language-server`
+- **Java 11+** (optional) or LemMinX native binary — required if you want XML LSP via the LemMinX
+  JAR
 
-If a required SDK is missing (for example, Dart SDK), Volt logs guidance and can display notifications (configurable) to help users install it.
+If a required SDK is missing (for example, Dart SDK), Volt logs guidance and can display
+notifications (configurable) to help users install it.
 
 ## Run (Desktop Development)
 
@@ -84,10 +94,13 @@ This prevents rust-analyzer and Cargo from locking the same `target/` folder.
 Volt runs language servers as either bundled sidecars or external processes from the user's system:
 
 - Bundled sidecars: Node-based servers run via the prepared Node sidecar (`npm run sidecars:node`).
-- External servers: Volt can spawn external language servers (e.g., `dart`, `gopls`, `pyright`) from PATH; detection is performed at runtime.
-- The Rust backend (`src-tauri/src/lsp/manager.rs`) manages process lifecycle, message framing (Content-Length), and event routing to the frontend.
+- External servers: Volt can spawn external language servers (e.g., `dart`, `gopls`, `pyright`) from
+  PATH; detection is performed at runtime.
+- The Rust backend (`src-tauri/src/lsp/manager.rs`) manages process lifecycle, message framing
+  (Content-Length), and event routing to the frontend.
 
-This separation keeps the UI process isolated from LSP processes and reduces memory/CPU overhead compared to embedding LSPs inside a single Node/Electron process.
+This separation keeps the UI process isolated from LSP processes and reduces memory/CPU overhead
+compared to embedding LSPs inside a single Node/Electron process.
 
 ## Where to Look Next
 
@@ -100,6 +113,7 @@ This separation keeps the UI process isolated from LSP processes and reduces mem
 
 ## License / Distribution
 
-This repository is **private** and not open-source. Do **not** add an open-source license file (MIT/Apache). The project is intended for private/internal use only.
+This repository is **private** and not open-source. Do **not** add an open-source license file
+(MIT/Apache). The project is intended for private/internal use only.
 
 If the distribution model changes later, update this section accordingly.

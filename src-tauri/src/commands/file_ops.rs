@@ -91,10 +91,7 @@ fn io_error_with_path(err: io::Error, path: &str) -> FileError {
 fn normalize_path(path: &str) -> PathBuf {
     // Windows MAX_PATH is 260, but we add prefix earlier to be safe
     // Skip if already has prefix or is a UNC path (\\server\share)
-    if path.len() > 200 
-        && !path.starts_with("\\\\?\\") 
-        && !path.starts_with("\\\\")
-    {
+    if path.len() > 200 && !path.starts_with("\\\\?\\") && !path.starts_with("\\\\") {
         // Convert forward slashes to backslashes for Windows
         let normalized = path.replace('/', "\\");
         PathBuf::from(format!("\\\\?\\{}", normalized))
@@ -232,7 +229,6 @@ fn decode_utf16_with_bom(bytes: &[u8]) -> Option<String> {
 
     Some(String::from_utf16_lossy(&units))
 }
-
 
 /// Read file contents as UTF-8 string
 #[tauri::command]
@@ -583,7 +579,6 @@ fn try_native_delete_windows(path: &std::path::Path) -> bool {
 
     cmd_status.map(|s| s.success()).unwrap_or(false) && !path.exists()
 }
-
 
 /// Rename/move a file or directory
 #[tauri::command]

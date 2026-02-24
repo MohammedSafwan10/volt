@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Runtime};
-use tauri::Manager;
 use tauri::path::BaseDirectory;
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use thiserror::Error;
@@ -84,7 +84,6 @@ pub struct ExternalLspConfig {
     /// Environment variables
     pub env: Option<HashMap<String, String>>,
 }
-
 
 /// Information about a running LSP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,11 +159,12 @@ impl<R: Runtime> LspManager<R> {
         let entrypoint_path = resolve_entrypoint_path(&self.app_handle, &config.entrypoint)?;
 
         // Create the sidecar command using Tauri Shell plugin
-        let mut command = shell.sidecar(&config.sidecar_name).map_err(|e| {
-            LspError::SpawnFailed {
-                message: format!("Failed to create sidecar '{}': {}", config.sidecar_name, e),
-            }
-        })?;
+        let mut command =
+            shell
+                .sidecar(&config.sidecar_name)
+                .map_err(|e| LspError::SpawnFailed {
+                    message: format!("Failed to create sidecar '{}': {}", config.sidecar_name, e),
+                })?;
 
         // For JS-based language servers we run a Node sidecar and pass the entrypoint as first arg.
         command = command.arg(entrypoint_path).args(&config.args);
@@ -199,7 +199,14 @@ impl<R: Runtime> LspManager<R> {
 
         // Spawn a task to handle events from the sidecar
         tauri::async_runtime::spawn(async move {
-            Self::handle_sidecar_events(rx, app_handle, server_id_clone, status_clone, servers_clone).await;
+            Self::handle_sidecar_events(
+                rx,
+                app_handle,
+                server_id_clone,
+                status_clone,
+                servers_clone,
+            )
+            .await;
         });
 
         // Store the running server
@@ -222,7 +229,10 @@ impl<R: Runtime> LspManager<R> {
     }
 
     /// Start an external language server (from user's PATH, e.g., Dart, Rust Analyzer)
-    pub fn start_external_server(&self, config: ExternalLspConfig) -> Result<LspServerInfo, LspError> {
+    pub fn start_external_server(
+        &self,
+        config: ExternalLspConfig,
+    ) -> Result<LspServerInfo, LspError> {
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
@@ -316,7 +326,14 @@ impl<R: Runtime> LspManager<R> {
         let servers_clone = Arc::clone(&self.servers);
 
         tauri::async_runtime::spawn(async move {
-            Self::handle_external_stdout(stdout, app_handle.clone(), server_id_clone.clone(), status_clone, servers_clone).await;
+            Self::handle_external_stdout(
+                stdout,
+                app_handle.clone(),
+                server_id_clone.clone(),
+                status_clone,
+                servers_clone,
+            )
+            .await;
         });
 
         // Spawn stderr logger task
@@ -327,7 +344,8 @@ impl<R: Runtime> LspManager<R> {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if !line.is_empty() {
-                        let _ = app_handle.emit(&format!("lsp://{}//stderr", server_id_clone), line);
+                        let _ =
+                            app_handle.emit(&format!("lsp://{}//stderr", server_id_clone), line);
                     }
                 }
             });
@@ -438,7 +456,8 @@ impl<R: Runtime> LspManager<R> {
                     Ok(_) => {
                         if let Ok(json_str) = String::from_utf8(buffer.clone()) {
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                                let _ = app_handle.emit(&format!("lsp://{}//message", server_id), json);
+                                let _ =
+                                    app_handle.emit(&format!("lsp://{}//message", server_id), json);
                             }
                         }
                     }
@@ -457,7 +476,6 @@ impl<R: Runtime> LspManager<R> {
             }
         }
     }
-
 
     /// Handle events from the sidecar process (stdout, stderr, exit)
     async fn handle_sidecar_events(
@@ -486,7 +504,7 @@ impl<R: Runtime> LspManager<R> {
                             // Look for end of headers (\r\n\r\n)
                             if let Some(header_end) = find_header_end(&buffer) {
                                 let headers = String::from_utf8_lossy(&buffer[..header_end]);
-                                
+
                                 // Parse Content-Length
                                 for line in headers.lines() {
                                     if let Some(len_str) = line.strip_prefix("Content-Length:") {
@@ -507,10 +525,12 @@ impl<R: Runtime> LspManager<R> {
                                 if buffer.len() >= length {
                                     // Extract the JSON body
                                     let body: Vec<u8> = buffer.drain(..length).collect();
-                                    
+
                                     // Parse and emit the message
                                     if let Ok(json_str) = String::from_utf8(body) {
-                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                        if let Ok(json) =
+                                            serde_json::from_str::<serde_json::Value>(&json_str)
+                                        {
                                             let _ = app_handle.emit(
                                                 &format!("lsp://{}//message", server_id),
                                                 json,
@@ -537,7 +557,8 @@ impl<R: Runtime> LspManager<R> {
                     }
                 }
                 CommandEvent::Error(error) => {
-                    let _ = app_handle.emit(&format!("lsp://{}//error", server_id), error.to_string());
+                    let _ =
+                        app_handle.emit(&format!("lsp://{}//error", server_id), error.to_string());
                 }
                 CommandEvent::Terminated(payload) => {
                     // Update status
@@ -565,9 +586,11 @@ impl<R: Runtime> LspManager<R> {
             message: format!("Failed to acquire lock: {}", e),
         })?;
 
-        let server = servers.get_mut(server_id).ok_or_else(|| LspError::ServerNotFound {
-            server_id: server_id.to_string(),
-        })?;
+        let server = servers
+            .get_mut(server_id)
+            .ok_or_else(|| LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            })?;
 
         // Check if server is still running
         {
@@ -591,9 +614,11 @@ impl<R: Runtime> LspManager<R> {
                 // Write LSP message with Content-Length header
                 let content_length = message.len();
                 let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
-                sidecar.write(full_message.as_bytes()).map_err(|e| LspError::SendFailed {
-                    message: format!("Failed to write to stdin: {}", e),
-                })?;
+                sidecar
+                    .write(full_message.as_bytes())
+                    .map_err(|e| LspError::SendFailed {
+                        message: format!("Failed to write to stdin: {}", e),
+                    })?;
             }
             ServerChild::External { stdin_tx, .. } => {
                 let stdin_tx = stdin_tx.clone();
@@ -606,9 +631,11 @@ impl<R: Runtime> LspManager<R> {
                 match stdin_tx.try_send(msg) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                        stdin_tx.blocking_send(msg).map_err(|e| LspError::SendFailed {
-                            message: format!("Failed to send to stdin channel: {}", e),
-                        })?;
+                        stdin_tx
+                            .blocking_send(msg)
+                            .map_err(|e| LspError::SendFailed {
+                                message: format!("Failed to send to stdin channel: {}", e),
+                            })?;
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                         return Err(LspError::SendFailed {
@@ -624,16 +651,17 @@ impl<R: Runtime> LspManager<R> {
         Ok(())
     }
 
-
     /// Stop a running server
     pub fn stop_server(&self, server_id: &str) -> Result<(), LspError> {
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
 
-        let server = servers.remove(server_id).ok_or_else(|| LspError::ServerNotFound {
-            server_id: server_id.to_string(),
-        })?;
+        let server = servers
+            .remove(server_id)
+            .ok_or_else(|| LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            })?;
 
         // Update status
         if let Ok(mut status) = server.status.lock() {
@@ -654,7 +682,9 @@ impl<R: Runtime> LspManager<R> {
         }
 
         // Emit stop event
-        let _ = self.app_handle.emit(&format!("lsp://{}//stopped", server_id), ());
+        let _ = self
+            .app_handle
+            .emit(&format!("lsp://{}//stopped", server_id), ());
 
         Ok(())
     }
@@ -684,7 +714,11 @@ impl<R: Runtime> LspManager<R> {
         let infos: Vec<LspServerInfo> = servers
             .iter()
             .map(|(id, server)| {
-                let status = server.status.lock().map(|s| s.clone()).unwrap_or(LspServerStatus::Error);
+                let status = server
+                    .status
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or(LspServerStatus::Error);
                 LspServerInfo {
                     server_id: id.clone(),
                     server_type: server.server_type.clone(),
@@ -703,11 +737,17 @@ impl<R: Runtime> LspManager<R> {
             message: format!("Failed to acquire lock: {}", e),
         })?;
 
-        let server = servers.get(server_id).ok_or_else(|| LspError::ServerNotFound {
-            server_id: server_id.to_string(),
-        })?;
+        let server = servers
+            .get(server_id)
+            .ok_or_else(|| LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            })?;
 
-        let status = server.status.lock().map(|s| s.clone()).unwrap_or(LspServerStatus::Error);
+        let status = server
+            .status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(LspServerStatus::Error);
 
         Ok(LspServerInfo {
             server_id: server_id.to_string(),
@@ -739,7 +779,11 @@ impl<R: Runtime> Drop for LspManager<R> {
 /// Find the end of HTTP-style headers (\r\n\r\n)
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     for i in 0..buffer.len().saturating_sub(3) {
-        if buffer[i] == b'\r' && buffer[i + 1] == b'\n' && buffer[i + 2] == b'\r' && buffer[i + 3] == b'\n' {
+        if buffer[i] == b'\r'
+            && buffer[i + 1] == b'\n'
+            && buffer[i + 2] == b'\r'
+            && buffer[i + 3] == b'\n'
+        {
             return Some(i);
         }
     }
@@ -751,7 +795,10 @@ fn resolve_entrypoint_path<R: Runtime>(
     entrypoint: &str,
 ) -> Result<PathBuf, LspError> {
     // 1) Production: bundled resource.
-    if let Ok(resolved) = app_handle.path().resolve(entrypoint, BaseDirectory::Resource) {
+    if let Ok(resolved) = app_handle
+        .path()
+        .resolve(entrypoint, BaseDirectory::Resource)
+    {
         if resolved.exists() {
             return Ok(resolved);
         }

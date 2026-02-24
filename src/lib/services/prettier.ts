@@ -1,7 +1,7 @@
 /**
  * Prettier Formatting Service
  * 
- * Provides document formatting using Prettier via the Tauri shell plugin.
+ * Provides document formatting using Prettier via backend run_command.
  * Respects workspace .prettierrc* configuration files.
  * 
  * Features:
@@ -11,7 +11,7 @@
  * - Non-blocking async formatting
  */
 
-import { Command } from '@tauri-apps/plugin-shell';
+import { invoke } from '@tauri-apps/api/core';
 import { projectStore } from '$lib/stores/project.svelte';
 import { editorStore } from '$lib/stores/editor.svelte';
 import { showToast } from '$lib/stores/toast.svelte';
@@ -168,10 +168,8 @@ export async function formatWithPrettier(
     
     const prettierPath = getPrettierPath();
 
-    // NOTE: @tauri-apps/plugin-shell Child API does not expose a reliable stdin close.
-    // Prettier reads until EOF, so streaming via stdin can hang.
-    // Instead, write a temp file alongside the target file, run prettier on that file,
-    // and read formatted content from stdout.
+    // Write a temp file alongside the target file, run prettier on that file via
+    // backend run_command, and read formatted content from stdout.
 
     const lastSlash = Math.max(filepath.lastIndexOf('/'), filepath.lastIndexOf('\\'));
     const sep = lastSlash >= 0 ? filepath[lastSlash] : (rootPath?.includes('\\') ? '\\' : '/');
@@ -188,12 +186,17 @@ export async function formatWithPrettier(
       // Build command arguments
       const args = ['--parser', parser, tempPath];
 
-      const result = await Command.create(prettierPath, args, {
+      const result = await invoke<{
+        exit_code: number;
+        stdout: string;
+        stderr: string;
+      }>('run_command', {
+        command: prettierPath,
+        args,
         cwd: rootPath || undefined,
-        encoding: 'utf-8'
-      }).execute();
+      });
 
-      if ((result.code ?? 0) !== 0) {
+      if ((result.exit_code ?? 0) !== 0) {
         logOutput('Prettier', `Formatting failed: ${result.stderr}`);
         showToast({
           message: 'Formatting failed. Check Output panel for details.',

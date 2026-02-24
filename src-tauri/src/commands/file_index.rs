@@ -387,7 +387,10 @@ pub async fn index_workspace_stream(
         if let Some(cached) = cache_guard.get(&root_path) {
             let now = current_timestamp();
             // Skip empty caches (likely corrupted or from interrupted indexing)
-            if now - cached.timestamp < CACHE_VALIDITY_SECS && cached.root_path == root_path && !cached.files.is_empty() {
+            if now - cached.timestamp < CACHE_VALIDITY_SECS
+                && cached.root_path == root_path
+                && !cached.files.is_empty()
+            {
                 // Send cached results immediately
                 let files = cached.files.clone();
                 drop(cache_guard);

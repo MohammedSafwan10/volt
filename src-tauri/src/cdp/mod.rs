@@ -1,5 +1,5 @@
 //! CDP (Chrome DevTools Protocol) Module
-//! 
+//!
 //! Provides professional browser automation capabilities similar to Playwright/Puppeteer.
 //! Uses chromiumoxide to connect to WebView2's CDP endpoint.
 //!
@@ -11,6 +11,6 @@
 //! - Browser automation (Input.*, Page.*)
 //! - Screenshots (Page.captureScreenshot)
 
+pub mod commands;
 pub mod manager;
 pub mod types;
-pub mod commands;

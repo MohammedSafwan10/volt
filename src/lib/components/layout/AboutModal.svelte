@@ -128,7 +128,7 @@
           </div>
         </div>
 
-        <p class="copyright">© 2025 Volt</p>
+        <p class="copyright">© 2026 Volt</p>
       </div>
     </div>
   </div>

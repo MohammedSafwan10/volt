@@ -8,6 +8,7 @@ import { gitStore } from '$lib/stores/git.svelte';
 import { readFileQuiet } from '$lib/services/file-system';
 import { getEditorSelection } from '$lib/services/monaco-models';
 import { createContextBudget, estimateTextTokens, type ContextBudget, type ContextLane } from './context-budget';
+import { buildHybridSemanticSnippets } from './semantic-retrieval';
 import {
   extractCursorWindow,
   extractQueryWindow,
@@ -51,6 +52,14 @@ export interface ContextV2 {
     freshSnippetCount: number;
     buildLatencyMs: number;
     fallbackUsed: boolean;
+    semanticCandidates: number;
+    semanticSelected: number;
+    hybridDropped: number;
+    semanticQueryMs: number;
+    semanticIndexStalenessMs: number;
+    semanticBackend: string;
+    semanticModelLoadMs: number;
+    semanticLastError?: string;
   };
 }
 
@@ -253,6 +262,16 @@ export async function buildContextV2(input: BuildContextV2Input): Promise<Contex
     runtime: 0,
   };
   const state = { totalTokens: 0, dropped: 0 };
+  let hybridStats: {
+    semanticCandidates: number;
+    semanticSelected: number;
+    hybridDropped: number;
+    semanticQueryMs: number;
+    semanticIndexStalenessMs: number;
+    semanticBackend: string;
+    semanticModelLoadMs: number;
+    semanticLastError?: string;
+  } | null = null;
 
   const active = editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)
     ? editorStore.activeFile
@@ -390,6 +409,41 @@ export async function buildContextV2(input: BuildContextV2Input): Promise<Contex
     });
   }
 
+  // Hybrid semantic retrieval lane: lexical + semantic candidates, then strict budget gate.
+  if (query && workspaceRoot) {
+    const hybrid = await buildHybridSemanticSnippets({
+      rootPath: workspaceRoot,
+      query,
+      touchedPaths: touchedPaths.map((p) => toRelativePath(p, workspaceRoot)),
+      activePath: active ? toRelativePath(active.path, workspaceRoot) : undefined,
+      diagnosticsPaths: diagnosticFiles.map((p) => toRelativePath(p, workspaceRoot)),
+    });
+    hybridStats = {
+      semanticCandidates: hybrid.semanticCandidates,
+      semanticSelected: hybrid.semanticSelected,
+      hybridDropped: hybrid.hybridDropped,
+      semanticQueryMs: hybrid.semanticQueryMs,
+      semanticIndexStalenessMs: hybrid.semanticIndexStalenessMs,
+      semanticBackend: hybrid.semanticBackend,
+      semanticModelLoadMs: hybrid.semanticModelLoadMs,
+      semanticLastError: hybrid.semanticLastError,
+    };
+    for (const semantic of hybrid.snippets) {
+      addDraft(drafts, laneUsage, budget, state, {
+        lane: semantic.lane,
+        path: semantic.path,
+        title: semantic.title,
+        content: semantic.content.slice(0, 3600),
+        startLine: semantic.startLine,
+        endLine: semantic.endLine,
+        score: semantic.score,
+        source: semantic.source,
+        timestamp: semantic.timestamp,
+        stale: semantic.stale,
+      });
+    }
+  }
+
   const ranked = drafts
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_SNIPPETS)
@@ -436,8 +490,26 @@ export async function buildContextV2(input: BuildContextV2Input): Promise<Contex
       freshSnippetCount,
       buildLatencyMs: Date.now() - startedAt,
       fallbackUsed: false,
+      semanticCandidates: 0,
+      semanticSelected: 0,
+      hybridDropped: 0,
+      semanticQueryMs: 0,
+      semanticIndexStalenessMs: 0,
+      semanticBackend: 'disabled',
+      semanticModelLoadMs: 0,
     },
   };
+
+  if (hybridStats) {
+    context.stats.semanticCandidates = hybridStats.semanticCandidates;
+    context.stats.semanticSelected = hybridStats.semanticSelected;
+    context.stats.hybridDropped = hybridStats.hybridDropped;
+    context.stats.semanticQueryMs = hybridStats.semanticQueryMs;
+    context.stats.semanticIndexStalenessMs = hybridStats.semanticIndexStalenessMs;
+    context.stats.semanticBackend = hybridStats.semanticBackend;
+    context.stats.semanticModelLoadMs = hybridStats.semanticModelLoadMs;
+    context.stats.semanticLastError = hybridStats.semanticLastError;
+  }
 
   return context;
 }
@@ -451,6 +523,9 @@ export function formatContextV2(context: ContextV2): string {
   if (context.query) lines.push(`User query: ${context.query}`);
   lines.push(
     `Budget: ~${context.stats.estimatedTokensUsed}/${context.budget.availableContextTokens} context tokens; snippets=${context.stats.snippetsSelected}; dropped=${context.stats.droppedCandidates}`,
+  );
+  lines.push(
+    `Hybrid retrieval: backend=${context.stats.semanticBackend}; semanticCandidates=${context.stats.semanticCandidates}; semanticSelected=${context.stats.semanticSelected}; hybridDropped=${context.stats.hybridDropped}; semanticQueryMs=${context.stats.semanticQueryMs}; modelLoadMs=${context.stats.semanticModelLoadMs}`,
   );
 
   lines.push('## Evidence Snippets');

@@ -72,6 +72,8 @@ export interface SearchResults {
     fallbackUsed: boolean;
     fallbackReason?: string | null;
     elapsedMs: number;
+    rgSource: string;
+    rgPath?: string | null;
   };
 }
 
@@ -101,6 +103,8 @@ export interface SearchDoneEvent {
     fallbackUsed: boolean;
     fallbackReason?: string | null;
     elapsedMs: number;
+    rgSource: string;
+    rgPath?: string | null;
   };
 }
 
@@ -145,7 +149,7 @@ export async function workspaceSearch(options: SearchOptions): Promise<SearchRes
     const results = await invoke<SearchResults>('workspace_search', { options });
 
     const telemetry = results.telemetry
-      ? ` [engine=${results.telemetry.engine}${results.telemetry.fallbackUsed ? ', fallback' : ''}, ${results.telemetry.elapsedMs}ms]`
+      ? ` [engine=${results.telemetry.engine}${results.telemetry.rgSource ? `/${results.telemetry.rgSource}` : ''}${results.telemetry.fallbackUsed ? ', fallback' : ''}, ${results.telemetry.elapsedMs}ms]`
       : '';
     logOutput(
       'Volt',

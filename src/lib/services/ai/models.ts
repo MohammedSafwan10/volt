@@ -6,7 +6,7 @@
 export interface ModelConfig {
   id: string;              // Full model ID (e.g., 'moonshotai/kimi-k2:free')
   name: string;            // Display name
-  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai';
+  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
   contextWindow: number;   // Total context window in tokens
   maxOutput: number;       // Max output tokens
   supportsTools: boolean;  // Function calling support
@@ -74,17 +74,6 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   },
 
   // ============ OpenRouter Free Models ============
-  'mistralai/mistral-small-3.1-24b-instruct:free': {
-    id: 'mistralai/mistral-small-3.1-24b-instruct:free',
-    name: 'Mistral Small 3.1 24B',
-    provider: 'openrouter',
-    contextWindow: 128000,
-    // OpenRouter currently reports null max_completion_tokens for this free route.
-    // Keep a conservative cap to avoid over-requesting completion length.
-    maxOutput: 8192,
-    supportsTools: true,
-    free: true
-  },
   'qwen/qwen3-coder:free': {
     id: 'qwen/qwen3-coder:free',
     name: 'Qwen3 Coder',
@@ -111,6 +100,17 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     maxOutput: 256000,
     supportsTools: true,
     free: true
+  },
+
+  // ============ Mistral Models ============
+  'devstral-medium-latest': {
+    id: 'devstral-medium-latest',
+    name: 'Devstral Medium',
+    provider: 'mistral',
+    contextWindow: 128000,
+    maxOutput: 8192,
+    supportsTools: true,
+    free: false
   },
 
   // ============ Anthropic Models ============
@@ -185,7 +185,7 @@ export function formatContextSize(tokens: number): string {
  * Get all models for a provider
  */
 export function getModelsForProvider(
-  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai'
+  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral'
 ): ModelConfig[] {
   return Object.values(MODEL_REGISTRY).filter(m => m.provider === provider);
 }

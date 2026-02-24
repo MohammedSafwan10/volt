@@ -70,6 +70,8 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
         fallbackUsed: boolean;
         fallbackReason?: string | null;
         elapsedMs: number;
+        rgSource?: string;
+        rgPath?: string | null;
       };
     }>('workspace_search', {
       options: {
@@ -110,7 +112,8 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
         : result.telemetry.fallbackUsed
           ? ', fallback used'
           : '';
-      lines.push(`Engine: ${result.telemetry.engine} (${result.telemetry.elapsedMs}ms${fallback})`);
+      const source = result.telemetry.rgSource ? `, source: ${result.telemetry.rgSource}` : '';
+      lines.push(`Engine: ${result.telemetry.engine} (${result.telemetry.elapsedMs}ms${source}${fallback})`);
     }
     if (result.truncated) {
       lines.push('(results truncated)');
@@ -190,7 +193,23 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
     lines.push('Use read_file with offset/limit to see focused context.');
 
     const { text, truncated } = truncateOutput(lines.join('\n'));
-    return { success: true, output: text, truncated };
+    return {
+      success: true,
+      output: text,
+      truncated,
+      meta: result.telemetry
+        ? {
+            searchTelemetry: {
+              engine: result.telemetry.engine,
+              rgSource: result.telemetry.rgSource ?? 'none',
+              rgPath: result.telemetry.rgPath ?? null,
+              fallbackUsed: result.telemetry.fallbackUsed,
+              fallbackReason: result.telemetry.fallbackReason ?? null,
+              elapsedMs: result.telemetry.elapsedMs,
+            },
+          }
+        : undefined,
+    };
 
   } catch (err) {
     const message = err instanceof Error
@@ -242,6 +261,9 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   try {
     let results: Array<{ name: string; relativePath: string }>;
     let engineLabel = 'legacy-index';
+    let rgSource: string | null = null;
+    let rgPath: string | null = null;
+    let elapsedMs = 0;
     let fallbackNote = '';
 
     try {
@@ -253,6 +275,8 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
         fallbackUsed: boolean;
         fallbackReason?: string | null;
         elapsedMs: number;
+        rgSource?: string | null;
+        rgPath?: string | null;
       }>('find_files_by_name', {
         options: {
           query,
@@ -266,6 +290,9 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
         }
       });
       engineLabel = rgResult.engine;
+      rgSource = rgResult.rgSource ?? null;
+      rgPath = rgResult.rgPath ?? null;
+      elapsedMs = rgResult.elapsedMs ?? 0;
       if (rgResult.fallbackUsed && rgResult.fallbackReason) {
         fallbackNote = ` (fallback: ${rgResult.fallbackReason})`;
       }
@@ -350,8 +377,18 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
 
     return {
       success: true,
-      output: lines.join('\n')
-    };
+        output: lines.join('\n'),
+        meta: {
+          searchTelemetry: {
+            engine: engineLabel,
+            rgSource: rgSource ?? (engineLabel === 'rg' ? 'unknown' : 'none'),
+            rgPath,
+            fallbackUsed: fallbackNote.length > 0,
+            fallbackReason: fallbackNote || null,
+            elapsedMs,
+          },
+        },
+      };
 
   } catch (err) {
     const message = err instanceof Error

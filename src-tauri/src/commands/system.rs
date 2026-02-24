@@ -1,12 +1,90 @@
-use serde::Serialize;
-use sysinfo::System;
-use std::collections::HashMap;
-use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use sysinfo::System;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_opener::OpenerExt;
 
 // Track running watch processes
-static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn normalize_executable_name(command: &str) -> String {
+    let trimmed = command.trim().trim_matches('"').trim_matches('\'');
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase()
+}
+
+fn is_allowed_executable(command: &str) -> bool {
+    let name = normalize_executable_name(command);
+    matches!(
+        name.as_str(),
+        "npx"
+            | "npx.cmd"
+            | "where"
+            | "which"
+            | "java"
+            | "java.exe"
+            | "dart"
+            | "dart.exe"
+            | "flutter"
+            | "flutter.exe"
+            | "flutter.bat"
+            | "yaml-language-server"
+            | "yaml-language-server.cmd"
+            | "yaml-language-server.exe"
+            | "lemminx"
+            | "lemminx.exe"
+            | "prettier"
+            | "prettier.cmd"
+            | "prettier.exe"
+    )
+}
+
+fn validate_command_invocation(command: &str, cwd: &Option<String>) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("Command cannot be empty".to_string());
+    }
+
+    if !is_allowed_executable(command) {
+        return Err(format!(
+            "Command '{}' is not allowed by secure allow-list",
+            command
+        ));
+    }
+
+    if let Some(path) = cwd {
+        let cwd_path = Path::new(path);
+        if !cwd_path.exists() {
+            return Err(format!("Working directory does not exist: {}", path));
+        }
+        if !cwd_path.is_dir() {
+            return Err(format!("Working directory is not a directory: {}", path));
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_to_absolute(path: &str, base_dir: &Option<String>) -> Result<PathBuf, String> {
+    let raw = PathBuf::from(path);
+    if raw.is_absolute() {
+        return Ok(raw);
+    }
+
+    if let Some(base) = base_dir {
+        return Ok(Path::new(base).join(raw));
+    }
+
+    std::env::current_dir()
+        .map(|cwd| cwd.join(raw))
+        .map_err(|e| format!("Failed to resolve current directory: {}", e))
+}
 
 fn kill_watch_process(watch_id: &str) {
     if let Ok(mut processes) = WATCH_PROCESSES.lock() {
@@ -77,6 +155,8 @@ pub async fn run_command(
 ) -> Result<CommandResult, String> {
     use std::process::Command;
 
+    validate_command_invocation(&command, &cwd)?;
+
     // On Windows, hide the console window
     let mut cmd = if cfg!(windows) {
         use std::os::windows::process::CommandExt;
@@ -109,6 +189,48 @@ pub fn get_env_var(name: String) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// Open a file/folder externally, constrained to a trusted base directory.
+/// This avoids broad opener permissions in capabilities while keeping UX working.
+#[tauri::command]
+pub fn open_path_scoped(
+    app: AppHandle,
+    path: String,
+    base_dir: Option<String>,
+) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    if path.contains("://") {
+        return Err("URLs are not allowed in open_path_scoped".to_string());
+    }
+
+    let absolute_target = resolve_to_absolute(&path, &base_dir)?;
+    let canonical_target = absolute_target
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve target path: {}", e))?;
+
+    if !canonical_target.exists() {
+        return Err(format!(
+            "Path does not exist: {}",
+            canonical_target.to_string_lossy()
+        ));
+    }
+
+    if let Some(base) = base_dir {
+        let canonical_base = Path::new(&base)
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve base directory: {}", e))?;
+        if !canonical_target.starts_with(&canonical_base) {
+            return Err("Path is outside the allowed project directory".to_string());
+        }
+    }
+
+    app.opener()
+        .open_path(canonical_target.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("Failed to open path: {}", e))
+}
+
 /// Start a watch command that streams output via events
 /// Used for `tsc --watch` and similar long-running processes
 #[tauri::command]
@@ -119,9 +241,11 @@ pub async fn start_watch_command(
     args: Vec<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
-    use std::process::{Command, Stdio};
     use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
     use std::thread;
+
+    validate_command_invocation(&command, &cwd)?;
 
     // Stop any existing watch with this ID
     {
@@ -149,13 +273,12 @@ pub async fn start_watch_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("Failed to spawn watch command: {}", e))?;
 
-    let stdout = child.stdout.take()
-        .ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take()
-        .ok_or("Failed to capture stderr")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
     // Store child process
     {
@@ -213,7 +336,10 @@ pub async fn start_watch_command(
             if let Some(child) = processes.get_mut(&watch_id_exit) {
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        let _ = app.emit(&format!("watch://{}//exit", watch_id_exit), status.code().unwrap_or(-1));
+                        let _ = app.emit(
+                            &format!("watch://{}//exit", watch_id_exit),
+                            status.code().unwrap_or(-1),
+                        );
                         processes.remove(&watch_id_exit);
                         return;
                     }
@@ -257,7 +383,8 @@ pub fn stop_all_watch_commands() -> Result<(), String> {
 /// List active watch commands
 #[tauri::command]
 pub fn list_watch_commands() -> Vec<String> {
-    WATCH_PROCESSES.lock()
+    WATCH_PROCESSES
+        .lock()
         .map(|p| p.keys().cloned().collect())
         .unwrap_or_default()
 }

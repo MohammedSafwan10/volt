@@ -13,6 +13,7 @@ import {
   type FileSearchResult,
   type SearchMatch
 } from '$lib/services/search';
+import { getSemanticStatus } from '$lib/services/ai/semantic-index';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { setModelValue } from '$lib/services/monaco-models';
 import { editorStore } from '$lib/stores/editor.svelte';
@@ -20,6 +21,13 @@ import { showToast } from './toast.svelte';
 
 export type { SearchResults, FileSearchResult, SearchMatch };
 export type FileMatches = FileSearchResult;
+export type SearchEngineStatus = 'unknown' | 'rg-bundled' | 'rg-system' | 'legacy-fallback';
+export type SemanticBackendStatus =
+  | 'unknown'
+  | 'local-onnx'
+  | 'local-onnx-fallback'
+  | 'disabled'
+  | 'error';
 
 class SearchStore {
   // Search query
@@ -41,6 +49,9 @@ class SearchStore {
   searching = $state(false);
   results = $state<SearchResults | null>(null);
   lastSearchCancelled = $state(false);
+  searchEngineStatus = $state<SearchEngineStatus>('unknown');
+  semanticBackendStatus = $state<SemanticBackendStatus>('unknown');
+  searchEngineHint = $state<string | null>(null);
   
   // Expanded files in results (for collapsible file groups)
   expandedFiles = $state<Set<string>>(new Set());
@@ -59,6 +70,31 @@ class SearchStore {
   private streamLatestTotalMatches = 0;
   private streamLatestTruncated = false;
   private streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private mapSearchEngineStatus(telemetry?: {
+    engine: string;
+    fallbackUsed: boolean;
+    rgSource: string;
+  }): SearchEngineStatus {
+    if (!telemetry) return this.searchEngineStatus;
+    if (telemetry.engine === 'legacy') return 'legacy-fallback';
+    if (telemetry.rgSource === 'bundled') return 'rg-bundled';
+    if (telemetry.rgSource === 'system') return 'rg-system';
+    return 'legacy-fallback';
+  }
+
+  private mapSemanticStatus(backend: string): SemanticBackendStatus {
+    if (backend === 'local-onnx') return 'local-onnx';
+    if (backend === 'local-onnx-fallback') return 'local-onnx-fallback';
+    if (backend === 'disabled') return 'disabled';
+    return 'error';
+  }
+
+  private async refreshSemanticStatus(rootPath: string): Promise<void> {
+    const status = await getSemanticStatus(rootPath);
+    if (!status) return;
+    this.semanticBackendStatus = this.mapSemanticStatus(status.backend);
+  }
 
   private normalizePath(path: string): string {
     return path.replace(/\\/g, '/');
@@ -207,8 +243,11 @@ class SearchStore {
             files,
             totalMatches: done.totalMatches,
             totalFiles: done.totalFiles,
-            truncated: done.truncated
+            truncated: done.truncated,
+            telemetry: done.telemetry
           };
+          this.searchEngineStatus = this.mapSearchEngineStatus(done.telemetry);
+          this.searchEngineHint = done.telemetry?.fallbackReason ?? null;
         }
 
         if (this.inFlightRequestId === requestId) {
@@ -229,6 +268,8 @@ class SearchStore {
         showToast({ message: `Search error: ${evt.error.message || evt.error.type}`, type: 'error' });
       }
     });
+
+    await this.refreshSemanticStatus(rootPath);
   }
 
   /**
@@ -241,6 +282,7 @@ class SearchStore {
     this.expandedFiles = new Set();
     this.selectedFile = null;
     this.selectedMatch = null;
+    this.searchEngineHint = null;
     if (this.inFlightRequestId) {
       void cancelWorkspaceSearch(this.inFlightRequestId);
       this.inFlightRequestId = null;

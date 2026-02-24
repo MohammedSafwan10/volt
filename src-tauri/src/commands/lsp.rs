@@ -5,7 +5,7 @@
 //! - Send JSON-RPC messages to servers
 //! - Query server status
 
-use crate::lsp::{LspError, LspManager, LspServerConfig, ExternalLspConfig, LspServerInfo};
+use crate::lsp::{ExternalLspConfig, LspError, LspManager, LspServerConfig, LspServerInfo};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Runtime, State};
@@ -104,7 +104,6 @@ pub async fn lsp_start_external_server<R: Runtime>(
 
     manager.start_external_server(config)
 }
-
 
 /// Stop a language server sidecar
 #[tauri::command]

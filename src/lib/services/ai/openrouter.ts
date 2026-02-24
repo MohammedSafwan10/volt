@@ -5,7 +5,7 @@
  * API is OpenAI-compatible with some extensions.
  * 
  * Docs: https://openrouter.ai/docs/api-reference/overview
- * Free models: DeepSeek R1, Qwen3, Mistral, etc.
+ * Free models: Qwen3, GLM, StepFun, etc.
  */
 
 import type {
@@ -418,6 +418,8 @@ export const openRouterProvider: AIProvider = {
 
     // Track tool calls being built up across chunks
     const pendingToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
+    let sawDeltaContent = false;
+    let fallbackAccumulated = '';
 
     try {
       while (true) {
@@ -456,6 +458,7 @@ export const openRouterProvider: AIProvider = {
             const delta = choice.delta;
 
             if (delta?.content) {
+              sawDeltaContent = true;
               yield { type: 'content', content: delta.content };
             }
 
@@ -468,9 +471,25 @@ export const openRouterProvider: AIProvider = {
               yield { type: 'thinking', thinking: delta.reasoning_content };
             }
 
-            // Some upstream providers only send final message content in stream events.
-            if (!delta?.content && typeof choice.message?.content === 'string' && choice.message.content.length > 0) {
-              yield { type: 'content', content: choice.message.content };
+            // Some upstream providers only send final/cumulative message content in stream events.
+            // Emit fallback content only when no delta content has been seen, and only emit novel suffix.
+            if (
+              !sawDeltaContent &&
+              !delta?.content &&
+              typeof choice.message?.content === 'string' &&
+              choice.message.content.length > 0
+            ) {
+              const nextContent = choice.message.content;
+              let novel = nextContent;
+              if (fallbackAccumulated && nextContent.startsWith(fallbackAccumulated)) {
+                novel = nextContent.slice(fallbackAccumulated.length);
+              } else if (nextContent === fallbackAccumulated) {
+                novel = '';
+              }
+              fallbackAccumulated = nextContent;
+              if (novel) {
+                yield { type: 'content', content: novel };
+              }
             }
 
             // Handle streaming tool calls

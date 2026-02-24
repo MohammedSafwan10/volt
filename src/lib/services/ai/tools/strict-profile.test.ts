@@ -9,7 +9,7 @@ let STRICT_CANONICAL_TOOL_NAMES!: Set<string>;
 let getAllToolsForMode!: (mode: 'ask' | 'plan' | 'agent') => Array<{ name: string }>;
 let getSystemPrompt!: (options: {
   mode: 'ask' | 'plan' | 'agent';
-  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai';
+  provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
   model: string;
 }) => string;
 

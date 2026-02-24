@@ -27,6 +27,32 @@
   const resultCount = $derived(searchStore.results?.totalMatches ?? 0);
   const fileCount = $derived(searchStore.results?.totalFiles ?? 0);
   const wasCancelled = $derived(searchStore.lastSearchCancelled);
+  const searchStatusLabel = $derived.by(() => {
+    switch (searchStore.searchEngineStatus) {
+      case 'rg-bundled':
+        return 'Search: rg (bundled)';
+      case 'rg-system':
+        return 'Search: rg (system)';
+      case 'legacy-fallback':
+        return 'Search: legacy fallback';
+      default:
+        return 'Search: unknown';
+    }
+  });
+  const semanticStatusLabel = $derived.by(() => {
+    switch (searchStore.semanticBackendStatus) {
+      case 'local-onnx':
+        return 'Semantic: local-onnx';
+      case 'local-onnx-fallback':
+        return 'Semantic: fallback';
+      case 'disabled':
+        return 'Semantic: disabled';
+      case 'error':
+        return 'Semantic: error';
+      default:
+        return 'Semantic: unknown';
+    }
+  });
 
   // Flatten results for virtualization - each file header and match is a row
   type FlatItem = 
@@ -372,6 +398,20 @@
       <div class="results-header">
         <span class="results-count">
           {resultCount} result{resultCount === 1 ? '' : 's'} in {fileCount} file{fileCount === 1 ? '' : 's'}
+        </span>
+        <span
+          class="engine-badge"
+          class:warning={searchStore.searchEngineStatus === 'legacy-fallback'}
+          title={searchStore.searchEngineHint ?? searchStatusLabel}
+        >
+          {searchStatusLabel}
+        </span>
+        <span
+          class="engine-badge"
+          class:warning={searchStore.semanticBackendStatus === 'local-onnx-fallback' || searchStore.semanticBackendStatus === 'error'}
+          title={semanticStatusLabel}
+        >
+          {semanticStatusLabel}
         </span>
         {#if searchStore.searching}
           <span class="truncated-warning" title="Searching...">
@@ -733,6 +773,21 @@
   .results-actions {
     display: flex;
     gap: 2px;
+  }
+
+  .engine-badge {
+    font-size: 10px;
+    line-height: 1;
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+
+  .engine-badge.warning {
+    color: var(--color-warning);
+    border-color: var(--color-warning);
   }
 
   .icon-btn {

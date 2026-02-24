@@ -9,6 +9,7 @@
   import { WelcomeScreen } from "$lib/components/welcome";
   import Breadcrumb from "$lib/components/editor/Breadcrumb.svelte";
   import EmptyState from "$lib/components/editor/EmptyState.svelte";
+  import FilePreview from "$lib/components/editor/FilePreview.svelte";
   import GoToLineDialog from "$lib/components/editor/GoToLineDialog.svelte";
   import { TabBar } from "$lib/components/tabs";
   import {
@@ -67,6 +68,46 @@
   let MonacoEditorComponent = $state<any | null>(null);
   let MonacoDiffEditorComponent = $state<any | null>(null);
   let monacoFeatureLoading = $state(false);
+
+  function getFileExt(path: string): string {
+    const name = path.split(/[/\\]/).pop() ?? path;
+    const idx = name.lastIndexOf(".");
+    return idx >= 0 ? name.slice(idx + 1).toLowerCase() : "";
+  }
+
+  function shouldUseRichPreview(path: string): boolean {
+    const ext = getFileExt(path);
+    return (
+      ext === "md" ||
+      ext === "mdx" ||
+      ext === "pdf" ||
+      ext === "png" ||
+      ext === "jpg" ||
+      ext === "jpeg" ||
+      ext === "gif" ||
+      ext === "webp" ||
+      ext === "bmp" ||
+      ext === "ico" ||
+      ext === "avif" ||
+      ext === "tif" ||
+      ext === "tiff" ||
+      ext === "mp3" ||
+      ext === "wav" ||
+      ext === "ogg" ||
+      ext === "oga" ||
+      ext === "flac" ||
+      ext === "aac" ||
+      ext === "m4a" ||
+      ext === "mp4" ||
+      ext === "mpeg" ||
+      ext === "mpg" ||
+      ext === "webm" ||
+      ext === "mov" ||
+      ext === "avi" ||
+      ext === "m4v" ||
+      ext === "ogv"
+    );
+  }
 
   // Go to Line dialog state
   let goToLineOpen = $state(false);
@@ -620,6 +661,11 @@
                 >
                   <SettingsPanel />
                 </div>
+              {:else if shouldUseRichPreview(editorStore.activeFile.path)}
+                <FilePreview
+                  filepath={editorStore.activeFile.path}
+                  content={editorStore.activeFile.content}
+                />
               {:else}
                 {#if MonacoEditorComponent}
                   <MonacoEditorComponent

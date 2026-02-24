@@ -46,6 +46,14 @@ export type AgentTelemetryEvent =
       staleVsFreshRatio: number;
       buildLatencyMs: number;
       fallbackUsed: boolean;
+      semanticCandidates?: number;
+      semanticSelected?: number;
+      hybridDropped?: number;
+      semanticQueryMs?: number;
+      semanticIndexStalenessMs?: number;
+      semanticBackend?: string;
+      semanticModelLoadMs?: number;
+      semanticLastError?: string;
     };
 
 const MAX_EVENTS = 2000;

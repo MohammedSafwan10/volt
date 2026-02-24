@@ -1179,6 +1179,9 @@ class AssistantStore {
       return msg;
     });
     this.enforceInMemoryBudget();
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
 
     // Persist to database immediately
     this.persistMessageToHistory(messageId);
@@ -1234,6 +1237,9 @@ class AssistantStore {
       }
       return msg;
     });
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
 
     // Persist to database immediately
     this.persistMessageToHistory(messageId);
@@ -1283,6 +1289,9 @@ class AssistantStore {
       }
       return msg;
     });
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
 
     // Persist to database immediately
     this.persistMessageToHistory(messageId);
@@ -1340,6 +1349,9 @@ class AssistantStore {
       }
       return msg;
     });
+    if (this.currentConversation) {
+      this.currentConversation.messages = this.messages;
+    }
   }
 
   markAssistantMessageStreamState(
@@ -1716,6 +1728,40 @@ class AssistantStore {
         ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
         : tc
     );
+
+    // Cancel inline tool calls shown inside assistant messages.
+    const cancelInlineToolCalls = (msg: AssistantMessage): AssistantMessage => {
+      const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
+        tc.status === 'running' || tc.status === 'pending'
+          ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
+          : tc
+      );
+      const contentParts = (msg.contentParts || []).map(part => {
+        if (part.type === 'tool') {
+          const tc = part.toolCall;
+          if (tc.status === 'running' || tc.status === 'pending') {
+            return {
+              ...part,
+              toolCall: {
+                ...tc,
+                status: 'cancelled' as ToolCallStatus,
+                endTime: Date.now(),
+              },
+            };
+          }
+        }
+        return part;
+      });
+      return { ...msg, inlineToolCalls, contentParts };
+    };
+
+    this.messages = this.messages.map(cancelInlineToolCalls);
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        messages: this.currentConversation.messages.map(cancelInlineToolCalls),
+      };
+    }
 
     // Force-close any active thinking blocks so UI never gets stuck on "Thinking..."
     for (const msg of this.messages) {

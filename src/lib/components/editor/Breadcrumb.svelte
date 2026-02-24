@@ -10,27 +10,32 @@
 
   let { filepath }: Props = $props();
 
-  // Get path segments relative to project root
+  const normalizedRootPath = $derived(
+    projectStore.rootPath ? projectStore.rootPath.replace(/\\/g, '/') : ''
+  );
+  const normalizedFilePath = $derived(filepath ? filepath.replace(/\\/g, '/') : '');
+
+  // Path segments relative to project root (always shown with workspace as first crumb).
   const segments = $derived.by(() => {
-    if (!filepath || !projectStore.rootPath) return [];
-    
-    const rootPath = projectStore.rootPath.replace(/\\/g, '/');
-    const fullPath = filepath.replace(/\\/g, '/');
-    
-    // Get relative path
-    let relativePath = fullPath;
-    if (fullPath.startsWith(rootPath)) {
-      relativePath = fullPath.slice(rootPath.length);
+    if (!normalizedFilePath) return [];
+
+    let relativePath = normalizedFilePath;
+    if (normalizedRootPath && normalizedFilePath.startsWith(normalizedRootPath)) {
+      relativePath = normalizedFilePath.slice(normalizedRootPath.length);
       if (relativePath.startsWith('/')) {
         relativePath = relativePath.slice(1);
       }
     }
-    
     return relativePath.split('/').filter(Boolean);
   });
 
   const fileName = $derived(segments.length > 0 ? segments[segments.length - 1] : '');
   const folderSegments = $derived(segments.slice(0, -1));
+  const rootLabel = $derived(
+    projectStore.projectName ||
+      (normalizedRootPath ? normalizedRootPath.split('/').filter(Boolean).pop() : '') ||
+      'Workspace'
+  );
 
   /**
    * Build absolute path for a folder segment
@@ -40,6 +45,9 @@
     if (!projectStore.rootPath) return '';
     
     const rootPath = projectStore.rootPath.replace(/\\/g, '/');
+    if (segmentIndex < 0) {
+      return rootPath;
+    }
     const pathParts = segments.slice(0, segmentIndex + 1);
     return `${rootPath}/${pathParts.join('/')}`;
   }
@@ -99,6 +107,18 @@
 
 {#if segments.length > 0}
   <nav class="breadcrumb no-select" aria-label="File path">
+    <button
+      class="breadcrumb-item clickable root"
+      title="Go to workspace root"
+      onclick={() => projectStore.rootPath && handleFolderClick(-1)}
+      aria-label="Navigate to workspace root"
+    >
+      <UIIcon name="folder" size={14} />
+      <span>{rootLabel}</span>
+    </button>
+    <span class="separator" aria-hidden="true">
+      <UIIcon name="chevron-right" size={12} />
+    </span>
     {#each folderSegments as segment, i (i)}
       <button 
         class="breadcrumb-item clickable" 

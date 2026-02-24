@@ -8,12 +8,14 @@ export { geminiProvider, validateGeminiKey } from './gemini';
 export { openRouterProvider, validateOpenRouterKey } from './openrouter';
 export { anthropicProvider, validateAnthropicKey } from './anthropic';
 export { openaiProvider, validateOpenAIKey } from './openai';
+export { mistralProvider, validateMistralKey } from './mistral';
 
 import type { AIProvider, ChatRequest, ChatResponse, StreamChunk } from './types';
 import { geminiProvider } from './gemini';
 import { openRouterProvider } from './openrouter';
 import { anthropicProvider } from './anthropic';
 import { openaiProvider } from './openai';
+import { mistralProvider } from './mistral';
 import { aiSettingsStore, type AIProvider as AIProviderType, type AIMode } from '$lib/stores/ai.svelte';
 
 // Provider registry
@@ -21,7 +23,8 @@ const providers: Record<AIProviderType, AIProvider> = {
   gemini: geminiProvider,
   openrouter: openRouterProvider,
   anthropic: anthropicProvider,
-  openai: openaiProvider
+  openai: openaiProvider,
+  mistral: mistralProvider
 };
 
 /**

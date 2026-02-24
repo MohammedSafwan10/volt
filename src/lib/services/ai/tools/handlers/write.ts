@@ -811,15 +811,6 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
       ? Math.floor(args.expected_version)
       : undefined;
 
-  let contentDoc: FileDocument;
-  try {
-    contentDoc = await readFileDocumentFresh(path);
-  } catch {
-    return { success: false, error: `File not found: ${relativePath}` };
-  }
-
-  const before = contentDoc.content;
-  const expectedVersion = expectedVersionArg ?? contentDoc.version;
   let parsedPatch: { path: string; hunks: Array<{ lines: Array<{ op: 'context' | 'remove' | 'add'; text: string }> }> };
   try {
     parsedPatch = parseCodexPatch(patch);
@@ -831,6 +822,27 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
       success: false,
       error: `Patch target mismatch: expected "${relativePath}" but patch references "${parsedPatch.path}".`,
     };
+  }
+
+  let before = '';
+  let expectedVersion: number | undefined = expectedVersionArg;
+  try {
+    const contentDoc = await readFileDocumentFresh(path);
+    before = contentDoc.content;
+    expectedVersion = expectedVersionArg ?? contentDoc.version;
+  } catch {
+    // Missing file is allowed only for "add-only" patch hunks.
+    const hasNonAddLines = parsedPatch.hunks.some((hunk) =>
+      hunk.lines.some((line) => line.op !== 'add'),
+    );
+    if (hasNonAddLines) {
+      return {
+        success: false,
+        error: `File not found: ${relativePath}. For new files, use add-only patch hunks or write_file.`,
+      };
+    }
+    before = '';
+    expectedVersion = undefined;
   }
 
   let after: string;

@@ -121,6 +121,51 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+function getFileExt(path: string): string {
+  const name = path.split('/').pop() ?? path;
+  const idx = name.lastIndexOf('.');
+  return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
+}
+
+const BINARY_LIKE_EXTENSIONS = new Set([
+  'pdf',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'ico',
+  'avif',
+  'tif',
+  'tiff',
+  'zip',
+  '7z',
+  'rar',
+  'exe',
+  'dll',
+  'bin',
+  'woff',
+  'woff2',
+  'ttf',
+  'otf',
+  'mp3',
+  'wav',
+  'ogg',
+  'oga',
+  'flac',
+  'aac',
+  'm4a',
+  'mp4',
+  'mpeg',
+  'mpg',
+  'webm',
+  'mov',
+  'avi',
+  'm4v',
+  'ogv',
+]);
+
 class EditorStore {
   /** List of open files */
   openFiles = $state<OpenFile[]>([]);
@@ -178,34 +223,44 @@ class EditorStore {
       return true;
     }
 
-    // Read file content (use original path for file system access)
-    const content = await readFile(path);
-    if (content === null) {
+    // Extract filename
+    const name = normalizedPath.split('/').pop() || normalizedPath;
+    const ext = getFileExt(normalizedPath);
+    const isBinaryLike = BINARY_LIKE_EXTENSIONS.has(ext);
+
+    // Read file content for text-like files only.
+    // Binary files are opened in preview mode and should not fail file open.
+    const content = isBinaryLike ? '' : await readFile(path);
+    if (!isBinaryLike && content === null) {
       // Error already shown via toast in readFile
       return false;
     }
-
-    // Extract filename
-    const name = normalizedPath.split('/').pop() || normalizedPath;
 
     // Detect language from extension
     const language = detectLanguage(name);
 
     // Detect line ending from content
-    const lineEnding = content.includes('\r\n') ? 'CRLF' : 'LF';
+    const lineEnding = content && content.includes('\r\n') ? 'CRLF' : 'LF';
 
-    // Add to open files
+    // Add to open files (race-safe: check again after async read)
+    const existingAfterRead = this.openFiles.find(f => f.path === normalizedPath);
+    if (existingAfterRead) {
+      this.activeFilePath = normalizedPath;
+      return true;
+    }
+
     const newFile: OpenFile = {
       path: normalizedPath,
       name,
-      content,
-      originalContent: content,
+      content: content ?? '',
+      originalContent: content ?? '',
       language,
       lineEnding,
-      encoding: 'UTF-8'
+      encoding: 'UTF-8',
+      readonly: isBinaryLike || undefined,
     };
 
-    this.openFiles = [...this.openFiles, newFile];
+    this.openFiles = [...this.openFiles.filter(f => f.path !== normalizedPath), newFile];
     this.activeFilePath = normalizedPath;
 
     // Reset cursor position for new file
@@ -546,6 +601,13 @@ class EditorStore {
     const normalizedPath = normalizePath(path);
     const fileIndex = this.openFiles.findIndex(f => f.path === normalizedPath);
     if (fileIndex === -1) return false;
+
+    const ext = getFileExt(normalizedPath);
+    const isBinaryLike = BINARY_LIKE_EXTENSIONS.has(ext);
+    if (isBinaryLike) {
+      // Binary previews are loaded by viewer components from disk directly.
+      return true;
+    }
 
     // Use original path for file system access
     try {

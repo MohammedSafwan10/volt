@@ -13,7 +13,7 @@
 	} from "$lib/services/terminal-loader";
 	import type { TerminalSession } from "$lib/services/terminal-client";
 	import { themeStore } from "$lib/stores/theme.svelte";
-	import { open } from "@tauri-apps/plugin-shell";
+	import { openUrl } from "@tauri-apps/plugin-opener";
 	import TerminalActions from "./TerminalActions.svelte";
 
 	interface Props {
@@ -174,10 +174,10 @@
 		terminal = createTerminal();
 		applyTheme(terminal);
 		fitAddon = createFitAddon();
-		// WebLinksAddon with handler to open URLs via Tauri shell
+		// WebLinksAddon with handler to open URLs via opener plugin
 		webLinksAddon = createWebLinksAddon(
 			(_event: MouseEvent, uri: string) => {
-				void open(uri);
+				void openUrl(uri);
 			},
 		);
 

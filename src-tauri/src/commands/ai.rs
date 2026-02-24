@@ -12,6 +12,7 @@ fn provider_keyring_username(provider: &str) -> Result<String, String> {
         "openrouter" => Ok("ai.openrouter.api_key".to_string()),
         "anthropic" => Ok("ai.anthropic.api_key".to_string()),
         "openai" => Ok("ai.openai.api_key".to_string()),
+        "mistral" => Ok("ai.mistral.api_key".to_string()),
         _ => Err("Unsupported AI provider".to_string()),
     }
 }
@@ -411,6 +412,90 @@ pub async fn gemini_proxy_stream(
 
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|err| format!("Error while reading Gemini stream: {err}"))?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(i) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=i).collect();
+            if let Ok(line) = String::from_utf8(line_bytes) {
+                if !line.trim().is_empty() {
+                    on_event
+                        .send(line)
+                        .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+                }
+            }
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer).to_string();
+        if !line.trim().is_empty() {
+            on_event
+                .send(line)
+                .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn mistral_proxy(body: Value, api_key: String) -> Result<Value, String> {
+    let client = reqwest::Client::new();
+    let api_key = api_key.trim();
+
+    let response = client
+        .post("https://api.mistral.ai/v1/chat/completions")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to reach Mistral: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Mistral error (Status {status}): {text}"));
+    }
+
+    let json: Value = response
+        .json()
+        .await
+        .map_err(|err| format!("Failed to parse Mistral response: {err}"))?;
+
+    Ok(json)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn mistral_proxy_stream(
+    body: Value,
+    api_key: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let api_key = api_key.trim();
+
+    let response = client
+        .post("https://api.mistral.ai/v1/chat/completions")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to send streaming request to Mistral: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Mistral streaming error (Status {status}): {text}"));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|err| format!("Error while reading Mistral stream: {err}"))?;
         buffer.extend_from_slice(&chunk);
 
         while let Some(i) = buffer.iter().position(|&b| b == b'\n') {

@@ -12,8 +12,8 @@ use chromiumoxide::Page;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Runtime};
+use tokio::sync::{Mutex, RwLock};
 
 /// CDP Manager state
 pub struct CdpManager {
@@ -170,11 +170,11 @@ impl CdpManager {
 
         // Get all available pages
         let pages = browser.pages().await.map_err(|e| e.to_string())?;
-        
+
         if pages.is_empty() {
             return Err("No pages available".to_string());
         }
-        
+
         // Find the right page
         let page = if let Some(url) = target_url {
             // Find page with matching URL
@@ -386,14 +386,29 @@ impl CdpManager {
     pub async fn get_console_logs(&self, limit: Option<usize>) -> Vec<CdpConsoleLog> {
         let logs = self.console_logs.lock().await;
         let limit = limit.unwrap_or(100).min(logs.len());
-        logs.iter().rev().take(limit).cloned().collect::<Vec<_>>().into_iter().rev().collect()
+        logs.iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     /// Get buffered JS errors
     pub async fn get_js_errors(&self, limit: Option<usize>) -> Vec<CdpJsError> {
         let errors = self.js_errors.lock().await;
         let limit = limit.unwrap_or(50).min(errors.len());
-        errors.iter().rev().take(limit).cloned().collect::<Vec<_>>().into_iter().rev().collect()
+        errors
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     /// Get buffered network requests
@@ -402,7 +417,13 @@ impl CdpManager {
         let mut reqs: Vec<_> = requests.values().cloned().collect();
         reqs.sort_by_key(|r| r.timestamp);
         let limit = limit.unwrap_or(100).min(reqs.len());
-        reqs.into_iter().rev().take(limit).collect::<Vec<_>>().into_iter().rev().collect()
+        reqs.into_iter()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     /// Clear console logs buffer
@@ -425,7 +446,9 @@ impl CdpManager {
     pub async fn navigate(&self, url: &str) -> Result<(), String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
-        page.goto(url).await.map_err(|e| format!("Navigation failed: {}", e))?;
+        page.goto(url)
+            .await
+            .map_err(|e| format!("Navigation failed: {}", e))?;
         Ok(())
     }
 
@@ -435,22 +458,20 @@ impl CdpManager {
         let page = page.as_ref().ok_or("No page attached")?;
 
         match page.find_element(selector).await {
-            Ok(element) => {
-                match element.click().await {
-                    Ok(_) => Ok(CdpClickResult {
-                        success: true,
-                        element_found: true,
-                        selector: selector.to_string(),
-                        error: None,
-                    }),
-                    Err(e) => Ok(CdpClickResult {
-                        success: false,
-                        element_found: true,
-                        selector: selector.to_string(),
-                        error: Some(format!("Click failed: {}", e)),
-                    }),
-                }
-            }
+            Ok(element) => match element.click().await {
+                Ok(_) => Ok(CdpClickResult {
+                    success: true,
+                    element_found: true,
+                    selector: selector.to_string(),
+                    error: None,
+                }),
+                Err(e) => Ok(CdpClickResult {
+                    success: false,
+                    element_found: true,
+                    selector: selector.to_string(),
+                    error: Some(format!("Click failed: {}", e)),
+                }),
+            },
             Err(e) => Ok(CdpClickResult {
                 success: false,
                 element_found: false,
@@ -461,7 +482,11 @@ impl CdpManager {
     }
 
     /// Type text into the focused element or a specific element
-    pub async fn type_text(&self, text: &str, selector: Option<&str>) -> Result<CdpTypeResult, String> {
+    pub async fn type_text(
+        &self,
+        text: &str,
+        selector: Option<&str>,
+    ) -> Result<CdpTypeResult, String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
@@ -505,20 +530,22 @@ impl CdpManager {
     pub async fn press_key(&self, key: &str) -> Result<(), String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
-        
+
         // Use keyboard input via evaluate
         let script = format!(
             r#"document.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{}' }}))"#,
             key
         );
-        page.evaluate(script).await.map_err(|e| format!("Key press failed: {}", e))?;
+        page.evaluate(script)
+            .await
+            .map_err(|e| format!("Key press failed: {}", e))?;
         Ok(())
     }
 
     /// Take a screenshot of the page
     pub async fn screenshot(&self, full_page: bool) -> Result<CdpScreenshot, String> {
         use chromiumoxide::page::ScreenshotParams;
-        
+
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
@@ -527,7 +554,8 @@ impl CdpManager {
             .full_page(full_page)
             .build();
 
-        let screenshot_bytes = page.screenshot(params)
+        let screenshot_bytes = page
+            .screenshot(params)
             .await
             .map_err(|e| format!("Screenshot failed: {}", e))?;
 
@@ -543,12 +571,18 @@ impl CdpManager {
     /// Take a screenshot of a specific element
     pub async fn screenshot_element(&self, selector: &str) -> Result<CdpScreenshot, String> {
         use base64::Engine;
-        
+
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
-        let element = page.find_element(selector).await.map_err(|e| format!("Element not found: {}", e))?;
-        let screenshot = element.screenshot(page::CaptureScreenshotFormat::Png).await.map_err(|e| format!("Screenshot failed: {}", e))?;
+        let element = page
+            .find_element(selector)
+            .await
+            .map_err(|e| format!("Element not found: {}", e))?;
+        let screenshot = element
+            .screenshot(page::CaptureScreenshotFormat::Png)
+            .await
+            .map_err(|e| format!("Screenshot failed: {}", e))?;
 
         Ok(CdpScreenshot {
             data: base64::engine::general_purpose::STANDARD.encode(&screenshot),
@@ -584,23 +618,39 @@ impl CdpManager {
     pub async fn get_content(&self) -> Result<String, String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
-        page.content().await.map_err(|e| format!("Failed to get content: {}", e))
+        page.content()
+            .await
+            .map_err(|e| format!("Failed to get content: {}", e))
     }
 
     /// Get page title
     pub async fn get_title(&self) -> Result<String, String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
-        let result = page.evaluate("document.title".to_string()).await.map_err(|e| format!("Failed to get title: {}", e))?;
-        Ok(result.value().and_then(|v| v.as_str()).unwrap_or("").to_string())
+        let result = page
+            .evaluate("document.title".to_string())
+            .await
+            .map_err(|e| format!("Failed to get title: {}", e))?;
+        Ok(result
+            .value()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     /// Get current URL
     pub async fn get_url(&self) -> Result<String, String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
-        let result = page.evaluate("window.location.href".to_string()).await.map_err(|e| format!("Failed to get URL: {}", e))?;
-        Ok(result.value().and_then(|v| v.as_str()).unwrap_or("").to_string())
+        let result = page
+            .evaluate("window.location.href".to_string())
+            .await
+            .map_err(|e| format!("Failed to get URL: {}", e))?;
+        Ok(result
+            .value()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     /// Wait for an element to appear
@@ -626,7 +676,8 @@ impl CdpManager {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
-        let script = format!(r#"
+        let script = format!(
+            r#"
             (function() {{
                 const el = document.querySelector('{}');
                 if (!el) return null;
@@ -641,27 +692,48 @@ impl CdpManager {
                     selector: '{}',
                 }};
             }})()
-        "#, selector.replace('\'', "\\'"), selector.replace('\'', "\\'"));
+        "#,
+            selector.replace('\'', "\\'"),
+            selector.replace('\'', "\\'")
+        );
 
         let result = page.evaluate(script).await.map_err(|e| e.to_string())?;
-        
+
         if let Some(value) = result.value() {
             if value.is_null() {
                 return Ok(None);
             }
-            
+
             let el = CdpElement {
                 node_id: 0,
                 backend_node_id: None,
-                tag_name: value.get("tagName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                id: value.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                classes: value.get("classes")
+                tag_name: value
+                    .get("tagName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                id: value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                classes: value
+                    .get("classes")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 attributes: HashMap::new(),
-                outer_html: value.get("outerHtml").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                inner_text: value.get("innerText").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                outer_html: value
+                    .get("outerHtml")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                inner_text: value
+                    .get("innerText")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 computed_styles: HashMap::new(),
                 rect: value.get("rect").and_then(|v| {
                     Some(CdpRect {
@@ -674,19 +746,24 @@ impl CdpManager {
                 selector: selector.to_string(),
                 xpath: String::new(),
             };
-            
+
             return Ok(Some(el));
         }
-        
+
         Ok(None)
     }
 
     /// Get multiple elements by selector
-    pub async fn get_elements(&self, selector: &str, limit: usize) -> Result<Vec<CdpElement>, String> {
+    pub async fn get_elements(
+        &self,
+        selector: &str,
+        limit: usize,
+    ) -> Result<Vec<CdpElement>, String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
-        let script = format!(r#"
+        let script = format!(
+            r#"
             (function() {{
                 const elements = document.querySelectorAll('{}');
                 return Array.from(elements).slice(0, {}).map((el, idx) => {{
@@ -700,41 +777,55 @@ impl CdpManager {
                     }};
                 }});
             }})()
-        "#, selector.replace('\'', "\\'"), limit);
+        "#,
+            selector.replace('\'', "\\'"),
+            limit
+        );
 
         let result = page.evaluate(script).await.map_err(|e| e.to_string())?;
-        
+
         if let Some(arr) = result.value().and_then(|v| v.as_array()) {
-            let elements: Vec<CdpElement> = arr.iter().filter_map(|v| {
-                Some(CdpElement {
-                    node_id: 0,
-                    backend_node_id: None,
-                    tag_name: v.get("tagName")?.as_str()?.to_string(),
-                    id: v.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    classes: v.get("classes")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                        .unwrap_or_default(),
-                    attributes: HashMap::new(),
-                    outer_html: None,
-                    inner_text: v.get("innerText").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    computed_styles: HashMap::new(),
-                    rect: v.get("rect").and_then(|r| {
-                        Some(CdpRect {
-                            x: r.get("x")?.as_f64()?,
-                            y: r.get("y")?.as_f64()?,
-                            width: r.get("width")?.as_f64()?,
-                            height: r.get("height")?.as_f64()?,
-                        })
-                    }),
-                    selector: selector.to_string(),
-                    xpath: String::new(),
+            let elements: Vec<CdpElement> = arr
+                .iter()
+                .filter_map(|v| {
+                    Some(CdpElement {
+                        node_id: 0,
+                        backend_node_id: None,
+                        tag_name: v.get("tagName")?.as_str()?.to_string(),
+                        id: v.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        classes: v
+                            .get("classes")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        attributes: HashMap::new(),
+                        outer_html: None,
+                        inner_text: v
+                            .get("innerText")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        computed_styles: HashMap::new(),
+                        rect: v.get("rect").and_then(|r| {
+                            Some(CdpRect {
+                                x: r.get("x")?.as_f64()?,
+                                y: r.get("y")?.as_f64()?,
+                                width: r.get("width")?.as_f64()?,
+                                height: r.get("height")?.as_f64()?,
+                            })
+                        }),
+                        selector: selector.to_string(),
+                        xpath: String::new(),
+                    })
                 })
-            }).collect();
-            
+                .collect();
+
             return Ok(elements);
         }
-        
+
         Ok(vec![])
     }
 
@@ -764,10 +855,11 @@ impl CdpManager {
                     jsHeapUsed: memory.usedJSHeapSize || null,
                 };
             })()
-        "#.to_string();
+        "#
+        .to_string();
 
         let result = page.evaluate(script).await.map_err(|e| e.to_string())?;
-        
+
         if let Some(v) = result.value() {
             return Ok(CdpPerformanceMetrics {
                 dom_content_loaded: v.get("domContentLoaded").and_then(|v| v.as_u64()),
@@ -790,7 +882,7 @@ impl CdpManager {
                     .as_millis() as u64,
             });
         }
-        
+
         Err("Failed to get performance metrics".to_string())
     }
 
@@ -799,7 +891,8 @@ impl CdpManager {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
-        let script = format!(r#"
+        let script = format!(
+            r#"
             (function() {{
                 const el = document.querySelector('{}');
                 if (el) {{
@@ -808,10 +901,12 @@ impl CdpManager {
                 }}
                 return false;
             }})()
-        "#, selector.replace('\'', "\\'"));
+        "#,
+            selector.replace('\'', "\\'")
+        );
 
         let result = page.evaluate(script).await.map_err(|e| e.to_string())?;
-        
+
         if result.value().and_then(|v| v.as_bool()) == Some(true) {
             Ok(())
         } else {
@@ -826,7 +921,7 @@ impl CdpManager {
 
         let script = format!("window.scrollBy({}, {})", x, y);
         page.evaluate(script).await.map_err(|e| e.to_string())?;
-        
+
         Ok(())
     }
 
@@ -853,8 +948,10 @@ impl CdpManager {
             "#,
             width, height
         );
-        
-        page.evaluate(script).await.map_err(|e| format!("Failed to set viewport: {}", e))?;
+
+        page.evaluate(script)
+            .await
+            .map_err(|e| format!("Failed to set viewport: {}", e))?;
         Ok(())
     }
 
@@ -875,7 +972,10 @@ impl CdpManager {
 
     /// Enable element picker mode - highlights elements on hover and captures clicks
     /// Returns the selected element info when user clicks
-    pub async fn enable_element_picker<R: tauri::Runtime>(&self, app: tauri::AppHandle<R>) -> Result<(), String> {
+    pub async fn enable_element_picker<R: tauri::Runtime>(
+        &self,
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
         let page = self.page.read().await;
         let page = page.as_ref().ok_or("No page attached")?;
 
@@ -1066,16 +1166,18 @@ impl CdpManager {
                 return 'Element picker enabled';
             })()
         "#.to_string();
-        page.evaluate(script).await.map_err(|e| format!("Failed to enable element picker: {}", e))?;
-        
+        page.evaluate(script)
+            .await
+            .map_err(|e| format!("Failed to enable element picker: {}", e))?;
+
         // Start polling for selected element
         let page_clone = self.page.clone();
         let app_clone = app.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                
+
                 let page_guard = page_clone.read().await;
                 if let Some(page) = page_guard.as_ref() {
                     // Check if element was selected
@@ -1085,17 +1187,19 @@ impl CdpManager {
                             if !value.is_null() {
                                 // Element was selected! Emit event and clear
                                 let _ = app_clone.emit("browser://element-selected", value.clone());
-                                
+
                                 // Also emit that select mode is now off
                                 let _ = app_clone.emit("browser://select-mode", false);
-                                
+
                                 // Clear the selection
-                                let _ = page.evaluate("window.__voltSelectedElement = null".to_string()).await;
+                                let _ = page
+                                    .evaluate("window.__voltSelectedElement = null".to_string())
+                                    .await;
                                 break;
                             }
                         }
                     }
-                    
+
                     // Check if picker was cancelled
                     let picker_check = "!!window.__voltElementPicker".to_string();
                     if let Ok(result) = page.evaluate(picker_check).await {
@@ -1127,9 +1231,12 @@ impl CdpManager {
             if (window.__voltClearSelectionHighlight) {
                 window.__voltClearSelectionHighlight();
             }
-        "#.to_string();
+        "#
+        .to_string();
 
-        page.evaluate(script).await.map_err(|e| format!("Failed to disable element picker: {}", e))?;
+        page.evaluate(script)
+            .await
+            .map_err(|e| format!("Failed to disable element picker: {}", e))?;
         Ok(())
     }
 }

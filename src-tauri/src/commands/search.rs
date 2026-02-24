@@ -1,5 +1,5 @@
-use ignore::WalkBuilder;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use ignore::WalkBuilder;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
 #[derive(Clone)]
@@ -142,6 +142,10 @@ pub struct FindFilesResult {
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
     pub elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rg_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rg_path: Option<String>,
 }
 
 /// A single match within a file
@@ -218,6 +222,27 @@ pub struct SearchTelemetry {
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
     pub elapsed_ms: u64,
+    pub rg_source: String,
+    pub rg_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RgCommandInfo {
+    pub source: String,
+    pub path: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RgCommandSource {
+    Bundled,
+    System,
+}
+
+#[derive(Clone, Debug)]
+struct RgCommand {
+    source: RgCommandSource,
+    path: String,
 }
 
 /// Streaming search chunk event
@@ -271,13 +296,117 @@ enum RgSearchError {
     Cancelled,
 }
 
+fn rg_source_name(source: RgCommandSource) -> &'static str {
+    match source {
+        RgCommandSource::Bundled => "bundled",
+        RgCommandSource::System => "system",
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const RG_SIDECAR_NAME: &str = "rg-x86_64-pc-windows-msvc.exe";
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const RG_SIDECAR_NAME: &str = "rg-aarch64-pc-windows-msvc.exe";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RG_SIDECAR_NAME: &str = "rg-x86_64-unknown-linux-gnu";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const RG_SIDECAR_NAME: &str = "rg-aarch64-unknown-linux-gnu";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const RG_SIDECAR_NAME: &str = "rg-x86_64-apple-darwin";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const RG_SIDECAR_NAME: &str = "rg-aarch64-apple-darwin";
+
+fn command_path_exists(path: &PathBuf) -> bool {
+    path.exists() && path.is_file()
+}
+
+fn resolve_bundled_rg_command(app: &AppHandle) -> Option<RgCommand> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join(RG_SIDECAR_NAME));
+        candidates.push(resource_dir.join("binaries").join(RG_SIDECAR_NAME));
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join(RG_SIDECAR_NAME));
+            candidates.push(exe_dir.join("binaries").join(RG_SIDECAR_NAME));
+            candidates.push(exe_dir.join("..").join("binaries").join(RG_SIDECAR_NAME));
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("binaries").join(RG_SIDECAR_NAME));
+        candidates.push(cwd.join("src-tauri").join("binaries").join(RG_SIDECAR_NAME));
+        if let Some(parent) = cwd.parent() {
+            candidates.push(
+                parent
+                    .join("src-tauri")
+                    .join("binaries")
+                    .join(RG_SIDECAR_NAME),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if command_path_exists(&candidate) {
+            let path = normalize_path_for_display(&candidate.to_string_lossy());
+            return Some(RgCommand {
+                source: RgCommandSource::Bundled,
+                path,
+            });
+        }
+    }
+
+    None
+}
+
+fn resolve_system_rg_command() -> Result<Option<RgCommand>, RgSearchError> {
+    match Command::new("rg")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => Ok(Some(RgCommand {
+            source: RgCommandSource::System,
+            path: "rg".to_string(),
+        })),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(RgSearchError::Failed(format!(
+            "Failed to probe system rg: {e}"
+        ))),
+    }
+}
+
+fn resolve_rg_command(app: &AppHandle) -> Result<RgCommand, RgSearchError> {
+    if let Some(command) = resolve_bundled_rg_command(app) {
+        return Ok(command);
+    }
+
+    if let Some(command) = resolve_system_rg_command()? {
+        return Ok(command);
+    }
+
+    Err(RgSearchError::NotAvailable(
+        "ripgrep binary (rg) not available: bundled sidecar missing and system rg not in PATH"
+            .to_string(),
+    ))
+}
+
 impl SearchEngineMode {
     fn from_input(option: Option<&str>) -> Self {
         let env_mode = env::var("VOLT_SEARCH_ENGINE").ok();
         let raw = option
             .and_then(|s| {
                 let t = s.trim();
-                if t.is_empty() { None } else { Some(t.to_string()) }
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
             })
             .or(env_mode)
             .unwrap_or_else(|| "auto".to_string())
@@ -428,7 +557,11 @@ fn build_rg_args(options: &SearchOptions) -> Vec<String> {
 
 #[allow(dead_code)]
 fn build_rg_files_args(options: &FindFilesOptions) -> Vec<String> {
-    let mut args = vec!["--files".to_string(), "--color".to_string(), "never".to_string()];
+    let mut args = vec![
+        "--files".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+    ];
     if options.include_hidden {
         args.push("--hidden".to_string());
     }
@@ -522,26 +655,24 @@ fn add_match_to_file(
 }
 
 fn rg_search_sync(
+    app: &AppHandle,
     options: &SearchOptions,
     current_search_id: Arc<AtomicU64>,
-) -> Result<SearchResults, RgSearchError> {
+) -> Result<(SearchResults, RgCommandInfo), RgSearchError> {
     let max_results = if options.max_results == 0 {
         10000
     } else {
         options.max_results
     };
-    let mut cmd = Command::new("rg");
+    let rg_command = resolve_rg_command(app)?;
+    let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_args(options))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == io::ErrorKind::NotFound {
-            RgSearchError::NotAvailable("ripgrep binary (rg) was not found in PATH".to_string())
-        } else {
-            RgSearchError::Failed(format!("Failed to start rg: {e}"))
-        }
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| RgSearchError::Failed(format!("Failed to start rg: {e}")))?;
 
     let stdout = child
         .stdout
@@ -588,10 +719,7 @@ fn rg_search_sync(
             None => continue,
         };
         let line_text = extract_text_field(data, "lines").unwrap_or_default();
-        let line_number = data
-            .get("line_number")
-            .and_then(Value::as_u64)
-            .unwrap_or(1) as usize;
+        let line_number = data.get("line_number").and_then(Value::as_u64).unwrap_or(1) as usize;
         let submatches = match data.get("submatches").and_then(Value::as_array) {
             Some(s) => s,
             None => continue,
@@ -642,37 +770,42 @@ fn rg_search_sync(
         )));
     }
 
-    Ok(SearchResults {
-        total_files: files.len(),
-        files,
-        total_matches,
-        truncated,
-        telemetry: None,
-    })
+    Ok((
+        SearchResults {
+            total_files: files.len(),
+            files,
+            total_matches,
+            truncated,
+            telemetry: None,
+        },
+        RgCommandInfo {
+            source: rg_source_name(rg_command.source).to_string(),
+            path: rg_command.path,
+        },
+    ))
 }
 
 fn rg_search_stream(
     app: &AppHandle,
     options: &SearchOptions,
     current_search_id: Arc<AtomicU64>,
+    telemetry: SearchTelemetry,
 ) -> Result<(), RgSearchError> {
+    let started = Instant::now();
     let max_results = if options.max_results == 0 {
         10000
     } else {
         options.max_results
     };
-    let mut cmd = Command::new("rg");
+    let rg_command = resolve_rg_command(app)?;
+    let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_args(options))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == io::ErrorKind::NotFound {
-            RgSearchError::NotAvailable("ripgrep binary (rg) was not found in PATH".to_string())
-        } else {
-            RgSearchError::Failed(format!("Failed to start rg: {e}"))
-        }
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| RgSearchError::Failed(format!("Failed to start rg: {e}")))?;
 
     let stdout = child
         .stdout
@@ -705,7 +838,12 @@ fn rg_search_stream(
                     total_files,
                     truncated,
                     cancelled: true,
-                    telemetry: None,
+                    telemetry: Some(SearchTelemetry {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        rg_source: rg_source_name(rg_command.source).to_string(),
+                        rg_path: Some(rg_command.path.clone()),
+                        ..telemetry.clone()
+                    }),
                 },
             );
             return Ok(());
@@ -727,8 +865,8 @@ fn rg_search_stream(
             Some(v) => v,
             None => continue,
         };
-        let path_text =
-            extract_text_field(data, "path").map(|p| rg_output_path_to_display(&p, &options.root_path));
+        let path_text = extract_text_field(data, "path")
+            .map(|p| rg_output_path_to_display(&p, &options.root_path));
 
         match ty {
             "begin" => {
@@ -751,10 +889,8 @@ fn rg_search_stream(
             }
             "match" => {
                 let line_text = extract_text_field(data, "lines").unwrap_or_default();
-                let line_number = data
-                    .get("line_number")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1) as usize;
+                let line_number =
+                    data.get("line_number").and_then(Value::as_u64).unwrap_or(1) as usize;
                 let submatches = match data.get("submatches").and_then(Value::as_array) {
                     Some(s) => s,
                     None => continue,
@@ -763,11 +899,7 @@ fn rg_search_stream(
                     Some(p) => p,
                     None => continue,
                 };
-                if current_file_result
-                    .as_ref()
-                    .map(|f| f.path.as_str())
-                    != Some(path.as_str())
-                {
+                if current_file_result.as_ref().map(|f| f.path.as_str()) != Some(path.as_str()) {
                     if let Some(file) = current_file_result.take() {
                         if !file.matches.is_empty() {
                             total_files += 1;
@@ -780,7 +912,9 @@ fn rg_search_stream(
                         matches: Vec::new(),
                     });
                 }
-                let file = current_file_result.as_mut().expect("current file must exist");
+                let file = current_file_result
+                    .as_mut()
+                    .expect("current file must exist");
 
                 for sub in submatches {
                     if max_results > 0 && total_matches >= max_results {
@@ -796,8 +930,14 @@ fn rg_search_stream(
                         None => continue,
                     };
                     let match_text = extract_text_field(sub, "match").unwrap_or_default();
-                    if add_match_to_file(file, line_number, line_text.clone(), start, end, match_text)
-                    {
+                    if add_match_to_file(
+                        file,
+                        line_number,
+                        line_text.clone(),
+                        start,
+                        end,
+                        match_text,
+                    ) {
                         total_matches += 1;
                     }
                 }
@@ -807,10 +947,7 @@ fn rg_search_stream(
             }
             "end" => {
                 if let Some(path) = &path_text {
-                    if current_file_result
-                        .as_ref()
-                        .map(|f| f.path.as_str())
-                        == Some(path.as_str())
+                    if current_file_result.as_ref().map(|f| f.path.as_str()) == Some(path.as_str())
                     {
                         if let Some(file) = current_file_result.take() {
                             if !file.matches.is_empty() {
@@ -825,7 +962,9 @@ fn rg_search_stream(
             _ => {}
         }
 
-        if !batch.is_empty() && (batch.len() >= BATCH_SIZE || last_emit.elapsed() >= BATCH_MAX_LATENCY) {
+        if !batch.is_empty()
+            && (batch.len() >= BATCH_SIZE || last_emit.elapsed() >= BATCH_MAX_LATENCY)
+        {
             let _ = app.emit(
                 "search://chunk",
                 SearchChunkEvent {
@@ -875,7 +1014,12 @@ fn rg_search_stream(
             total_files,
             truncated,
             cancelled: false,
-            telemetry: None,
+            telemetry: Some(SearchTelemetry {
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                rg_source: rg_source_name(rg_command.source).to_string(),
+                rg_path: Some(rg_command.path),
+                ..telemetry
+            }),
         },
     );
 
@@ -883,19 +1027,19 @@ fn rg_search_stream(
 }
 
 #[allow(dead_code)]
-fn rg_find_files(options: &FindFilesOptions) -> Result<Vec<String>, RgSearchError> {
-    let mut cmd = Command::new("rg");
+fn rg_find_files(
+    app: &AppHandle,
+    options: &FindFilesOptions,
+) -> Result<(Vec<String>, RgCommandInfo), RgSearchError> {
+    let rg_command = resolve_rg_command(app)?;
+    let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_files_args(options))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == io::ErrorKind::NotFound {
-            RgSearchError::NotAvailable("ripgrep binary (rg) was not found in PATH".to_string())
-        } else {
-            RgSearchError::Failed(format!("Failed to start rg --files: {e}"))
-        }
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| RgSearchError::Failed(format!("Failed to start rg --files: {e}")))?;
 
     let status_code = output.status.code().unwrap_or(2);
     if status_code != 0 {
@@ -920,11 +1064,20 @@ fn rg_find_files(options: &FindFilesOptions) -> Result<Vec<String>, RgSearchErro
         }
         out.push(normalize_relative_path_for_output(trimmed));
     }
-    Ok(out)
+    Ok((
+        out,
+        RgCommandInfo {
+            source: rg_source_name(rg_command.source).to_string(),
+            path: rg_command.path,
+        },
+    ))
 }
 
 #[allow(dead_code)]
-fn legacy_find_files(options: &FindFilesOptions, root_path: &PathBuf) -> Result<Vec<String>, SearchError> {
+fn legacy_find_files(
+    options: &FindFilesOptions,
+    root_path: &PathBuf,
+) -> Result<Vec<String>, SearchError> {
     let include_globs = build_globset(&options.include_patterns)?;
     let exclude_globs = build_globset(&options.exclude_patterns)?;
 
@@ -1132,7 +1285,9 @@ fn legacy_search_stream(
     pattern: &Regex,
     root_path: &PathBuf,
     current_search_id: Arc<AtomicU64>,
+    telemetry: SearchTelemetry,
 ) -> Result<(), SearchError> {
+    let started = Instant::now();
     let max_results = if options.max_results == 0 {
         10000
     } else {
@@ -1175,7 +1330,10 @@ fn legacy_search_stream(
                     total_files,
                     truncated: truncated_flag.load(Ordering::SeqCst),
                     cancelled: true,
-                    telemetry: None,
+                    telemetry: Some(SearchTelemetry {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..telemetry.clone()
+                    }),
                 },
             );
             return Ok(());
@@ -1238,7 +1396,10 @@ fn legacy_search_stream(
                         total_files,
                         truncated: truncated_flag.load(Ordering::SeqCst),
                         cancelled: true,
-                        telemetry: None,
+                        telemetry: Some(SearchTelemetry {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..telemetry.clone()
+                        }),
                     },
                 );
                 return Ok(());
@@ -1272,7 +1433,10 @@ fn legacy_search_stream(
             total_files,
             truncated: truncated_flag.load(Ordering::SeqCst),
             cancelled: false,
-            telemetry: None,
+            telemetry: Some(SearchTelemetry {
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                ..telemetry
+            }),
         },
     );
 
@@ -1283,6 +1447,7 @@ fn legacy_search_stream(
 #[tauri::command]
 pub async fn workspace_search(
     state: tauri::State<'_, SearchManagerState>,
+    app: AppHandle,
     options: SearchOptions,
 ) -> Result<SearchResults, SearchError> {
     if options.query.is_empty() {
@@ -1323,6 +1488,7 @@ pub async fn workspace_search(
     let current_search_id = state.current_search_id.clone();
     let mode = SearchEngineMode::from_input(options.engine.as_deref());
     let options_for_task = options;
+    let app_for_task = app.clone();
 
     tokio::task::spawn_blocking(move || {
         let started = Instant::now();
@@ -1343,6 +1509,8 @@ pub async fn workspace_search(
                     fallback_used: false,
                     fallback_reason: None,
                     elapsed_ms,
+                    rg_source: "none".to_string(),
+                    rg_path: None,
                 });
                 info!(
                     target: "volt.search",
@@ -1356,95 +1524,104 @@ pub async fn workspace_search(
                 );
                 Ok(out)
             }
-            SearchEngineMode::Rg => match rg_search_sync(&options_for_task, current_search_id.clone()) {
-                Ok(mut out) => {
-                    let elapsed_ms = started.elapsed().as_millis() as u64;
-                    out.telemetry = Some(SearchTelemetry {
-                        requested_engine: requested_engine.clone(),
-                        engine: "rg".to_string(),
-                        fallback_used: false,
-                        fallback_reason: None,
-                        elapsed_ms,
-                    });
-                    info!(
-                        target: "volt.search",
-                        mode = requested_engine.as_str(),
-                        engine = "rg",
-                        fallback_used = false,
-                        request_id = options_for_task.request_id,
-                        total_matches = out.total_matches,
-                        total_files = out.total_files,
-                        elapsed_ms = elapsed_ms
-                    );
-                    Ok(out)
-                }
-                Err(RgSearchError::Cancelled) => Err(SearchError::Cancelled),
-                Err(RgSearchError::NotAvailable(reason)) | Err(RgSearchError::Failed(reason)) => {
-                    Err(SearchError::IoError {
+            SearchEngineMode::Rg => {
+                match rg_search_sync(&app_for_task, &options_for_task, current_search_id.clone()) {
+                    Ok((mut out, rg_info)) => {
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        out.telemetry = Some(SearchTelemetry {
+                            requested_engine: requested_engine.clone(),
+                            engine: "rg".to_string(),
+                            fallback_used: false,
+                            fallback_reason: None,
+                            elapsed_ms,
+                            rg_source: rg_info.source,
+                            rg_path: Some(rg_info.path),
+                        });
+                        info!(
+                            target: "volt.search",
+                            mode = requested_engine.as_str(),
+                            engine = "rg",
+                            fallback_used = false,
+                            request_id = options_for_task.request_id,
+                            total_matches = out.total_matches,
+                            total_files = out.total_files,
+                            elapsed_ms = elapsed_ms
+                        );
+                        Ok(out)
+                    }
+                    Err(RgSearchError::Cancelled) => Err(SearchError::Cancelled),
+                    Err(RgSearchError::NotAvailable(reason))
+                    | Err(RgSearchError::Failed(reason)) => Err(SearchError::IoError {
                         message: format!("rg mode failed: {reason}"),
-                    })
+                    }),
                 }
-            },
-            SearchEngineMode::Auto => match rg_search_sync(&options_for_task, current_search_id.clone()) {
-                Ok(mut out) => {
-                    let elapsed_ms = started.elapsed().as_millis() as u64;
-                    out.telemetry = Some(SearchTelemetry {
-                        requested_engine: requested_engine.clone(),
-                        engine: "rg".to_string(),
-                        fallback_used: false,
-                        fallback_reason: None,
-                        elapsed_ms,
-                    });
-                    info!(
-                        target: "volt.search",
-                        mode = requested_engine.as_str(),
-                        engine = "rg",
-                        fallback_used = false,
-                        request_id = options_for_task.request_id,
-                        total_matches = out.total_matches,
-                        total_files = out.total_files,
-                        elapsed_ms = elapsed_ms
-                    );
-                    Ok(out)
+            }
+            SearchEngineMode::Auto => {
+                match rg_search_sync(&app_for_task, &options_for_task, current_search_id.clone()) {
+                    Ok((mut out, rg_info)) => {
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        out.telemetry = Some(SearchTelemetry {
+                            requested_engine: requested_engine.clone(),
+                            engine: "rg".to_string(),
+                            fallback_used: false,
+                            fallback_reason: None,
+                            elapsed_ms,
+                            rg_source: rg_info.source,
+                            rg_path: Some(rg_info.path),
+                        });
+                        info!(
+                            target: "volt.search",
+                            mode = requested_engine.as_str(),
+                            engine = "rg",
+                            fallback_used = false,
+                            request_id = options_for_task.request_id,
+                            total_matches = out.total_matches,
+                            total_files = out.total_files,
+                            elapsed_ms = elapsed_ms
+                        );
+                        Ok(out)
+                    }
+                    Err(RgSearchError::Cancelled) => Err(SearchError::Cancelled),
+                    Err(err) => {
+                        warn!(
+                            target: "volt.search",
+                            engine = "auto",
+                            request_id = options_for_task.request_id,
+                            "rg fallback to legacy: {:?}",
+                            err
+                        );
+                        let pattern = build_pattern(&options_for_task)?;
+                        let mut out = legacy_search_sync(
+                            &options_for_task,
+                            &pattern,
+                            &root_path,
+                            current_search_id.clone(),
+                        )?;
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        out.telemetry = Some(SearchTelemetry {
+                            requested_engine: requested_engine.clone(),
+                            engine: "legacy".to_string(),
+                            fallback_used: true,
+                            fallback_reason: Some(format!("{:?}", err)),
+                            elapsed_ms,
+                            rg_source: "none".to_string(),
+                            rg_path: None,
+                        });
+                        info!(
+                            target: "volt.search",
+                            mode = requested_engine.as_str(),
+                            engine = "legacy",
+                            fallback_used = true,
+                            fallback_reason = format!("{:?}", err),
+                            request_id = options_for_task.request_id,
+                            total_matches = out.total_matches,
+                            total_files = out.total_files,
+                            elapsed_ms = elapsed_ms
+                        );
+                        Ok(out)
+                    }
                 }
-                Err(RgSearchError::Cancelled) => Err(SearchError::Cancelled),
-                Err(err) => {
-                    warn!(
-                        target: "volt.search",
-                        engine = "auto",
-                        request_id = options_for_task.request_id,
-                        "rg fallback to legacy: {:?}",
-                        err
-                    );
-                    let pattern = build_pattern(&options_for_task)?;
-                    let mut out = legacy_search_sync(
-                        &options_for_task,
-                        &pattern,
-                        &root_path,
-                        current_search_id.clone(),
-                    )?;
-                    let elapsed_ms = started.elapsed().as_millis() as u64;
-                    out.telemetry = Some(SearchTelemetry {
-                        requested_engine: requested_engine.clone(),
-                        engine: "legacy".to_string(),
-                        fallback_used: true,
-                        fallback_reason: Some(format!("{:?}", err)),
-                        elapsed_ms,
-                    });
-                    info!(
-                        target: "volt.search",
-                        mode = requested_engine.as_str(),
-                        engine = "legacy",
-                        fallback_used = true,
-                        fallback_reason = format!("{:?}", err),
-                        request_id = options_for_task.request_id,
-                        total_matches = out.total_matches,
-                        total_files = out.total_files,
-                        elapsed_ms = elapsed_ms
-                    );
-                    Ok(out)
-                }
-            },
+            }
         }
     })
     .await
@@ -1455,7 +1632,10 @@ pub async fn workspace_search(
 
 #[tauri::command]
 #[allow(dead_code)]
-pub async fn find_files_by_name(options: FindFilesOptions) -> Result<FindFilesResult, SearchError> {
+pub async fn find_files_by_name(
+    app: AppHandle,
+    options: FindFilesOptions,
+) -> Result<FindFilesResult, SearchError> {
     if options.query.trim().is_empty() {
         return Ok(FindFilesResult {
             files: Vec::new(),
@@ -1465,6 +1645,8 @@ pub async fn find_files_by_name(options: FindFilesOptions) -> Result<FindFilesRe
             fallback_used: false,
             fallback_reason: None,
             elapsed_ms: 0,
+            rg_source: None,
+            rg_path: None,
         });
     }
 
@@ -1492,24 +1674,25 @@ pub async fn find_files_by_name(options: FindFilesOptions) -> Result<FindFilesRe
 
     let mut fallback_used = false;
     let mut fallback_reason: Option<String> = None;
+    let mut rg_info: Option<RgCommandInfo> = None;
 
     let (selected_engine, mut files) = match mode {
-        SearchEngineMode::Legacy => {
-            ("legacy", legacy_find_files(&options, &root_path)?)
-        }
-        SearchEngineMode::Rg => {
-            match rg_find_files(&options) {
-                Ok(list) => ("rg", list),
-                Err(RgSearchError::NotAvailable(reason)) | Err(RgSearchError::Failed(reason)) => {
-                    return Err(SearchError::IoError {
-                        message: format!("rg mode failed: {reason}"),
-                    });
-                }
-                Err(RgSearchError::Cancelled) => ("rg", Vec::new()),
+        SearchEngineMode::Legacy => ("legacy", legacy_find_files(&options, &root_path)?),
+        SearchEngineMode::Rg => match rg_find_files(&app, &options) {
+            Ok((list, resolved)) => {
+                rg_info = Some(resolved);
+                ("rg", list)
             }
-        }
-        SearchEngineMode::Auto => match rg_find_files(&options) {
-            Ok(list) => {
+            Err(RgSearchError::NotAvailable(reason)) | Err(RgSearchError::Failed(reason)) => {
+                return Err(SearchError::IoError {
+                    message: format!("rg mode failed: {reason}"),
+                });
+            }
+            Err(RgSearchError::Cancelled) => ("rg", Vec::new()),
+        },
+        SearchEngineMode::Auto => match rg_find_files(&app, &options) {
+            Ok((list, resolved)) => {
+                rg_info = Some(resolved);
                 ("rg", list)
             }
             Err(err) => {
@@ -1557,6 +1740,8 @@ pub async fn find_files_by_name(options: FindFilesOptions) -> Result<FindFilesRe
         fallback_used,
         fallback_reason,
         elapsed_ms,
+        rg_source: rg_info.as_ref().map(|info| info.source.clone()),
+        rg_path: rg_info.map(|info| info.path),
     })
 }
 
@@ -1635,17 +1820,28 @@ pub async fn workspace_search_stream(
     tokio::task::spawn_blocking(move || {
         let started = Instant::now();
         let request_id = options_for_task.request_id;
+        let requested_engine = search_engine_mode_name(mode).to_string();
 
         let run = (|| -> Result<(), SearchError> {
             match mode {
                 SearchEngineMode::Legacy => {
                     let pattern = build_pattern(&options_for_task)?;
+                    let telemetry = SearchTelemetry {
+                        requested_engine: requested_engine.clone(),
+                        engine: "legacy".to_string(),
+                        fallback_used: false,
+                        fallback_reason: None,
+                        elapsed_ms: 0,
+                        rg_source: "none".to_string(),
+                        rg_path: None,
+                    };
                     legacy_search_stream(
                         &app_for_scan,
                         &options_for_task,
                         &pattern,
                         &root_path,
                         current_search_id.clone(),
+                        telemetry,
                     )?;
                     info!(
                         target: "volt.search",
@@ -1659,6 +1855,15 @@ pub async fn workspace_search_stream(
                     &app_for_scan,
                     &options_for_task,
                     current_search_id.clone(),
+                    SearchTelemetry {
+                        requested_engine: requested_engine.clone(),
+                        engine: "rg".to_string(),
+                        fallback_used: false,
+                        fallback_reason: None,
+                        elapsed_ms: 0,
+                        rg_source: "none".to_string(),
+                        rg_path: None,
+                    },
                 ) {
                     Ok(()) => {
                         info!(
@@ -1679,6 +1884,15 @@ pub async fn workspace_search_stream(
                     &app_for_scan,
                     &options_for_task,
                     current_search_id.clone(),
+                    SearchTelemetry {
+                        requested_engine: requested_engine.clone(),
+                        engine: "rg".to_string(),
+                        fallback_used: false,
+                        fallback_reason: None,
+                        elapsed_ms: 0,
+                        rg_source: "none".to_string(),
+                        rg_path: None,
+                    },
                 ) {
                     Ok(()) => {
                         info!(
@@ -1699,12 +1913,22 @@ pub async fn workspace_search_stream(
                             err
                         );
                         let pattern = build_pattern(&options_for_task)?;
+                        let telemetry = SearchTelemetry {
+                            requested_engine: requested_engine.clone(),
+                            engine: "legacy".to_string(),
+                            fallback_used: true,
+                            fallback_reason: Some(format!("{:?}", err)),
+                            elapsed_ms: 0,
+                            rg_source: "none".to_string(),
+                            rg_path: None,
+                        };
                         legacy_search_stream(
                             &app_for_scan,
                             &options_for_task,
                             &pattern,
                             &root_path,
                             current_search_id.clone(),
+                            telemetry,
                         )?;
                         info!(
                             target: "volt.search",
@@ -1938,7 +2162,9 @@ pub async fn replace_in_file(options: ReplaceInFileOptions) -> Result<ReplaceRes
         }
 
         // Perform replacement
-        let new_content = pattern.replace_all(&content, replace_text.as_str()).to_string();
+        let new_content = pattern
+            .replace_all(&content, replace_text.as_str())
+            .to_string();
 
         // Write back to file
         fs::write(&path, &new_content)?;

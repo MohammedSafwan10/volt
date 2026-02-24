@@ -75,8 +75,6 @@ class PromptLibraryStore {
   recentUsage = $state<Map<string, number>>(new Map());
 
   private searchIndex = $state<Map<string, string>>(new Map());
-  private categoriesCache = $state<string[]>([]);
-  private categoriesDirty = $state(true);
   private loaded = false;
 
   get allPrompts(): PromptTemplate[] {
@@ -119,13 +117,9 @@ class PromptLibraryStore {
   }
 
   get categories(): string[] {
-    if (this.categoriesDirty) {
-      const values = new Set<string>();
-      for (const p of this.allPrompts) values.add(p.category);
-      this.categoriesCache = ["All", ...[...values].sort()];
-      this.categoriesDirty = false;
-    }
-    return this.categoriesCache;
+    const values = new Set<string>();
+    for (const p of this.allPrompts) values.add(p.category);
+    return ["All", ...[...values].sort()];
   }
 
   getCategoryCount(category: string): number {
@@ -140,7 +134,6 @@ class PromptLibraryStore {
       this.loadPersisted();
       await this.loadBuiltinPrompts();
       this.rebuildSearchIndex();
-      this.categoriesDirty = true;
       this.loaded = true;
     } finally {
       this.isLoading = false;
@@ -218,7 +211,6 @@ class PromptLibraryStore {
     };
     this.userPrompts = [prompt, ...this.userPrompts];
     this.upsertSearchIndex(prompt);
-    this.categoriesDirty = true;
     this.persist();
     return prompt;
   }
@@ -233,7 +225,6 @@ class PromptLibraryStore {
       this.recentUsage = new Map(this.recentUsage);
       this.searchIndex.delete(id);
       this.searchIndex = new Map(this.searchIndex);
-      this.categoriesDirty = true;
       this.persist();
     }
   }

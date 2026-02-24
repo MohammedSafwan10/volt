@@ -320,13 +320,13 @@ fn run_git_command(args: &[&str], cwd: &Path) -> Result<String, GitError> {
                 path: cwd.display().to_string(),
             });
         }
-        
+
         if stderr.contains("dubious ownership") || stderr.contains("safe.directory") {
             return Err(GitError::DubiousOwnership {
                 path: cwd.display().to_string(),
             });
         }
-        
+
         if stderr.contains("Permission denied") || stderr.contains("permission denied") {
             return Err(GitError::PermissionDenied {
                 path: cwd.display().to_string(),
@@ -398,7 +398,6 @@ pub fn is_git_repo(path: &str) -> bool {
     git_dir.exists()
 }
 
-
 /// Get full git status using porcelain v2 format for reliable parsing
 #[tauri::command]
 pub async fn git_status(
@@ -416,13 +415,12 @@ pub async fn git_status(
     ];
 
     let manager = manager.inner().clone();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        manager.run_cancellable(op_id, args, cwd)
-    })
-    .await
-    .map_err(|e| GitError::CommandFailed {
-        message: e.to_string(),
-    })??;
+    let output =
+        tauri::async_runtime::spawn_blocking(move || manager.run_cancellable(op_id, args, cwd))
+            .await
+            .map_err(|e| GitError::CommandFailed {
+                message: e.to_string(),
+            })??;
 
     parse_porcelain_v2_status(&output)
 }
@@ -470,20 +468,16 @@ fn parse_porcelain_v2_status(output: &str) -> Result<GitStatus, GitError> {
         } else if entry.starts_with("# branch.head") {
             status.branch = entry.strip_prefix("# branch.head ").map(|s| s.to_string());
         } else if entry.starts_with("# branch.upstream") {
-            status.upstream = entry.strip_prefix("# branch.upstream ").map(|s| s.to_string());
+            status.upstream = entry
+                .strip_prefix("# branch.upstream ")
+                .map(|s| s.to_string());
         } else if entry.starts_with("# branch.ab") {
             // Parse ahead/behind: # branch.ab +1 -2
             if let Some(ab) = entry.strip_prefix("# branch.ab ") {
                 let parts: Vec<&str> = ab.split_whitespace().collect();
                 if parts.len() >= 2 {
-                    status.ahead = parts[0]
-                        .trim_start_matches('+')
-                        .parse()
-                        .unwrap_or(0);
-                    status.behind = parts[1]
-                        .trim_start_matches('-')
-                        .parse()
-                        .unwrap_or(0);
+                    status.ahead = parts[0].trim_start_matches('+').parse().unwrap_or(0);
+                    status.behind = parts[1].trim_start_matches('-').parse().unwrap_or(0);
                 }
             }
         } else if entry.starts_with("1 ") || entry.starts_with("2 ") {
@@ -514,9 +508,7 @@ fn parse_porcelain_v2_status(output: &str) -> Result<GitStatus, GitError> {
                 };
 
                 // Check for submodule (submodule state field)
-                let is_submodule = parts
-                    .get(2)
-                    .is_some_and(|sub| sub.starts_with('S'));
+                let is_submodule = parts.get(2).is_some_and(|sub| sub.starts_with('S'));
 
                 // Index (staged) status
                 if x != '.' && x != '?' {
@@ -743,13 +735,12 @@ pub async fn git_diff_file(
     };
 
     let manager = manager.inner().clone();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        manager.run_cancellable(op_id, args, cwd)
-    })
-    .await
-    .map_err(|e| GitError::CommandFailed {
-        message: e.to_string(),
-    })??;
+    let output =
+        tauri::async_runtime::spawn_blocking(move || manager.run_cancellable(op_id, args, cwd))
+            .await
+            .map_err(|e| GitError::CommandFailed {
+                message: e.to_string(),
+            })??;
 
     parse_diff_output(&output, &file_path, MAX_DIFF_LINES)
 }
@@ -857,13 +848,11 @@ fn parse_range(range: &str) -> (u32, u32) {
 #[tauri::command]
 pub async fn git_has_uncommitted_changes(path: String) -> Result<bool, GitError> {
     let status = git_status_internal(&path).await?;
-    Ok(
-        !status.staged.is_empty()
-            || !status.unstaged.is_empty()
-            || !status.untracked.is_empty()
-            || status.has_conflicts
-            || !status.conflicted.is_empty(),
-    )
+    Ok(!status.staged.is_empty()
+        || !status.unstaged.is_empty()
+        || !status.untracked.is_empty()
+        || status.has_conflicts
+        || !status.conflicted.is_empty())
 }
 
 /// Discard changes to a file (git checkout -- file)

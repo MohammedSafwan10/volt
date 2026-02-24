@@ -5,8 +5,8 @@
 use crate::cdp::manager::CdpManager;
 use crate::cdp::types::*;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::{AppHandle, Runtime, State};
+use tokio::sync::Mutex;
 
 /// CDP state wrapper for Tauri
 pub struct CdpState(pub Arc<Mutex<CdpManager>>);
@@ -46,27 +46,29 @@ pub async fn cdp_discover_url() -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to CDP endpoint: {}. Make sure the browser is open.", e))?;
-    
+        .map_err(|e| {
+            format!(
+                "Failed to connect to CDP endpoint: {}. Make sure the browser is open.",
+                e
+            )
+        })?;
+
     let json: serde_json::Value = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse CDP response: {}", e))?;
-    
+
     let ws_url = json
         .get("webSocketDebuggerUrl")
         .and_then(|v| v.as_str())
         .ok_or("CDP endpoint did not return webSocketDebuggerUrl")?;
-    
+
     Ok(ws_url.to_string())
 }
 
 /// Connect to CDP endpoint
 #[tauri::command]
-pub async fn cdp_connect(
-    state: State<'_, CdpState>,
-    ws_url: String,
-) -> Result<(), String> {
+pub async fn cdp_connect(state: State<'_, CdpState>, ws_url: String) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.connect(&ws_url).await
 }
@@ -176,10 +178,7 @@ pub async fn cdp_clear_network(state: State<'_, CdpState>) -> Result<(), String>
 
 /// Navigate to URL
 #[tauri::command]
-pub async fn cdp_navigate(
-    state: State<'_, CdpState>,
-    url: String,
-) -> Result<(), String> {
+pub async fn cdp_navigate(state: State<'_, CdpState>, url: String) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.navigate(&url).await
 }
@@ -232,10 +231,7 @@ pub async fn cdp_type(
 
 /// Press a key
 #[tauri::command]
-pub async fn cdp_press_key(
-    state: State<'_, CdpState>,
-    key: String,
-) -> Result<(), String> {
+pub async fn cdp_press_key(state: State<'_, CdpState>, key: String) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.press_key(&key).await
 }
@@ -307,7 +303,9 @@ pub async fn cdp_wait_for_selector(
     timeout_ms: Option<u64>,
 ) -> Result<bool, String> {
     let manager = state.0.lock().await;
-    manager.wait_for_selector(&selector, timeout_ms.unwrap_or(5000)).await
+    manager
+        .wait_for_selector(&selector, timeout_ms.unwrap_or(5000))
+        .await
 }
 
 /// Scroll to an element
@@ -322,11 +320,7 @@ pub async fn cdp_scroll_to_element(
 
 /// Scroll the page
 #[tauri::command]
-pub async fn cdp_scroll_by(
-    state: State<'_, CdpState>,
-    x: i32,
-    y: i32,
-) -> Result<(), String> {
+pub async fn cdp_scroll_by(state: State<'_, CdpState>, x: i32, y: i32) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.scroll_by(x, y).await
 }
@@ -361,10 +355,7 @@ pub async fn cdp_set_viewport(
 
 /// Emulate a mobile device
 #[tauri::command]
-pub async fn cdp_emulate_device(
-    state: State<'_, CdpState>,
-    device: String,
-) -> Result<(), String> {
+pub async fn cdp_emulate_device(state: State<'_, CdpState>, device: String) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.emulate_device(&device).await
 }
@@ -381,9 +372,7 @@ pub async fn cdp_enable_element_picker<R: Runtime>(
 
 /// Disable element picker mode
 #[tauri::command]
-pub async fn cdp_disable_element_picker(
-    state: State<'_, CdpState>,
-) -> Result<(), String> {
+pub async fn cdp_disable_element_picker(state: State<'_, CdpState>) -> Result<(), String> {
     let manager = state.0.lock().await;
     manager.disable_element_picker().await
 }

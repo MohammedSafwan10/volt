@@ -32,8 +32,8 @@ import {
   startWatching as startFileWatching,
   stopWatching as stopFileWatching,
   onFileChange,
-  type FileChangeBatchEvent,
 } from '$lib/services/file-watch';
+import type { FileChangeBatchEvent } from '$lib/services/file-watch';
 import { projectDiagnostics } from '$lib/services/project-diagnostics';
 import { tscWatcher } from '$lib/services/tsc-watcher';
 import { problemsStore } from './problems.svelte';
@@ -43,6 +43,12 @@ import { gitStore } from './git.svelte';
 import type { FileEntry } from '$lib/types/files';
 import { invoke } from '@tauri-apps/api/core';
 import { clearContextV2Cache } from '$lib/services/ai/context-v2';
+import {
+  clearSemanticQueue,
+  queueSemanticRemove,
+  queueSemanticUpsert,
+  warmSemanticIndex,
+} from '$lib/services/ai/semantic-index';
 
 // Tauri FS plugin for file watching
 import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
@@ -186,6 +192,7 @@ class ProjectStore {
       await this.stopLspServers();
       await cancelIndexing();
       clearContextV2Cache();
+      clearSemanticQueue();
     }
 
     const entries = await listDirectory(path);
@@ -227,6 +234,8 @@ class ProjectStore {
 
     // Initial project index for Quick Open and project-wide analysis
     void indexProject(path);
+    // Warm semantic index in background (Phase B hybrid retrieval).
+    void warmSemanticIndex(path);
 
     // Run project-wide diagnostics (tsc, eslint) in background
     void projectDiagnostics.runDiagnostics(path);
@@ -307,6 +316,10 @@ class ProjectStore {
 
         this.handleFileDeleted(oldAbs);
         this.handleFileCreated(newAbs, newRel);
+        if (this.rootPath) {
+          queueSemanticRemove(this.rootPath, oldAbs);
+          queueSemanticUpsert(this.rootPath, newAbs);
+        }
         continue;
       }
 
@@ -317,13 +330,16 @@ class ProjectStore {
         switch (change.kind) {
           case 'create':
             this.handleFileCreated(absPath, relPath);
+            if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
           case 'delete':
             this.handleFileDeleted(absPath);
+            if (this.rootPath) queueSemanticRemove(this.rootPath, absPath);
             break;
           case 'rename':
             // If we only got the new path, best-effort refresh.
             this.handleFileCreated(absPath, relPath);
+            if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
           case 'modify':
             // If the file is open in the editor, reload it to show new content
@@ -333,6 +349,7 @@ class ProjectStore {
             if (editorStore.openFiles.some(f => f.path === normalizedPath)) {
               void editorStore.reloadFile(absPath);
             }
+            if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
         }
       }
@@ -442,7 +459,7 @@ class ProjectStore {
       // Allow the project directory in the FS scope so the fs plugin can watch it.
       // The app already has direct filesystem access via custom commands; this is
       // just to unblock plugin-fs `watch`.
-      await invoke('fs_allow_directory', { path: projectPath, recursive: false });
+      await invoke('fs_allow_directory', { path: projectPath, recursive: true });
 
       // Watch the project root for lock file changes
       // Using debounce of 1000ms to avoid rapid re-detection during install
@@ -625,6 +642,7 @@ class ProjectStore {
 
     // Clear AI context caches
     clearContextV2Cache();
+    clearSemanticQueue();
 
     // Clear all problems
     problemsStore.clearAll();

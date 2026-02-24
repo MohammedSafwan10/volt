@@ -9,7 +9,7 @@ import { PROVIDER_GEMINI, buildMcpSection } from './prompt-shared';
 import { buildCategoryToolGuidance } from './tool-guidance';
 
 export interface AskPromptOptions {
-    provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai';
+    provider: 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
     workspaceRoot?: string;
     mcpTools?: Array<{
       serverId: string;

@@ -6,4 +6,4 @@
 
 pub mod manager;
 
-pub use manager::{LspManager, LspServerConfig, ExternalLspConfig, LspServerInfo, LspError};
+pub use manager::{ExternalLspConfig, LspError, LspManager, LspServerConfig, LspServerInfo};
