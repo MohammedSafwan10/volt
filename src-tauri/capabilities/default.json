@@ -4,17 +4,16 @@
   "description": "Capability for the main window",
   "remote": {
     "urls": [
-      "http://localhost:*",
-      "https://localhost:*",
-      "http://127.0.0.1:*",
-      "https://127.0.0.1:*",
-      "http://0.0.0.0:*",
-      "https://0.0.0.0:*"
+      "http://localhost:1420",
+      "https://localhost:1420",
+      "http://127.0.0.1:1420",
+      "https://127.0.0.1:1420",
+      "http://0.0.0.0:1420",
+      "https://0.0.0.0:1420"
     ]
   },
   "windows": [
-    "main",
-    "volt-browser"
+    "main"
   ],
   "permissions": [
     "core:default",
@@ -32,7 +31,6 @@
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
-    "fs:default",
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [

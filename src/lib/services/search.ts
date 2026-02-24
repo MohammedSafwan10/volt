@@ -65,6 +65,14 @@ export interface SearchResults {
   totalFiles: number;
   /** Whether the search was truncated due to max_results */
   truncated: boolean;
+  /** Runtime diagnostics for engine selection/fallback. */
+  telemetry?: {
+    requestedEngine: string;
+    engine: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string | null;
+    elapsedMs: number;
+  };
 }
 
 /** Search error from Rust */
@@ -87,6 +95,13 @@ export interface SearchDoneEvent {
   totalFiles: number;
   truncated: boolean;
   cancelled: boolean;
+  telemetry?: {
+    requestedEngine: string;
+    engine: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string | null;
+    elapsedMs: number;
+  };
 }
 
 export interface SearchErrorEvent {
@@ -129,9 +144,12 @@ export async function workspaceSearch(options: SearchOptions): Promise<SearchRes
 
     const results = await invoke<SearchResults>('workspace_search', { options });
 
+    const telemetry = results.telemetry
+      ? ` [engine=${results.telemetry.engine}${results.telemetry.fallbackUsed ? ', fallback' : ''}, ${results.telemetry.elapsedMs}ms]`
+      : '';
     logOutput(
       'Volt',
-      `Found ${results.totalMatches} matches in ${results.totalFiles} files${results.truncated ? ' (truncated)' : ''}`
+      `Found ${results.totalMatches} matches in ${results.totalFiles} files${results.truncated ? ' (truncated)' : ''}${telemetry}`
     );
 
     return results;

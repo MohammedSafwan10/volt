@@ -11,6 +11,7 @@ fn provider_keyring_username(provider: &str) -> Result<String, String> {
         "gemini" => Ok("ai.gemini.api_key".to_string()),
         "openrouter" => Ok("ai.openrouter.api_key".to_string()),
         "anthropic" => Ok("ai.anthropic.api_key".to_string()),
+        "openai" => Ok("ai.openai.api_key".to_string()),
         _ => Err("Unsupported AI provider".to_string()),
     }
 }

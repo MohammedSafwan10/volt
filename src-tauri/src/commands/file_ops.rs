@@ -168,6 +168,71 @@ fn system_time_to_millis(time: SystemTime) -> Option<u64> {
         .map(|d| d.as_millis() as u64)
 }
 
+fn should_allow_lossy_text_fallback(path: &str) -> bool {
+    let ext = PathBuf::from(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    matches!(
+        ext.as_str(),
+        "txt"
+            | "md"
+            | "log"
+            | "csv"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "html"
+            | "css"
+            | "js"
+            | "ts"
+            | "py"
+            | "rs"
+            | "java"
+            | "c"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "go"
+            | "svelte"
+            | "vue"
+            | "ini"
+            | "conf"
+            | "toml"
+    )
+}
+
+fn decode_utf16_with_bom(bytes: &[u8]) -> Option<String> {
+    if bytes.len() < 2 {
+        return None;
+    }
+
+    let little_endian = if bytes.starts_with(&[0xFF, 0xFE]) {
+        true
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        false
+    } else {
+        return None;
+    };
+
+    let data = &bytes[2..];
+    let mut units = Vec::with_capacity(data.len() / 2);
+    let mut chunks = data.chunks_exact(2);
+    for chunk in &mut chunks {
+        let unit = if little_endian {
+            u16::from_le_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        };
+        units.push(unit);
+    }
+
+    Some(String::from_utf16_lossy(&units))
+}
+
 
 /// Read file contents as UTF-8 string
 #[tauri::command]
@@ -179,7 +244,27 @@ pub async fn read_file(path: String) -> Result<String, FileError> {
     let path_clone = path.clone();
     spawn_blocking(move || {
         let path_buf = normalize_path(&path_clone);
-        fs::read_to_string(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
+        let bytes = fs::read(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))?;
+
+        // Fast path: valid UTF-8.
+        if let Ok(text) = String::from_utf8(bytes.clone()) {
+            return Ok(text);
+        }
+
+        // Common Windows case: UTF-16 text files with BOM.
+        if let Some(text) = decode_utf16_with_bom(&bytes) {
+            return Ok(text);
+        }
+
+        // Fallback for text-like file extensions (e.g. ANSI/CP1252 .txt files).
+        if should_allow_lossy_text_fallback(&path_clone) {
+            return Ok(String::from_utf8_lossy(&bytes).to_string());
+        }
+
+        Err(io_error_with_path(
+            io::Error::new(ErrorKind::InvalidData, "File is not valid UTF-8 text"),
+            &path_clone,
+        ))
     })
     .await
 }
@@ -754,6 +839,35 @@ mod tests {
     async fn test_invalid_path() {
         let result = read_file("".to_string()).await;
         assert!(matches!(result, Err(FileError::InvalidPath { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_lossy_txt_fallback() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("cp1252.txt");
+        let path_str = file_path.to_string_lossy().to_string();
+
+        // Invalid UTF-8 byte 0x80 in middle.
+        fs::write(&file_path, vec![b'H', b'i', b' ', 0x80, b'!']).unwrap();
+
+        let content = read_file(path_str).await.unwrap();
+        assert!(content.contains("Hi "));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_utf16_bom() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("utf16.txt");
+        let path_str = file_path.to_string_lossy().to_string();
+
+        let mut bytes = vec![0xFF, 0xFE]; // UTF-16 LE BOM
+        for unit in "Hello".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(&file_path, bytes).unwrap();
+
+        let content = read_file(path_str).await.unwrap();
+        assert_eq!(content, "Hello");
     }
 
     #[cfg(windows)]

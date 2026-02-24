@@ -365,6 +365,8 @@ export class TerminalSession {
 
 	private cleanOutputHistory: string[] = [];
 	private cleanOutputHistoryChars = 0;
+	private cleanOutputStartOffset = 0;
+	private cleanOutputEndOffset = 0;
 
 	private backendReady = false;
 	private readyPromise: Promise<void>;
@@ -535,9 +537,12 @@ export class TerminalSession {
 	private captureToCleanHistory(data: string): void {
 		this.cleanOutputHistory.push(data);
 		this.cleanOutputHistoryChars += data.length;
+		this.cleanOutputEndOffset += data.length;
 		while (this.cleanOutputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS) {
 			const removed = this.cleanOutputHistory.shift();
-			this.cleanOutputHistoryChars -= (removed?.length ?? 0);
+			const removedLen = removed?.length ?? 0;
+			this.cleanOutputHistoryChars -= removedLen;
+			this.cleanOutputStartOffset += removedLen;
 		}
 	}
 
@@ -560,8 +565,31 @@ export class TerminalSession {
 		return full.length <= maxChars ? full : full.slice(-maxChars);
 	}
 
+	public getCleanOutputCursor(): number {
+		return this.cleanOutputEndOffset;
+	}
+
+	public readCleanOutputSince(
+		offset: number,
+		maxChars = 200_000
+	): { text: string; nextOffset: number; truncatedBeforeOffset: boolean } {
+		const normalizedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+		const startOffset = Math.max(normalizedOffset, this.cleanOutputStartOffset);
+		const localStart = startOffset - this.cleanOutputStartOffset;
+		const full = this.cleanOutputHistory.join('');
+		let text = full.slice(localStart);
+		if (text.length > maxChars) {
+			text = text.slice(-maxChars);
+		}
+		return {
+			text,
+			nextOffset: this.cleanOutputEndOffset,
+			truncatedBeforeOffset: normalizedOffset < this.cleanOutputStartOffset
+		};
+	}
+
 	public getCleanOutputSince(offset: number): string {
-		return this.cleanOutputHistory.join('').slice(offset);
+		return this.readCleanOutputSince(offset, Number.POSITIVE_INFINITY).text;
 	}
 
 	public async waitForOutput(predicate: (text: string) => boolean, timeoutMs = 10000, startOffset = 0): Promise<string> {
@@ -594,7 +622,7 @@ export class TerminalSession {
 	public async executeCommand(command: string, timeoutMs = 300000): Promise<CommandCompletion> {
 		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(command, timeoutMs);
 		return new Promise((resolve) => {
-			const startOffset = this.cleanOutputHistoryChars;
+			const startOffset = this.getCleanOutputCursor();
 			let tid: ReturnType<typeof setTimeout> | null = null;
 			if (timeoutMs > 0) {
 				tid = setTimeout(() => {
