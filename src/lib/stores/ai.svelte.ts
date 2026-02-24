@@ -11,10 +11,11 @@ import { validateGeminiKey } from '$lib/services/ai/gemini';
 import { validateOpenRouterKey } from '$lib/services/ai/openrouter';
 import { validateAnthropicKey } from '$lib/services/ai/anthropic';
 import { validateOpenAIKey } from '$lib/services/ai/openai';
-import { getModelConfig, upsertModelConfig, type ModelConfig } from '$lib/services/ai/models';
+import { validateMistralKey } from '$lib/services/ai/mistral';
+import { getModelConfig, upsertModelConfig } from '$lib/services/ai/models';
 
 // Supported AI providers
-export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai';
+export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
 
 // AI operation modes
 export type AIMode = 'ask' | 'plan' | 'agent';
@@ -81,7 +82,6 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       // Best free models with function calling support
       'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
       'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
-      'mistralai/mistral-small-3.1-24b-instruct:free', // Mistral Small 3.1 - available free
       'stepfun/step-3.5-flash:free'        // StepFun 3.5 Flash - 256K context
     ],
     defaultModel: 'qwen/qwen3-coder:free'
@@ -126,6 +126,22 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       'gpt-5-nano'
     ],
     defaultModel: 'gpt-5.2'
+  },
+  mistral: {
+    id: 'mistral',
+    name: 'Mistral',
+    capabilities: {
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: true,
+      maxContextHint: 128000
+    },
+    models: [
+      'devstral-latest',
+      'codestral-latest',
+      'devstral-medium-latest'
+    ],
+    defaultModel: 'devstral-latest'
   }
 };
 
@@ -167,6 +183,11 @@ class AISettingsStore {
       ask: 'gpt-5.2',
       plan: 'gpt-5.2',
       agent: 'gpt-5.2'
+    },
+    mistral: {
+      ask: 'codestral-latest',
+      plan: 'devstral-latest',
+      agent: 'devstral-latest'
     }
   });
 
@@ -179,7 +200,8 @@ class AISettingsStore {
     gemini: false,
     openrouter: false,
     anthropic: false,
-    openai: false
+    openai: false,
+    mistral: false
   });
 
   isValidating = $state(false);
@@ -273,6 +295,8 @@ class AISettingsStore {
         result = await validateAnthropicKey(key);
       } else if (provider === 'openai') {
         result = await validateOpenAIKey(key);
+      } else if (provider === 'mistral') {
+        result = await validateMistralKey(key);
       } else {
         result = { success: false, error: 'Unknown provider' };
       }
@@ -385,10 +409,10 @@ class AISettingsStore {
           ? live.top_provider.max_completion_tokens
           : (existing?.maxOutput ?? 8192);
 
-        const updated: ModelConfig = {
+        const updated = {
           id: modelId,
           name: existing?.name ?? live.name ?? modelId,
-          provider: 'openrouter',
+          provider: 'openrouter' as const,
           contextWindow: live.context_length,
           maxOutput: maxOut,
           supportsTools: Boolean(live.supported_parameters?.includes('tools')),
