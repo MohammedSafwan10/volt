@@ -5,6 +5,9 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: path.resolve(__dirname, 'src/lib'),
+      $core: path.resolve(__dirname, 'src/lib/core'),
+      $features: path.resolve(__dirname, 'src/lib/features'),
+      $shared: path.resolve(__dirname, 'src/lib/shared'),
     },
   },
   test: {

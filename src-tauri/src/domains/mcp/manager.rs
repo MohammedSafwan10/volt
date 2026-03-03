@@ -1,0 +1,1 @@
+// MCP domain manager placeholder.

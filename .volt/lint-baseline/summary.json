@@ -1,0 +1,165 @@
+{
+  "generatedAt": "2026-02-27T10:31:17.8109897+05:30",
+  "totals": {
+    "issues": 399,
+    "errors": 297,
+    "warnings": 102,
+    "filesWithIssues": 108
+  },
+  "topRules": [
+    {
+      "ruleId": "@typescript-eslint/no-explicit-any",
+      "count": 118
+    },
+    {
+      "ruleId": "@typescript-eslint/no-unused-vars",
+      "count": 101
+    },
+    {
+      "ruleId": "no-useless-escape",
+      "count": 50
+    },
+    {
+      "ruleId": "(none)",
+      "count": 25
+    },
+    {
+      "ruleId": "svelte/require-each-key",
+      "count": 18
+    },
+    {
+      "ruleId": "svelte/prefer-svelte-reactivity",
+      "count": 15
+    },
+    {
+      "ruleId": "no-empty",
+      "count": 14
+    },
+    {
+      "ruleId": "no-useless-assignment",
+      "count": 14
+    },
+    {
+      "ruleId": "no-control-regex",
+      "count": 8
+    },
+    {
+      "ruleId": "no-undef",
+      "count": 8
+    },
+    {
+      "ruleId": "prefer-const",
+      "count": 7
+    },
+    {
+      "ruleId": "svelte/no-unused-svelte-ignore",
+      "count": 6
+    },
+    {
+      "ruleId": "no-case-declarations",
+      "count": 5
+    },
+    {
+      "ruleId": "@typescript-eslint/no-unused-expressions",
+      "count": 4
+    },
+    {
+      "ruleId": "svelte/no-at-html-tags",
+      "count": 3
+    },
+    {
+      "ruleId": "@typescript-eslint/ban-ts-comment",
+      "count": 1
+    },
+    {
+      "ruleId": "preserve-caught-error",
+      "count": 1
+    },
+    {
+      "ruleId": "no-import-assign",
+      "count": 1
+    }
+  ],
+  "topFiles": [
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\lsp\\svelte.ts",
+      "count": 33
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\tools\\handlers\\index.ts",
+      "count": 21
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\assistant\\components\\AssistantPanel.svelte",
+      "count": 20
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\tools\\handlers\\write.ts",
+      "count": 19
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\assistant\\components\\FileEditCard.svelte",
+      "count": 18
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\providers\\gemini.ts",
+      "count": 17
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\tools\\handlers\\lsp.ts",
+      "count": 15
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\providers\\openai.ts",
+      "count": 14
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\assistant\\components\\InlineToolCall.svelte",
+      "count": 14
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\providers\\anthropic.ts",
+      "count": 13
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\terminal\\services\\terminal-client.ts",
+      "count": 11
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\assistant\\components\\ChatInputBar.svelte",
+      "count": 10
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\services\\monaco-dart-language.ts",
+      "count": 9
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\tools\\handlers\\read.ts",
+      "count": 7
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\features\\assistant\\components\\AssistantMessageRow.svelte",
+      "count": 7
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\providers\\openrouter.ts",
+      "count": 7
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\shared\\components\\layout\\MainLayout.svelte",
+      "count": 7
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\ai\\tools\\utils.ts",
+      "count": 5
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\lsp\\dart-sidecar.ts",
+      "count": 5
+    },
+    {
+      "filePath": "C:\\tauri\\volt\\src\\lib\\core\\lsp\\typescript-sidecar.ts",
+      "count": 5
+    }
+  ]
+}

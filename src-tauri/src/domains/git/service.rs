@@ -1,0 +1,1 @@
+// Git domain service placeholder.

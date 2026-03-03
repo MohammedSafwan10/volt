@@ -2,6 +2,7 @@ mod cdp;
 mod chat_history;
 mod commands;
 mod lsp;
+mod domains;
 
 use tauri::Manager;
 
@@ -320,3 +321,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

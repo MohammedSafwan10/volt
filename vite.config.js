@@ -2,12 +2,19 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
 
-// @ts-ignore process is a nodejs global
+// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [tailwindcss(), sveltekit()],
+  resolve: {
+    alias: {
+      $core: new URL("./src/lib/core", import.meta.url).pathname,
+      $features: new URL("./src/lib/features", import.meta.url).pathname,
+      $shared: new URL("./src/lib/shared", import.meta.url).pathname
+    }
+  },
   build: {
     rollupOptions: {
       output: {

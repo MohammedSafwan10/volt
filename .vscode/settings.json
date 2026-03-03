@@ -1,4 +1,18 @@
 {
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+    "svelte"
+  ],
+  "eslint.workingDirectories": [
+    {
+      "mode": "auto"
+    }
+  ],
+  "eslint.lintTask.enable": true,
+  "problems.maxProblems": 5000,
   "svelte.enable-ts-plugin": true,
   "rust-analyzer.cargo.targetDir": "target/analyzer",
   "[markdown]": {

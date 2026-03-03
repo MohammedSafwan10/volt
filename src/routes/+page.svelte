@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MainLayout } from '$lib/components/layout';
+  import { MainLayout } from '$shared/components/layout';
 </script>
 
 <MainLayout />

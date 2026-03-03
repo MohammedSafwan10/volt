@@ -1,10 +1,10 @@
 <script lang="ts">
   import "../app.css";
-  import ToastContainer from "$lib/components/ui/ToastContainer.svelte";
+  import ToastContainer from "$shared/components/ui/ToastContainer.svelte";
   import { onMount } from 'svelte';
   import { openUrl } from '@tauri-apps/plugin-opener';
-  import { initializeFileService } from '$lib/services/file-service';
-  import { cleanupStaleBackendWatchers } from '$lib/services/hmr-cleanup';
+  import { initializeFileService } from '$core/services/file-service';
+  import { cleanupStaleBackendWatchers } from '$core/services/hmr-cleanup';
   
   let { children } = $props();
 
