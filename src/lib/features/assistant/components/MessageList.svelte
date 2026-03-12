@@ -142,22 +142,28 @@
     // 3. If a new message arrived and we were at the bottom, follow it
     const lastMsgIsUser =
       messages.length > 0 && messages[messages.length - 1].role === "user";
-    const shouldScroll =
-      lastMsgIsUser || (isStreaming && isFollowing) || userNearBottom;
+    const shouldScroll = lastMsgIsUser || isFollowing;
 
     if (shouldScroll) {
       // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
+      let timer: number | undefined;
+      const rafId = requestAnimationFrame(() => {
         scrollToBottom(lastMsgIsUser ? "smooth" : "auto");
 
         // Secondary safety check for dynamic height elements (like images/code blocks)
-        const timer = setTimeout(() => {
+        timer = window.setTimeout(() => {
           if (isFollowing || userNearBottom) {
             scrollToBottom("auto");
           }
         }, 100);
-        return () => clearTimeout(timer);
       });
+
+      return () => {
+        cancelAnimationFrame(rafId);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+        }
+      };
     }
   });
 

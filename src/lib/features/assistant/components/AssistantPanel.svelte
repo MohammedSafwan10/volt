@@ -2576,7 +2576,7 @@
     <MessageList
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
-      isStreaming={isAssistantBusy}
+      isStreaming={assistantStore.isStreaming}
       onQuickPrompt={handleQuickPrompt}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
