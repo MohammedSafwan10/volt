@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { exists } from '@tauri-apps/plugin-fs';
 import { problemsStore, type Problem } from '$shared/stores/problems.svelte';
 import { registerCleanup } from '$core/services/hmr-cleanup';
+import { hasProblemsFromSource } from '$core/services/diagnostics-source-utils';
 
 const WATCH_ID = 'tsc-watch';
 const SOURCE = 'TypeScript (build)';
@@ -256,13 +257,13 @@ class TscWatcher {
   }
 
   private clearTscProblems(): void {
-    // Remove all problems with our source
+    // Remove all problems with our source without touching diagnostics
+    // produced by other providers for the same file.
     const allFiles = Object.keys(problemsStore.problemsByFile);
     for (const file of allFiles) {
       const problems = problemsStore.problemsByFile[file] || [];
-      const nonTscProblems = problems.filter(p => p.source !== SOURCE);
-      if (nonTscProblems.length !== problems.length) {
-        problemsStore.setProblemsForFile(file, nonTscProblems);
+      if (hasProblemsFromSource(problems, SOURCE)) {
+        problemsStore.clearProblemsForFile(file, SOURCE);
       }
     }
   }

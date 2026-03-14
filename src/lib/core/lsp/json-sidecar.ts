@@ -13,7 +13,13 @@
  * - Supports package.json, tsconfig.json, etc. with built-in schemas
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
+import {
+  getLspRegistry,
+  rehydrateTrackedDocuments,
+  sendDidSaveForTrackedDocument,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
 import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 
@@ -24,6 +30,10 @@ let initializationPromise: Promise<void> | null = null;
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
+
+async function rehydrateOpenDocuments(): Promise<void> {
+  await rehydrateTrackedDocuments(openDocuments, notifyJsonDocumentOpened);
+}
 
 /**
  * Check if a file is a JSON file
@@ -182,10 +192,15 @@ async function initializeServer(): Promise<void> {
       });
       jsonServerTransport.onExit(() => {
         console.log('[JSON LSP] Server exited');
+        problemsStore.markSourceStale('json');
         jsonServerTransport = null;
         jsonServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
+      });
+      jsonServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('json');
+        await rehydrateOpenDocuments();
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -330,6 +345,20 @@ export async function notifyJsonDocumentClosed(filepath: string): Promise<void> 
   await jsonServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri: pathToUri(filepath) }
   });
+  problemsStore.clearProblemsForFile(filepath, 'json');
+}
+
+export async function notifyJsonDocumentSaved(filepath: string, content: string): Promise<void> {
+  if (!isJsonFile(filepath)) return;
+  await sendDidSaveForTrackedDocument({
+    filepath,
+    content,
+    openDocuments,
+    transport: jsonServerTransport,
+    initialized: jsonServerInitialized,
+    ensureOpen: notifyJsonDocumentOpened,
+    pathToUri,
+  });
 }
 
 /**
@@ -384,12 +413,16 @@ export async function ensureJsonLspStarted(): Promise<void> {
 export async function stopJsonLsp(): Promise<void> {
   if (!jsonServerTransport) return;
 
+  const transport = jsonServerTransport;
+
   try {
-    await jsonServerTransport.sendRequest('shutdown', null);
-    await jsonServerTransport.sendNotification('exit', null);
+    await transport.sendRequest('shutdown', null);
+    await transport.sendNotification('exit', null);
   } catch {
     // Ignore errors during shutdown
   }
+
+  await transport.stop();
 
   jsonServerTransport = null;
   jsonServerInitialized = false;

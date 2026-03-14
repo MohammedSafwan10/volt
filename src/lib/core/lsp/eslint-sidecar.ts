@@ -54,6 +54,15 @@ function isServerAlreadyRunningError(error: unknown): boolean {
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
 
+async function rehydrateOpenDocuments(): Promise<void> {
+  if (!eslintServerTransport || !eslintServerInitialized) return;
+  const docs = Array.from(openDocuments.entries());
+  openDocuments.clear();
+  for (const [filepath, doc] of docs) {
+    await notifyEslintDocumentOpened(filepath, doc.content);
+  }
+}
+
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150; // Faster debounce for full diagnostics mode
@@ -265,10 +274,15 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       eslintServerTransport.onExit(() => {
         console.log('[ESLint LSP] Server exited');
+        problemsStore.markSourceStale('eslint');
         eslintServerTransport = null;
         eslintServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
+      });
+      eslintServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('eslint');
+        await rehydrateOpenDocuments();
       });
 
       // Send initialize request

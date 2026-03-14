@@ -17,6 +17,10 @@
 
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
+import {
+  rehydrateTrackedDocuments,
+  sendDidSaveForTrackedDocument,
+} from './sidecar/document-lifecycle';
 import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectXmlLsp, isXmlLspAvailable, type XmlLspInfo } from './xml-sdk';
@@ -26,6 +30,10 @@ let xmlServerInitialized = false;
 
 // Track open documents
 const openDocuments = new Map<string, { version: number; content: string }>();
+
+async function rehydrateOpenDocuments(): Promise<void> {
+  await rehydrateTrackedDocuments(openDocuments, notifyDocumentOpened);
+}
 
 // Debounce diagnostics
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -150,6 +158,17 @@ export async function initializeServer(): Promise<boolean> {
 
     // Set up message handler
     xmlServerTransport.onMessage(handleServerMessage);
+    xmlServerTransport.onExit(() => {
+      console.log('[XML LSP] Server exited');
+      problemsStore.markSourceStale('xml');
+      xmlServerTransport = null;
+      xmlServerInitialized = false;
+      openDocuments.clear();
+    });
+    xmlServerTransport.onRestart(async () => {
+      problemsStore.markSourceFresh('xml');
+      await rehydrateOpenDocuments();
+    });
 
     // Send initialize request
     const initResult = await xmlServerTransport.sendRequest('initialize', {
@@ -427,6 +446,19 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   });
 
   problemsStore.clearProblemsForFile(filepath, 'xml');
+}
+
+export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
+  if (!isXmlFile(filepath)) return;
+  await sendDidSaveForTrackedDocument({
+    filepath,
+    content,
+    openDocuments,
+    transport: xmlServerTransport,
+    initialized: xmlServerInitialized,
+    ensureOpen: notifyDocumentOpened,
+    pathToUri,
+  });
 }
 
 /**

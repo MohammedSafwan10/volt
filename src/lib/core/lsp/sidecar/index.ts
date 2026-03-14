@@ -74,3 +74,8 @@ export {
   initLspRegistry,
   disposeLspRegistry,
 } from './register';
+
+export {
+  rehydrateTrackedDocuments,
+  sendDidSaveForTrackedDocument,
+} from './document-lifecycle';

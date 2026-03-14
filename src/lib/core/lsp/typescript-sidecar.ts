@@ -33,6 +33,15 @@ let initializedRootPath: string | null = null;
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
 
+async function rehydrateOpenDocuments(): Promise<void> {
+  if (!tsServerTransport || !tsServerInitialized) return;
+  const docs = Array.from(openDocuments.entries());
+  openDocuments.clear();
+  for (const [filepath, doc] of docs) {
+    await notifyDocumentOpened(filepath, doc.content);
+  }
+}
+
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 75;
@@ -241,11 +250,16 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       tsServerTransport.onExit(() => {
         console.log('[TS LSP] Server exited');
+        problemsStore.markSourceStale('typescript');
         tsServerTransport = null;
         tsServerInitialized = false;
         initializationPromise = null;
         initializedRootPath = null;
         openDocuments.clear();
+      });
+      tsServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('typescript');
+        await rehydrateOpenDocuments();
       });
 
       // Send initialize request

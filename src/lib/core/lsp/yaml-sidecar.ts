@@ -17,6 +17,10 @@
 
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
+import {
+  rehydrateTrackedDocuments,
+  sendDidSaveForTrackedDocument,
+} from './sidecar/document-lifecycle';
 import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectYamlLsp, isYamlLspAvailable, type YamlLspInfo } from './yaml-sdk';
@@ -26,6 +30,10 @@ let yamlServerInitialized = false;
 
 // Track open documents
 const openDocuments = new Map<string, { version: number; content: string }>();
+
+async function rehydrateOpenDocuments(): Promise<void> {
+  await rehydrateTrackedDocuments(openDocuments, notifyDocumentOpened);
+}
 
 // Debounce diagnostics
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -128,6 +136,17 @@ export async function initializeServer(): Promise<boolean> {
 
     // Set up message handler
     yamlServerTransport.onMessage(handleServerMessage);
+    yamlServerTransport.onExit(() => {
+      console.log('[YAML LSP] Server exited');
+      problemsStore.markSourceStale('yaml');
+      yamlServerTransport = null;
+      yamlServerInitialized = false;
+      openDocuments.clear();
+    });
+    yamlServerTransport.onRestart(async () => {
+      problemsStore.markSourceFresh('yaml');
+      await rehydrateOpenDocuments();
+    });
 
     // Send initialize request
     const initResult = await yamlServerTransport.sendRequest('initialize', {
@@ -395,6 +414,19 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
 
   // Clear diagnostics for this file
   problemsStore.clearProblemsForFile(filepath, 'yaml');
+}
+
+export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
+  if (!isYamlFile(filepath)) return;
+  await sendDidSaveForTrackedDocument({
+    filepath,
+    content,
+    openDocuments,
+    transport: yamlServerTransport,
+    initialized: yamlServerInitialized,
+    ensureOpen: notifyDocumentOpened,
+    pathToUri,
+  });
 }
 
 /**

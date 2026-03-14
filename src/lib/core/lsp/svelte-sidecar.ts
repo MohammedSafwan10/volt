@@ -36,6 +36,15 @@ let initializedRootPath: string | null = null;
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
 
+async function rehydrateOpenDocuments(): Promise<void> {
+  if (!svelteServerTransport || !svelteServerInitialized) return;
+  const docs = Array.from(openDocuments.entries());
+  openDocuments.clear();
+  for (const [filepath, doc] of docs) {
+    await notifySvelteDocumentOpened(filepath, doc.content);
+  }
+}
+
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150;
@@ -154,11 +163,16 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       svelteServerTransport.onExit(() => {
         console.log('[Svelte LSP] Server exited');
+        problemsStore.markSourceStale('svelte');
         svelteServerTransport = null;
         svelteServerInitialized = false;
         initializationPromise = null;
         initializedRootPath = null;
         openDocuments.clear();
+      });
+      svelteServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('svelte');
+        await rehydrateOpenDocuments();
       });
 
       // Send initialize request

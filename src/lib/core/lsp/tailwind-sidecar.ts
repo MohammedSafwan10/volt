@@ -25,6 +25,15 @@ let initializationPromise: Promise<void> | null = null;
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
 
+async function rehydrateOpenDocuments(): Promise<void> {
+  if (!tailwindServerTransport || !tailwindServerInitialized) return;
+  const docs = Array.from(openDocuments.entries());
+  openDocuments.clear();
+  for (const [filepath, doc] of docs) {
+    await notifyTailwindDocumentOpened(filepath, doc.content);
+  }
+}
+
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150;
@@ -233,10 +242,15 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       tailwindServerTransport.onExit(() => {
         console.log('[Tailwind LSP] Server exited');
+        problemsStore.markSourceStale('tailwindcss');
         tailwindServerTransport = null;
         tailwindServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
+      });
+      tailwindServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('tailwindcss');
+        await rehydrateOpenDocuments();
       });
 
       // Send initialize request

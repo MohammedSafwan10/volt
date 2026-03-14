@@ -13,7 +13,13 @@
  * - Workspace root = projectStore.rootPath
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
+import {
+  getLspRegistry,
+  rehydrateTrackedDocuments,
+  sendDidSaveForTrackedDocument,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
 import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
@@ -26,6 +32,10 @@ let initializationPromise: Promise<void> | null = null;
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
+
+async function rehydrateOpenDocuments(): Promise<void> {
+  await rehydrateTrackedDocuments(openDocuments, notifyCssDocumentOpened);
+}
 
 /**
  * Check if a file is a CSS file
@@ -183,10 +193,15 @@ async function initializeServer(): Promise<void> {
       });
       cssServerTransport.onExit(() => {
         console.log('[CSS LSP] Server exited');
+        problemsStore.markSourceStale('css');
         cssServerTransport = null;
         cssServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
+      });
+      cssServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('css');
+        await rehydrateOpenDocuments();
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -334,6 +349,20 @@ export async function notifyCssDocumentClosed(filepath: string): Promise<void> {
   await cssServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri: pathToUri(filepath) }
   });
+  problemsStore.clearProblemsForFile(filepath, 'css');
+}
+
+export async function notifyCssDocumentSaved(filepath: string, content: string): Promise<void> {
+  if (!isCssFile(filepath)) return;
+  await sendDidSaveForTrackedDocument({
+    filepath,
+    content,
+    openDocuments,
+    transport: cssServerTransport,
+    initialized: cssServerInitialized,
+    ensureOpen: notifyCssDocumentOpened,
+    pathToUri,
+  });
 }
 
 export interface Location {
@@ -451,12 +480,16 @@ export async function ensureCssLspStarted(): Promise<void> {
 export async function stopCssLsp(): Promise<void> {
   if (!cssServerTransport) return;
 
+  const transport = cssServerTransport;
+
   try {
-    await cssServerTransport.sendRequest('shutdown', null);
-    await cssServerTransport.sendNotification('exit', null);
+    await transport.sendRequest('shutdown', null);
+    await transport.sendNotification('exit', null);
   } catch {
     // Ignore errors during shutdown
   }
+
+  await transport.stop();
 
   cssServerTransport = null;
   cssServerInitialized = false;

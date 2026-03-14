@@ -17,6 +17,7 @@ import {
     startDartLsp,
     startProjectWideAnalysis as startDartAnalysis,
 } from '$core/lsp/dart-sidecar';
+import { getStaleSourceFiles } from '$core/services/diagnostics-source-utils';
 
 interface SystemCapabilities {
     os_name?: string;
@@ -43,9 +44,21 @@ export class ProjectDiagnostics {
     private pendingRoot: string | null = null;
     private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly MIN_INTERVAL_MS = 15000;
+    private eslintBuildFiles = new Set<string>();
 
     constructor() {
         this.checkPlatform();
+    }
+
+    reset(): void {
+        this.pendingRoot = null;
+        this.isRunning = false;
+        this.lastRun = 0;
+        this.eslintBuildFiles.clear();
+        if (this.scheduledTimer) {
+            clearTimeout(this.scheduledTimer);
+            this.scheduledTimer = null;
+        }
     }
 
     private async checkPlatform() {
@@ -329,9 +342,12 @@ export class ProjectDiagnostics {
                 }>;
             }
 
+            const nextFiles = new Set<string>();
+
             for (const result of (json as EslintResult[])) {
                 // Fix path separators if needed or ensure absolute
-                const filePath = result.filePath;
+                const filePath = this.resolveAbsolutePath(rootPath, result.filePath);
+                nextFiles.add(filePath);
                 const problems: Problem[] = result.messages.map((msg, idx) => ({
                     id: `eslint-${filePath}-${msg.line}-${msg.column}-${idx}`,
                     file: filePath,
@@ -348,6 +364,12 @@ export class ProjectDiagnostics {
 
                 problemsStore.setProblemsForFile(filePath, problems, 'eslint (build)');
             }
+
+            for (const filePath of getStaleSourceFiles(this.eslintBuildFiles, nextFiles)) {
+                problemsStore.clearProblemsForFile(filePath, 'eslint (build)');
+            }
+
+            this.eslintBuildFiles = nextFiles;
 
         } catch (e) {
             console.warn('Failed to parse eslint output:', e);

@@ -24,6 +24,7 @@ import type {
   HealthStatus,
 } from './types';
 import { DEFAULT_HEALTH_CONFIG } from './types';
+import { getHealthProbe, isResponsiveProtocolError } from './health';
 
 /** Pending request tracking */
 interface PendingRequest {
@@ -45,6 +46,7 @@ export class LspTransport {
   private errorHandlers: Set<ErrorHandler> = new Set();
   private exitHandlers: Set<ExitHandler> = new Set();
   private healthHandlers: Set<HealthHandler> = new Set();
+  private restartHandlers: Set<() => void | Promise<void>> = new Set();
   private pendingRequests: Map<number | string, PendingRequest> = new Map();
   private nextRequestId = 1;
   private unlisteners: UnlistenFn[] = [];
@@ -52,6 +54,8 @@ export class LspTransport {
   private startMode: StartMode | null = null;
   private startConfig: Omit<LspServerConfig, 'serverId' | 'serverType'> | Omit<ExternalLspConfig, 'serverId' | 'serverType'> | null = null;
   private isRestarting = false;
+  private preserveHandlersOnStop = false;
+  private restartCount = 0;
 
   // Health monitoring state
   private healthConfig: Required<HealthConfig>;
@@ -110,6 +114,7 @@ export class LspTransport {
     errorHandlers: number;
     exitHandlers: number;
     healthHandlers: number;
+    restartCount: number;
   } {
     return {
       id: this.serverId,
@@ -122,6 +127,7 @@ export class LspTransport {
       errorHandlers: this.errorHandlers.size,
       exitHandlers: this.exitHandlers.size,
       healthHandlers: this.healthHandlers.size,
+      restartCount: this.restartCount,
     };
   }
 
@@ -427,6 +433,19 @@ export class LspTransport {
     if (!running) {
       throw new Error(`LSP server not running: ${this.serverId}`);
     }
+
+    if (!this.isConnected) {
+      throw new Error(`LSP transport disconnected: ${this.serverId}`);
+    }
+
+    const probe = getHealthProbe();
+    try {
+      await this.sendRequestWithTimeout(probe.method, probe.params, this.healthConfig.timeoutMs);
+    } catch (error) {
+      if (!isResponsiveProtocolError(error)) {
+        throw error;
+      }
+    }
   }
 
   /**
@@ -632,10 +651,15 @@ onExit(handler: ExitHandler): () => void {
 /**
  * Register a health status change handler
  */
-onHealth(handler: HealthHandler): () => void {
+  onHealth(handler: HealthHandler): () => void {
   this.healthHandlers.add(handler);
   return() => this.healthHandlers.delete(handler);
 }
+
+  onRestart(handler: () => void | Promise<void>): () => void {
+    this.restartHandlers.add(handler);
+    return () => this.restartHandlers.delete(handler);
+  }
 
   /**
    * Stop the server and clean up
@@ -660,10 +684,13 @@ if (this.isConnected) {
 }
 
 this.isConnected = false;
+if (!this.preserveHandlersOnStop) {
 this.messageHandlers.clear();
 this.errorHandlers.clear();
 this.exitHandlers.clear();
 this.healthHandlers.clear();
+this.restartHandlers.clear();
+}
 this.pendingRequests.clear();
 this.responseTimes = [];
   }
@@ -678,22 +705,33 @@ this.responseTimes = [];
     const errorHandlers = new Set(this.errorHandlers);
     const exitHandlers = new Set(this.exitHandlers);
     const healthHandlers = new Set(this.healthHandlers);
+    const restartHandlers = new Set(this.restartHandlers);
 
     try {
+      this.preserveHandlersOnStop = true;
       await this.stop();
+      this.preserveHandlersOnStop = false;
       this.messageHandlers = messageHandlers;
       this.errorHandlers = errorHandlers;
       this.exitHandlers = exitHandlers;
       this.healthHandlers = healthHandlers;
+      this.restartHandlers = restartHandlers;
 
       if (this.startMode === 'sidecar') {
         await this.start(this.startConfig as Omit<LspServerConfig, 'serverId' | 'serverType'>);
       } else {
         await this.startExternal(this.startConfig as Omit<ExternalLspConfig, 'serverId' | 'serverType'>);
       }
+
+      this.restartCount += 1;
+
+      for (const handler of this.restartHandlers) {
+        await handler();
+      }
     } catch (error) {
       this.notifyError(`Failed to auto-restart server: ${String(error)}`);
     } finally {
+      this.preserveHandlersOnStop = false;
       this.isRestarting = false;
     }
   }

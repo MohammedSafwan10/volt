@@ -37,6 +37,15 @@ let isAnalyzing = false;
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
 
+async function rehydrateOpenDocuments(): Promise<void> {
+  if (!dartServerTransport || !dartServerInitialized) return;
+  const docs = Array.from(openDocuments.entries());
+  openDocuments.clear();
+  for (const [filepath, doc] of docs) {
+    await notifyDocumentOpened(filepath, doc.content);
+  }
+}
+
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150;
@@ -273,11 +282,16 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       dartServerTransport.onExit(() => {
         console.log('[Dart LSP] Server exited');
+        problemsStore.markSourceStale('dart');
         dartServerTransport = null;
         dartServerInitialized = false;
         initializationPromise = null;
         initializedRootPath = null;
         openDocuments.clear();
+      });
+      dartServerTransport.onRestart(async () => {
+        problemsStore.markSourceFresh('dart');
+        await rehydrateOpenDocuments();
       });
 
       // Send initialize request

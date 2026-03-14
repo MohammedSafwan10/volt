@@ -144,6 +144,7 @@ function getFileName(filePath: string): string {
  * so we skip Monaco markers for those files to avoid conflicts.
  */
 function processMarkers(monaco: typeof Monaco): void {
+  const monacoSource = 'monaco-native';
   // Get all markers from Monaco
   const allMarkers = monaco.editor.getModelMarkers({});
 
@@ -181,17 +182,17 @@ function processMarkers(monaco: typeof Monaco): void {
       endColumn: marker.endColumn,
       message: marker.message,
       severity: mapSeverity(monaco, marker.severity),
-      source: 'monaco',
+      source: monacoSource,
       code: marker.code?.toString()
     }));
 
-    problemsStore.setProblemsForFile(filePath, problems, 'monaco');
+    problemsStore.setProblemsForFile(filePath, problems, monacoSource);
     currentFiles.delete(filePath);
   }
 
   // Clear problems for non-TS/JS files that no longer have markers
   for (const filePath of currentFiles) {
-    problemsStore.clearProblemsForFile(filePath, 'monaco');
+    problemsStore.clearProblemsForFile(filePath, monacoSource);
   }
 }
 
@@ -415,7 +416,9 @@ export function disposeLspClient(): void {
   disposables.length = 0;
 
   activeLanguages.clear();
-  problemsStore.clearAll();
+  for (const filePath of problemsStore.filesWithSource('monaco-native')) {
+    problemsStore.clearProblemsForFile(filePath, 'monaco-native');
+  }
   initialized = false;
 }
 
