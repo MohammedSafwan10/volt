@@ -31,6 +31,14 @@ import {
   sanitizeUserInput,
 } from './assistant/utils';
 import {
+  findConversationIdByMessageId as resolveConversationIdByMessageId,
+  stripSystemReminderTags,
+} from './assistant-message-routing';
+import {
+  resolveConversationFallbackOnClose,
+  shouldCreateInitialConversation,
+} from './assistant-tab-flow';
+import {
   CONTEXT_LIMITS,
   IMAGE_LIMITS,
   MODE_CAPABILITIES,
@@ -129,6 +137,53 @@ export interface Conversation {
   messages: AssistantMessage[];
 }
 
+interface ConversationRuntimeState {
+  messages: AssistantMessage[];
+  currentMode: AIMode;
+  inputValue: string;
+  attachedContext: AttachedContext[];
+  inputHistory: Array<{ content: string; attachments: MessageAttachment[] }>;
+  historyIndex: number;
+  draftValue: string;
+  draftAttachments: MessageAttachment[];
+  pendingAttachments: MessageAttachment[];
+  isStreaming: boolean;
+  abortController: AbortController | null;
+  agentLoopState: AgentLoopState;
+  agentLoopMeta: Record<string, unknown>;
+  activeToolCalls: ToolCall[];
+}
+
+interface ConversationScopedStatePatch {
+  messages?: AssistantMessage[];
+  currentMode?: AIMode;
+  inputValue?: string;
+  attachedContext?: AttachedContext[];
+  inputHistory?: Array<{ content: string; attachments: MessageAttachment[] }>;
+  historyIndex?: number;
+  draftValue?: string;
+  draftAttachments?: MessageAttachment[];
+  pendingAttachments?: MessageAttachment[];
+  isStreaming?: boolean;
+  abortController?: AbortController | null;
+  agentLoopState?: AgentLoopState;
+  agentLoopMeta?: Record<string, unknown>;
+  activeToolCalls?: ToolCall[];
+}
+
+interface ConversationSummaryLike {
+  id: string;
+  createdAt: number;
+  updatedAt?: number;
+  title?: string;
+  isPinned?: boolean;
+  mode?: string;
+}
+
+function debugAssistantSession(event: string, details: Record<string, unknown> = {}): void {
+  console.info('[AssistantSession]', { event, ...details, at: Date.now() });
+}
+
 // Selection range for Monaco editor
 export interface SelectionRange {
   startLine: number;
@@ -205,6 +260,7 @@ const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
 const PANEL_OPEN_KEY = 'volt.assistant.panelOpen';
 const BROWSER_TOOLS_ENABLED_KEY = 'volt.assistant.browserToolsEnabled';
 const CURRENT_CONV_ID_KEY = 'volt.assistant.currentConversationId';
+const OPEN_TAB_IDS_KEY = 'volt.assistant.openTabIds';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
@@ -221,6 +277,7 @@ class AssistantStore {
   // Conversation state
   currentConversation = $state<Conversation | null>(null);
   messages = $state<AssistantMessage[]>([]);
+  openConversationIds = $state<string[]>([]);
 
   // Input state
   inputValue = $state("");
@@ -242,12 +299,14 @@ class AssistantStore {
   // Current tool calls being displayed
   activeToolCalls = $state<ToolCall[]>([]);
   browserToolsEnabled = $state(false);
+  private runStates = $state<Record<string, { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>>({});
+  private conversationRuntimeState = $state<Record<string, ConversationRuntimeState>>({});
 
   constructor() {
     this.loadPanelWidth();
     this.loadPanelOpen();
     this.loadBrowserToolsEnabled();
-    this.initConversation();
+    this.loadOpenConversationIds();
     this.loadCurrentConversationId();
   }
 
@@ -278,8 +337,11 @@ class AssistantStore {
     this.currentConversation = {
       id: crypto.randomUUID(),
       createdAt: Date.now(),
+      title: 'New Chat',
       messages: []
     };
+    this.ensureConversationTab(this.currentConversation.id);
+    this.ensureConversationRuntime(this.currentConversation.id, 'agent');
   }
 
   /**
@@ -287,11 +349,18 @@ class AssistantStore {
    * Called by UI when user clicks "New Chat"
    */
   newConversation(): void {
+    if (this.currentConversation?.id) {
+      this.commitActiveViewToRuntime(this.currentConversation.id);
+    }
     // Clear current state
     this.messages = [];
     this.activeToolCalls = [];
     this.pendingAttachments = [];
     this.inputValue = "";
+    this.inputHistory = [];
+    this.historyIndex = -1;
+    this.draftValue = "";
+    this.draftAttachments = [];
     this.currentMode = 'agent';
 
     // Initialize fresh conversation
@@ -299,9 +368,14 @@ class AssistantStore {
     this.currentConversation = {
       id: newId,
       createdAt: Date.now(),
+      title: 'New Chat',
       messages: []
     };
+    this.ensureConversationTab(newId);
+    this.ensureConversationRuntime(newId, 'agent');
+    this.syncRuntimeToActiveView(newId);
     this.saveCurrentConversationId();
+    this.saveOpenConversationIds();
 
     // Immediately notify chat history store of the new active ID.
     // The conversation will be persisted when the first message is sent.
@@ -327,10 +401,17 @@ class AssistantStore {
       metadata?: string;
     }>;
   }): void {
+    if (this.currentConversation?.id) {
+      this.commitActiveViewToRuntime(this.currentConversation.id);
+    }
+
     // Clear current state
     this.activeToolCalls = [];
     this.pendingAttachments = [];
     this.inputValue = "";
+    this.historyIndex = -1;
+    this.draftValue = "";
+    this.draftAttachments = [];
 
     // Restore mode
     this.currentMode = (conversation.mode as AIMode) || 'agent';
@@ -499,8 +580,387 @@ class AssistantStore {
     this.currentConversation = {
       id: conversation.id,
       createdAt: conversation.createdAt,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt,
+      isPinned: conversation.isPinned,
+      mode: conversation.mode,
       messages: restoredMessages
     };
+    this.conversationRuntimeState = {
+      ...this.conversationRuntimeState,
+      [conversation.id]: {
+        messages: restoredMessages,
+        currentMode: (conversation.mode as AIMode) || 'agent',
+        inputValue: '',
+        attachedContext: [],
+        inputHistory: [],
+        historyIndex: -1,
+        draftValue: '',
+        draftAttachments: [],
+        pendingAttachments: [],
+        isStreaming: false,
+        abortController: null,
+        agentLoopState: 'completed',
+        agentLoopMeta: {},
+        activeToolCalls: [],
+      },
+    };
+    this.ensureConversationTab(conversation.id);
+    this.saveOpenConversationIds();
+    this.markConversationRunState(conversation.id, {
+      isStreaming: false,
+      agentLoopState: 'completed',
+    });
+  }
+
+  private ensureConversationTab(conversationId: string): void {
+    if (!conversationId) return;
+    if (this.openConversationIds.includes(conversationId)) return;
+    this.openConversationIds = [...this.openConversationIds, conversationId];
+  }
+
+  private createDefaultRuntimeState(mode: AIMode = 'agent'): ConversationRuntimeState {
+    return {
+      messages: [],
+      currentMode: mode,
+      inputValue: '',
+      attachedContext: [],
+      inputHistory: [],
+      historyIndex: -1,
+      draftValue: '',
+      draftAttachments: [],
+      pendingAttachments: [],
+      isStreaming: false,
+      abortController: null,
+      agentLoopState: 'completed',
+      agentLoopMeta: {},
+      activeToolCalls: [],
+    };
+  }
+
+  private ensureConversationRuntime(conversationId: string, mode: AIMode = 'agent'): ConversationRuntimeState {
+    const existing = this.conversationRuntimeState[conversationId];
+    if (existing) return existing;
+    const runtime = this.createDefaultRuntimeState(mode);
+    this.conversationRuntimeState = {
+      ...this.conversationRuntimeState,
+      [conversationId]: runtime,
+    };
+    return runtime;
+  }
+
+  private updateConversationRuntime(
+    conversationId: string,
+    updater: (runtime: ConversationRuntimeState) => ConversationRuntimeState,
+  ): ConversationRuntimeState {
+    const current = this.ensureConversationRuntime(conversationId);
+    const next = updater(current);
+    this.conversationRuntimeState = {
+      ...this.conversationRuntimeState,
+      [conversationId]: next,
+    };
+    return next;
+  }
+
+  private buildConversationRecord(
+    conversationId: string,
+    summary?: ConversationSummaryLike,
+  ): Conversation {
+    const runtime = this.ensureConversationRuntime(
+      conversationId,
+      (summary?.mode as AIMode) || 'agent',
+    );
+    return {
+      id: conversationId,
+      createdAt: summary?.createdAt ?? Date.now(),
+      title: summary?.title ?? 'New Chat',
+      updatedAt: summary?.updatedAt ?? Date.now(),
+      isPinned: summary?.isPinned ?? false,
+      mode: summary?.mode ?? runtime.currentMode,
+      messages: runtime.messages,
+    };
+  }
+
+  switchToConversation(conversationId: string, summary?: ConversationSummaryLike): boolean {
+    if (!conversationId) return false;
+    if (this.currentConversation?.id === conversationId) {
+      this.syncRuntimeToActiveView(conversationId);
+      this.saveCurrentConversationId();
+      return true;
+    }
+
+    if (this.currentConversation?.id) {
+      this.commitActiveViewToRuntime(this.currentConversation.id);
+    }
+
+    const runtime = this.conversationRuntimeState[conversationId];
+    if (!runtime) return false;
+
+    this.currentConversation = this.buildConversationRecord(conversationId, summary);
+    this.ensureConversationTab(conversationId);
+    this.syncRuntimeToActiveView(conversationId);
+    this.saveCurrentConversationId();
+    return true;
+  }
+
+  private syncRuntimeToActiveView(conversationId: string): void {
+    if (this.currentConversation?.id !== conversationId) return;
+    const runtime = this.ensureConversationRuntime(conversationId);
+    this.messages = runtime.messages;
+    this.currentMode = runtime.currentMode;
+    this.inputValue = runtime.inputValue;
+    this.attachedContext = [...runtime.attachedContext];
+    this.inputHistory = [...runtime.inputHistory];
+    this.historyIndex = runtime.historyIndex;
+    this.draftValue = runtime.draftValue;
+    this.draftAttachments = [...runtime.draftAttachments];
+    this.pendingAttachments = [...runtime.pendingAttachments];
+    this.isStreaming = runtime.isStreaming;
+    this.abortController = runtime.abortController;
+    this.agentLoopState = runtime.agentLoopState;
+    this.agentLoopMeta = { ...runtime.agentLoopMeta };
+    this.activeToolCalls = [...runtime.activeToolCalls];
+    debugAssistantSession('sync_runtime_to_active_view', {
+      conversationId,
+      messageCount: runtime.messages.length,
+      isStreaming: runtime.isStreaming,
+      agentLoopState: runtime.agentLoopState,
+    });
+  }
+
+  private applyConversationStatePatch(
+    conversationId: string,
+    patch: ConversationScopedStatePatch,
+  ): ConversationRuntimeState {
+    const nextRuntime = this.updateConversationRuntime(conversationId, (runtime) => ({
+      ...runtime,
+      ...patch,
+    }));
+
+    if (this.currentConversation?.id === conversationId) {
+      this.syncRuntimeToActiveView(conversationId);
+      this.currentConversation = {
+        ...this.currentConversation,
+        mode: nextRuntime.currentMode,
+        messages: nextRuntime.messages,
+        updatedAt: Date.now(),
+      };
+    }
+
+    return nextRuntime;
+  }
+
+  private updateConversationMessages(
+    conversationId: string,
+    updater: (messages: AssistantMessage[]) => AssistantMessage[],
+  ): AssistantMessage[] {
+    const runtime = this.ensureConversationRuntime(conversationId);
+    const nextMessages = updater(runtime.messages);
+    this.applyConversationStatePatch(conversationId, { messages: nextMessages });
+    return nextMessages;
+  }
+
+  private commitActiveViewToRuntime(conversationId: string): void {
+    this.conversationRuntimeState = {
+      ...this.conversationRuntimeState,
+      [conversationId]: {
+        messages: this.messages,
+        currentMode: this.currentMode,
+        inputValue: this.inputValue,
+        attachedContext: [...this.attachedContext],
+        inputHistory: [...this.inputHistory],
+        historyIndex: this.historyIndex,
+        draftValue: this.draftValue,
+        draftAttachments: [...this.draftAttachments],
+        pendingAttachments: [...this.pendingAttachments],
+        isStreaming: this.isStreaming,
+        abortController: this.abortController,
+        agentLoopState: this.agentLoopState,
+        agentLoopMeta: { ...this.agentLoopMeta },
+        activeToolCalls: [...this.activeToolCalls],
+      },
+    };
+    debugAssistantSession('commit_active_view_to_runtime', {
+      conversationId,
+      messageCount: this.messages.length,
+      isStreaming: this.isStreaming,
+      agentLoopState: this.agentLoopState,
+    });
+  }
+
+  getConversationMessages(conversationId: string): AssistantMessage[] {
+    if (!conversationId) return [];
+    return this.currentConversation?.id === conversationId
+      ? this.messages
+      : (this.conversationRuntimeState[conversationId]?.messages ?? []);
+  }
+
+  private findConversationIdByMessageId(messageId: string): string | null {
+    return resolveConversationIdByMessageId(
+      messageId,
+      this.currentConversation?.id ?? null,
+      this.messages,
+      this.conversationRuntimeState,
+    );
+  }
+
+  private getMessageForPersistence(messageId: string): {
+    conversationId: string;
+    message: AssistantMessage;
+  } | null {
+    const conversationId = this.findConversationIdByMessageId(messageId);
+    if (!conversationId) return null;
+    const messages = this.getConversationMessages(conversationId);
+    const message = messages.find((entry) => entry.id === messageId);
+    if (!message) return null;
+    return { conversationId, message };
+  }
+
+  private removeConversationTab(conversationId: string): void {
+    this.openConversationIds = this.openConversationIds.filter((id) => id !== conversationId);
+    const { [conversationId]: _, ...rest } = this.runStates;
+    this.runStates = rest;
+  }
+
+  getOpenConversationTabs(): Array<{
+    id: string;
+    title: string;
+    isActive: boolean;
+    isRunning: boolean;
+    hasError: boolean;
+    updatedAt: number;
+  }> {
+    return this.openConversationIds.map((id) => {
+      const isActive = this.currentConversation?.id === id;
+      const liveConversation = isActive ? this.currentConversation : null;
+      const historyConversation = chatHistoryStore.conversations.find((conv) => conv.id === id);
+      const runState = this.runStates[id];
+      return {
+        id,
+        title: liveConversation?.title?.trim() || historyConversation?.title?.trim() || 'New Chat',
+        isActive,
+        isRunning: Boolean(runState?.isStreaming) || runState?.agentLoopState === 'running' || runState?.agentLoopState === 'waiting_tool' || runState?.agentLoopState === 'waiting_approval' || runState?.agentLoopState === 'completing',
+        hasError: runState?.agentLoopState === 'failed',
+        updatedAt: runState?.updatedAt ?? historyConversation?.updatedAt ?? liveConversation?.updatedAt ?? liveConversation?.createdAt ?? 0,
+      };
+    });
+  }
+
+  markConversationRunState(
+    conversationId: string,
+    patch: Partial<{ isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>,
+  ): void {
+    if (!conversationId) return;
+    const previous = this.runStates[conversationId] ?? {
+      isStreaming: false,
+      agentLoopState: 'completed' as AgentLoopState,
+      updatedAt: Date.now(),
+      lastError: null,
+    };
+    this.runStates = {
+      ...this.runStates,
+      [conversationId]: {
+        ...previous,
+        ...patch,
+        updatedAt: patch.updatedAt ?? Date.now(),
+      },
+    };
+  }
+
+  closeConversationTab(conversationId: string): void {
+    if (!conversationId) return;
+    const isCurrent = this.currentConversation?.id === conversationId;
+    const isRunning = this.runStates[conversationId]?.isStreaming;
+    if (isRunning) {
+      this.stopStreamingForConversation(conversationId);
+    }
+    if (isCurrent) {
+      this.commitActiveViewToRuntime(conversationId);
+    }
+
+    this.removeConversationTab(conversationId);
+    const { [conversationId]: __removedRuntime, ...remainingRuntime } = this.conversationRuntimeState;
+    this.conversationRuntimeState = remainingRuntime;
+    if (this.currentConversation?.id !== conversationId) {
+      this.saveOpenConversationIds();
+      return;
+    }
+
+    const fallbackDecision = resolveConversationFallbackOnClose({
+      closingConversationId: conversationId,
+      openConversationIds: this.openConversationIds,
+      historyConversationIds: chatHistoryStore.conversations.map((conv) => conv.id),
+    });
+    const switchToNewConversation = () => {
+      this.newConversation();
+      this.saveOpenConversationIds();
+    };
+
+    if (fallbackDecision.action === 'switch_open') {
+      const fallbackId = fallbackDecision.conversationId;
+      const fallbackRuntime = this.conversationRuntimeState[fallbackId];
+      if (fallbackRuntime) {
+        const fallbackSummary = chatHistoryStore.conversations.find((conv) => conv.id === fallbackId);
+        this.switchToConversation(fallbackId, fallbackSummary);
+        chatHistoryStore.activeConversationId = fallbackId;
+      } else {
+        const fallbackSummary = chatHistoryStore.conversations.find((conv) => conv.id === fallbackId);
+        if (fallbackSummary) {
+          void chatHistoryStore.getConversation(fallbackId)
+            .then((fullConversation) => {
+              this.loadConversation(fullConversation);
+              chatHistoryStore.activeConversationId = fallbackId;
+            })
+            .catch(() => {
+              switchToNewConversation();
+            });
+        } else {
+          switchToNewConversation();
+        }
+      }
+    } else if (fallbackDecision.action === 'switch_history') {
+      const historyFallbackId = fallbackDecision.conversationId;
+      const fallbackSummary = chatHistoryStore.conversations.find((conv) => conv.id === historyFallbackId);
+      if (fallbackSummary) {
+        void chatHistoryStore.getConversation(historyFallbackId)
+          .then((fullConversation) => {
+            this.loadConversation(fullConversation);
+            chatHistoryStore.activeConversationId = historyFallbackId;
+          })
+          .catch(() => {
+            switchToNewConversation();
+          });
+      } else {
+        switchToNewConversation();
+      }
+    } else {
+      switchToNewConversation();
+    }
+
+    this.saveOpenConversationIds();
+  }
+
+  private saveOpenConversationIds(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(OPEN_TAB_IDS_KEY, JSON.stringify(this.openConversationIds));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private loadOpenConversationIds(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(OPEN_TAB_IDS_KEY);
+      if (!stored) return;
+      const ids = JSON.parse(stored);
+      if (Array.isArray(ids)) {
+        this.openConversationIds = ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      }
+    } catch {
+      // Ignore storage errors
+    }
   }
 
   /**
@@ -668,12 +1128,13 @@ class AssistantStore {
   addUserMessage(content: string, context?: AttachedContext[], smartContextBlock?: string): string {
     // Sanitize user input to remove excessive repetition
     const sanitizedContent = sanitizeUserInput(content);
+    const { visibleContent, hiddenReminderBlock } = stripSystemReminderTags(sanitizedContent);
 
     const id = crypto.randomUUID();
     const message: AssistantMessage = {
       id,
       role: 'user',
-      content: sanitizedContent,
+      content: visibleContent,
       timestamp: Date.now(),
       attachments: [...this.pendingAttachments], // Include pending attachments
       smartContextBlock
@@ -695,21 +1156,40 @@ class AssistantStore {
       message.smartContextBlock = (message.smartContextBlock ? message.smartContextBlock + '\n\n' : '') + fullContextBlock;
     }
 
-    this.messages = [...this.messages, message];
-    this.enforceInMemoryBudget();
+    if (hiddenReminderBlock) {
+      message.smartContextBlock = (message.smartContextBlock ? `${message.smartContextBlock}\n\n` : '') + `<system-reminder>\n${hiddenReminderBlock}\n</system-reminder>`;
+    }
 
-    // Update conversation
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: [...this.currentConversation.messages, message]
-      };
+    const conversationId = this.currentConversation?.id;
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => [...messages, message]);
+      if (this.currentConversation) {
+        const nextTitle =
+          this.currentConversation.title && this.currentConversation.title !== 'New Chat'
+            ? this.currentConversation.title
+            : visibleContent.slice(0, 50) || 'New Chat';
+        this.currentConversation = {
+          ...this.currentConversation,
+          title: nextTitle,
+          messages: this.messages,
+        };
+      }
+      this.enforceInMemoryBudget();
+    } else {
+      this.messages = [...this.messages, message];
+      this.enforceInMemoryBudget();
     }
 
     // Clear pending attachments after adding to message
     this.pendingAttachments = [];
 
     this.saveCurrentConversationId();
+    if (conversationId) {
+      this.markConversationRunState(conversationId, {
+        updatedAt: Date.now(),
+      });
+    }
+    this.persistMessageToHistory(id, true);
 
     return id;
   }
@@ -773,6 +1253,7 @@ class AssistantStore {
 
   addAssistantMessage(content: string, isStreaming = false): string {
     const id = crypto.randomUUID();
+    const conversationId = this.currentConversation?.id;
     const message: AssistantMessage = {
       id,
       role: 'assistant',
@@ -781,26 +1262,36 @@ class AssistantStore {
       isStreaming,
       streamState: isStreaming ? 'active' : 'completed',
     };
-    this.messages = [...this.messages, message];
-    this.enforceInMemoryBudget();
-
-    // Update conversation
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: [...this.currentConversation.messages, message]
-      };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => [...messages, message]);
+      if (this.currentConversation?.id === conversationId) {
+        this.enforceInMemoryBudget();
+      }
+    } else {
+      this.messages = [...this.messages, message];
+      this.enforceInMemoryBudget();
     }
 
     this.saveCurrentConversationId();
+    if (conversationId) {
+      this.markConversationRunState(conversationId, {
+        isStreaming,
+        agentLoopState: isStreaming ? 'running' : 'completed',
+      });
+      debugAssistantSession('add_assistant_message', {
+        conversationId,
+        messageId: id,
+        isStreaming,
+      });
+    }
 
     return id;
   }
 
   updateAssistantMessage(id: string, content: string, isStreaming = false): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.currentConversation?.id;
+    const updateMessage = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id !== id) return msg;
-      // Set endTime when streaming ends
       const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
       const contentParts = this.normalizeContentParts(msg.contentParts, content);
       const streamState =
@@ -810,25 +1301,22 @@ class AssistantStore {
             ? msg.streamState
             : 'completed';
       return { ...msg, content, isStreaming, endTime, contentParts, streamState };
-    });
+    };
+
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(updateMessage));
+    } else {
+      this.messages = this.messages.map(updateMessage);
+    }
 
     // Also update in currentConversation
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(msg => {
-          if (msg.id !== id) return msg;
-          const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
-          const contentParts = this.normalizeContentParts(msg.contentParts, content);
-          const streamState =
-            isStreaming
-              ? 'active'
-              : msg.streamState === 'interrupted' || msg.streamState === 'cancelled' || msg.streamState === 'failed'
-                ? msg.streamState
-                : 'completed';
-          return { ...msg, content, isStreaming, endTime, contentParts, streamState };
-        })
-      };
+    if (this.currentConversation && conversationId) {
+      debugAssistantSession('update_assistant_message', {
+        conversationId,
+        messageId: id,
+        isStreaming,
+        contentLength: content.length,
+      });
     }
 
     // Persist to database immediately
@@ -849,6 +1337,7 @@ class AssistantStore {
 
   addToolMessage(toolCall: ToolCall): string {
     const id = crypto.randomUUID();
+    const conversationId = this.currentConversation?.id;
     const message: AssistantMessage = {
       id,
       role: 'tool',
@@ -856,14 +1345,22 @@ class AssistantStore {
       timestamp: Date.now(),
       toolCalls: [toolCall]
     };
-    this.messages = [...this.messages, message];
-    this.enforceInMemoryBudget();
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => [...messages, message]);
+      if (this.currentConversation?.id === conversationId) {
+        this.enforceInMemoryBudget();
+      }
+    } else {
+      this.messages = [...this.messages, message];
+      this.enforceInMemoryBudget();
+    }
 
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: [...this.currentConversation.messages, message]
-      };
+    if (conversationId) {
+      debugAssistantSession('add_tool_message', {
+        conversationId,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      });
     }
 
     this.saveCurrentConversationId();
@@ -890,7 +1387,8 @@ class AssistantStore {
    * Add a tool call to a specific assistant message (for inline display)
    */
   addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.currentConversation?.id;
+    const addToolCall = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id !== messageId) return msg;
       const ensuredToolCall: ToolCall = {
         ...toolCall,
@@ -906,30 +1404,12 @@ class AssistantStore {
       const contentParts = [...(msg.contentParts || [])];
       contentParts.push({ type: "tool", toolCall: ensuredToolCall });
       return { ...msg, inlineToolCalls, contentParts };
-    });
+    };
 
-    // Also update in currentConversation
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(msg => {
-          if (msg.id !== messageId) return msg;
-          const ensuredToolCall: ToolCall = {
-            ...toolCall,
-            meta: {
-              ...(toolCall.meta || {}),
-              textOffset:
-                typeof (toolCall.meta as any)?.textOffset === 'number'
-                  ? (toolCall.meta as any).textOffset
-                  : (msg.content?.length ?? 0),
-            },
-          };
-          const inlineToolCalls = [...(msg.inlineToolCalls || []), ensuredToolCall];
-          const contentParts = [...(msg.contentParts || [])];
-          contentParts.push({ type: "tool", toolCall: ensuredToolCall });
-          return { ...msg, inlineToolCalls, contentParts };
-        }),
-      };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(addToolCall));
+    } else {
+      this.messages = this.messages.map(addToolCall);
     }
 
     // Persist to database immediately
@@ -940,7 +1420,8 @@ class AssistantStore {
    * Update a tool call within a message
    */
   updateToolCallInMessage(messageId: string, toolCallId: string, updates: Partial<ToolCall>): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.findConversationIdByMessageId(messageId);
+    const patchToolCall = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id !== messageId) return msg;
 
       const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
@@ -984,55 +1465,21 @@ class AssistantStore {
       });
 
       return { ...msg, inlineToolCalls, contentParts };
-    });
+    };
 
-    // Also update in currentConversation
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(msg => {
-          if (msg.id !== messageId) return msg;
-          const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
-            tc.id === toolCallId ? {
-              ...tc,
-              ...updates,
-              meta: updates.meta
-                ? {
-                  ...(tc.meta || {}),
-                  ...updates.meta,
-                  textOffset:
-                    typeof (updates.meta as any)?.textOffset === 'number'
-                      ? (updates.meta as any).textOffset
-                      : (tc.meta as any)?.textOffset
-                }
-                : tc.meta
-            } : tc,
-          );
-          const contentParts = (msg.contentParts || []).map(part => {
-            if (part.type === "tool" && part.toolCall.id === toolCallId) {
-              return {
-                ...part,
-                toolCall: {
-                  ...part.toolCall,
-                  ...updates,
-                  meta: updates.meta
-                    ? {
-                      ...(part.toolCall.meta || {}),
-                      ...updates.meta,
-                      textOffset:
-                        typeof (updates.meta as any)?.textOffset === 'number'
-                          ? (updates.meta as any).textOffset
-                          : (part.toolCall.meta as any)?.textOffset
-                    }
-                    : part.toolCall.meta
-                },
-              };
-            }
-            return part;
-          });
-          return { ...msg, inlineToolCalls, contentParts };
-        }),
-      };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(patchToolCall));
+    } else {
+      this.messages = this.messages.map(patchToolCall);
+    }
+
+    if (conversationId) {
+      debugAssistantSession('update_tool_call_in_message', {
+        conversationId,
+        messageId,
+        toolCallId,
+        status: updates.status,
+      });
     }
 
     // Persist to database immediately
@@ -1057,9 +1504,9 @@ class AssistantStore {
       return;
     }
 
-    const msg = this.messages.find(m => m.id === messageId);
-    const convId = this.currentConversation?.id;
-    if (!msg || !convId) return;
+    const persisted = this.getMessageForPersistence(messageId);
+    if (!persisted) return;
+    const { message: msg, conversationId: convId } = persisted;
 
     try {
       try {
@@ -1147,7 +1594,8 @@ class AssistantStore {
   }
 
   appendTextToMessage(messageId: string, text: string, isStreaming: boolean): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.currentConversation?.id;
+    const appendText = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id === messageId) {
         const parts = msg.contentParts ?? [];
         const lastPart = parts[parts.length - 1];
@@ -1177,10 +1625,23 @@ class AssistantStore {
         };
       }
       return msg;
-    });
-    this.enforceInMemoryBudget();
-    if (this.currentConversation) {
-      this.currentConversation.messages = this.messages;
+    };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(appendText));
+      if (this.currentConversation?.id === conversationId) {
+        this.enforceInMemoryBudget();
+      }
+    } else {
+      this.messages = this.messages.map(appendText);
+      this.enforceInMemoryBudget();
+    }
+    if (conversationId) {
+      debugAssistantSession('append_text_to_message', {
+        conversationId,
+        messageId,
+        chunkLength: text.length,
+        isStreaming,
+      });
     }
 
     // Persist to database immediately
@@ -1195,7 +1656,8 @@ class AssistantStore {
    * Creates a new thinking part if the last part isn't thinking, or appends to it
    */
   appendThinkingToMessage(messageId: string, thinking: string): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.currentConversation?.id;
+    const appendThinking = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id === messageId) {
         const parts = msg.contentParts ?? [];
         const lastPart = parts[parts.length - 1];
@@ -1236,9 +1698,11 @@ class AssistantStore {
         };
       }
       return msg;
-    });
-    if (this.currentConversation) {
-      this.currentConversation.messages = this.messages;
+    };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(appendThinking));
+    } else {
+      this.messages = this.messages.map(appendThinking);
     }
 
     // Persist to database immediately
@@ -1250,7 +1714,8 @@ class AssistantStore {
    * Called when thinking ends or when a tool/text part is about to be added
    */
   endThinkingPart(messageId: string): void {
-    this.messages = this.messages.map(msg => {
+    const conversationId = this.currentConversation?.id;
+    const endThinking = (msg: AssistantMessage): AssistantMessage => {
       if (msg.id === messageId) {
         const parts = msg.contentParts ?? [];
 
@@ -1288,9 +1753,11 @@ class AssistantStore {
         return { ...msg, contentParts: newParts, isThinking: false };
       }
       return msg;
-    });
-    if (this.currentConversation) {
-      this.currentConversation.messages = this.messages;
+    };
+    if (conversationId) {
+      this.updateConversationMessages(conversationId, (messages) => messages.map(endThinking));
+    } else {
+      this.messages = this.messages.map(endThinking);
     }
 
     // Persist to database immediately
@@ -1376,6 +1843,17 @@ class AssistantStore {
         ...this.currentConversation,
         messages: this.currentConversation.messages.map(applyPatch),
       };
+      this.markConversationRunState(this.currentConversation.id, {
+        isStreaming: false,
+        agentLoopState: streamState === 'failed' ? 'failed' : streamState === 'cancelled' ? 'cancelled' : 'completed',
+        lastError: streamState === 'failed' ? (streamIssue ?? this.runStates[this.currentConversation.id]?.lastError ?? null) : null,
+      });
+      debugAssistantSession('mark_stream_state', {
+        conversationId: this.currentConversation.id,
+        messageId,
+        streamState,
+        streamIssue,
+      });
     }
     this.persistMessageToHistory(messageId, true);
   }
@@ -1677,59 +2155,49 @@ class AssistantStore {
     const controller = new AbortController();
     this.abortController = controller;
     this.isStreaming = true;
+    if (this.currentConversation?.id) {
+      this.updateConversationRuntime(this.currentConversation.id, (runtime) => ({
+        ...runtime,
+        isStreaming: true,
+        abortController: controller,
+      }));
+      this.markConversationRunState(this.currentConversation.id, {
+        isStreaming: true,
+        agentLoopState: 'running',
+        lastError: null,
+      });
+      debugAssistantSession('start_streaming', {
+        conversationId: this.currentConversation.id,
+      });
+    }
     return controller;
   }
 
-  stopStreaming(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-    this.isStreaming = false;
-    if (this.agentLoopState !== 'completed' && this.agentLoopState !== 'failed') {
-      this.agentLoopState = 'cancelled';
-    }
+  stopStreamingForConversation(conversationId: string): void {
+    const runtime = this.conversationRuntimeState[conversationId];
+    if (!runtime) return;
 
-    // Mark any streaming messages as complete
-    this.messages = this.messages.map(msg =>
+    runtime.abortController?.abort();
+
+    const nextLoopState: AgentLoopState =
+      runtime.agentLoopState !== 'completed' && runtime.agentLoopState !== 'failed'
+        ? 'cancelled'
+        : runtime.agentLoopState;
+
+    const cancelStreamingMessage = (msg: AssistantMessage): AssistantMessage =>
       msg.isStreaming
         ? {
             ...msg,
             isStreaming: false,
             streamState: msg.role === 'assistant' ? 'cancelled' : msg.streamState,
-            streamIssue: msg.role === 'assistant' ? (msg.streamIssue ?? 'User cancelled streaming') : msg.streamIssue,
+            streamIssue:
+              msg.role === 'assistant'
+                ? (msg.streamIssue ?? 'User cancelled streaming')
+                : msg.streamIssue,
             endTime: msg.endTime ?? Date.now(),
           }
-        : msg
-    );
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map((msg) =>
-          msg.isStreaming
-            ? {
-                ...msg,
-                isStreaming: false,
-                streamState: msg.role === 'assistant' ? 'cancelled' : msg.streamState,
-                streamIssue:
-                  msg.role === 'assistant'
-                    ? (msg.streamIssue ?? 'User cancelled streaming')
-                    : msg.streamIssue,
-                endTime: msg.endTime ?? Date.now(),
-              }
-            : msg,
-        ),
-      };
-    }
+        : msg;
 
-    // Cancel any running tool calls
-    this.activeToolCalls = this.activeToolCalls.map(tc =>
-      tc.status === 'running' || tc.status === 'pending'
-        ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
-        : tc
-    );
-
-    // Cancel inline tool calls shown inside assistant messages.
     const cancelInlineToolCalls = (msg: AssistantMessage): AssistantMessage => {
       const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
         tc.status === 'running' || tc.status === 'pending'
@@ -1755,20 +2223,43 @@ class AssistantStore {
       return { ...msg, inlineToolCalls, contentParts };
     };
 
-    this.messages = this.messages.map(cancelInlineToolCalls);
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(cancelInlineToolCalls),
-      };
-    }
+    const nextMessages = runtime.messages
+      .map(cancelStreamingMessage)
+      .map(cancelInlineToolCalls);
+    const nextActiveToolCalls = runtime.activeToolCalls.map(tc =>
+      tc.status === 'running' || tc.status === 'pending'
+        ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
+        : tc
+    );
 
-    // Force-close any active thinking blocks so UI never gets stuck on "Thinking..."
-    for (const msg of this.messages) {
+    this.applyConversationStatePatch(conversationId, {
+      messages: nextMessages,
+      activeToolCalls: nextActiveToolCalls,
+      isStreaming: false,
+      abortController: null,
+      agentLoopState: nextLoopState,
+    });
+
+    for (const msg of nextMessages) {
       if (msg.role === 'assistant') {
         this.finalizeThinking(msg.id);
       }
     }
+
+    this.markConversationRunState(conversationId, {
+      isStreaming: false,
+      agentLoopState: nextLoopState,
+    });
+    debugAssistantSession('stop_streaming_for_conversation', {
+      conversationId,
+      agentLoopState: nextLoopState,
+    });
+  }
+
+  stopStreaming(): void {
+    const conversationId = this.currentConversation?.id ?? null;
+    if (!conversationId) return;
+    this.stopStreamingForConversation(conversationId);
   }
 
   setAgentLoopState(state: AgentLoopState, meta: Record<string, unknown> = {}): void {
@@ -1801,6 +2292,23 @@ class AssistantStore {
     }
     this.agentLoopState = state;
     this.agentLoopMeta = { ...meta, at: Date.now() };
+    if (this.currentConversation?.id) {
+      this.updateConversationRuntime(this.currentConversation.id, (runtime) => ({
+        ...runtime,
+        isStreaming: state === 'running' || state === 'waiting_tool' || state === 'waiting_approval' || state === 'completing',
+        agentLoopState: state,
+        agentLoopMeta: { ...meta, at: Date.now() },
+      }));
+      this.markConversationRunState(this.currentConversation.id, {
+        isStreaming: state === 'running' || state === 'waiting_tool' || state === 'waiting_approval' || state === 'completing',
+        agentLoopState: state,
+        lastError: state === 'failed' ? String(meta?.error ?? meta?.message ?? this.runStates[this.currentConversation.id]?.lastError ?? '') || null : null,
+      });
+      debugAssistantSession('set_agent_loop_state', {
+        conversationId: this.currentConversation.id,
+        state,
+      });
+    }
     console.info('[AssistantLoop] state', {
       from: previous,
       to: state,
@@ -1817,12 +2325,18 @@ class AssistantStore {
 
   // Clear conversation
   clearConversation(): void {
+    const previousConversationId = this.currentConversation?.id ?? null;
     this.messages = [];
     this.activeToolCalls = [];
     this.inputValue = '';
     this.attachedContext = [];
     this.pendingAttachments = [];
-    this.initConversation();
+    this.currentMode = 'agent';
+    this.currentConversation = null;
+    if (previousConversationId) {
+      this.removeConversationTab(previousConversationId);
+      this.saveOpenConversationIds();
+    }
   }
 
   // Input management
@@ -1933,9 +2447,24 @@ class AssistantStore {
         // We'll need to fetch the actual conversation from the DB
         // For now, we at least know what the ID was
         void this.restoreLastConversation(stored);
+      } else if (this.openConversationIds.length > 0) {
+        void this.restoreLastConversation(this.openConversationIds[this.openConversationIds.length - 1]);
+      } else if (shouldCreateInitialConversation({
+        currentConversationId: this.currentConversation?.id ?? null,
+        storedConversationId: null,
+        openConversationIds: this.openConversationIds,
+      })) {
+        this.initConversation();
       }
     } catch {
       // Ignore storage errors
+      if (shouldCreateInitialConversation({
+        currentConversationId: this.currentConversation?.id ?? null,
+        storedConversationId: null,
+        openConversationIds: this.openConversationIds,
+      })) {
+        this.initConversation();
+      }
     }
   }
 
@@ -1945,6 +2474,7 @@ class AssistantStore {
       if (this.currentConversation) {
         localStorage.setItem(CURRENT_CONV_ID_KEY, this.currentConversation.id);
       }
+      this.saveOpenConversationIds();
     } catch {
       // Ignore storage errors
     }
@@ -1968,6 +2498,7 @@ class AssistantStore {
               mode: conv.mode ?? "agent",
               messages: conv.messages,
             });
+            chatHistoryStore.activeConversationId = conv.id;
           }
         } catch (err) {
           const message = String(err ?? '');
@@ -1978,10 +2509,18 @@ class AssistantStore {
             console.warn("[AssistantStore] Failed to restore last conversation:", err);
           }
           localStorage.removeItem(CURRENT_CONV_ID_KEY);
+          if (!this.currentConversation) {
+            this.initConversation();
+          }
         }
+      } else if (!this.currentConversation) {
+        this.initConversation();
       }
     } catch (err) {
       console.warn('[AssistantStore] Failed to restore last conversation:', err);
+      if (!this.currentConversation) {
+        this.initConversation();
+      }
     }
   }
 
@@ -2298,8 +2837,14 @@ class AssistantStore {
 }
 
 // Singleton instance
+export { AssistantStore };
 export const assistantStore = new AssistantStore();
 chatHistoryStore.setActiveConversationDeletedHandler(() => {
+  const activeId = assistantStore.currentConversation?.id;
+  if (activeId) {
+    assistantStore.closeConversationTab(activeId);
+    return;
+  }
   assistantStore.clearConversation();
 });
 

@@ -49,6 +49,7 @@ import {
   queueSemanticUpsert,
   warmSemanticIndex,
 } from '$core/ai/retrieval/semantic-index';
+import { WorkspaceLifecycleManager } from '$core/workspace/workspace-lifecycle';
 
 // Tauri FS plugin for file watching
 import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
@@ -114,6 +115,7 @@ class ProjectStore {
 
   // Initialization promise to coordinate other stores
   private resolveInitialized: (() => void) | null = null;
+  private workspaceLifecycle = new WorkspaceLifecycleManager();
   public initialized = new Promise<void>((resolve) => {
     this.resolveInitialized = resolve;
   });
@@ -121,7 +123,73 @@ class ProjectStore {
   constructor() {
     this.loadRecentProjects();
     setTerminalProblemMatcherProjectRootResolver(() => this.rootPath);
+    this.registerWorkspaceLifecycleHooks();
     // Init must be called manually by the app root to avoid HMR loops
+  }
+
+  private registerWorkspaceLifecycleHooks(): void {
+    this.workspaceLifecycle.register({
+      id: 'project-store-core',
+      teardown: async (context) => {
+        await this.stopFileWatching();
+        await this.stopWatchingLockFiles();
+        await tscWatcher.stop();
+        await this.stopLspServers();
+        await mcpStore.cleanup();
+        gitStore.reset();
+        await clearIndex(false);
+        clearContextV2Cache();
+        clearSemanticQueue();
+        projectDiagnostics.reset();
+        if (this.treeRefreshTimer) {
+          clearTimeout(this.treeRefreshTimer);
+          this.treeRefreshTimer = null;
+        }
+        if (this.diagTimer) {
+          clearTimeout(this.diagTimer);
+          this.diagTimer = null;
+        }
+        for (const timer of this.pendingFolderRefreshes.values()) {
+          clearTimeout(timer);
+        }
+        this.pendingFolderRefreshes.clear();
+        problemsStore.clearAll();
+        terminalProblemMatcher.clear();
+        editorStore.closeAllFiles(true);
+        const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
+        await terminalStore.killAll();
+        this.rootPath = null;
+        if (context.removePersistence && typeof window !== 'undefined') {
+          localStorage.removeItem(CURRENT_PROJECT_KEY);
+        }
+        this.projectName = '';
+        if (context.clearFileTree) {
+          this.tree = [];
+        }
+        this.selectedPaths.clear();
+        this.expandedPaths = new Set();
+        this.packageManager = 'npm';
+      },
+      activate: async ({ rootPath }) => {
+        this.packageManager = await this.detectPackageManager(rootPath);
+        await this.startWatchingLockFiles(rootPath);
+        initLspRegistry(rootPath);
+        void mcpStore.initialize(rootPath);
+        void gitStore.init(rootPath);
+        await this.startFileWatching(rootPath);
+        void indexProject(rootPath);
+        void warmSemanticIndex(rootPath);
+        void projectDiagnostics.runDiagnostics(rootPath);
+        void tscWatcher.start(rootPath);
+        void (async () => {
+          const pubspecInfo = await getFileInfoQuiet(`${rootPath}/pubspec.yaml`);
+          if (pubspecInfo) {
+            console.log('[ProjectStore] Dart project detected, starting LSP...');
+            await startDartLsp(rootPath);
+          }
+        })();
+      },
+    });
   }
 
   /**
@@ -187,19 +255,19 @@ class ProjectStore {
       return true;
     }
 
-    // Stop any existing LSP servers and cancel file indexing from previous project
-    if (this.rootPath) {
-      await this.stopLspServers();
-      await cancelIndexing();
-      clearContextV2Cache();
-      clearSemanticQueue();
-    }
-
     const entries = await listDirectory(path);
     if (entries === null) {
       // Keep the currently-open project visible if a refresh/switch fails.
       this.loading = false;
       return false;
+    }
+
+    if (this.rootPath) {
+      await this.workspaceLifecycle.teardown({
+        removePersistence: false,
+        clearFileTree: false,
+        previousRootPath: this.rootPath,
+      });
     }
 
     this.rootPath = path;
@@ -213,44 +281,7 @@ class ProjectStore {
     this.loading = false;
     this.addToRecentProjects(path);
 
-    // Detect package manager from lock files
-    this.packageManager = await this.detectPackageManager(path);
-
-    // Start watching lock files for changes (VS Code-like behavior)
-    await this.startWatchingLockFiles(path);
-
-    // Initialize LSP registry with new project root
-    initLspRegistry(path);
-
-    // Initialize MCP servers with workspace path
-    void mcpStore.initialize(path);
-
-    // Initialize git store for auto-refresh and status badges
-    // This runs in background, doesn't block project open
-    void gitStore.init(path);
-
-    // Start file watching for incremental index updates
-    await this.startFileWatching(path);
-
-    // Initial project index for Quick Open and project-wide analysis
-    void indexProject(path);
-    // Warm semantic index in background (Phase B hybrid retrieval).
-    void warmSemanticIndex(path);
-
-    // Run project-wide diagnostics (tsc, eslint) in background
-    void projectDiagnostics.runDiagnostics(path);
-
-    // Start tsc --watch for real-time error streaming (VS Code-like behavior)
-    void tscWatcher.start(path);
-
-    // Auto-start Dart LSP for Flutter/Dart projects to enable project-wide diagnostics immediately
-    void (async () => {
-      const pubspecInfo = await getFileInfoQuiet(`${path}/pubspec.yaml`);
-      if (pubspecInfo) {
-        console.log('[ProjectStore] Dart project detected, starting LSP...');
-        await startDartLsp(path);
-      }
-    })();
+    await this.workspaceLifecycle.activate({ rootPath: path });
 
     return true;
   }
@@ -619,56 +650,11 @@ class ProjectStore {
    * VS Code behavior: closes all open files and kills all terminals
    */
   async closeProject(): Promise<void> {
-    // Stop file watching
-    await this.stopFileWatching();
-
-    // Stop watching lock files
-    await this.stopWatchingLockFiles();
-
-    // Stop tsc-watch streaming
-    await tscWatcher.stop();
-
-    // Stop all LSP servers when closing project
-    await this.stopLspServers();
-
-    // Stop all MCP servers
-    await mcpStore.cleanup();
-
-    // Reset git store
-    gitStore.reset();
-
-    // Cancel file indexing and clear the index
-    await clearIndex(false);
-
-    // Clear AI context caches
-    clearContextV2Cache();
-    clearSemanticQueue();
-
-    // Clear all problems
-    problemsStore.clearAll();
-    terminalProblemMatcher.clear();
-
-    // Close all open editor tabs (VS Code behavior)
-    editorStore.closeAllFiles(true);
-
-    // Kill all terminals (VS Code behavior - terminals are project-specific)
-    const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
-    await terminalStore.killAll();
-
-    this.rootPath = null;
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(CURRENT_PROJECT_KEY);
-    }
-    this.projectName = '';
-    this.tree = [];
-    this.selectedPaths.clear();
-    this.expandedPaths = new Set();
-    this.packageManager = 'npm';
-
-    if (this.fileServiceUnsubscribe) {
-      this.fileServiceUnsubscribe();
-      this.fileServiceUnsubscribe = null;
-    }
+    await this.workspaceLifecycle.teardown({
+      previousRootPath: this.rootPath,
+      removePersistence: true,
+      clearFileTree: true,
+    });
   }
 
   /**

@@ -3,7 +3,7 @@
  * Handles Problems, Output, and Terminal views
  */
 
-export type BottomPanelTab = 'problems' | 'output' | 'terminal';
+export type BottomPanelTab = 'problems' | 'output' | 'terminal' | 'lsp';
 
 class BottomPanelStore {
   activeTab = $state<BottomPanelTab>('terminal');

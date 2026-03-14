@@ -41,16 +41,19 @@ import {
 import {
   isHtmlFile,
   notifyHtmlDocumentClosed,
+  notifyHtmlDocumentSaved,
   notifyHtmlDocumentChanged
 } from '$core/lsp/html-sidecar';
 import {
   isCssFile,
   notifyCssDocumentClosed,
+  notifyCssDocumentSaved,
   notifyCssDocumentChanged
 } from '$core/lsp/css-sidecar';
 import {
   isJsonFile,
   notifyJsonDocumentClosed,
+  notifyJsonDocumentSaved,
   notifyJsonDocumentChanged
 } from '$core/lsp/json-sidecar';
 import {
@@ -62,13 +65,20 @@ import {
 import {
   isYamlFile,
   notifyDocumentClosed as notifyYamlDocumentClosed,
+  notifyDocumentSaved as notifyYamlDocumentSaved,
   notifyDocumentChanged as notifyYamlDocumentChanged
 } from '$core/lsp/yaml-sidecar';
 import {
   isXmlFile,
   notifyDocumentClosed as notifyXmlDocumentClosed,
+  notifyDocumentSaved as notifyXmlDocumentSaved,
   notifyDocumentChanged as notifyXmlDocumentChanged
 } from '$core/lsp/xml-sidecar';
+import {
+  notifyEditorDidClose,
+  notifyEditorDidSave,
+  type EditorLifecycleTarget,
+} from './editor-lsp-lifecycle';
 
 export interface OpenFile {
   /** Full file path (normalized with forward slashes) */
@@ -121,6 +131,29 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+function safelyNotify(operation: () => Promise<void>, label: string): void {
+  void operation().catch((error) => {
+    console.error(`[EditorStore] ${label} failed:`, error);
+  });
+}
+
+function reportLifecycleError(label: string, error: unknown): void {
+  console.error(`[EditorStore] ${label} failed:`, error);
+}
+
+const LSP_LIFECYCLE_TARGETS: EditorLifecycleTarget[] = [
+  { matches: isTsJsFile, close: notifyTsDocumentClosed, save: notifyTsDocumentSaved },
+  { matches: isTailwindFile, close: notifyTailwindDocumentClosed, save: notifyTailwindDocumentSaved },
+  { matches: isEslintFile, close: notifyEslintDocumentClosed, save: notifyEslintDocumentSaved },
+  { matches: isSvelteFile, close: notifySvelteDocumentClosed, save: notifySvelteDocumentSaved },
+  { matches: isHtmlFile, close: notifyHtmlDocumentClosed, save: notifyHtmlDocumentSaved },
+  { matches: isCssFile, close: notifyCssDocumentClosed, save: notifyCssDocumentSaved },
+  { matches: isJsonFile, close: notifyJsonDocumentClosed, save: notifyJsonDocumentSaved },
+  { matches: isDartLspFile, close: notifyDartDocumentClosed, save: notifyDartDocumentSaved },
+  { matches: isYamlFile, close: notifyYamlDocumentClosed, save: notifyYamlDocumentSaved },
+  { matches: isXmlFile, close: notifyXmlDocumentClosed, save: notifyXmlDocumentSaved },
+];
+
 function getFileExt(path: string): string {
   const name = path.split('/').pop() ?? path;
   const idx = name.lastIndexOf('.');
@@ -166,7 +199,7 @@ const BINARY_LIKE_EXTENSIONS = new Set([
   'ogv',
 ]);
 
-class EditorStore {
+export class EditorStore {
   /** List of open files */
   openFiles = $state<OpenFile[]>([]);
 
@@ -354,44 +387,7 @@ class EditorStore {
     this.openFiles = this.openFiles.filter(f => f.path !== normalizedPath);
     disposeModel(normalizedPath);
     notifyFileClosed(file.language);
-
-    // Notify TypeScript LSP sidecar about the file being closed
-    if (isTsJsFile(normalizedPath)) {
-      notifyTsDocumentClosed(normalizedPath);
-    }
-
-    // Notify Tailwind LSP sidecar about the file being closed
-    if (isTailwindFile(normalizedPath)) {
-      notifyTailwindDocumentClosed(normalizedPath);
-    }
-
-    // Notify ESLint LSP sidecar about the file being closed
-    if (isEslintFile(normalizedPath)) {
-      notifyEslintDocumentClosed(normalizedPath);
-    }
-
-    // Notify Svelte LSP sidecar about the file being closed
-    if (isSvelteFile(normalizedPath)) {
-      notifySvelteDocumentClosed(normalizedPath);
-    }
-    if (isHtmlFile(normalizedPath)) {
-      notifyHtmlDocumentClosed(normalizedPath);
-    }
-    if (isCssFile(normalizedPath)) {
-      notifyCssDocumentClosed(normalizedPath);
-    }
-    if (isJsonFile(normalizedPath)) {
-      notifyJsonDocumentClosed(normalizedPath);
-    }
-    if (isDartLspFile(normalizedPath)) {
-      notifyDartDocumentClosed(normalizedPath);
-    }
-    if (isYamlFile(normalizedPath)) {
-      notifyYamlDocumentClosed(normalizedPath);
-    }
-    if (isXmlFile(normalizedPath)) {
-      notifyXmlDocumentClosed(normalizedPath);
-    }
+    notifyEditorDidClose(normalizedPath, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
 
     // Update active file
     if (this.activeFilePath === normalizedPath) {
@@ -413,44 +409,7 @@ class EditorStore {
 
     for (const file of this.openFiles) {
       notifyFileClosed(file.language);
-
-      // Notify TypeScript LSP sidecar about the file being closed
-      if (isTsJsFile(file.path)) {
-        notifyTsDocumentClosed(file.path);
-      }
-
-      // Notify Tailwind LSP sidecar about the file being closed
-      if (isTailwindFile(file.path)) {
-        notifyTailwindDocumentClosed(file.path);
-      }
-
-      // Notify ESLint LSP sidecar about the file being closed
-      if (isEslintFile(file.path)) {
-        notifyEslintDocumentClosed(file.path);
-      }
-
-      // Notify Svelte LSP sidecar about the file being closed
-      if (isSvelteFile(file.path)) {
-        notifySvelteDocumentClosed(file.path);
-      }
-      if (isHtmlFile(file.path)) {
-        notifyHtmlDocumentClosed(file.path);
-      }
-      if (isCssFile(file.path)) {
-        notifyCssDocumentClosed(file.path);
-      }
-      if (isJsonFile(file.path)) {
-        notifyJsonDocumentClosed(file.path);
-      }
-      if (isDartLspFile(file.path)) {
-        notifyDartDocumentClosed(file.path);
-      }
-      if (isYamlFile(file.path)) {
-        notifyYamlDocumentClosed(file.path);
-      }
-      if (isXmlFile(file.path)) {
-        notifyXmlDocumentClosed(file.path);
-      }
+      notifyEditorDidClose(file.path, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
     }
     this.openFiles = [];
     this.activeFilePath = null;
@@ -568,29 +527,7 @@ class EditorStore {
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.originalContent = file.content;
-
-      // Notify TypeScript LSP sidecar about the file being saved
-      if (isTsJsFile(normalizedPath)) {
-        notifyTsDocumentSaved(normalizedPath, file.content);
-      }
-
-      // Notify Tailwind LSP sidecar about the file being saved
-      if (isTailwindFile(normalizedPath)) {
-        notifyTailwindDocumentSaved(normalizedPath, file.content);
-      }
-
-      // Notify ESLint LSP sidecar about the file being saved
-      if (isEslintFile(normalizedPath)) {
-        notifyEslintDocumentSaved(normalizedPath, file.content);
-      }
-
-      // Notify Svelte LSP sidecar about the file being saved
-      if (isSvelteFile(normalizedPath)) {
-        notifySvelteDocumentSaved(normalizedPath, file.content);
-      }
-      if (isDartLspFile(normalizedPath)) {
-        notifyDartDocumentSaved(normalizedPath, file.content);
-      }
+      notifyEditorDidSave(normalizedPath, file.content, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
     }
   }
 
@@ -683,18 +620,17 @@ class EditorStore {
     const file = this.openFiles.find(f => f.path === normOld);
     if (!file) return;
 
-    // Update metadata
-    file.path = normNew;
-    file.name = newPath.split(/[/\\]/).pop() || newPath;
+    const wasActive = this.activeFilePath === normOld;
 
-    // Refresh content from new location
-    await this.reloadFile(newPath);
+    this.closeFile(normOld, true);
 
-    if (this.activeFilePath === normOld) {
+    const reopened = await this.openFile(newPath);
+
+    if (reopened && wasActive) {
       this.activeFilePath = normNew;
     }
 
-    // Dispose old model if it exists (reloadFile will create/update the new one)
+    // Dispose old model if it exists
     disposeModel(normOld);
   }
 

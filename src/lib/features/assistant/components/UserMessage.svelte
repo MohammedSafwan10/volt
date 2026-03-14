@@ -60,7 +60,13 @@
     ) as SelectionAttachment[],
   );
 
-  const isLong = $derived(message.content.length > 500);
+  const visibleContent = $derived(
+    message.content
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  );
+  const isLong = $derived(visibleContent.length > 500);
 
   onDestroy(() => {
     if (copyTimeout) {
@@ -166,12 +172,12 @@
       </div>
     {/if}
 
-    {#if message.content.trim()}
+    {#if visibleContent.trim()}
       <div class="bubble-text">
         {#if isLong && !expanded}
-          {message.content.slice(0, 500)}...
+          {visibleContent.slice(0, 500)}...
         {:else}
-          {message.content}
+          {visibleContent}
         {/if}
       </div>
 

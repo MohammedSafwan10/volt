@@ -16,6 +16,7 @@ import { getModelConfig, upsertModelConfig } from '$core/ai/models';
 
 // Supported AI providers
 export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mistral';
+export type OpenAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 // AI operation modes
 export type AIMode = 'ask' | 'plan' | 'agent';
@@ -82,7 +83,8 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       // Best free models with function calling support
       'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
       'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
-      'stepfun/step-3.5-flash:free'        // StepFun 3.5 Flash - 256K context
+      'stepfun/step-3.5-flash:free',       // StepFun 3.5 Flash - 256K context
+      'nvidia/nemotron-3-super-120b-a12b:free' // Nemotron 3 Super - strong agentic/reasoning model
     ],
     defaultModel: 'qwen/qwen3-coder:free'
   },
@@ -115,17 +117,12 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       maxContextHint: 1000000
     },
     models: [
-      'gpt-5.2 pro|thinking',
-      'gpt-5.2 pro',
-      'gpt-5.2|thinking',
-      'gpt-5.2',
-      'gpt-5.1|thinking',
-      'gpt-5.1-chat-latest',
+      'gpt-5.4|thinking',
+      'gpt-5.4',
       'gpt-5.3-codex',
-      'gpt-5-mini',
-      'gpt-5-nano'
+      'gpt-5.3-codex|thinking'
     ],
-    defaultModel: 'gpt-5.2'
+    defaultModel: 'gpt-5.4'
   },
   mistral: {
     id: 'mistral',
@@ -155,6 +152,7 @@ export interface ValidationResult {
 interface AIPreferences {
   selectedProvider: AIProvider;
   selectedModels: Record<AIProvider, Record<AIMode, string>>;
+  openAIReasoningEffort?: Record<AIMode, OpenAIReasoningEffort>;
 }
 
 const PREFS_STORAGE_KEY = 'volt.ai.preferences';
@@ -180,9 +178,9 @@ class AISettingsStore {
       agent: 'claude-sonnet-4-5-20250929'
     },
     openai: {
-      ask: 'gpt-5.2',
-      plan: 'gpt-5.2',
-      agent: 'gpt-5.2'
+      ask: 'gpt-5.4',
+      plan: 'gpt-5.4',
+      agent: 'gpt-5.3-codex'
     },
     mistral: {
       ask: 'codestral-latest',
@@ -190,10 +188,19 @@ class AISettingsStore {
       agent: 'devstral-latest'
     }
   });
+  private openAIReasoningEffort = $state<Record<AIMode, OpenAIReasoningEffort>>({
+    ask: 'medium',
+    plan: 'high',
+    agent: 'high'
+  });
 
   // modelPerMode is now a getter reflecting the current provider's selection
   get modelPerMode(): Record<AIMode, string> {
     return this.selectedModels[this.selectedProvider];
+  }
+
+  get reasoningEffortPerMode(): Record<AIMode, OpenAIReasoningEffort> {
+    return this.openAIReasoningEffort;
   }
 
   hasApiKey = $state<Record<AIProvider, boolean>>({
@@ -255,6 +262,14 @@ class AISettingsStore {
       [mode]: model
     };
 
+    this.savePreferences();
+  }
+
+  setOpenAIReasoningEffort(mode: AIMode, effort: OpenAIReasoningEffort): void {
+    this.openAIReasoningEffort = {
+      ...this.openAIReasoningEffort,
+      [mode]: effort
+    };
     this.savePreferences();
   }
 
@@ -354,6 +369,14 @@ class AISettingsStore {
           agent: sanitizeModeModel(this.selectedProvider, 'agent', mpm.agent || currentM.agent)
         };
       }
+
+      if (prefs.openAIReasoningEffort) {
+        this.openAIReasoningEffort = {
+          ask: prefs.openAIReasoningEffort.ask ?? 'medium',
+          plan: prefs.openAIReasoningEffort.plan ?? 'high',
+          agent: prefs.openAIReasoningEffort.agent ?? 'high'
+        };
+      }
     } catch (err) {
       console.warn('Failed to load AI preferences:', err);
     }
@@ -365,7 +388,8 @@ class AISettingsStore {
     try {
       const prefs: AIPreferences = {
         selectedProvider: this.selectedProvider,
-        selectedModels: $state.snapshot(this.selectedModels)
+        selectedModels: $state.snapshot(this.selectedModels),
+        openAIReasoningEffort: $state.snapshot(this.openAIReasoningEffort)
       };
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
     } catch {

@@ -304,7 +304,16 @@ pub async fn chat_save_message<R: Runtime>(
     let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
     let conn = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    // Insert message
+    let existed_before = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id = ?1)",
+            params![message.id],
+            |row| row.get::<_, i32>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|e| format!("Failed to check existing message: {}", e))?;
+
+    // Insert or update message
     conn.execute(
         "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -328,6 +337,8 @@ pub async fn chat_save_message<R: Runtime>(
         )
         .unwrap_or(false);
 
+    let message_count_delta = if existed_before { 0 } else { 1 };
+
     if message.role == "user" && is_first_user_msg {
         // Auto-generate title from first user message (first 50 chars)
         let title = if message.content.len() > 50 {
@@ -338,20 +349,20 @@ pub async fn chat_save_message<R: Runtime>(
 
         conn.execute(
             "UPDATE conversations 
-             SET message_count = message_count + 1, 
-                 updated_at = ?1, 
-                 first_user_message = ?2,
-                 title = ?3
-             WHERE id = ?4",
-            params![now, message.content, title, conversation_id],
+             SET message_count = message_count + ?1, 
+                 updated_at = ?2, 
+                 first_user_message = ?3,
+                 title = ?4
+             WHERE id = ?5",
+            params![message_count_delta, now, message.content, title, conversation_id],
         )
         .map_err(|e| format!("Failed to update conversation: {}", e))?;
     } else {
         conn.execute(
             "UPDATE conversations 
-             SET message_count = message_count + 1, updated_at = ?1 
-             WHERE id = ?2",
-            params![now, conversation_id],
+             SET message_count = message_count + ?1, updated_at = ?2 
+             WHERE id = ?3",
+            params![message_count_delta, now, conversation_id],
         )
         .map_err(|e| format!("Failed to update conversation: {}", e))?;
     }

@@ -23,6 +23,7 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
+    flex: 1;
   }
 
   .header-icon {
@@ -42,6 +43,107 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .conversation-tabs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 2px 0;
+  }
+
+  .conversation-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .conversation-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 220px;
+    flex-shrink: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface0);
+    color: var(--color-text-secondary);
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+  }
+
+  .conversation-tab-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    padding: 4px 4px 4px 8px;
+    color: inherit;
+    border-radius: 999px;
+  }
+
+  .conversation-tab-main:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .conversation-tab.active {
+    background: var(--color-hover);
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+
+  .conversation-tab.running .conversation-tab-status {
+    background: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
+  }
+
+  .conversation-tab.error .conversation-tab-status {
+    background: var(--color-danger, #ff6b6b);
+  }
+
+  .conversation-tab-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--color-text-disabled);
+    flex-shrink: 0;
+  }
+
+  .conversation-tab-title {
+    font-size: 11px;
+    font-weight: 600;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conversation-tab-meta {
+    font-size: 10px;
+    color: var(--color-text-disabled);
+    flex-shrink: 0;
+  }
+
+  .conversation-tab-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-right: 4px;
+    border-radius: 999px;
+    color: inherit;
+    flex-shrink: 0;
+    opacity: 0.82;
+  }
+
+  .conversation-tab-close:hover {
+    background: var(--color-hover);
+    opacity: 1;
   }
 
   .header-actions {
@@ -262,4 +364,5 @@
     to {
       opacity: 1;
     }
-  }
+  }
+

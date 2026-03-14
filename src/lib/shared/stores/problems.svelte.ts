@@ -9,8 +9,21 @@
  * ✅ Source-aware merging (no overwrites between sources)
  */
 
+import {
+  summarizeDiagnosticSources,
+  type DiagnosticFreshnessSummary,
+  type DiagnosticSourceSnapshot,
+} from '$core/services/diagnostics-freshness';
+
 export type ProblemSeverity = 'error' | 'warning' | 'info' | 'hint';
 export type SeverityFilter = ProblemSeverity | 'all';
+
+export interface DiagnosticSourceState {
+  source: string;
+  lastUpdated: number;
+  isUpdating: boolean;
+  isStale: boolean;
+}
 
 export interface Problem {
   /** Unique identifier */
@@ -65,12 +78,16 @@ class ProblemsStore {
   
   /** Is currently receiving updates (for activity indicator) */
   isUpdating = $state(false);
+
+  /** Diagnostics source health state */
+  sourceStates = $state<Record<string, DiagnosticSourceState>>({});
   
   /** Last update timestamp */
   lastUpdate = $state(0);
   
   /** Update timeout for activity indicator */
   private updateTimeout: ReturnType<typeof setTimeout> | null = null;
+  private sourceUpdateTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Get all problems as a flat array (with filters applied) */
   get allProblems(): Problem[] {
@@ -164,6 +181,19 @@ class ProblemsStore {
   get totalUnfilteredCount(): number {
     return this.allProblemsUnfiltered.length;
   }
+
+  get diagnosticsFreshness(): DiagnosticFreshnessSummary {
+    const snapshots = Object.values(this.sourceStates).map((source): DiagnosticSourceSnapshot => ({
+      source: source.source,
+      lastUpdated: source.lastUpdated,
+      isUpdating: source.isUpdating,
+      isStale: source.isStale,
+      fileCount: this.filesWithSource(source.source).length,
+      problemCount: this.allProblemsUnfiltered.filter((problem) => problem.source === source.source).length,
+    }));
+
+    return summarizeDiagnosticSources(snapshots);
+  }
   
   /** Set severity filter */
   setSeverityFilter(filter: SeverityFilter): void {
@@ -189,15 +219,95 @@ class ProblemsStore {
     }, 500);
   }
 
+  private markSourceUpdating(source: string): void {
+    const now = Date.now();
+    this.sourceStates = {
+      ...this.sourceStates,
+      [source]: {
+        source,
+        lastUpdated: now,
+        isUpdating: true,
+        isStale: false,
+      },
+    };
+
+    const existing = this.sourceUpdateTimeouts.get(source);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timeout = setTimeout(() => {
+      const current = this.sourceStates[source];
+      if (!current) return;
+      this.sourceStates = {
+        ...this.sourceStates,
+        [source]: {
+          ...current,
+          isUpdating: false,
+          isStale: false,
+        },
+      };
+      this.sourceUpdateTimeouts.delete(source);
+    }, 500);
+
+    this.sourceUpdateTimeouts.set(source, timeout);
+  }
+
+  private touchSource(source?: string): void {
+    if (!source || source === 'monaco-native') return;
+    this.markUpdating();
+    this.markSourceUpdating(source);
+  }
+
+  markSourceFresh(source: string): void {
+    if (!source || source === 'monaco-native') return;
+    const current = this.sourceStates[source];
+    const now = Date.now();
+    this.sourceStates = {
+      ...this.sourceStates,
+      [source]: {
+        source,
+        lastUpdated: now,
+        isUpdating: false,
+        isStale: false,
+      },
+    };
+
+    const existing = this.sourceUpdateTimeouts.get(source);
+    if (existing) {
+      clearTimeout(existing);
+      this.sourceUpdateTimeouts.delete(source);
+    }
+  }
+
+  markSourceStale(source: string): void {
+    if (!source || source === 'monaco-native') return;
+    const current = this.sourceStates[source];
+    const now = Date.now();
+    this.sourceStates = {
+      ...this.sourceStates,
+      [source]: {
+        source,
+        lastUpdated: current?.lastUpdated ?? now,
+        isUpdating: false,
+        isStale: true,
+      },
+    };
+
+    const existing = this.sourceUpdateTimeouts.get(source);
+    if (existing) {
+      clearTimeout(existing);
+      this.sourceUpdateTimeouts.delete(source);
+    }
+  }
+
   /**
    * Set problems for a specific file
    * If source is provided, only replaces problems from that source
    * Otherwise replaces all existing problems for that file
    */
   setProblemsForFile(filePath: string, problems: Problem[], source?: string): void {
-    if (source !== 'monaco-native') {
-      this.markUpdating();
-    }
+    this.touchSource(source);
 
     const normalizedPath = this.normalizePath(filePath);
     
@@ -242,6 +352,7 @@ class ProblemsStore {
    * If source is provided, only clears problems from that source
    */
   clearProblemsForFile(filePath: string, source?: string): void {
+    this.touchSource(source);
     const normalizedPath = this.normalizePath(filePath);
     if (source) {
       const existingProblems = this.problemsByFile[normalizedPath] || [];
@@ -267,6 +378,11 @@ class ProblemsStore {
    */
   clearAll(): void {
     this.problemsByFile = {};
+    this.sourceStates = {};
+    for (const timeout of this.sourceUpdateTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    this.sourceUpdateTimeouts.clear();
   }
 
   /**
@@ -287,6 +403,12 @@ class ProblemsStore {
       if (aErrors !== bErrors) return bErrors - aErrors;
       return a.localeCompare(b);
     });
+  }
+
+  filesWithSource(source: string): string[] {
+    return Object.keys(this.problemsByFile).filter((filePath) =>
+      (this.problemsByFile[filePath] || []).some((problem) => problem.source === source),
+    );
   }
 }
 

@@ -111,6 +111,7 @@
     // OpenAI GPT-5
     if (base.startsWith("gpt-")) {
       const name = base
+        .replace("gpt-5.4", "GPT 5.4")
         .replace("gpt-5.2 pro", "GPT 5.2 Pro")
         .replace("gpt-5.2", "GPT 5.2")
         .replace("gpt-5.1-chat-latest", "GPT 5.1 (Instant)")

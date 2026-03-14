@@ -1,12 +1,12 @@
 /**
  * CDP (Chrome DevTools Protocol) Client
- * 
+ *
  * TypeScript client for interacting with the Rust CDP backend.
  * Provides professional browser automation capabilities similar to Playwright/Puppeteer.
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // =============================================================================
 // Types
@@ -133,7 +133,7 @@ export interface CdpEvaluateResult {
 }
 
 export interface CdpApplicationStorageEntry {
-  area: 'localStorage' | 'sessionStorage';
+  area: "localStorage" | "sessionStorage";
   key: string;
   value: string;
 }
@@ -190,28 +190,28 @@ class CdpClient {
 
   /** Check if CDP is available on this platform */
   async isAvailable(): Promise<boolean> {
-    return invoke<boolean>('cdp_is_available');
+    return invoke<boolean>("cdp_is_available");
   }
 
   /** Get current CDP connection status */
   async getStatus(): Promise<CdpStatus> {
-    return invoke<CdpStatus>('cdp_get_status');
+    return invoke<CdpStatus>("cdp_get_status");
   }
 
   /** Discover CDP WebSocket URL from the debug endpoint */
   async discoverUrl(): Promise<string> {
-    return invoke<string>('cdp_discover_url');
+    return invoke<string>("cdp_discover_url");
   }
 
   /** Connect to CDP endpoint */
   async connect(wsUrl: string): Promise<void> {
     try {
-      return await invoke('cdp_connect', { wsUrl });
+      return await invoke("cdp_connect", { wsUrl });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('wsUrl')) {
+      if (message.includes("wsUrl")) {
         // Compatibility fallback for older command arg mapping.
-        return invoke('cdp_connect', { ws_url: wsUrl } as unknown as Record<string, unknown>);
+        return invoke("cdp_connect", { ws_url: wsUrl } as unknown as Record<string, unknown>);
       }
       throw error;
     }
@@ -226,18 +226,21 @@ class CdpClient {
 
   /** Disconnect from CDP */
   async disconnect(): Promise<void> {
-    return invoke('cdp_disconnect');
+    return invoke("cdp_disconnect");
   }
 
   /** Attach to a page/target */
   async attachToPage(targetId?: string): Promise<void> {
     try {
-      return await invoke('cdp_attach_to_page', { targetId });
+      return await invoke("cdp_attach_to_page", { targetId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('targetId')) {
+      if (message.includes("targetId")) {
         // Compatibility fallback for older command arg mapping.
-        return invoke('cdp_attach_to_page', { target_id: targetId } as unknown as Record<string, unknown>);
+        return invoke("cdp_attach_to_page", { target_id: targetId } as unknown as Record<
+          string,
+          unknown
+        >);
       }
       throw error;
     }
@@ -249,17 +252,17 @@ class CdpClient {
 
   /** Enable console logging */
   async enableConsole(): Promise<void> {
-    return invoke('cdp_enable_console');
+    return invoke("cdp_enable_console");
   }
 
   /** Enable network monitoring */
   async enableNetwork(): Promise<void> {
-    return invoke('cdp_enable_network');
+    return invoke("cdp_enable_network");
   }
 
   /** Subscribe to console events */
   async onConsole(callback: (log: CdpConsoleLog) => void): Promise<UnlistenFn> {
-    const unlisten = await listen<CdpConsoleLog>('cdp://console', (event) => {
+    const unlisten = await listen<CdpConsoleLog>("cdp://console", (event) => {
       callback(event.payload);
     });
     return this.trackUnlistener(unlisten);
@@ -267,7 +270,7 @@ class CdpClient {
 
   /** Subscribe to error events */
   async onError(callback: (error: CdpJsError) => void): Promise<UnlistenFn> {
-    const unlisten = await listen<CdpJsError>('cdp://error', (event) => {
+    const unlisten = await listen<CdpJsError>("cdp://error", (event) => {
       callback(event.payload);
     });
     return this.trackUnlistener(unlisten);
@@ -275,7 +278,7 @@ class CdpClient {
 
   /** Subscribe to network request events */
   async onNetworkRequest(callback: (request: CdpNetworkRequest) => void): Promise<UnlistenFn> {
-    const unlisten = await listen<CdpNetworkRequest>('cdp://network-request', (event) => {
+    const unlisten = await listen<CdpNetworkRequest>("cdp://network-request", (event) => {
       callback(event.payload);
     });
     return this.trackUnlistener(unlisten);
@@ -283,7 +286,7 @@ class CdpClient {
 
   /** Subscribe to network response events */
   async onNetworkResponse(callback: (response: CdpNetworkResponse) => void): Promise<UnlistenFn> {
-    const unlisten = await listen<CdpNetworkResponse>('cdp://network-response', (event) => {
+    const unlisten = await listen<CdpNetworkResponse>("cdp://network-response", (event) => {
       callback(event.payload);
     });
     return this.trackUnlistener(unlisten);
@@ -295,32 +298,32 @@ class CdpClient {
 
   /** Get buffered console logs */
   async getConsoleLogs(limit?: number): Promise<CdpConsoleLog[]> {
-    return invoke<CdpConsoleLog[]>('cdp_get_console_logs', { limit });
+    return invoke<CdpConsoleLog[]>("cdp_get_console_logs", { limit });
   }
 
   /** Get buffered JS errors */
   async getJsErrors(limit?: number): Promise<CdpJsError[]> {
-    return invoke<CdpJsError[]>('cdp_get_js_errors', { limit });
+    return invoke<CdpJsError[]>("cdp_get_js_errors", { limit });
   }
 
   /** Get buffered network requests */
   async getNetworkRequests(limit?: number): Promise<CdpNetworkRequest[]> {
-    return invoke<CdpNetworkRequest[]>('cdp_get_network_requests', { limit });
+    return invoke<CdpNetworkRequest[]>("cdp_get_network_requests", { limit });
   }
 
   /** Clear console logs buffer */
   async clearConsole(): Promise<void> {
-    return invoke('cdp_clear_console');
+    return invoke("cdp_clear_console");
   }
 
   /** Clear JS errors buffer */
   async clearErrors(): Promise<void> {
-    return invoke('cdp_clear_errors');
+    return invoke("cdp_clear_errors");
   }
 
   /** Clear network buffer */
   async clearNetwork(): Promise<void> {
-    return invoke('cdp_clear_network');
+    return invoke("cdp_clear_network");
   }
 
   // ---------------------------------------------------------------------------
@@ -329,22 +332,22 @@ class CdpClient {
 
   /** Navigate to URL */
   async navigate(url: string): Promise<void> {
-    return invoke('cdp_navigate', { url });
+    return invoke("cdp_navigate", { url });
   }
 
   /** Get current URL */
   async getUrl(): Promise<string> {
-    return invoke<string>('cdp_get_url');
+    return invoke<string>("cdp_get_url");
   }
 
   /** Get page title */
   async getTitle(): Promise<string> {
-    return invoke<string>('cdp_get_title');
+    return invoke<string>("cdp_get_title");
   }
 
   /** Get page HTML content */
   async getContent(): Promise<string> {
-    return invoke<string>('cdp_get_content');
+    return invoke<string>("cdp_get_content");
   }
 
   // ---------------------------------------------------------------------------
@@ -353,22 +356,22 @@ class CdpClient {
 
   /** Click an element by selector */
   async click(selector: string): Promise<CdpClickResult> {
-    return invoke<CdpClickResult>('cdp_click', { selector });
+    return invoke<CdpClickResult>("cdp_click", { selector });
   }
 
   /** Type text into an element */
   async type(text: string, selector?: string): Promise<CdpTypeResult> {
-    return invoke<CdpTypeResult>('cdp_type', { text, selector });
+    return invoke<CdpTypeResult>("cdp_type", { text, selector });
   }
 
   /** Press a key */
   async pressKey(key: string): Promise<void> {
-    return invoke('cdp_press_key', { key });
+    return invoke("cdp_press_key", { key });
   }
 
   /** Evaluate JavaScript */
   async evaluate(expression: string): Promise<CdpEvaluateResult> {
-    return invoke<CdpEvaluateResult>('cdp_evaluate', { expression });
+    return invoke<CdpEvaluateResult>("cdp_evaluate", { expression });
   }
 
   // ---------------------------------------------------------------------------
@@ -377,12 +380,12 @@ class CdpClient {
 
   /** Take a screenshot of the page */
   async screenshot(fullPage?: boolean): Promise<CdpScreenshot> {
-    return invoke<CdpScreenshot>('cdp_screenshot', { fullPage });
+    return invoke<CdpScreenshot>("cdp_screenshot", { fullPage });
   }
 
   /** Take a screenshot of an element */
   async screenshotElement(selector: string): Promise<CdpScreenshot> {
-    return invoke<CdpScreenshot>('cdp_screenshot_element', { selector });
+    return invoke<CdpScreenshot>("cdp_screenshot_element", { selector });
   }
 
   // ---------------------------------------------------------------------------
@@ -391,27 +394,27 @@ class CdpClient {
 
   /** Get element information by selector */
   async getElement(selector: string): Promise<CdpElement | null> {
-    return invoke<CdpElement | null>('cdp_get_element', { selector });
+    return invoke<CdpElement | null>("cdp_get_element", { selector });
   }
 
   /** Get multiple elements by selector */
   async getElements(selector: string, limit?: number): Promise<CdpElement[]> {
-    return invoke<CdpElement[]>('cdp_get_elements', { selector, limit });
+    return invoke<CdpElement[]>("cdp_get_elements", { selector, limit });
   }
 
   /** Wait for an element to appear */
   async waitForSelector(selector: string, timeoutMs?: number): Promise<boolean> {
-    return invoke<boolean>('cdp_wait_for_selector', { selector, timeoutMs });
+    return invoke<boolean>("cdp_wait_for_selector", { selector, timeoutMs });
   }
 
   /** Scroll to an element */
   async scrollToElement(selector: string): Promise<void> {
-    return invoke('cdp_scroll_to_element', { selector });
+    return invoke("cdp_scroll_to_element", { selector });
   }
 
   /** Scroll the page */
   async scrollBy(x: number, y: number): Promise<void> {
-    return invoke('cdp_scroll_by', { x, y });
+    return invoke("cdp_scroll_by", { x, y });
   }
 
   // ---------------------------------------------------------------------------
@@ -420,12 +423,12 @@ class CdpClient {
 
   /** Get performance metrics */
   async getPerformance(): Promise<CdpPerformanceMetrics> {
-    return invoke<CdpPerformanceMetrics>('cdp_get_performance');
+    return invoke<CdpPerformanceMetrics>("cdp_get_performance");
   }
 
   /** Capture application storage/cookies/indexeddb summary from page context */
   async getApplicationSnapshot(): Promise<CdpApplicationSnapshot> {
-    const expression = `(() => {
+    const expression = `(async () => {
       const toEntries = (storage, area) => {
         const out = [];
         if (!storage) return out;
@@ -459,10 +462,20 @@ class CdpClient {
       } catch {}
 
       const warnings = [];
-      const indexeddb = [];
+      let indexeddb = [];
       try {
         if (!window.indexedDB || typeof window.indexedDB.databases !== 'function') {
           warnings.push('IndexedDB API unavailable in this context.');
+        } else {
+          try {
+            const dbs = await window.indexedDB.databases();
+            indexeddb = (dbs || []).map((db) => ({
+              name: db?.name || 'unknown',
+              version: typeof db?.version === 'number' ? db.version : undefined,
+            }));
+          } catch {
+            warnings.push('Failed to enumerate IndexedDB databases.');
+          }
         }
       } catch {
         warnings.push('Failed to inspect IndexedDB availability.');
@@ -482,8 +495,8 @@ class CdpClient {
     })()`;
 
     const result = await this.evaluate(expression);
-    if (!result.success || !result.value || typeof result.value !== 'object') {
-      throw new Error(result.error || 'Failed to capture application snapshot');
+    if (!result.success || !result.value || typeof result.value !== "object") {
+      throw new Error(result.error || "Failed to capture application snapshot");
     }
     return result.value as CdpApplicationSnapshot;
   }
@@ -494,12 +507,12 @@ class CdpClient {
 
   /** Set viewport size */
   async setViewport(width: number, height: number): Promise<void> {
-    return invoke('cdp_set_viewport', { width, height });
+    return invoke("cdp_set_viewport", { width, height });
   }
 
   /** Emulate a mobile device */
   async emulateDevice(device: string): Promise<void> {
-    return invoke('cdp_emulate_device', { device });
+    return invoke("cdp_emulate_device", { device });
   }
 
   // ---------------------------------------------------------------------------
@@ -508,12 +521,12 @@ class CdpClient {
 
   /** Enable element picker mode (highlight on hover, capture on click) */
   async enableElementPicker(): Promise<void> {
-    return invoke('cdp_enable_element_picker');
+    return invoke("cdp_enable_element_picker");
   }
 
   /** Disable element picker mode */
   async disableElementPicker(): Promise<void> {
-    return invoke('cdp_disable_element_picker');
+    return invoke("cdp_disable_element_picker");
   }
 
   // ---------------------------------------------------------------------------

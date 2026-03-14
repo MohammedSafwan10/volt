@@ -9,6 +9,7 @@
   import type { TerminalSession } from '$features/terminal/services/terminal-client';
   import OutputView from './OutputView.svelte';
   import ProblemsView from './ProblemsView.svelte';
+  import LspDebugView from './LspDebugView.svelte';
 
   interface Tab {
     id: BottomPanelTab;
@@ -17,6 +18,7 @@
 
   const tabs: Tab[] = [
     { id: 'problems', label: 'PROBLEMS' },
+    { id: 'lsp', label: 'LSP' },
     { id: 'output', label: 'OUTPUT' },
     { id: 'terminal', label: 'TERMINAL' }
   ];
@@ -227,6 +229,10 @@
   {/if}
 
   <div class="panel-content">
+    <div class="panel-view" class:active={bottomPanelStore.activeTab === 'lsp'}>
+      <LspDebugView />
+    </div>
+
     <div class="panel-view" class:active={bottomPanelStore.activeTab === 'problems'}>
       <ProblemsView />
     </div>

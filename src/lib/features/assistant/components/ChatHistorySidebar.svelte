@@ -64,6 +64,14 @@
         }
     }
 
+    function handleCloseConversationTab(e: MouseEvent, conv: ConversationSummary) {
+        e.stopPropagation();
+        assistantStore.closeConversationTab(conv.id);
+        if (chatHistoryStore.activeConversationId === conv.id) {
+            chatHistoryStore.activeConversationId = assistantStore.currentConversation?.id ?? null;
+        }
+    }
+
     function handleNewChat() {
         assistantStore.newConversation();
         chatHistoryStore.activeConversationId =
@@ -88,10 +96,21 @@
 
     async function handleRenameSubmit() {
         if (!renameDialog) return;
+        const trimmedTitle = renameDialog.newTitle.trim();
+        if (!trimmedTitle) {
+            renameDialog = null;
+            return;
+        }
         await chatHistoryStore.updateTitle(
             renameDialog.conversation.id,
-            renameDialog.newTitle,
+            trimmedTitle,
         );
+        if (assistantStore.currentConversation?.id === renameDialog.conversation.id) {
+            assistantStore.currentConversation = {
+                ...assistantStore.currentConversation,
+                title: trimmedTitle,
+            };
+        }
         renameDialog = null;
     }
 
@@ -134,7 +153,7 @@
 
     function handleSearchInput(e: Event) {
         const input = e.target as HTMLInputElement;
-        chatHistoryStore.search(input.value);
+        void chatHistoryStore.search(input.value);
     }
 
     const groupLabels: Record<DateGroup, string> = {
@@ -326,21 +345,26 @@
                                         </button>
                                     {/if}
 
-                                    <button
+                                    <div
                                         class="conversation-item"
                                         class:active={chatHistoryStore.activeConversationId ===
                                             conv.id}
-                                        onclick={() =>
-                                            chatHistoryStore.isSelectionMode
-                                                ? chatHistoryStore.toggleSelection(
-                                                      conv.id,
-                                                  )
-                                                : handleSelectConversation(
-                                                      conv,
-                                                  )}
+                                        role="group"
                                         oncontextmenu={(e) =>
                                             handleContextMenu(e, conv)}
                                     >
+                                        <button
+                                            class="conversation-item-main"
+                                            type="button"
+                                            onclick={() =>
+                                                chatHistoryStore.isSelectionMode
+                                                    ? chatHistoryStore.toggleSelection(
+                                                          conv.id,
+                                                      )
+                                                    : handleSelectConversation(
+                                                          conv,
+                                                      )}
+                                        >
                                         <div class="conv-icon">
                                             <UIIcon name="comment" size={16} />
                                         </div>
@@ -355,7 +379,19 @@
                                         <div class="conv-time">
                                             {formatDateTime(conv.updatedAt)}
                                         </div>
-                                    </button>
+                                        </button>
+                                        {#if assistantStore.openConversationIds.includes(conv.id)}
+                                            <button
+                                                class="conv-close"
+                                                type="button"
+                                                title="Close tab"
+                                                aria-label="Close {conv.title} tab"
+                                                onclick={(e) => handleCloseConversationTab(e, conv)}
+                                            >
+                                                <UIIcon name="close" size={12} />
+                                            </button>
+                                        {/if}
+                                    </div>
                                 </div>
                             {/each}
                         </div>
@@ -686,18 +722,29 @@
     }
 
     .conversation-item {
-        flex: 1;
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 10px 16px;
         background: none;
         border: none;
-        cursor: pointer;
         text-align: left;
         color: var(--text-primary, #fff);
         transition: background 0.1s;
         min-width: 0;
+    }
+
+    .conversation-item-main {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        padding: 10px 16px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: inherit;
+        text-align: left;
     }
 
     .conversation-item:hover {
@@ -737,6 +784,22 @@
         flex-shrink: 0;
         font-size: 11px;
         color: var(--text-tertiary, #666);
+    }
+
+    .conv-close {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        color: var(--text-secondary, #888);
+        flex-shrink: 0;
+    }
+
+    .conv-close:hover {
+        background: var(--bg-hover, #333);
+        color: var(--text-primary, #fff);
     }
 
     /* Batch Action Bar */

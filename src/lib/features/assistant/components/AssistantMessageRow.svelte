@@ -153,9 +153,25 @@
   }
 
   function getContentParts(msg: AssistantMessage): ContentPart[] {
+    const sanitizeVisibleText = (text: string): string =>
+      text
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+        .replace(/<system_context>[\s\S]*?<\/system_context>/gi, "")
+        .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+
     // PRIORITY: Use saved contentParts (has correct order from streaming/history)
     // Only rebuild from offsets as a fallback for legacy messages without contentParts
-    if (msg.contentParts?.length) return msg.contentParts;
+    if (msg.contentParts?.length) {
+      return msg.contentParts
+        .map((part) =>
+          part.type === "text"
+            ? { ...part, text: sanitizeVisibleText(part.text) }
+            : part,
+        )
+        .filter((part) => part.type !== "text" || part.text);
+    }
     
     // Fallback: try to rebuild from offsets (for old messages without contentParts)
     const rebuilt = buildContentPartsFromOffsets(msg);
@@ -167,7 +183,10 @@
     }
     
     // Last resort: just the text content
-    if (msg.content) return [{ type: "text", text: msg.content }];
+    if (msg.content) {
+      const cleaned = sanitizeVisibleText(msg.content);
+      if (cleaned) return [{ type: "text", text: cleaned }];
+    }
     return [];
   }
 

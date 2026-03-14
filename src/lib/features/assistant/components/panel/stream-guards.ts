@@ -54,7 +54,9 @@ export function createStreamGuards(): StreamGuards {
       lower.includes('<system_context') ||
       lower.includes('</system_context') ||
       lower.includes('<smart_context') ||
-      lower.includes('</smart_context')
+      lower.includes('</smart_context') ||
+      lower.includes('<system-reminder') ||
+      lower.includes('</system-reminder')
     );
   };
 

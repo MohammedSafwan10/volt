@@ -3,6 +3,7 @@ export interface NoToolOutcomeState {
   justProcessedToolResults: boolean;
   planModeViolationNudgeCount: number;
   fullContent: string;
+  repeatedFailureHint?: string | null;
 }
 
 export interface NoToolOutcomeInput {
@@ -99,6 +100,18 @@ export function handleNoToolOutcome(
       output:
         "You completed your reasoning but did not provide a response or take action. Based on your thinking, please now either: (1) call the appropriate tool to execute your plan, or (2) provide a text response to the user. Do NOT remain silent after thinking.",
     });
+    return { decision: 'continue', state: next };
+  }
+
+  if (next.repeatedFailureHint) {
+    input.addToolMessage({
+      id: `recovery_hint_${Date.now()}`,
+      name: '_system_recovery_hint',
+      arguments: {},
+      status: 'completed',
+      output: next.repeatedFailureHint,
+    });
+    next.repeatedFailureHint = null;
     return { decision: 'continue', state: next };
   }
 

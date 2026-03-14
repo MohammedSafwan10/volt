@@ -4,6 +4,7 @@
     PROVIDERS,
     type AIMode,
     type AIProvider,
+    type OpenAIReasoningEffort,
   } from "$features/assistant/stores/ai.svelte";
   import { showToast } from "$shared/stores/toast.svelte";
   import UIIcon from "$shared/components/ui/UIIcon.svelte";
@@ -176,6 +177,7 @@
 
     if (base.startsWith("gpt-")) {
       const name = base
+        .replace("gpt-5.4", "GPT 5.4")
         .replace("gpt-5.2 pro", "GPT 5.2 Pro")
         .replace("gpt-5.2", "GPT 5.2")
         .replace("gpt-5.1-chat-latest", "GPT 5.1 (Instant)")
@@ -202,6 +204,32 @@
     plan: "Plan Mode",
     agent: "Agent Mode",
   };
+
+  const openAIReasoningOptions: OpenAIReasoningEffort[] = [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ];
+
+  function supportsNoneReasoning(model: string): boolean {
+    return model.replace(/\|thinking$/, "") === "gpt-5.4";
+  }
+
+  function getReasoningOptionsForModel(
+    model: string,
+  ): OpenAIReasoningEffort[] {
+    return supportsNoneReasoning(model)
+      ? openAIReasoningOptions
+      : openAIReasoningOptions.filter((option) => option !== "none");
+  }
+
+  function formatReasoningLabel(option: OpenAIReasoningEffort): string {
+    if (option === "xhigh") return "Extra High";
+    if (option === "none") return "None";
+    return option.charAt(0).toUpperCase() + option.slice(1);
+  }
 </script>
 
 <div class="ai-settings">
@@ -251,9 +279,9 @@
           >
         {:else if aiSettingsStore.selectedProvider === "openai"}
           <br /><a
-            href="https://platform.openai.com/api-keys"
+            href="http://localhost:8317/v1"
             target="_blank"
-            class="key-link">Get API key →</a
+            class="key-link">Using local Codex proxy →</a
           >
         {/if}
       </div>
@@ -356,6 +384,31 @@
             <option value={model}>{formatModelLabel(model)}</option>
           {/each}
         </select>
+
+        {#if aiSettingsStore.selectedProvider === "openai"}
+          {@const reasoningOptions = getReasoningOptionsForModel(selectedModel)}
+          <select
+            class="select"
+            value={reasoningOptions.includes(
+              aiSettingsStore.reasoningEffortPerMode[mode],
+            )
+              ? aiSettingsStore.reasoningEffortPerMode[mode]
+              : reasoningOptions[0]}
+            onchange={(e) =>
+              aiSettingsStore.setOpenAIReasoningEffort(
+                mode,
+                (e.target as HTMLSelectElement)
+                  .value as OpenAIReasoningEffort,
+              )}
+            aria-label="{modeLabels[mode]} reasoning effort"
+          >
+            {#each reasoningOptions as option (option)}
+              <option value={option}>
+                Reasoning: {formatReasoningLabel(option)}
+              </option>
+            {/each}
+          </select>
+        {/if}
       </div>
     </div>
   {/each}

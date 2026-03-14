@@ -214,6 +214,20 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   const showAnalyzing = $derived(
     problemsStore.isUpdating && problemsStore.totalUnfilteredCount === 0,
   );
+  const diagnosticsFreshness = $derived(problemsStore.diagnosticsFreshness);
+
+  function getFreshnessTone(status: string): "success" | "warning" | "muted" {
+    if (status === "fresh") return "success";
+    if (status === "stale" || status === "updating") return "warning";
+    return "muted";
+  }
+
+  function getFreshnessLabel(status: string): string {
+    if (status === "updating") return "Diagnostics updating";
+    if (status === "stale") return "Diagnostics stale";
+    if (status === "fresh") return "Diagnostics fresh";
+    return "Diagnostics idle";
+  }
 
   function formatFileDirectory(filePath: string, fileName?: string): string {
     const normalized = filePath.replace(/\\/g, "/");
@@ -231,6 +245,16 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   <div class="problems-toolbar">
     <div class="toolbar-summary">
       <span class="summary-pill total">{problemsStore.totalUnfilteredCount} total</span>
+      <span
+        class="summary-pill freshness"
+        class:success={getFreshnessTone(diagnosticsFreshness.status) === "success"}
+        class:warning={getFreshnessTone(diagnosticsFreshness.status) === "warning"}
+        title={diagnosticsFreshness.activeSources.length > 0
+          ? `Sources: ${diagnosticsFreshness.activeSources.join(", ")}`
+          : "No diagnostics sources have reported yet"}
+      >
+        {getFreshnessLabel(diagnosticsFreshness.status)}
+      </span>
       {#if problemsStore.errorCount > 0}
         <span class="summary-pill error"
           ><UIIcon name="error" size={12} /> {problemsStore.errorCount}</span
@@ -324,7 +348,13 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       <div class="empty-icon"><UIIcon name="check" size={22} /></div>
       <p class="empty-title">No Problems</p>
       <p class="empty-description">
-        No errors or warnings detected in the workspace
+        {#if diagnosticsFreshness.status === "stale"}
+          No current problems, but some diagnostics sources are stale
+        {:else if diagnosticsFreshness.status === "updating"}
+          No current problems yet; diagnostics are still updating
+        {:else}
+          No errors or warnings detected in the workspace
+        {/if}
       </p>
     </div>
   {:else if problemsStore.totalCount === 0}
@@ -345,6 +375,11 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       1
         ? ""
         : "s"}
+      {#if diagnosticsFreshness.staleSources.length > 0}
+        · stale sources: {diagnosticsFreshness.staleSources.join(", ")}
+      {:else if diagnosticsFreshness.isUpdating}
+        · diagnostics still updating
+      {/if}
     </div>
 
     <div class="problems-list">
@@ -486,6 +521,16 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   .summary-pill.info {
     color: var(--color-accent);
+  }
+
+  .summary-pill.freshness.success {
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border));
+  }
+
+  .summary-pill.freshness.warning {
+    color: var(--color-warning);
+    border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
   }
 
   .filter-buttons {

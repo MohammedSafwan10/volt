@@ -9,6 +9,15 @@ export type VerificationProfile = {
   requiresTerminalVerification: boolean;
 };
 
+export interface CompactWorkingSetInput {
+  goal: string;
+  touchedFiles: string[];
+  lastMeaningfulAction?: string | null;
+  failureClass?: string | null;
+  pendingVerification?: string[];
+  openBlocker?: string | null;
+}
+
 export function normalizeQueueKey(path: string): string {
   if (!path) return path;
   const resolved = resolvePath(path);
@@ -51,6 +60,22 @@ export function buildVerificationCommandGuidance(
     .slice(0, 4);
   if (suggestions.length === 0) return 'Run a relevant validation command.';
   return `Run at least one relevant terminal verification command, for example: ${suggestions.map((s) => `\`${s}\``).join(', ')}.`;
+}
+
+export function buildCompactWorkingSetSummary(
+  input: CompactWorkingSetInput,
+): string {
+  const touched = input.touchedFiles.slice(0, 8);
+  const pending = (input.pendingVerification ?? []).slice(0, 6);
+  const lines = [
+    `goal: ${JSON.stringify(input.goal.trim() || 'Continue current task')}`,
+    `touched_files: [${touched.map((value) => JSON.stringify(value)).join(', ')}]`,
+    `last_meaningful_action: ${JSON.stringify(input.lastMeaningfulAction?.trim() || 'none')}`,
+    `failure_class: ${JSON.stringify(input.failureClass?.trim() || 'none')}`,
+    `pending_verification: [${pending.map((value) => JSON.stringify(value)).join(', ')}]`,
+    `open_blocker: ${JSON.stringify(input.openBlocker?.trim() || 'none')}`,
+  ];
+  return lines.join('\n');
 }
 
 export function isTerminalVerificationCommand(
@@ -113,6 +138,91 @@ export function getFailureSignature(
   const condensed = raw.replace(/\s+/g, ' ').slice(0, 220);
   const pathHint = String(args.path ?? args.filePath ?? '').toLowerCase();
   return `${toolName}:${pathHint}:${condensed}`;
+}
+
+export type RecoveryClass =
+  | 'stale_file'
+  | 'empty_search'
+  | 'broad_search'
+  | 'command_timeout'
+  | 'diagnostics_blocked'
+  | 'permission'
+  | 'generic';
+
+export function classifyRecoveryIssue(
+  toolName: string,
+  args: Record<string, unknown>,
+  result: { success: boolean; error?: string; output?: string },
+): RecoveryClass | null {
+  if (result.success) return null;
+
+  const error = String(result.error ?? '').toLowerCase();
+  const output = String(result.output ?? '').toLowerCase();
+  const combined = `${error}\n${output}`;
+
+  if (
+    combined.includes('content changed on disk') ||
+    combined.includes('patch apply failed') ||
+    combined.includes('version conflict') ||
+    combined.includes('no match')
+  ) {
+    return 'stale_file';
+  }
+
+  if (toolName === 'workspace_search') {
+    if (
+      combined.includes('0 matches') ||
+      combined.includes('no matches') ||
+      combined.includes('no results')
+    ) {
+      return 'empty_search';
+    }
+    if (
+      combined.includes('too many matches') ||
+      combined.includes('too many results') ||
+      combined.includes('broad search')
+    ) {
+      return 'broad_search';
+    }
+  }
+
+  if (toolName === 'run_command' && combined.includes('timed out')) {
+    return 'command_timeout';
+  }
+
+  if (toolName === 'get_diagnostics' && (combined.includes('blocking diagnostics') || combined.includes('diagnostic'))) {
+    return 'diagnostics_blocked';
+  }
+
+  if (combined.includes('permission') || combined.includes('denied')) {
+    return 'permission';
+  }
+
+  return 'generic';
+}
+
+export function buildRecoveryHint(
+  recoveryClass: RecoveryClass,
+  context?: { toolName?: string; path?: string },
+): string {
+  const pathText = context?.path ? ` for \`${context.path}\`` : '';
+  switch (recoveryClass) {
+    case 'stale_file':
+      return `Previous edit context is stale${pathText}. Re-read the file with a focused slice, rebuild a smaller patch from fresh content, then retry once.`;
+    case 'empty_search':
+      return 'Search returned nothing. Retry once with alternate casing, a related symbol, or a narrower folder/file pattern.';
+    case 'broad_search':
+      return 'Search was too broad. Add includePattern or more specific query terms before searching again.';
+    case 'command_timeout':
+      return 'The command timed out. Do not repeat it unchanged; switch to a narrower validator or use read/search tools if this was exploration.';
+    case 'diagnostics_blocked':
+      return 'Diagnostics are still blocking completion. Fix the touched file errors or explain the exact blocker before attempting completion.';
+    case 'permission':
+      return 'This failed due to permissions or approval constraints. Choose a safer alternative or wait for user approval instead of retrying blindly.';
+    case 'generic':
+    default:
+      return `The previous ${context?.toolName ?? 'tool'} attempt failed. Change strategy before retrying the same action.`;
+  }
 }
 
 export function getAdaptiveFileEditConcurrency(queueCount: number): number {

@@ -59,6 +59,7 @@ export interface GroupedConversations {
 class ChatHistoryStore {
     // State
     conversations = $state<ConversationSummary[]>([]);
+    private allConversations = $state<ConversationSummary[]>([]);
     isLoading = $state(false);
     searchQuery = $state('');
     sidebarOpen = $state(false);
@@ -82,7 +83,8 @@ class ChatHistoryStore {
         this.isLoading = true;
         try {
             const convos = await invoke<ConversationSummary[]>('chat_list_conversations');
-            this.conversations = convos;
+            this.allConversations = convos;
+            this.applyVisibleConversations();
         } catch (err) {
             console.error('[ChatHistory] Failed to load conversations:', err);
         } finally {
@@ -95,6 +97,11 @@ class ChatHistoryStore {
      */
     async search(query: string): Promise<void> {
         this.searchQuery = query;
+        if (!query.trim()) {
+            this.applyVisibleConversations();
+            return;
+        }
+
         this.isLoading = true;
         try {
             const convos = await invoke<ConversationSummary[]>('chat_search_conversations', { query });
@@ -111,7 +118,7 @@ class ChatHistoryStore {
      */
     async createConversation(id: string, mode: string): Promise<ConversationSummary> {
         const convo = await invoke<ConversationSummary>('chat_create_conversation', { id, mode });
-        this.conversations = [convo, ...this.conversations];
+        this.upsertConversationSummary(convo);
         this.activeConversationId = id;
         return convo;
     }
@@ -129,20 +136,59 @@ class ChatHistoryStore {
     async saveMessage(conversationId: string, message: ChatMessage): Promise<void> {
         await invoke('chat_save_message', { conversationId, message });
 
-        // Refresh conversation list to update timestamps and titles
-        await this.loadConversations();
+        const existing = this.conversations.find(c => c.id === conversationId);
+        const nextTitle =
+            existing?.title && existing.title !== 'New Chat'
+                ? existing.title
+                : (message.role === 'user'
+                    ? (message.content.length > 50 ? `${message.content.slice(0, 50)}...` : message.content)
+                    : existing?.title || 'New Chat');
+
+        const updatedSummary: ConversationSummary = existing
+            ? {
+                ...existing,
+                title: nextTitle,
+                updatedAt: Date.now(),
+                messageCount: Math.max(existing.messageCount, 0) + 1,
+                firstUserMessage: existing.firstUserMessage ?? (message.role === 'user' ? message.content : null),
+            }
+            : {
+                id: conversationId,
+                title: nextTitle,
+                createdAt: message.timestamp,
+                updatedAt: Date.now(),
+                messageCount: 1,
+                firstUserMessage: message.role === 'user' ? message.content : null,
+                isPinned: false,
+                mode: 'agent',
+            };
+
+        this.upsertConversationSummary(updatedSummary);
     }
 
     /**
      * Update conversation title
      */
     async updateTitle(conversationId: string, title: string): Promise<void> {
-        await invoke('chat_update_title', { conversationId, title });
+        const trimmedTitle = title.trim();
+        if (!trimmedTitle) return;
+
+        await invoke('chat_update_title', { conversationId, title: trimmedTitle });
 
         // Update local state
-        this.conversations = this.conversations.map(c =>
-            c.id === conversationId ? { ...c, title } : c
-        );
+        this.upsertConversationSummary({
+            ...(this.allConversations.find(c => c.id === conversationId) ?? this.conversations.find(c => c.id === conversationId) ?? {
+                id: conversationId,
+                title: trimmedTitle,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                messageCount: 0,
+                firstUserMessage: null,
+                isPinned: false,
+                mode: 'agent',
+            }),
+            title: trimmedTitle,
+        });
     }
 
     /**
@@ -151,9 +197,10 @@ class ChatHistoryStore {
     async updateMode(conversationId: string, mode: string): Promise<void> {
         await invoke('chat_update_mode', { conversationId, mode });
 
-        this.conversations = this.conversations.map(c =>
-            c.id === conversationId ? { ...c, mode, updatedAt: Date.now() } : c
-        );
+        const existing = this.allConversations.find(c => c.id === conversationId) ?? this.conversations.find(c => c.id === conversationId);
+        if (existing) {
+            this.upsertConversationSummary({ ...existing, mode, updatedAt: Date.now() });
+        }
     }
 
     /**
@@ -163,16 +210,10 @@ class ChatHistoryStore {
         const isPinned = await invoke<boolean>('chat_toggle_pin', { conversationId });
 
         // Update local state and re-sort
-        this.conversations = this.conversations.map(c =>
-            c.id === conversationId ? { ...c, isPinned } : c
-        );
-
-        // Re-sort: pinned first, then by updatedAt
-        this.conversations = [...this.conversations].sort((a, b) => {
-            if (a.isPinned && !b.isPinned) return -1;
-            if (!a.isPinned && b.isPinned) return 1;
-            return b.updatedAt - a.updatedAt;
-        });
+        const existing = this.allConversations.find(c => c.id === conversationId) ?? this.conversations.find(c => c.id === conversationId);
+        if (existing) {
+            this.upsertConversationSummary({ ...existing, isPinned });
+        }
 
         return isPinned;
     }
@@ -187,7 +228,8 @@ class ChatHistoryStore {
         const deletingActive = this.activeConversationId === conversationId;
 
         // Remove from local state
-        this.conversations = this.conversations.filter(c => c.id !== conversationId);
+        this.allConversations = this.allConversations.filter(c => c.id !== conversationId);
+        this.applyVisibleConversations();
         this.selectedIds.delete(conversationId);
 
         // If we deleted the active conversation, clear it from both stores
@@ -216,7 +258,8 @@ class ChatHistoryStore {
             }
 
             // Update local state
-            this.conversations = this.conversations.filter(c => !ids.includes(c.id));
+            this.allConversations = this.allConversations.filter(c => !ids.includes(c.id));
+            this.applyVisibleConversations();
             ids.forEach(id => this.selectedIds.delete(id));
 
             if (deletingActive) {
@@ -241,10 +284,12 @@ class ChatHistoryStore {
         this.isLoading = true;
         try {
             await invoke('chat_clear_all');
+            this.allConversations = [];
             this.conversations = [];
             this.activeConversationId = null;
             this.selectedIds.clear();
             this.isSelectionMode = false;
+            this.onActiveConversationDeleted?.();
         } catch (err) {
             console.error('[ChatHistory] Clear all failed:', err);
         } finally {
@@ -345,6 +390,37 @@ class ChatHistoryStore {
         this.sidebarOpen = true;
         // Refresh list when opening
         this.loadConversations();
+    }
+
+    private applyVisibleConversations(): void {
+        if (!this.searchQuery.trim()) {
+            this.conversations = [...this.allConversations].sort((a, b) => {
+                if (a.isPinned && !b.isPinned) return -1;
+                if (!a.isPinned && b.isPinned) return 1;
+                return b.updatedAt - a.updatedAt;
+            });
+            return;
+        }
+
+        const query = this.searchQuery.trim().toLowerCase();
+        this.conversations = this.allConversations
+            .filter((c) =>
+                c.title.toLowerCase().includes(query) ||
+                c.firstUserMessage?.toLowerCase().includes(query),
+            )
+            .sort((a, b) => {
+                if (a.isPinned && !b.isPinned) return -1;
+                if (!a.isPinned && b.isPinned) return 1;
+                return b.updatedAt - a.updatedAt;
+            });
+    }
+
+    private upsertConversationSummary(summary: ConversationSummary): void {
+        this.allConversations = [
+            summary,
+            ...this.allConversations.filter((c) => c.id !== summary.id),
+        ];
+        this.applyVisibleConversations();
     }
 
     closeSidebar(): void {
