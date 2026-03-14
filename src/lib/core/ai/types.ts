@@ -76,6 +76,7 @@ export interface ChatRequest {
   stream?: boolean;
   tools?: ToolDefinition[];
   systemPrompt?: string;
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 // Non-streaming response

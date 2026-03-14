@@ -9,6 +9,7 @@ import { problemsStore } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { toolObservabilityStore } from '$features/assistant/stores/tool-observability.svelte';
 import { truncateOutput, type ToolResult } from '$core/ai/tools/utils';
+import { matchesRequestedDiagnosticPath } from './diagnostics-paths';
 
 /**
  * Get errors/warnings from IDE
@@ -29,6 +30,7 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
 
   // Get all problems from the store (unfiltered to avoid UI filter mismatch)
   const allProblems = problemsStore.allProblemsUnfiltered;
+  const freshness = problemsStore.diagnosticsFreshness;
 
   // If specific paths requested, filter to those
   let relevantProblems = allProblems;
@@ -40,10 +42,8 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
 
     relevantProblems = allProblems.filter(problem => {
       const problemPath = normalizePath(problem.file, workspaceRoot);
-      return normalizedPaths.some(p =>
-        problemPath === p ||
-        problemPath.endsWith('/' + p) ||
-        problemPath.endsWith('\\' + p)
+      return normalizedPaths.some((pathToCheck) =>
+        matchesRequestedDiagnosticPath(problemPath, pathToCheck),
       );
     });
 
@@ -66,13 +66,45 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
     lines.push(`Checked: ${fileList}\n`);
   }
 
+  const freshnessLabel =
+    freshness.status === 'updating'
+      ? 'updating'
+      : freshness.status === 'stale'
+        ? 'partially stale'
+        : freshness.status === 'fresh'
+          ? 'fresh'
+          : 'idle';
+  lines.push(`Diagnostics status: ${freshnessLabel}`);
+  if (freshness.activeSources.length > 0) {
+    lines.push(`Sources: ${freshness.activeSources.join(', ')}`);
+  }
+  if (freshness.staleSources.length > 0) {
+    lines.push(`Stale sources: ${freshness.staleSources.join(', ')}`);
+  }
+  lines.push('');
+
   if (relevantProblems.length === 0) {
-    if (pathsToCheck.length > 0) {
+    if (freshness.status === 'updating') {
+      lines.push('No issues currently reported, but diagnostics are still updating.');
+    } else if (freshness.status === 'stale') {
+      lines.push('No issues currently reported, but some diagnostics sources are stale.');
+    } else if (pathsToCheck.length > 0) {
       lines.push('✓ No issues found');
     } else {
       lines.push('✓ No issues in workspace');
     }
-    return { success: true, output: lines.join('\n') };
+    return {
+      success: true,
+      output: lines.join('\n'),
+      meta: {
+        errorCount: 0,
+        warningCount: 0,
+        fileCount: 0,
+        checkedFiles,
+        freshness,
+        problems: [],
+      },
+    };
   }
 
   // Count by severity
@@ -126,6 +158,7 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
       warningCount: warnCount,
       fileCount: byFile.size,
       checkedFiles,
+      freshness,
       problems: relevantProblems.slice(0, 50).map(p => ({
         ...p,
         relativePath: p.file.replace(workspaceRoot, '').replace(/^[/\\]/, '')
@@ -201,6 +234,8 @@ export async function handleGetToolMetrics(): Promise<ToolResult> {
  */
 function normalizePath(path: string, workspaceRoot: string): string {
   let normalized = path.replace(/\\/g, '/');
+  normalized = normalized.replace(/\/\.\//g, '/');
+  normalized = normalized.replace(/\/+/g, '/');
 
   // Remove workspace root prefix if present
   if (workspaceRoot) {

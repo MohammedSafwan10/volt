@@ -321,6 +321,20 @@ function toGeminiContents(messages: ChatMessage[]): GeminiContent[] {
   return merged;
 }
 
+export function ensureGeminiContents(messages: ChatMessage[]): GeminiContent[] {
+  const contents = toGeminiContents(messages);
+  if (contents.length > 0) {
+    return contents;
+  }
+
+  return [
+    {
+      role: 'user',
+      parts: [{ text: 'Please continue.' }],
+    },
+  ];
+}
+
 /**
  * Convert tool definitions to Gemini format
  */
@@ -444,7 +458,7 @@ export const geminiProvider: AIProvider = {
     const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 
     const geminiBody = {
-      contents: toGeminiContents(request.messages),
+      contents: ensureGeminiContents(request.messages),
       generationConfig: {
         maxOutputTokens: request.maxTokens ?? 8192,
         stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],
@@ -529,7 +543,7 @@ export const geminiProvider: AIProvider = {
     const { model, thinkingEnabled } = parseGeminiModel(request.model);
 
     const geminiBody = {
-      contents: toGeminiContents(request.messages),
+      contents: ensureGeminiContents(request.messages),
       generationConfig: {
         maxOutputTokens: request.maxTokens ?? 65536,
         stopSequences: ['<system_context', '</system_context', '<smart_context', '</smart_context'],

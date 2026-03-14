@@ -89,11 +89,6 @@ pub async fn anthropic_proxy(
 ) -> Result<Value, String> {
     let client = reqwest::Client::new();
     let api_key = api_key.trim();
-    println!(
-        "[Anthropic Proxy] Sending request. Version: {}, Key length: {}",
-        anthropic_version,
-        api_key.len()
-    );
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
@@ -130,11 +125,6 @@ pub async fn anthropic_proxy_stream(
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let api_key = api_key.trim();
-    println!(
-        "[Anthropic Proxy Stream] Sending request. Version: {}, Key length: {}",
-        anthropic_version,
-        api_key.len()
-    );
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
@@ -290,11 +280,6 @@ pub async fn openrouter_proxy_stream(
     let client = reqwest::Client::new();
     let api_key = api_key.trim();
 
-    println!(
-        "[OpenRouter Proxy Stream] Sending request. Model: {}, Key length: {}",
-        body["model"],
-        api_key.len()
-    );
     let response = client
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {api_key}"))

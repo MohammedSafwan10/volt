@@ -36,7 +36,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
   {
     name: 'list_dir',
-    description: 'List directory contents. Returns names, types, sizes.',
+    description: 'List directory contents for path discovery. Prefer this over terminal commands when locating files/folders.',
     parameters: {
       type: 'object',
       properties: {
@@ -50,7 +50,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read file contents. Prefer focused reads via offset/limit.',
+    description: 'Read exact file contents. Prefer small offset/limit slices and always use this before apply_patch on the same path.',
     parameters: {
       type: 'object',
       properties: {
@@ -129,7 +129,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ============================================
   {
     name: 'workspace_search',
-    description: 'Search for text/regex in files. Returns matches with 2 lines of context.',
+    description: 'Search workspace text/regex to discover files, symbols, and evidence before reading or patching. Prefer this before run_command for code exploration.',
     parameters: {
       type: 'object',
       properties: {
@@ -311,7 +311,7 @@ Example: multi_replace(path, [{oldStr: "foo", newStr: "bar"}, {oldStr: "baz", ne
   {
     name: 'apply_patch',
     description: `Apply a Codex patch (*** Begin Patch ... *** End Patch) atomically to one file.
-Only Codex patch grammar is accepted.`,
+Only Codex patch grammar is accepted. Re-read the file first if content may be stale or the previous patch failed.`,
     parameters: {
       type: 'object',
       properties: {
@@ -401,7 +401,7 @@ Executes in an isolated terminal to prevent interference with other processes.
 CRITICAL RULES:
 1. Supports command chaining (&&, ||, ;)
 2. Each run_command executes independently
-3. Use only for short-running tasks (install, git, mkdir, etc.)
+3. Use only for short-running tasks (install, git, validators, mkdir, etc.)
 4. For interactive prompts after start, use "send_terminal_input"`,
     parameters: {
       type: 'object',
@@ -535,7 +535,7 @@ Better than get_process_output for monitoring: waits for new output instead of r
   // ============================================
   {
     name: 'get_diagnostics',
-    description: 'Get errors/warnings from IDE (TypeScript, ESLint, Svelte, etc.).',
+    description: 'Get IDE/compiler diagnostics. Use after edits and before attempt_completion; diagnostics are the source of truth for correctness.',
     parameters: {
       type: 'object',
       properties: {
@@ -577,7 +577,7 @@ Better than get_process_output for monitoring: waits for new output instead of r
   },
   {
     name: 'attempt_completion',
-    description: 'Declare the task complete with a final user-facing result summary. Agent mode loop exits only after this succeeds.',
+    description: 'Declare the task complete with a final user-facing result summary. Only call this after required edits, checks, and diagnostics are done.',
     parameters: {
       type: 'object',
       properties: {

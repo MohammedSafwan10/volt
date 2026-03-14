@@ -39,6 +39,7 @@ export interface ContextV2 {
   builtAt: number;
   workspaceRoot?: string;
   activeFilePath?: string;
+  workingSetSummary?: string;
   budget: ContextBudget;
   snippets: ContextSnippet[];
   diagnosticsSummary: string;
@@ -66,6 +67,7 @@ export interface ContextV2 {
 export interface BuildContextV2Input {
   query?: string;
   modelId: string;
+  workingSetSummary?: string;
 }
 
 interface SnippetDraft {
@@ -474,6 +476,7 @@ export async function buildContextV2(input: BuildContextV2Input): Promise<Contex
     builtAt: Date.now(),
     workspaceRoot,
     activeFilePath: active ? toRelativePath(active.path, workspaceRoot) : undefined,
+    workingSetSummary: input.workingSetSummary?.trim() || undefined,
     budget,
     snippets: ranked,
     diagnosticsSummary: buildDiagnosticsSummary(workspaceRoot),
@@ -521,6 +524,12 @@ export function formatContextV2(context: ContextV2): string {
   if (context.workspaceRoot) lines.push(`Workspace: ${context.workspaceRoot}`);
   if (context.activeFilePath) lines.push(`Active file: ${context.activeFilePath}`);
   if (context.query) lines.push(`User query: ${context.query}`);
+  if (context.workingSetSummary) {
+    lines.push('## Compact Working Set');
+    lines.push('```yaml');
+    lines.push(context.workingSetSummary);
+    lines.push('```');
+  }
   lines.push(
     `Budget: ~${context.stats.estimatedTokensUsed}/${context.budget.availableContextTokens} context tokens; snippets=${context.stats.snippetsSelected}; dropped=${context.stats.droppedCandidates}`,
   );

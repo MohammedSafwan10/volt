@@ -101,6 +101,15 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     supportsTools: true,
     free: true
   },
+  'nvidia/nemotron-3-super-120b-a12b:free': {
+    id: 'nvidia/nemotron-3-super-120b-a12b:free',
+    name: 'Nemotron 3 Super',
+    provider: 'openrouter',
+    contextWindow: 262144,
+    maxOutput: 262144,
+    supportsTools: true,
+    free: true
+  },
 
   // ============ Mistral Models ============
   'devstral-medium-latest': {
@@ -109,6 +118,44 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     provider: 'mistral',
     contextWindow: 128000,
     maxOutput: 8192,
+    supportsTools: true,
+    free: false
+  },
+
+  // ============ Local Codex Proxy Models ============
+  'gpt-5.4|thinking': {
+    id: 'gpt-5.4|thinking',
+    name: 'GPT 5.4 (thinking)',
+    provider: 'openai',
+    contextWindow: 1000000,
+    maxOutput: 128000,
+    supportsTools: true,
+    free: false
+  },
+  'gpt-5.4': {
+    id: 'gpt-5.4',
+    name: 'GPT 5.4',
+    provider: 'openai',
+    contextWindow: 1000000,
+    maxOutput: 128000,
+    supportsTools: true,
+    free: false
+  },
+  'gpt-5.3-codex|thinking': {
+    id: 'gpt-5.3-codex|thinking',
+    name: 'GPT 5.3 Codex (thinking)',
+    provider: 'openai',
+    contextWindow: 1000000,
+    maxOutput: 128000,
+    supportsTools: true,
+    free: false
+  },
+  'gpt-5.3-codex': {
+    id: 'gpt-5.3-codex',
+    name: 'GPT 5.3 Codex',
+    provider: 'openai',
+    contextWindow: 1000000,
+    maxOutput: 128000,
     supportsTools: true,
     free: false
   },

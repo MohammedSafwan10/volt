@@ -27,6 +27,30 @@ const providers: Record<AIProviderType, AIProvider> = {
   mistral: mistralProvider
 };
 
+function getStreamIdleTimeoutMs(providerId: AIProviderType, model: string): number {
+  const normalized = model.toLowerCase();
+
+  if (providerId === 'openai') {
+    if (normalized.includes('gpt-5.4') || normalized.includes('codex')) {
+      return 90_000;
+    }
+    return 60_000;
+  }
+
+  if (providerId === 'openrouter') {
+    if (normalized.includes(':free') || normalized.includes('/free') || normalized.includes('flash')) {
+      return 120_000;
+    }
+    return 90_000;
+  }
+
+  if (providerId === 'gemini') {
+    return 75_000;
+  }
+
+  return 45_000;
+}
+
 /**
  * Get the current provider instance
  */
@@ -58,7 +82,14 @@ export async function sendChat(
     throw new Error('No API key configured. Please add your API key in Settings → AI.');
   }
 
-  return provider.sendChat({ ...request, model }, apiKey, signal);
+  return provider.sendChat({
+    ...request,
+    model,
+    reasoningEffort:
+      aiSettingsStore.selectedProvider === 'openai'
+        ? aiSettingsStore.reasoningEffortPerMode[mode]
+        : request.reasoningEffort,
+  }, apiKey, signal);
 }
 
 /**
@@ -83,7 +114,7 @@ export async function* streamChat(
   // Retry configuration (like Kiro)
   const MAX_RETRIES = 3;
   const INITIAL_DELAY_MS = 1000;
-  const STREAM_IDLE_TIMEOUT_MS = 45_000;
+  const STREAM_IDLE_TIMEOUT_MS = getStreamIdleTimeoutMs(aiSettingsStore.selectedProvider, model);
 
   let lastError: string | null = null;
 
@@ -93,7 +124,14 @@ export async function* streamChat(
     try {
       let sawDone = false;
       const streamIterator = provider
-        .streamChat({ ...request, model }, apiKey, signal)[Symbol.asyncIterator]();
+        .streamChat({
+          ...request,
+          model,
+          reasoningEffort:
+            aiSettingsStore.selectedProvider === 'openai'
+              ? aiSettingsStore.reasoningEffortPerMode[mode]
+              : request.reasoningEffort,
+        }, apiKey, signal)[Symbol.asyncIterator]();
 
       while (true) {
         const next = await nextWithIdleTimeout(
