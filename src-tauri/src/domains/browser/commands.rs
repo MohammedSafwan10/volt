@@ -2,7 +2,7 @@
 //! Full-featured browser with tabs, bookmarks, history, devtools, and AI integration
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, WebviewBuilder,
@@ -105,8 +105,8 @@ pub struct BrowserState {
     zoom_level: Arc<Mutex<f64>>,
     history: Arc<Mutex<Vec<HistoryEntry>>>,
     bookmarks: Arc<Mutex<Vec<Bookmark>>>,
-    console_messages: Arc<Mutex<Vec<ConsoleMessage>>>,
-    network_requests: Arc<Mutex<Vec<NetworkRequest>>>,
+    console_messages: Arc<Mutex<VecDeque<ConsoleMessage>>>,
+    network_requests: Arc<Mutex<VecDeque<NetworkRequest>>>,
     responsive_mode: Arc<Mutex<Option<(u32, u32)>>>, // width, height
 }
 
@@ -120,8 +120,8 @@ impl BrowserState {
             zoom_level: Arc::new(Mutex::new(1.0)),
             history: Arc::new(Mutex::new(Vec::new())),
             bookmarks: Arc::new(Mutex::new(Vec::new())),
-            console_messages: Arc::new(Mutex::new(Vec::new())),
-            network_requests: Arc::new(Mutex::new(Vec::new())),
+            console_messages: Arc::new(Mutex::new(VecDeque::new())),
+            network_requests: Arc::new(Mutex::new(VecDeque::new())),
             responsive_mode: Arc::new(Mutex::new(None)),
         }
     }
@@ -475,7 +475,7 @@ pub async fn browser_create<R: Runtime>(
     bounds: BrowserBounds,
 ) -> Result<BrowserInfo, String> {
     // Close existing if any
-    if let Some(label) = state.webview_label.lock().unwrap().take() {
+    if let Some(label) = state.webview_label.lock().map_err(|_| "Lock poisoned".to_string())?.take() {
         if let Some(webview) = app.get_webview(&label) {
             let _ = webview.close();
         }
@@ -503,10 +503,10 @@ pub async fn browser_create<R: Runtime>(
         )
         .map_err(|e| format!("Failed to create browser: {}", e))?;
 
-    *state.webview_label.lock().unwrap() = Some(BROWSER_LABEL.to_string());
-    *state.current_url.lock().unwrap() = url.clone();
-    *state.select_mode.lock().unwrap() = false;
-    *state.zoom_level.lock().unwrap() = 1.0;
+    *state.webview_label.lock().map_err(|_| "Lock poisoned".to_string())? = Some(BROWSER_LABEL.to_string());
+    *state.current_url.lock().map_err(|_| "Lock poisoned".to_string())? = url.clone();
+    *state.select_mode.lock().map_err(|_| "Lock poisoned".to_string())? = false;
+    *state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())? = 1.0;
 
     // Add to history
     let entry = HistoryEntry {
@@ -517,7 +517,7 @@ pub async fn browser_create<R: Runtime>(
             .unwrap_or_default()
             .as_secs(),
     };
-    state.history.lock().unwrap().push(entry);
+    state.history.lock().map_err(|_| "Lock poisoned".to_string())?.push(entry);
 
     let _ = app.emit("browser://created", &url);
 
@@ -538,20 +538,20 @@ pub async fn browser_close<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
 ) -> Result<(), String> {
-    if let Some(label) = state.webview_label.lock().unwrap().take() {
+    if let Some(label) = state.webview_label.lock().map_err(|_| "Lock poisoned".to_string())?.take() {
         if let Some(webview) = app.get_webview(&label) {
             webview
                 .close()
                 .map_err(|e| format!("Close failed: {}", e))?;
         }
     }
-    *state.current_url.lock().unwrap() = String::new();
-    *state.current_title.lock().unwrap() = String::from("New Tab");
-    *state.select_mode.lock().unwrap() = false;
-    *state.zoom_level.lock().unwrap() = 1.0;
-    *state.responsive_mode.lock().unwrap() = None;
-    state.console_messages.lock().unwrap().clear();
-    state.network_requests.lock().unwrap().clear();
+    *state.current_url.lock().map_err(|_| "Lock poisoned".to_string())? = String::new();
+    *state.current_title.lock().map_err(|_| "Lock poisoned".to_string())? = String::from("New Tab");
+    *state.select_mode.lock().map_err(|_| "Lock poisoned".to_string())? = false;
+    *state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())? = 1.0;
+    *state.responsive_mode.lock().map_err(|_| "Lock poisoned".to_string())? = None;
+    state.console_messages.lock().map_err(|_| "Lock poisoned".to_string())?.clear();
+    state.network_requests.lock().map_err(|_| "Lock poisoned".to_string())?.clear();
     let _ = app.emit("browser://closed", ());
     Ok(())
 }
@@ -583,14 +583,13 @@ pub async fn browser_navigate<R: Runtime>(
         format!("https://{}", url)
     };
 
+    let escaped_url = serde_json::to_string(&final_url)
+        .map_err(|e| format!("URL encode failed: {}", e))?;
     webview
-        .eval(&format!(
-            "window.location.href = '{}';",
-            final_url.replace('\'', "\\'")
-        ))
+        .eval(&format!("window.location.href = {};", escaped_url))
         .map_err(|e| format!("Navigate failed: {}", e))?;
 
-    *state.current_url.lock().unwrap() = final_url.clone();
+    *state.current_url.lock().map_err(|_| "Lock poisoned".to_string())? = final_url.clone();
 
     // Add to history
     let entry = HistoryEntry {
@@ -601,7 +600,7 @@ pub async fn browser_navigate<R: Runtime>(
             .unwrap_or_default()
             .as_secs(),
     };
-    state.history.lock().unwrap().push(entry);
+    state.history.lock().map_err(|_| "Lock poisoned".to_string())?.push(entry);
 
     let _ = app.emit("browser://navigated", &final_url);
     Ok(())
@@ -720,25 +719,29 @@ pub async fn browser_set_select_mode<R: Runtime>(
     webview
         .eval(&script)
         .map_err(|e| format!("Set select mode failed: {}", e))?;
-    *state.select_mode.lock().unwrap() = enabled;
+    *state.select_mode.lock().map_err(|_| "Lock poisoned".to_string())? = enabled;
     let _ = app.emit("browser://select-mode", enabled);
     Ok(())
 }
 
-/// Execute arbitrary JavaScript
+/// Execute JavaScript in browser webview (callers must sanitize)
 #[tauri::command]
 pub async fn browser_execute_js<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, BrowserState>,
     script: String,
 ) -> Result<(), String> {
+    if script.len() > 1_000_000 {
+        return Err("Script too large (max 1MB)".to_string());
+    }
     let label = state
         .webview_label
         .lock()
-        .unwrap()
+        .map_err(|_| "Lock poisoned".to_string())?
         .clone()
         .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
+    tracing::debug!(script_len = script.len(), "browser_execute_js");
     webview
         .eval(&script)
         .map_err(|e| format!("Execute JS failed: {}", e))?;
@@ -819,7 +822,7 @@ pub async fn browser_zoom_in<R: Runtime>(
         .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
 
-    let mut zoom = state.zoom_level.lock().unwrap();
+    let mut zoom = state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())?;
     *zoom = (*zoom + 0.1).min(3.0);
     let new_zoom = *zoom;
 
@@ -844,7 +847,7 @@ pub async fn browser_zoom_out<R: Runtime>(
         .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
 
-    let mut zoom = state.zoom_level.lock().unwrap();
+    let mut zoom = state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())?;
     *zoom = (*zoom - 0.1).max(0.25);
     let new_zoom = *zoom;
 
@@ -869,7 +872,7 @@ pub async fn browser_zoom_reset<R: Runtime>(
         .ok_or("Browser not open")?;
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
 
-    *state.zoom_level.lock().unwrap() = 1.0;
+    *state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())? = 1.0;
     webview
         .set_zoom(1.0)
         .map_err(|e| format!("Zoom reset failed: {}", e))?;
@@ -893,7 +896,7 @@ pub async fn browser_set_zoom<R: Runtime>(
     let webview = app.get_webview(&label).ok_or("Browser webview not found")?;
 
     let clamped = level.clamp(0.25, 3.0);
-    *state.zoom_level.lock().unwrap() = clamped;
+    *state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())? = clamped;
     webview
         .set_zoom(clamped)
         .map_err(|e| format!("Set zoom failed: {}", e))?;
@@ -1042,7 +1045,7 @@ pub async fn browser_element_selected<R: Runtime>(
     state: tauri::State<'_, BrowserState>,
     element: SelectedElement,
 ) -> Result<(), String> {
-    *state.select_mode.lock().unwrap() = false;
+    *state.select_mode.lock().map_err(|_| "Lock poisoned".to_string())? = false;
     let _ = app.emit("browser://select-mode", false);
     let _ = app.emit("browser://element-selected", &element);
     Ok(())
@@ -1053,11 +1056,11 @@ pub async fn browser_element_selected<R: Runtime>(
 pub async fn browser_get_state(
     state: tauri::State<'_, BrowserState>,
 ) -> Result<BrowserInfo, String> {
-    let is_open = state.webview_label.lock().unwrap().is_some();
-    let url = state.current_url.lock().unwrap().clone();
-    let title = state.current_title.lock().unwrap().clone();
-    let select_mode = *state.select_mode.lock().unwrap();
-    let zoom_level = *state.zoom_level.lock().unwrap();
+    let is_open = state.webview_label.lock().map_err(|_| "Lock poisoned".to_string())?.is_some();
+    let url = state.current_url.lock().map_err(|_| "Lock poisoned".to_string())?.clone();
+    let title = state.current_title.lock().map_err(|_| "Lock poisoned".to_string())?.clone();
+    let select_mode = *state.select_mode.lock().map_err(|_| "Lock poisoned".to_string())?;
+    let zoom_level = *state.zoom_level.lock().map_err(|_| "Lock poisoned".to_string())?;
 
     Ok(BrowserInfo {
         is_open,
@@ -1087,7 +1090,7 @@ pub async fn browser_add_bookmark(
             .unwrap_or_default()
             .as_secs(),
     };
-    state.bookmarks.lock().unwrap().push(bookmark.clone());
+    state.bookmarks.lock().map_err(|_| "Lock poisoned".to_string())?.push(bookmark.clone());
     Ok(bookmark)
 }
 
@@ -1097,7 +1100,7 @@ pub async fn browser_remove_bookmark(
     state: tauri::State<'_, BrowserState>,
     id: String,
 ) -> Result<(), String> {
-    state.bookmarks.lock().unwrap().retain(|b| b.id != id);
+    state.bookmarks.lock().map_err(|_| "Lock poisoned".to_string())?.retain(|b| b.id != id);
     Ok(())
 }
 
@@ -1106,7 +1109,7 @@ pub async fn browser_remove_bookmark(
 pub async fn browser_get_bookmarks(
     state: tauri::State<'_, BrowserState>,
 ) -> Result<Vec<Bookmark>, String> {
-    Ok(state.bookmarks.lock().unwrap().clone())
+    Ok(state.bookmarks.lock().map_err(|_| "Lock poisoned".to_string())?.clone())
 }
 
 /// Get browsing history
@@ -1115,7 +1118,7 @@ pub async fn browser_get_history(
     state: tauri::State<'_, BrowserState>,
     limit: Option<usize>,
 ) -> Result<Vec<HistoryEntry>, String> {
-    let history = state.history.lock().unwrap();
+    let history = state.history.lock().map_err(|_| "Lock poisoned".to_string())?;
     let limit = limit.unwrap_or(100);
     let start = history.len().saturating_sub(limit);
     Ok(history[start..].to_vec())
@@ -1124,7 +1127,7 @@ pub async fn browser_get_history(
 /// Clear browsing history
 #[tauri::command]
 pub async fn browser_clear_history(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
-    state.history.lock().unwrap().clear();
+    state.history.lock().map_err(|_| "Lock poisoned".to_string())?.clear();
     Ok(())
 }
 
@@ -1146,7 +1149,7 @@ pub async fn browser_set_responsive_mode<R: Runtime>(
 
     match (width, height) {
         (Some(w), Some(h)) => {
-            *state.responsive_mode.lock().unwrap() = Some((w, h));
+            *state.responsive_mode.lock().map_err(|_| "Lock poisoned".to_string())? = Some((w, h));
             // Set viewport via CSS
             let script = format!(
                 r#"document.documentElement.style.cssText = 'width:{}px !important;max-width:{}px !important;margin:0 auto;box-shadow:0 0 20px rgba(0,0,0,0.3);';"#,
@@ -1157,7 +1160,7 @@ pub async fn browser_set_responsive_mode<R: Runtime>(
                 .map_err(|e| format!("Set responsive mode failed: {}", e))?;
         }
         _ => {
-            *state.responsive_mode.lock().unwrap() = None;
+            *state.responsive_mode.lock().map_err(|_| "Lock poisoned".to_string())? = None;
             webview
                 .eval("document.documentElement.style.cssText = '';")
                 .map_err(|e| format!("Clear responsive mode failed: {}", e))?;
@@ -1246,11 +1249,11 @@ pub async fn browser_devtools_console_log<R: Runtime>(
 
     // Store in state (keep last 500)
     {
-        let mut logs = state.console_messages.lock().unwrap();
+        let mut logs = state.console_messages.lock().map_err(|_| "Lock poisoned".to_string())?;
         if logs.len() >= 500 {
-            logs.remove(0);
+            logs.pop_front();
         }
-        logs.push(log.clone());
+        logs.push_back(log.clone());
     }
 
     // Emit to frontend
@@ -1325,11 +1328,11 @@ pub async fn browser_devtools_network_request<R: Runtime>(
 
     // Store in state (keep last 200)
     {
-        let mut requests = state.network_requests.lock().unwrap();
+        let mut requests = state.network_requests.lock().map_err(|_| "Lock poisoned".to_string())?;
         if requests.len() >= 200 {
-            requests.remove(0);
+            requests.pop_front();
         }
-        requests.push(request);
+        requests.push_back(request);
     }
 
     let _ = app.emit(
@@ -1364,7 +1367,7 @@ pub async fn browser_devtools_network_response<R: Runtime>(
 ) -> Result<(), String> {
     // Update request in state
     {
-        let mut requests = state.network_requests.lock().unwrap();
+        let mut requests = state.network_requests.lock().map_err(|_| "Lock poisoned".to_string())?;
         if let Some(req) = requests.iter_mut().find(|r| r.id == id) {
             req.status = status;
             req.duration = duration;
@@ -1454,10 +1457,10 @@ pub async fn browser_get_console_messages(
     state: tauri::State<'_, BrowserState>,
     limit: Option<usize>,
 ) -> Result<Vec<ConsoleMessage>, String> {
-    let messages = state.console_messages.lock().unwrap();
+    let messages = state.console_messages.lock().map_err(|_| "Lock poisoned".to_string())?;
     let limit = limit.unwrap_or(100);
     let start = messages.len().saturating_sub(limit);
-    Ok(messages[start..].to_vec())
+    Ok(messages.iter().skip(start).cloned().collect())
 }
 
 /// Get network requests from state
@@ -1467,17 +1470,17 @@ pub async fn browser_get_network_requests(
     state: tauri::State<'_, BrowserState>,
     limit: Option<usize>,
 ) -> Result<Vec<NetworkRequest>, String> {
-    let requests = state.network_requests.lock().unwrap();
+    let requests = state.network_requests.lock().map_err(|_| "Lock poisoned".to_string())?;
     let limit = limit.unwrap_or(100);
     let start = requests.len().saturating_sub(limit);
-    Ok(requests[start..].to_vec())
+    Ok(requests.iter().skip(start).cloned().collect())
 }
 
 /// Clear console messages
 #[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_clear_console(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
-    state.console_messages.lock().unwrap().clear();
+    state.console_messages.lock().map_err(|_| "Lock poisoned".to_string())?.clear();
     Ok(())
 }
 
@@ -1485,6 +1488,6 @@ pub async fn browser_clear_console(state: tauri::State<'_, BrowserState>) -> Res
 #[allow(dead_code)]
 #[tauri::command]
 pub async fn browser_clear_network(state: tauri::State<'_, BrowserState>) -> Result<(), String> {
-    state.network_requests.lock().unwrap().clear();
+    state.network_requests.lock().map_err(|_| "Lock poisoned".to_string())?.clear();
     Ok(())
 }

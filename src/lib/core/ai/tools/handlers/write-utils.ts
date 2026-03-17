@@ -85,10 +85,20 @@ export function findBestMatch(content: string, snippet: string): SnippetMatch | 
   }
 
   try {
-    const fuzzyRegex = buildFuzzyRegex(snippet);
-    const fuzzyMatch = fuzzyRegex.exec(content);
-    if (fuzzyMatch) {
-      return { index: fuzzyMatch.index, length: fuzzyMatch[0].length, similarity: 0.8 };
+    // Only attempt fuzzy matching if snippet has enough meaningful tokens
+    // to avoid matching unrelated code sections
+    const tokens = snippet.trim().split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length >= 3) {
+      const fuzzyRegex = buildFuzzyRegex(snippet);
+      const fuzzyMatch = fuzzyRegex.exec(content);
+      if (fuzzyMatch) {
+        // Validate match length is reasonable compared to snippet length
+        // Reject if match is more than 2x the snippet length (likely wrong section)
+        const lengthRatio = fuzzyMatch[0].length / snippet.length;
+        if (lengthRatio <= 2.0 && lengthRatio >= 0.3) {
+          return { index: fuzzyMatch.index, length: fuzzyMatch[0].length, similarity: 0.8 };
+        }
+      }
     }
   } catch {
     // Ignore invalid fuzzy regex generation and fall through.

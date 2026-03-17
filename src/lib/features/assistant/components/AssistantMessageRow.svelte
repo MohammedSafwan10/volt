@@ -1,25 +1,27 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount } from "svelte";
-  import { UIIcon, Markdown } from "$shared/components/ui";
+  import { UIIcon } from "$shared/components/ui";
   import type {
     AssistantMessage,
     ToolCall,
     ContentPart,
   } from "$features/assistant/stores/assistant.svelte";
+  import AssistantStreamingMarkdown from "./AssistantStreamingMarkdown.svelte";
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
+  import { getFileEditDiffStats } from "./file-edit-stats";
   import { openFullDiffView } from "$features/editor/services/diff-view";
   import { writeFile } from "$core/services/file-system";
   import { showToast } from "$shared/stores/toast.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
-  import StreamingStatus from "./StreamingStatus.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
 
   interface Props {
     message: AssistantMessage;
     msgIdx: number;
     showStreamingFallback?: boolean;
+    renderMode?: "history" | "active";
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
     elapsedTime?: string | null;
@@ -29,6 +31,7 @@
     message,
     msgIdx,
     showStreamingFallback = false,
+    renderMode = "history",
     onToolApprove,
     onToolDeny,
     elapsedTime,
@@ -38,10 +41,12 @@
   const showStreaming = $derived(
     Boolean(message.isStreaming || showStreamingFallback),
   );
+  const isActiveRow = $derived(renderMode === "active");
 
   // Track reverted tool calls
   let revertedIds = $state<Set<string>>(new Set());
   let copyStatus = $state<"idle" | "copied">("idle");
+  let turnReviewExpanded = $state(false);
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Live timer for active thinking - updates every second
@@ -83,21 +88,25 @@
     return isFileMutatingTool(toolCall.name);
   }
 
-  function isTerminalTool(toolCall: ToolCall): boolean {
-    return isTerminalToolName(toolCall.name);
+  function shouldRenderFileEditAsApproval(toolCall: ToolCall): boolean {
+    return Boolean(toolCall.requiresApproval && toolCall.status === "pending");
   }
 
-  // Get the first pending terminal tool ID (for Kiro-style sequential approval)
-  function getFirstPendingTerminalId(): string | null {
+  function getFirstUnresolvedTerminalId(): string | null {
     const parts = getContentParts(message);
     for (const part of parts) {
-      if (part.type === "tool" && isTerminalTool(part.toolCall)) {
-        if (
-          part.toolCall.status === "pending" &&
-          part.toolCall.requiresApproval
-        ) {
-          return part.toolCall.id;
-        }
+      if (part.type !== "tool") continue;
+      if (!isTerminalToolName(part.toolCall.name)) continue;
+      if (!part.toolCall.requiresApproval) continue;
+      const isApprovedPending =
+        part.toolCall.status === "pending" &&
+        part.toolCall.reviewStatus === "accepted";
+      if (
+        part.toolCall.status === "running" ||
+        part.toolCall.status === "pending" ||
+        isApprovedPending
+      ) {
+        return part.toolCall.id;
       }
     }
     return null;
@@ -474,6 +483,55 @@
   }
 
   const contentParts = $derived(getContentParts(message));
+  const completedFileEditCalls = $derived.by(() =>
+    contentParts
+      .filter(
+        (part): part is Extract<ContentPart, { type: "tool" }> =>
+          part.type === "tool" &&
+          isFileEditTool(part.toolCall) &&
+          part.toolCall.status === "completed",
+      )
+      .map((part) => part.toolCall),
+  );
+  const turnFileGroups = $derived.by(() => {
+    const groups = new Map<
+      string,
+      { primary: ToolCall; calls: ToolCall[]; filename: string; stats: ReturnType<typeof getFileEditDiffStats> }
+    >();
+    for (const toolCall of completedFileEditCalls) {
+      const path = String(toolCall.arguments.path || "");
+      if (!path) continue;
+      const existing = groups.get(path);
+      if (existing) {
+        existing.calls.push(toolCall);
+        existing.stats = getFileEditDiffStats(existing.calls);
+        continue;
+      }
+      groups.set(path, {
+        primary: toolCall,
+        calls: [toolCall],
+        filename: path.split(/[/\\]/).pop() || path,
+        stats: getFileEditDiffStats([toolCall]),
+      });
+    }
+    return Array.from(groups.values());
+  });
+  const turnEditSummary = $derived.by(() => {
+    if (turnFileGroups.length === 0) return null;
+    let added = 0;
+    let removed = 0;
+    for (const group of turnFileGroups) {
+      if (group.stats) {
+        added += group.stats.added;
+        removed += group.stats.removed;
+      }
+    }
+    return {
+      fileCount: turnFileGroups.length,
+      added,
+      removed,
+    };
+  });
   function isTextPart(part: ContentPart): part is Extract<ContentPart, { type: "text" }> {
     return part.type === "text";
   }
@@ -487,7 +545,13 @@
     return message.content?.trim() || "";
   });
   const fileEditGroups = $derived(groupFileEdits(contentParts));
-  const firstPendingTerminalId = $derived(getFirstPendingTerminalId());
+  const visibleContentParts = $derived(
+    contentParts.filter((part) => {
+      if (part.type !== "tool") return true;
+      return !shouldSkipToolCall(part.toolCall.id, fileEditGroups);
+    }),
+  );
+  const firstPendingTerminalId = $derived(getFirstUnresolvedTerminalId());
 
   // Track manual toggle state for thinking blocks to avoid auto-reopening during streaming
   let manualThinkingStates = $state<Record<string, boolean>>({});
@@ -555,14 +619,21 @@
       });
     }
   }
+
 </script>
 
-<article class="message-row assistant" class:streaming={showStreaming}>
+<article
+  class="message-row assistant"
+  class:streaming={showStreaming}
+  class:active-row={isActiveRow}
+>
   <div class="msg-body">
     <div class="activity-thread">
-      <div class="activity-spine"></div>
+      {#if !isActiveRow}
+        <div class="activity-spine"></div>
+      {/if}
       <div class="activity-content">
-        {#each contentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? getThinkingKey(part, i) : `text-${i}`)}
+        {#each visibleContentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? getThinkingKey(part, i) : `text-${i}`)}
           <div class="activity-item">
             {#if part.type === "thinking"}
               {@const thinkingKey = getThinkingKey(part, i)}
@@ -631,11 +702,12 @@
               )}
               {#if !isGroupedChild}
                 <div class="inline-tool-wrapper">
-                  {#if isFileEditTool(part.toolCall)}
+                  {#if isFileEditTool(part.toolCall) && !shouldRenderFileEditAsApproval(part.toolCall)}
                     {@const group = fileEditGroups.get(part.toolCall.id)}
                     <FileEditCard
                       toolCall={part.toolCall}
                       groupedToolCalls={group?.grouped ?? []}
+                      compact={isActiveRow}
                       onFullDiff={handleFullDiff}
                       onRevert={handleRevert}
                       onUndoRevert={handleUndoRevert}
@@ -645,14 +717,15 @@
                   {:else}
                     <InlineToolCall
                       toolCall={part.toolCall}
-                      streamingProgress={part.toolCall.streamingProgress}
+                      compact={isActiveRow}
+                      showApprovalInline={true}
                       onApprove={onToolApprove
                         ? () => onToolApprove(message.id, part.toolCall)
                         : undefined}
                       onDeny={onToolDeny
                         ? () => onToolDeny(message.id, part.toolCall)
                         : undefined}
-                      isFirstPendingTerminal={!isTerminalTool(part.toolCall) ||
+                      isFirstPendingTerminal={!isTerminalToolName(part.toolCall.name) ||
                         part.toolCall.id === firstPendingTerminalId}
                     />
                   {/if}
@@ -660,10 +733,12 @@
               {/if}
             {:else if part.type === "text" && part.text.trim()}
               <div class="msg-content">
+                <AssistantStreamingMarkdown
+                  content={part.text}
+                  streaming={showStreaming && i === contentParts.length - 1}
+                />
                 {#if showStreaming && i === contentParts.length - 1}
-                  <Markdown content={part.text} /><span class="cursor"></span>
-                {:else}
-                  <Markdown content={part.text} />
+                  <span class="cursor"></span>
                 {/if}
               </div>
             {/if}
@@ -676,17 +751,64 @@
       </div>
     </div>
 
-    {#if showStreaming}
-      <StreamingStatus
-        isStreaming={showStreaming}
-        isThinking={message.isThinking || false}
-        activeToolNames={message.inlineToolCalls
-          ?.filter((tc) => tc.status === "running" || tc.status === "pending")
-          .map((tc) => tc.name) || []}
-      />
-    {/if}
-
     {#if !showStreaming}
+      {#if turnEditSummary}
+        <div class="turn-summary">
+          <span class="turn-summary-label"
+            >Edited {turnEditSummary.fileCount} file{turnEditSummary.fileCount === 1 ? "" : "s"}</span
+          >
+          <span class="turn-summary-ledger">
+            {#if turnEditSummary.added > 0}
+              <span class="added">+{turnEditSummary.added}</span>
+            {/if}
+            {#if turnEditSummary.removed > 0}
+              <span class="removed">-{turnEditSummary.removed}</span>
+            {/if}
+          </span>
+          <button
+            class="turn-summary-action"
+            type="button"
+            onclick={() => (turnReviewExpanded = !turnReviewExpanded)}
+          >
+            {turnReviewExpanded ? "Hide review" : "Review"}
+          </button>
+        </div>
+        {#if turnReviewExpanded}
+          <div class="turn-review">
+            {#each turnFileGroups as group (group.primary.arguments.path as string)}
+              <div class="turn-review-row">
+                <div class="turn-review-file">
+                  <span class="turn-review-name">{group.filename}</span>
+                  <span class="turn-review-path">{group.primary.arguments.path as string}</span>
+                </div>
+                <div class="turn-review-meta">
+                  {#if group.stats}
+                    <span class="turn-review-ledger">
+                      {#if group.stats.added > 0}
+                        <span class="added">+{group.stats.added}</span>
+                      {/if}
+                      {#if group.stats.removed > 0}
+                        <span class="removed">-{group.stats.removed}</span>
+                      {/if}
+                    </span>
+                  {/if}
+                  <button
+                    class="turn-review-diff"
+                    type="button"
+                    onclick={() =>
+                      handleFullDiff(
+                        group.primary,
+                        group.calls.length > 1 ? group.calls : undefined,
+                      )}
+                  >
+                    Diff
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
       <div class="message-meta">
         <div class="meta-left">
           <span class="meta-time">{formatTime(message.timestamp)}</span>
@@ -743,6 +865,10 @@
     gap: 10px;
     animation: slideIn 0.2s ease;
   }
+
+  .message-row.active-row {
+    animation: none;
+  }
   @keyframes slideIn {
     from {
       opacity: 0;
@@ -766,6 +892,10 @@
     padding-left: 18px;
   }
 
+  .active-row .activity-thread {
+    padding-left: 0;
+  }
+
   .activity-spine {
     position: absolute;
     left: 4px;
@@ -786,6 +916,10 @@
     margin-bottom: 8px;
   }
 
+  .active-row .activity-item {
+    margin-bottom: 6px;
+  }
+
   .activity-item:last-child {
     margin-bottom: 0;
   }
@@ -801,6 +935,10 @@
     opacity: 0.3;
   }
 
+  .active-row .activity-item::before {
+    display: none;
+  }
+
   .inline-tool-wrapper {
     margin: 2px 0;
   }
@@ -810,6 +948,11 @@
     line-height: 1.6;
     color: var(--color-text);
     word-break: break-word;
+  }
+
+  .active-row .msg-content {
+    font-size: 12.5px;
+    line-height: 1.55;
   }
 
   .cursor {
@@ -840,6 +983,135 @@
     justify-content: space-between;
     margin-top: 10px;
     gap: 12px;
+  }
+
+  .turn-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+    padding: 4px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-bg)) 90%, transparent);
+    font-size: 11px;
+  }
+
+  .turn-summary-label {
+    color: var(--color-text-secondary);
+  }
+
+  .turn-summary-ledger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-weight: 600;
+  }
+
+  .turn-summary .added {
+    color: #4ade80;
+  }
+
+  .turn-summary .removed {
+    color: #f87171;
+  }
+
+  .turn-summary-action {
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    background: transparent;
+    color: var(--color-text);
+    font-size: 11px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+  }
+
+  .turn-summary-action:hover {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    border-color: var(--color-accent);
+  }
+
+  .turn-review {
+    margin-top: 8px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-bg-elevated, var(--color-bg)) 92%, transparent);
+    overflow: hidden;
+  }
+
+  .turn-review-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  }
+
+  .turn-review-row:first-child {
+    border-top: none;
+  }
+
+  .turn-review-file {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .turn-review-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .turn-review-path {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .turn-review-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .turn-review-ledger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 56px;
+    justify-content: flex-end;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .turn-review-diff {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+  }
+
+  .turn-review-diff:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   }
 
   .meta-left {

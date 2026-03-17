@@ -49,6 +49,7 @@ use crate::__cmd__browser_zoom_reset;
 use crate::__cmd__call_mcp_tool;
 use crate::__cmd__cancel_index_workspace;
 use crate::__cmd__cancel_workspace_search;
+use crate::__cmd__find_files_by_name;
 use crate::__cmd__cdp_attach_to_page;
 use crate::__cmd__cdp_clear_console;
 use crate::__cmd__cdp_clear_errors;
@@ -237,8 +238,8 @@ use crate::domains::mcp::commands::{
     McpState,
 };
 use crate::domains::search::commands::{
-    cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
-    workspace_search_stream, SearchManagerState,
+    cancel_workspace_search, find_files_by_name, replace_in_file, replace_one_in_file,
+    workspace_search, workspace_search_stream, SearchManagerState,
 };
 use crate::domains::semantic::commands::{
     semantic_index_compact, semantic_index_query, semantic_index_rebuild,
@@ -429,6 +430,7 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             workspace_search,
             workspace_search_stream,
             cancel_workspace_search,
+            find_files_by_name,
             replace_in_file,
             replace_one_in_file,
             // File indexing

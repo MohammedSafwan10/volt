@@ -1,4 +1,9 @@
 import type { ToolResult } from '$core/ai/tools';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
+import {
+  createToolRuntimeContext,
+  getInitialToolLiveStatus,
+} from './tool-live-updates';
 
 export interface QueuedNonFileTool {
   id: string;
@@ -43,7 +48,7 @@ interface NonFileExecutorDeps {
   executeToolCall: (
     name: string,
     args: Record<string, unknown>,
-    options: { signal: AbortSignal; idempotencyKey: string },
+    options: { signal: AbortSignal; idempotencyKey: string; runtime?: ToolRuntimeContext },
   ) => Promise<ToolResult>;
   signal: AbortSignal;
   toolRunScope: string;
@@ -84,11 +89,14 @@ export async function executeQueuedNonFileTools(
     deps.updateToolCallInMessage(deps.messageId, queued.id, {
       status: 'running',
       startTime: Date.now(),
+      meta: {
+        liveStatus: getInitialToolLiveStatus(queued.name),
+      },
     });
   }
 
   const promises = toolsToRun.map((queued) =>
-    deps
+        deps
       .executeToolCall(queued.name, queued.args, {
         signal: deps.signal,
         idempotencyKey: deps.getToolIdempotencyKey(
@@ -97,6 +105,9 @@ export async function executeQueuedNonFileTools(
           queued.name,
           queued.args,
         ),
+        runtime: createToolRuntimeContext((patch) => {
+          deps.updateToolCallInMessage(deps.messageId, queued.id, patch);
+        }),
       })
       .then((result) => {
         if (!result.success) {
@@ -111,9 +122,13 @@ export async function executeQueuedNonFileTools(
           status: result.success ? 'completed' : 'failed',
           output: result.output,
           error: result.error,
-          meta: result.meta,
+          meta: {
+            ...(result.meta ?? {}),
+            liveStatus: undefined,
+          },
           data: result.data,
           endTime: Date.now(),
+          streamingProgress: undefined,
         });
         deps.trackToolOutcome(queued.name, queued.args, result);
         const signature = deps.getFailureSignature(queued.name, queued.args, result);
@@ -130,7 +145,11 @@ export async function executeQueuedNonFileTools(
         deps.updateToolCallInMessage(deps.messageId, queued.id, {
           status: 'failed',
           error,
+          meta: {
+            liveStatus: undefined,
+          },
           endTime: Date.now(),
+          streamingProgress: undefined,
         });
         const signature = deps.getFailureSignature(queued.name, queued.args, {
           success: false,
@@ -182,14 +201,17 @@ export async function executeFileEditQueues(
         deps.updateToolCallInMessage(deps.messageId, edit.id, {
           status: 'running',
           startTime: Date.now(),
-          meta: { editPhase: 'writing', queueIndex: edit.queueIndex },
+          meta: {
+            editPhase: 'writing',
+            queueIndex: edit.queueIndex,
+            liveStatus: getInitialToolLiveStatus(edit.name),
+          },
         });
 
         try {
-          const isLastEditForPath = edit.queueIndex === edits.length;
           const args: Record<string, unknown> = {
             ...edit.args,
-            postEditDiagnostics: isLastEditForPath,
+            postEditDiagnostics: false,
           };
           let result = await deps.executeToolCall(edit.name, args, {
             signal: deps.signal,
@@ -199,6 +221,9 @@ export async function executeFileEditQueues(
               edit.name,
               args,
             ),
+            runtime: createToolRuntimeContext((patch) => {
+              deps.updateToolCallInMessage(deps.messageId, edit.id, patch);
+            }),
           });
           let retried = false;
           if (
@@ -219,6 +244,9 @@ export async function executeFileEditQueues(
                 edit.name,
                 retryArgs,
               ),
+              runtime: createToolRuntimeContext((patch) => {
+                deps.updateToolCallInMessage(deps.messageId, edit.id, patch);
+              }),
             });
             if (!retryResult.success) {
               retryResult.error = `${retryResult.error ?? 'Retry exhausted'}\n\nRetry exhausted after one automatic re-read/retry attempt.`;
@@ -259,9 +287,11 @@ export async function executeFileEditQueues(
               editPhase: result.success ? 'done' : 'failed',
               queueIndex: edit.queueIndex,
               autoRetried: retried,
+              liveStatus: undefined,
             },
             data: result.data,
             endTime: Date.now(),
+            streamingProgress: undefined,
           });
           deps.trackToolOutcome(edit.name, edit.args, result);
           const signature = deps.getFailureSignature(edit.name, edit.args, result);
@@ -280,7 +310,8 @@ export async function executeFileEditQueues(
             status: 'failed',
             error,
             endTime: Date.now(),
-            meta: { editPhase: 'failed', queueIndex: edit.queueIndex },
+            meta: { editPhase: 'failed', queueIndex: edit.queueIndex, liveStatus: undefined },
+            streamingProgress: undefined,
           });
           results.push({
             id: edit.id,

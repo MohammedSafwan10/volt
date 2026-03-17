@@ -23,6 +23,16 @@ class TerminalStore {
 	private syncPromise: Promise<void> | null = null;
 	private startupSyncComplete = false;
 
+	private normalizeCwd(path: string | null | undefined): string | null {
+		if (!path) return null;
+		const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+		return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+	}
+
+	private resolveDesiredCwd(cwd?: string): string | undefined {
+		return cwd ?? projectStore.rootPath ?? undefined;
+	}
+
 	constructor() {
 		void this.syncWithBackendRetry(5, 250);
 		// Start terminal problem matcher (background service)
@@ -120,7 +130,7 @@ class TerminalStore {
 				await projectStore.initialized;
 			}
 
-			const workingDir = cwd ?? projectStore.rootPath ?? undefined;
+			const workingDir = this.resolveDesiredCwd(cwd);
 			console.log('[TerminalStore] Creating terminal in:', workingDir || '(default)');
 
 			const session = await createTerminalSession(workingDir);
@@ -166,24 +176,41 @@ class TerminalStore {
 		}
 
 		// Check for existing AI terminal first
+		const desiredCwd = this.resolveDesiredCwd(cwd);
+		const desiredCwdNormalized = this.normalizeCwd(desiredCwd);
 		const existingId = this.aiTerminalId;
 		if (existingId) {
 			const existing = this.sessions.find((s) => s.id === existingId) ?? null;
 			if (existing) {
-				console.log('[TerminalStore] Reusing existing AI terminal:', existingId);
-				console.log('[TerminalStore] AI terminal output history chars:', existing.getRecentOutput().length);
-				this.activeTerminalId = existing.id;
-				return existing;
+				const existingCwdNormalized = this.normalizeCwd(existing.cwd || existing.info.cwd);
+				const cwdMatches =
+					!desiredCwdNormalized ||
+					existingCwdNormalized === desiredCwdNormalized;
+				if (cwdMatches) {
+					console.log('[TerminalStore] Reusing existing AI terminal:', existingId);
+					console.log('[TerminalStore] AI terminal output history chars:', existing.getRecentOutput().length);
+					this.activeTerminalId = existing.id;
+					return existing;
+				}
+				console.log(
+					'[TerminalStore] Replacing AI terminal due to cwd mismatch:',
+					existing.cwd || existing.info.cwd,
+					'->',
+					desiredCwd,
+				);
+				this.aiTerminalId = null;
 			}
 			// AI terminal ID exists but session is gone, clear it
-			console.log('[TerminalStore] AI terminal ID exists but session gone, clearing');
-			this.aiTerminalId = null;
+			else {
+				console.log('[TerminalStore] AI terminal ID exists but session gone, clearing');
+				this.aiTerminalId = null;
+			}
 		}
 
 		// Create new AI terminal with mutex protection
 		this.aiCreatePromise = (async () => {
 			console.log('[TerminalStore] Creating new AI terminal');
-			const session = await this.createTerminal(cwd);
+			const session = await this.createTerminal(desiredCwd);
 			if (!session) {
 				console.error('[TerminalStore] Failed to create AI terminal');
 				return null;

@@ -219,7 +219,14 @@ pub async fn start_mcp_server(
             "npm" => "npm.cmd".to_string(),
             "yarn" => "yarn.cmd".to_string(),
             "pnpm" => "pnpm.cmd".to_string(),
+            "bunx" => "bunx.cmd".to_string(),
+            "bun" => "bun.exe".to_string(),
+            "deno" => "deno.exe".to_string(),
             "node" => "node.exe".to_string(),
+            "python" => "python.exe".to_string(),
+            "python3" => "python3.exe".to_string(),
+            "uvx" => "uvx.cmd".to_string(),
+            "uv" => "uv.exe".to_string(),
             other => other.to_string(),
         }
     } else {
@@ -483,7 +490,7 @@ pub async fn call_mcp_tool(
         &pending,
         "tools/call",
         Some(json!({"name": tool_name, "arguments": arguments})),
-        30,
+        120,
     )
     .await
 }

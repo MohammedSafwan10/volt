@@ -35,7 +35,7 @@ interface OpenAIRequest {
 
 interface OpenAIMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
-    content?: string;
+    content?: string | OpenAIContentPart[];
     name?: string;
     tool_calls?: Array<{
         id: string;
@@ -46,6 +46,15 @@ interface OpenAIMessage {
         };
     }>;
     tool_call_id?: string;
+}
+
+interface OpenAIContentPart {
+    type: 'text' | 'image_url';
+    text?: string;
+    image_url?: {
+        url: string;
+        detail?: 'auto';
+    };
 }
 
 function isReasoningModel(model: string): boolean {
@@ -103,7 +112,7 @@ function extractStreamContent(choice: OpenAIChoice): string {
     return '';
 }
 
-function toOpenAIMessageContent(message: ChatRequest['messages'][number]): string {
+function toOpenAIMessageText(message: ChatRequest['messages'][number]): string {
     if (message.content?.trim()) return message.content;
     if (!message.parts?.length) return '';
 
@@ -114,7 +123,37 @@ function toOpenAIMessageContent(message: ChatRequest['messages'][number]): strin
     return textParts.join('\n').trim();
 }
 
-function toOpenAIMessages(messages: ChatRequest['messages'], systemPrompt?: string): OpenAIMessage[] {
+function toOpenAIContentParts(message: ChatRequest['messages'][number]): OpenAIContentPart[] {
+    const contentParts: OpenAIContentPart[] = [];
+
+    if (!message.parts?.length) {
+        const text = message.content?.trim();
+        return text ? [{ type: 'text', text }] : [];
+    }
+
+    for (const part of message.parts) {
+        if (part.type === 'text' || part.type === 'thinking') {
+            if (part.text.trim()) {
+                contentParts.push({ type: 'text', text: part.text });
+            }
+            continue;
+        }
+
+        if (part.type === 'image') {
+            contentParts.push({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${part.mimeType};base64,${part.data}`,
+                    detail: 'auto',
+                },
+            });
+        }
+    }
+
+    return contentParts;
+}
+
+export function toOpenAIMessages(messages: ChatRequest['messages'], systemPrompt?: string): OpenAIMessage[] {
     const result: OpenAIMessage[] = [];
     const seenToolCallIds = new Set<string>();
     const consumedToolCallIds = new Set<string>();
@@ -126,7 +165,7 @@ function toOpenAIMessages(messages: ChatRequest['messages'], systemPrompt?: stri
     for (const message of messages) {
         const functionCalls = message.parts?.filter((part) => part.type === 'function_call') ?? [];
         const functionResponses = message.parts?.filter((part) => part.type === 'function_response') ?? [];
-        const content = toOpenAIMessageContent(message);
+        const textContent = toOpenAIMessageText(message);
 
         if (functionCalls.length > 0) {
             for (const part of functionCalls) {
@@ -136,7 +175,7 @@ function toOpenAIMessages(messages: ChatRequest['messages'], systemPrompt?: stri
             }
             result.push({
                 role: 'assistant',
-                content: content || '',
+                content: textContent || '',
                 tool_calls: functionCalls.map((part) => ({
                     id: part.id,
                     type: 'function',
@@ -166,7 +205,13 @@ function toOpenAIMessages(messages: ChatRequest['messages'], systemPrompt?: stri
             continue;
         }
 
-        if (!content) continue;
+        const contentParts = toOpenAIContentParts(message);
+        if (contentParts.length === 0) continue;
+
+        const content =
+            contentParts.length === 1 && contentParts[0].type === 'text'
+                ? contentParts[0].text ?? ''
+                : contentParts;
         result.push({
             role: message.role === 'system' ? 'system' : message.role === 'assistant' ? 'assistant' : 'user',
             content,
@@ -268,6 +313,25 @@ function parseToolArguments(raw: string): Record<string, unknown> {
     }
 }
 
+function getStreamedToolArguments(raw: string): {
+    arguments: Record<string, unknown>;
+    complete: boolean;
+} {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return { arguments: {}, complete: false };
+    }
+
+    try {
+        return {
+            arguments: JSON.parse(trimmed) as Record<string, unknown>,
+            complete: true,
+        };
+    } catch {
+        return { arguments: {}, complete: false };
+    }
+}
+
 export async function validateOpenAIKey(apiKey: string): Promise<{ success: boolean; error?: string }> {
     try {
         await fetchLocalCodexProxy({
@@ -310,7 +374,7 @@ export const openaiProvider: AIProvider = {
             toolCalls: choice.message?.tool_calls?.map((tc) => ({
                 id: tc.id,
                 name: tc.function.name,
-                arguments: JSON.parse(tc.function.arguments)
+                arguments: parseToolArguments(tc.function.arguments)
             })),
             finishReason: choice.finish_reason === 'tool_calls' ? 'tool_calls' : 'stop',
             usage
@@ -354,7 +418,17 @@ export const openaiProvider: AIProvider = {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        const pendingToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+        const pendingToolCalls = new Map<
+            number,
+            {
+                id: string;
+                name: string;
+                arguments: string;
+                emittedPartial: boolean;
+                emittedArgsKey: string | null;
+                emittedFinal: boolean;
+            }
+        >();
         let buffer = '';
         let accumulatedContent = '';
 
@@ -418,6 +492,9 @@ export const openaiProvider: AIProvider = {
                                     id: call.id || `call_${Date.now()}_${idx}`,
                                     name: '',
                                     arguments: '',
+                                    emittedPartial: false,
+                                    emittedArgsKey: null,
+                                    emittedFinal: false,
                                 });
                             }
 
@@ -425,6 +502,34 @@ export const openaiProvider: AIProvider = {
                             if (call.id) pending.id = call.id;
                             if (call.function?.name) pending.name = call.function.name;
                             if (call.function?.arguments) pending.arguments += call.function.arguments;
+
+                            if (!pending.name) {
+                                continue;
+                            }
+
+                            const parsed = getStreamedToolArguments(pending.arguments);
+                            const argsKey = JSON.stringify(parsed.arguments);
+                            const shouldEmit =
+                                !pending.emittedPartial ||
+                                argsKey !== pending.emittedArgsKey;
+
+                            if (!shouldEmit) {
+                                continue;
+                            }
+
+                            yield {
+                                type: 'tool_call',
+                                partial: true,
+                                toolCall: {
+                                    id: pending.id,
+                                    name: pending.name,
+                                    arguments: parsed.arguments,
+                                },
+                            };
+
+                            pending.emittedPartial = true;
+                            pending.emittedArgsKey = argsKey;
+                            pending.emittedFinal = false;
                         }
                     }
                 }
@@ -435,12 +540,14 @@ export const openaiProvider: AIProvider = {
 
         for (const [, pending] of pendingToolCalls) {
             if (!pending.name) continue;
+            const parsed = getStreamedToolArguments(pending.arguments);
             yield {
                 type: 'tool_call',
+                partial: false,
                 toolCall: {
                     id: pending.id,
                     name: pending.name,
-                    arguments: parseToolArguments(pending.arguments),
+                    arguments: parsed.complete ? parsed.arguments : parseToolArguments(pending.arguments),
                 },
             };
         }

@@ -10,14 +10,24 @@ import { projectStore } from '$shared/stores/project.svelte';
 import { toolObservabilityStore } from '$features/assistant/stores/tool-observability.svelte';
 import { truncateOutput, type ToolResult } from '$core/ai/tools/utils';
 import { matchesRequestedDiagnosticPath } from './diagnostics-paths';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
 
 /**
  * Get errors/warnings from IDE
  * 
- * Kiro-style: Takes array of paths, shows which files were checked
+ * Takes array of paths, shows which files were checked
  */
-export async function handleGetDiagnostics(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleGetDiagnostics(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const workspaceRoot = projectStore.rootPath || '';
+  runtime?.onUpdate?.({
+    liveStatus: 'Collecting diagnostics...',
+    meta: {
+      diagnosticsFreshness: problemsStore.diagnosticsFreshness,
+    },
+  });
 
   // Get paths to check - accept both 'paths' (array) and 'path' (single)
   let pathsToCheck: string[] = [];
@@ -31,6 +41,17 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
   // Get all problems from the store (unfiltered to avoid UI filter mismatch)
   const allProblems = problemsStore.allProblemsUnfiltered;
   const freshness = problemsStore.diagnosticsFreshness;
+  runtime?.onUpdate?.({
+    liveStatus:
+      freshness.status === 'updating'
+        ? 'Waiting for diagnostics to settle...'
+        : freshness.status === 'stale'
+          ? 'Collecting diagnostics (some sources stale)...'
+          : 'Collecting diagnostics...',
+    meta: {
+      diagnosticsFreshness: freshness,
+    },
+  });
 
   // If specific paths requested, filter to those
   let relevantProblems = allProblems;
@@ -58,7 +79,7 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
   // Format output
   const lines: string[] = [];
 
-  // Show which files were checked (Kiro-style)
+  // Show which files were checked
   if (pathsToCheck.length > 0) {
     const fileList = pathsToCheck.length <= 3
       ? pathsToCheck.join(', ')
@@ -172,7 +193,9 @@ export async function handleGetDiagnostics(args: Record<string, unknown>): Promi
  * - Per-tool latency / error / retry stats
  * - Top failing signatures
  */
-export async function handleGetToolMetrics(): Promise<ToolResult> {
+export async function handleGetToolMetrics(
+  _runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const aggregates = toolObservabilityStore.toolAggregates;
   const topFailingSignatures = toolObservabilityStore.topFailingSignatures;
   const topSlowTools = toolObservabilityStore.topSlowTools;

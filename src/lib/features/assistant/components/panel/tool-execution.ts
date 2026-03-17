@@ -1,5 +1,10 @@
 import type { ToolResult } from '$core/ai/tools';
 import type { ToolCall } from '$features/assistant/stores/assistant.svelte';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
+import {
+  createToolRuntimeContext,
+  getInitialToolLiveStatus,
+} from './tool-live-updates';
 
 interface ExecuteToolWithUpdatesParams {
   toolCall: ToolCall;
@@ -8,7 +13,7 @@ interface ExecuteToolWithUpdatesParams {
   executeToolCall: (
     name: string,
     args: Record<string, unknown>,
-    options: { signal?: AbortSignal; idempotencyKey: string },
+    options: { signal?: AbortSignal; idempotencyKey: string; runtime?: ToolRuntimeContext },
   ) => Promise<ToolResult>;
   getToolIdempotencyKey: (
     scope: string,
@@ -37,6 +42,9 @@ export async function executeToolWithUpdates(
   updateToolCall(toolCall.id, {
     status: 'running',
     startTime: Date.now(),
+    meta: {
+      liveStatus: getInitialToolLiveStatus(toolCall.name),
+    },
   });
 
   try {
@@ -48,13 +56,19 @@ export async function executeToolWithUpdates(
         toolCall.name,
         toolCall.arguments,
       ),
+      runtime: createToolRuntimeContext((patch) => {
+        updateToolCall(toolCall.id, patch);
+      }),
     });
 
     updateToolCall(toolCall.id, {
       status: result.success ? 'completed' : 'failed',
       output: result.output,
       error: result.error,
-      meta: result.meta,
+      meta: {
+        ...(result.meta ?? {}),
+        liveStatus: undefined,
+      },
       data: result.data,
       endTime: Date.now(),
       streamingProgress: undefined,
@@ -66,6 +80,9 @@ export async function executeToolWithUpdates(
     updateToolCall(toolCall.id, {
       status: 'failed',
       error,
+      meta: {
+        liveStatus: undefined,
+      },
       endTime: Date.now(),
       streamingProgress: undefined,
     });

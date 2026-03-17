@@ -15,8 +15,18 @@
  * - Must respect workspace ESLint configuration
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  getLspRegistry,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileQuiet } from '$core/services/file-system';
@@ -34,10 +44,30 @@ function normalizeFilePath(filepath: string): string {
   return filepath.replace(/\\/g, '/');
 }
 
+function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
+  const active = new Set(
+    Array.from(openDocuments.keys()).map((path) => normalizeFilePath(path)),
+  );
+
+  return [...files].sort((a, b) => {
+    const aActive = active.has(normalizeFilePath(a.path)) ? 0 : 1;
+    const bActive = active.has(normalizeFilePath(b.path)) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return normalizeFilePath(a.path).localeCompare(normalizeFilePath(b.path));
+  });
+}
+
 // Server instance tracking
 let eslintServerTransport: LspTransport | null = null;
 let eslintServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let eslintSessionGeneration = 0;
+const eslintRecovery = createLspRecoveryController({
+  source: 'eslint',
+  restart: async () => {
+    await recoverEslintLspAfterExit();
+  },
+});
 
 interface LspStartErrorLike {
   type?: string;
@@ -66,6 +96,9 @@ async function rehydrateOpenDocuments(): Promise<void> {
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150; // Faster debounce for full diagnostics mode
+const PROJECT_ANALYSIS_BATCH_SIZE = 10;
+const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
+let projectAnalysisRunId = 0;
 
 /**
  * File extensions that ESLint can lint
@@ -224,8 +257,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  // Merge with existing problems (don't overwrite TS or Tailwind problems)
-  problemsStore.setProblemsForFile(filePath, problems, 'eslint');
+  setSourceProblemsForFile({
+    source: 'eslint',
+    generation: eslintSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -248,16 +285,34 @@ async function initializeServer(): Promise<void> {
       try {
         eslintServerTransport = await registry.startServer('eslint', {
           serverId: 'eslint-main',
-          cwd: projectStore.rootPath ?? undefined
+          cwd: projectStore.rootPath ?? undefined,
+          restartPolicy: {
+            enabled: true,
+            baseDelayMs: 750,
+            maxDelayMs: 10_000,
+            maxAttempts: 4,
+            windowMs: 120_000,
+          },
         });
+        eslintServerTransport.configureHealth({ autoRestart: true });
+        eslintSessionGeneration = startSourceSession('eslint');
       } catch (error) {
         if (isServerAlreadyRunningError(error)) {
           console.warn('[ESLint LSP] Recovering from stale server state (ServerAlreadyRunning)');
           await invoke('lsp_stop_server', { serverId: 'eslint-main' });
           eslintServerTransport = await registry.startServer('eslint', {
             serverId: 'eslint-main',
-            cwd: projectStore.rootPath ?? undefined
+            cwd: projectStore.rootPath ?? undefined,
+            restartPolicy: {
+              enabled: true,
+              baseDelayMs: 750,
+              maxDelayMs: 10_000,
+              maxAttempts: 4,
+              windowMs: 120_000,
+            },
           });
+          eslintServerTransport.configureHealth({ autoRestart: true });
+          eslintSessionGeneration = startSourceSession('eslint');
         } else {
           throw error;
         }
@@ -274,14 +329,16 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       eslintServerTransport.onExit(() => {
         console.log('[ESLint LSP] Server exited');
-        problemsStore.markSourceStale('eslint');
+        eslintSessionGeneration = markSourceSessionStale('eslint');
+        eslintRecovery.schedule('transport exit');
         eslintServerTransport = null;
         eslintServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
       });
       eslintServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('eslint');
+        eslintSessionGeneration = startSourceSession('eslint');
+        markSourceSessionReady('eslint', eslintSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -413,6 +470,8 @@ async function initializeServer(): Promise<void> {
       });
 
       eslintServerInitialized = true;
+      markSourceSessionReady('eslint', eslintSessionGeneration);
+      eslintRecovery.reset();
     } catch (error) {
       console.error('[ESLint LSP] Failed to initialize server:', error);
       eslintServerTransport = null;
@@ -546,7 +605,11 @@ export async function notifyEslintDocumentClosed(filepath: string): Promise<void
   });
 
   // Clear ESLint problems for this file
-  problemsStore.clearProblemsForFile(normalizedPath, 'eslint');
+  clearSourceProblemsForFile({
+    source: 'eslint',
+    generation: eslintSessionGeneration,
+    filePath: normalizedPath,
+  });
 }
 
 /**
@@ -698,6 +761,8 @@ export async function stopEslintLsp(): Promise<void> {
   eslintServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
+  eslintSessionGeneration = markSourceSessionStale('eslint');
+  eslintRecovery.reset();
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -716,6 +781,13 @@ export async function restartEslintLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
+}
+
+async function recoverEslintLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || eslintServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
 }
 
 /**
@@ -781,8 +853,10 @@ export async function pushEslintConfig(): Promise<void> {
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
+  const runId = ++projectAnalysisRunId;
+
   const allFiles = getAllFiles();
-  const eslintFiles = allFiles.filter(f => isEslintFile(f.path));
+  const eslintFiles = prioritizeProjectFiles(allFiles.filter(f => isEslintFile(f.path)));
 
   if (eslintFiles.length === 0) {
     console.log('[ESLint LSP] No JS/TS files found for background analysis.');
@@ -791,18 +865,34 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
   console.log(`[ESLint LSP] Starting project-wide analysis of ${eslintFiles.length} files...`);
 
-  // Process files with delay to avoid overwhelming the server
+  let processedSinceYield = 0;
+
   for (const file of eslintFiles) {
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     const normalizedPath = normalizeFilePath(file.path);
 
     // Skip if already open
     if (openDocuments.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     if (content) {
       await notifyEslintDocumentOpened(normalizedPath, content);
-      // Small delay to let server process
-      await new Promise(r => setTimeout(r, 50));
+      processedSinceYield += 1;
+
+      if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
+        processedSinceYield = 0;
+        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        if (runId !== projectAnalysisRunId) {
+          return;
+        }
+      }
     }
   }
 

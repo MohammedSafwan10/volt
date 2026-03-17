@@ -104,6 +104,7 @@
   let markersDisposable: Monaco.IDisposable | null = $state(null);
   let cursorDisposable: Monaco.IDisposable | null = $state(null);
   let selectionDisposable: Monaco.IDisposable | null = $state(null);
+  let modelSwapRunId = 0;
 
   const MONACO_NATIVE_SOURCE = "monaco-native";
 
@@ -129,6 +130,34 @@
       normalized = normalized[0].toLowerCase() + normalized.slice(1);
     }
     return normalized;
+  }
+
+  function isTransientSidecarOpenError(error: unknown): boolean {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === "object" && error !== null
+          ? JSON.stringify(error)
+          : String(error ?? "");
+    return (
+      /transport not connected/i.test(message) ||
+      /server exited/i.test(message) ||
+      /servernotfound/i.test(message) ||
+      /spawn failed/i.test(message) ||
+      /canceled/i.test(message)
+    );
+  }
+
+  async function safelyNotifySidecar(
+    label: string,
+    notify: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await notify();
+    } catch (error) {
+      if (isTransientSidecarOpenError(error)) return;
+      console.warn(`[MonacoEditor] ${label} sidecar open notification failed`, error);
+    }
   }
 
   function applyProblemsMarkersForCurrentModel(
@@ -162,6 +191,45 @@
     monacoInstance.editor.setModelMarkers(model, "volt-problems", markers);
   }
 
+  function nativeMarkerFingerprint(marker: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+    message: string;
+    severity: Monaco.MarkerSeverity;
+    code?: unknown;
+  }): string {
+    const code =
+      typeof marker.code === "string"
+        ? marker.code
+        : marker.code && typeof marker.code === "object" && "value" in marker.code
+          ? String(marker.code.value)
+          : "";
+
+    return [
+      marker.startLineNumber,
+      marker.startColumn,
+      marker.endLineNumber,
+      marker.endColumn,
+      marker.message.trim(),
+      marker.severity,
+      code,
+    ].join("|");
+  }
+
+  function problemFingerprint(problem: Problem): string {
+    return [
+      problem.line,
+      problem.column,
+      problem.endLine,
+      problem.endColumn,
+      problem.message.trim(),
+      problem.severity,
+      problem.code ?? "",
+    ].join("|");
+  }
+
   function mapNativeMarkerSeverity(
     severity: Monaco.MarkerSeverity,
   ): Problem["severity"] {
@@ -189,25 +257,33 @@
 
     const normalizedPath = normalizeProblemsPath(filepath);
     const fileName = normalizedPath.split(/[/\\]/).pop() || normalizedPath;
+    const providerFingerprints = new Set(
+      problemsStore
+        .getDedupedProblemsForFile(normalizedPath)
+        .filter((problem) => problem.source !== MONACO_NATIVE_SOURCE)
+        .map((problem) => problemFingerprint(problem)),
+    );
 
-    const nativeProblems: Problem[] = nativeMarkers.map((marker, index) => ({
-      id: `${MONACO_NATIVE_SOURCE}:${normalizedPath}:${marker.startLineNumber}:${marker.startColumn}:${index}`,
-      file: normalizedPath,
-      fileName,
-      line: marker.startLineNumber,
-      column: marker.startColumn,
-      endLine: marker.endLineNumber,
-      endColumn: marker.endColumn,
-      message: marker.message,
-      severity: mapNativeMarkerSeverity(marker.severity),
-      source: marker.source || marker.owner || MONACO_NATIVE_SOURCE,
-      code:
-        typeof marker.code === "string"
-          ? marker.code
-          : marker.code && typeof marker.code === "object" && "value" in marker.code
-            ? String(marker.code.value)
-            : undefined,
-    }));
+    const nativeProblems: Problem[] = nativeMarkers
+      .filter((marker) => !providerFingerprints.has(nativeMarkerFingerprint(marker)))
+      .map((marker, index) => ({
+        id: `${MONACO_NATIVE_SOURCE}:${normalizedPath}:${marker.startLineNumber}:${marker.startColumn}:${index}`,
+        file: normalizedPath,
+        fileName,
+        line: marker.startLineNumber,
+        column: marker.startColumn,
+        endLine: marker.endLineNumber,
+        endColumn: marker.endColumn,
+        message: marker.message,
+        severity: mapNativeMarkerSeverity(marker.severity),
+        source: marker.source || marker.owner || MONACO_NATIVE_SOURCE,
+        code:
+          typeof marker.code === "string"
+            ? marker.code
+            : marker.code && typeof marker.code === "object" && "value" in marker.code
+              ? String(marker.code.value)
+              : undefined,
+      }));
 
     problemsStore.setProblemsForFile(
       normalizedPath,
@@ -457,6 +533,8 @@
 
     const path = filepath;
     const lang = detectedLanguage;
+    const runId = modelSwapRunId + 1;
+    modelSwapRunId = runId;
 
     // Notify Monaco LSP client about the file being opened
     notifyFileOpened(lang);
@@ -468,7 +546,7 @@
         language: lang,
       });
 
-      if (!editor) return;
+      if (!editor || runId !== modelSwapRunId) return;
       editor.setModel(model);
 
       applyProblemsMarkersForCurrentModel(model, path);
@@ -489,54 +567,57 @@
 
       // Notify TypeScript LSP sidecar about the file being opened
       if (isTsJsFile(path)) {
-        await notifyDocumentOpened(path, value);
+        await safelyNotifySidecar("typescript", () => notifyDocumentOpened(path, value));
       }
 
       // Notify Tailwind LSP sidecar about the file being opened
       if (isTailwindFile(path)) {
-        await notifyTailwindDocumentOpened(path, value);
+        await safelyNotifySidecar("tailwind", () => notifyTailwindDocumentOpened(path, value));
       }
 
       // Notify ESLint LSP sidecar about the file being opened
       if (isEslintFile(path)) {
-        await notifyEslintDocumentOpened(path, value);
+        await safelyNotifySidecar("eslint", () => notifyEslintDocumentOpened(path, value));
       }
 
       // Notify Svelte LSP sidecar about the file being opened
       if (isSvelteFile(path)) {
-        await notifySvelteDocumentOpened(path, value);
+        await safelyNotifySidecar("svelte", () => notifySvelteDocumentOpened(path, value));
       }
 
       // Notify HTML LSP sidecar about the file being opened
       if (isHtmlFile(path)) {
-        await notifyHtmlDocumentOpened(path, value);
+        await safelyNotifySidecar("html", () => notifyHtmlDocumentOpened(path, value));
       }
 
       // Notify CSS LSP sidecar about the file being opened
       if (isCssFile(path)) {
-        await notifyCssDocumentOpened(path, value);
+        await safelyNotifySidecar("css", () => notifyCssDocumentOpened(path, value));
       }
 
       // Notify JSON LSP sidecar about the file being opened
       if (isJsonFile(path)) {
-        await notifyJsonDocumentOpened(path, value);
+        await safelyNotifySidecar("json", () => notifyJsonDocumentOpened(path, value));
       }
 
       // Notify Dart LSP sidecar about the file being opened
       if (isDartLspFile(path)) {
-        await notifyDartDocumentOpened(path, value);
+        await safelyNotifySidecar("dart", () => notifyDartDocumentOpened(path, value));
       }
 
       // Notify YAML LSP sidecar about the file being opened
       if (isYamlFile(path)) {
-        await notifyYamlDocumentOpened(path, value);
+        await safelyNotifySidecar("yaml", () => notifyYamlDocumentOpened(path, value));
       }
 
       // Notify XML LSP sidecar about the file being opened
       if (isXmlFile(path)) {
-        await notifyXmlDocumentOpened(path, value);
+        await safelyNotifySidecar("xml", () => notifyXmlDocumentOpened(path, value));
       }
-    })();
+    })().catch((error) => {
+      if (isTransientSidecarOpenError(error)) return;
+      console.warn("[MonacoEditor] Model swap failed", error);
+    });
   });
 
   // Update readonly state

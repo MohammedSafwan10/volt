@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { sanitizeVisibleAssistantText } from './assistant-message-routing';
 
 // ============================================================================
 // Types
@@ -57,6 +58,10 @@ export interface GroupedConversations {
 // ============================================================================
 
 class ChatHistoryStore {
+    private sanitizeVisibleHistoryText(content: string): string {
+        return sanitizeVisibleAssistantText(content);
+    }
+
     // State
     conversations = $state<ConversationSummary[]>([]);
     private allConversations = $state<ConversationSummary[]>([]);
@@ -83,7 +88,11 @@ class ChatHistoryStore {
         this.isLoading = true;
         try {
             const convos = await invoke<ConversationSummary[]>('chat_list_conversations');
-            this.allConversations = convos;
+            this.allConversations = convos.map((convo) => ({
+                ...convo,
+                title: this.sanitizeVisibleHistoryText(convo.title),
+                firstUserMessage: convo.firstUserMessage ? this.sanitizeVisibleHistoryText(convo.firstUserMessage) : null,
+            }));
             this.applyVisibleConversations();
         } catch (err) {
             console.error('[ChatHistory] Failed to load conversations:', err);
@@ -105,7 +114,11 @@ class ChatHistoryStore {
         this.isLoading = true;
         try {
             const convos = await invoke<ConversationSummary[]>('chat_search_conversations', { query });
-            this.conversations = convos;
+            this.conversations = convos.map((convo) => ({
+                ...convo,
+                title: this.sanitizeVisibleHistoryText(convo.title),
+                firstUserMessage: convo.firstUserMessage ? this.sanitizeVisibleHistoryText(convo.firstUserMessage) : null,
+            }));
         } catch (err) {
             console.error('[ChatHistory] Search failed:', err);
         } finally {
@@ -136,12 +149,14 @@ class ChatHistoryStore {
     async saveMessage(conversationId: string, message: ChatMessage): Promise<void> {
         await invoke('chat_save_message', { conversationId, message });
 
+        const visibleContent = this.sanitizeVisibleHistoryText(message.content);
+
         const existing = this.conversations.find(c => c.id === conversationId);
         const nextTitle =
             existing?.title && existing.title !== 'New Chat'
                 ? existing.title
                 : (message.role === 'user'
-                    ? (message.content.length > 50 ? `${message.content.slice(0, 50)}...` : message.content)
+                    ? (visibleContent.length > 50 ? `${visibleContent.slice(0, 50)}...` : visibleContent)
                     : existing?.title || 'New Chat');
 
         const updatedSummary: ConversationSummary = existing
@@ -150,7 +165,7 @@ class ChatHistoryStore {
                 title: nextTitle,
                 updatedAt: Date.now(),
                 messageCount: Math.max(existing.messageCount, 0) + 1,
-                firstUserMessage: existing.firstUserMessage ?? (message.role === 'user' ? message.content : null),
+                firstUserMessage: existing.firstUserMessage ?? (message.role === 'user' ? visibleContent : null),
             }
             : {
                 id: conversationId,
@@ -158,7 +173,7 @@ class ChatHistoryStore {
                 createdAt: message.timestamp,
                 updatedAt: Date.now(),
                 messageCount: 1,
-                firstUserMessage: message.role === 'user' ? message.content : null,
+                firstUserMessage: message.role === 'user' ? visibleContent : null,
                 isPinned: false,
                 mode: 'agent',
             };

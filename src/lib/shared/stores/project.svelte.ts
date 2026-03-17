@@ -15,14 +15,25 @@ import { stopTsLsp } from '$core/lsp/typescript-sidecar';
 import { stopTailwindLsp } from '$core/lsp/tailwind-sidecar';
 import { stopEslintLsp, pushEslintConfig } from '$core/lsp/eslint-sidecar';
 import { stopSvelteLsp } from '$core/lsp/svelte-sidecar';
+import { stopHtmlLsp } from '$core/lsp/html-sidecar';
+import { stopCssLsp } from '$core/lsp/css-sidecar';
+import { stopJsonLsp } from '$core/lsp/json-sidecar';
+import { stopYamlLsp } from '$core/lsp/yaml-sidecar';
+import { stopXmlLsp } from '$core/lsp/xml-sidecar';
 import {
   cancelIndexing,
   clearIndex,
+  getIndexStatus,
   handleFileChangeBatch,
   indexProject,
   getIndexedRoot,
 } from '$core/services/file-index';
-import { notifyFileChanges as notifyDartFileChanges, startDartLsp } from '$core/lsp/dart-sidecar';
+import { startDartLsp, stopDartLsp } from '$core/lsp/dart-sidecar';
+import {
+  dispatchWatchedFileChanges,
+  normalizeWatchedFileChanges,
+  resetWatchedFileDispatch,
+} from '$core/lsp/sidecar/watched-files';
 import {
   terminalProblemMatcher,
   setTerminalProblemMatcherProjectRootResolver,
@@ -69,6 +80,82 @@ export interface TreeNode extends FileEntry {
   loading: boolean;
 }
 
+export type ProjectStartupPhase =
+  | 'idle'
+  | 'paint'
+  | 'light'
+  | 'core-bg'
+  | 'heavy-bg'
+  | 'background-ready';
+
+const LARGE_REPO_FILE_THRESHOLD = 12_000;
+const LARGE_REPO_INDEX_MS_THRESHOLD = 1_500;
+const LARGE_REPO_HEAVY_DIRS = new Set(['node_modules', '.next', 'dist', 'build']);
+const NON_DIAGNOSTIC_DIRS = new Set([
+  '.agent',
+  '.agents',
+  '.augment',
+  '.factory',
+  '.git',
+  '.kiro',
+  '.next',
+  '.qoder',
+  '.trae',
+  '.windsurf',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+]);
+const DIAGNOSTIC_RELEVANT_EXTENSIONS = new Set([
+  '.astro',
+  '.cjs',
+  '.css',
+  '.cts',
+  '.dart',
+  '.htm',
+  '.html',
+  '.js',
+  '.json',
+  '.jsx',
+  '.mjs',
+  '.mts',
+  '.scss',
+  '.sass',
+  '.less',
+  '.svelte',
+  '.ts',
+  '.tsx',
+  '.vue',
+  '.yaml',
+  '.yml',
+]);
+const DIAGNOSTIC_RELEVANT_FILENAMES = new Set([
+  '.eslintrc',
+  '.eslintrc.cjs',
+  '.eslintrc.js',
+  '.eslintrc.json',
+  '.eslintrc.yaml',
+  '.eslintrc.yml',
+  'eslint.config.js',
+  'eslint.config.mjs',
+  'eslint.config.cjs',
+  'next.config.js',
+  'next.config.mjs',
+  'next.config.ts',
+  'package.json',
+  'svelte.config.js',
+  'tsconfig.base.json',
+  'tsconfig.build.json',
+  'tsconfig.eslint.json',
+  'tsconfig.json',
+  'tsconfig.node.json',
+  'vite.config.js',
+  'vite.config.mjs',
+  'vite.config.ts',
+]);
+
 class ProjectStore {
   // Current project root path
   rootPath = $state<string | null>(null);
@@ -96,6 +183,13 @@ class ProjectStore {
 
   // Detected package manager for the project
   packageManager = $state<PackageManager>('npm');
+  startupPhase = $state<ProjectStartupPhase>('idle');
+  uiReady = $state(false);
+  coreReady = $state(false);
+  backgroundReady = $state(false);
+  largeRepoMode = $state(false);
+  indexedFileCount = $state(0);
+  initialIndexDurationMs = $state(0);
 
   // File watcher unlisten function
   private unwatch: UnwatchFn | null = null;
@@ -104,6 +198,10 @@ class ProjectStore {
   private treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fileServiceUnsubscribe: (() => void) | null = null;
   private pendingFolderRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  private activationTaskTimers = new Set<ReturnType<typeof setTimeout>>();
+  private startupGeneration = 0;
+  private startupSerialChain: Promise<void> = Promise.resolve();
+  private startupRootHasHeavyDirs = false;
 
   // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
   private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -131,9 +229,13 @@ class ProjectStore {
     this.workspaceLifecycle.register({
       id: 'project-store-core',
       teardown: async (context) => {
+        this.startupGeneration += 1;
+        this.startupSerialChain = Promise.resolve();
+        this.clearActivationTasks();
         await this.stopFileWatching();
         await this.stopWatchingLockFiles();
         await tscWatcher.stop();
+        resetWatchedFileDispatch();
         await this.stopLspServers();
         await mcpStore.cleanup();
         gitStore.reset();
@@ -158,38 +260,154 @@ class ProjectStore {
         editorStore.closeAllFiles(true);
         const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
         await terminalStore.killAll();
-        this.rootPath = null;
-        if (context.removePersistence && typeof window !== 'undefined') {
-          localStorage.removeItem(CURRENT_PROJECT_KEY);
-        }
-        this.projectName = '';
-        if (context.clearFileTree) {
-          this.tree = [];
+        if (!context.preserveVisualState) {
+          this.rootPath = null;
+          if (context.removePersistence && typeof window !== 'undefined') {
+            localStorage.removeItem(CURRENT_PROJECT_KEY);
+          }
+          this.projectName = '';
+          if (context.clearFileTree) {
+            this.tree = [];
+          }
         }
         this.selectedPaths.clear();
         this.expandedPaths = new Set();
         this.packageManager = 'npm';
+        this.startupPhase = 'idle';
+        this.uiReady = false;
+        this.coreReady = false;
+        this.backgroundReady = false;
+        this.largeRepoMode = false;
+        this.indexedFileCount = 0;
+        this.initialIndexDurationMs = 0;
+        this.startupRootHasHeavyDirs = false;
       },
       activate: async ({ rootPath }) => {
+        const generation = ++this.startupGeneration;
         this.packageManager = await this.detectPackageManager(rootPath);
-        await this.startWatchingLockFiles(rootPath);
+        if (!this.isStartupCurrent(rootPath, generation)) return;
+
         initLspRegistry(rootPath);
-        void mcpStore.initialize(rootPath);
-        void gitStore.init(rootPath);
-        await this.startFileWatching(rootPath);
-        void indexProject(rootPath);
-        void warmSemanticIndex(rootPath);
-        void projectDiagnostics.runDiagnostics(rootPath);
-        void tscWatcher.start(rootPath);
-        void (async () => {
-          const pubspecInfo = await getFileInfoQuiet(`${rootPath}/pubspec.yaml`);
-          if (pubspecInfo) {
-            console.log('[ProjectStore] Dart project detected, starting LSP...');
-            await startDartLsp(rootPath);
+        this.startupPhase = 'light';
+        this.clearActivationTasks();
+        this.startupSerialChain = Promise.resolve();
+
+        this.scheduleActivationTask(rootPath, generation, 0, async () => {
+          await this.startWatchingLockFiles(rootPath);
+        });
+        this.scheduleActivationTask(rootPath, generation, 80, async () => {
+          await this.startFileWatching(rootPath);
+        });
+        this.scheduleSerialActivationTask(rootPath, generation, 'core-bg', 150, async () => {
+          await gitStore.init(rootPath);
+        });
+        this.scheduleSerialActivationTask(rootPath, generation, 'core-bg', 450, async () => {
+          const startedAt = Date.now();
+          await indexProject(rootPath);
+          if (!this.isStartupCurrent(rootPath, generation)) return;
+
+          const indexDurationMs = Date.now() - startedAt;
+          const status = getIndexStatus();
+          this.indexedFileCount = status.count;
+          this.initialIndexDurationMs = indexDurationMs;
+          this.largeRepoMode = this.classifyLargeRepo(status.count, indexDurationMs);
+          this.coreReady = true;
+
+          const diagnosticsDelay = this.largeRepoMode ? 3000 : 700;
+          const tscDelay = this.largeRepoMode ? 4500 : 1400;
+          const semanticDelay = this.largeRepoMode ? 12000 : 2600;
+          const mcpDelay = this.largeRepoMode ? 7000 : 2200;
+          const finalizeDelay = this.largeRepoMode ? 7800 : 3400;
+
+          this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', diagnosticsDelay, async () => {
+            await projectDiagnostics.runDiagnostics(rootPath);
+          });
+          this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', tscDelay, async () => {
+            await tscWatcher.start(rootPath);
+          });
+          this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', 1800, async () => {
+            const pubspecInfo = await getFileInfoQuiet(`${rootPath}/pubspec.yaml`);
+            if (pubspecInfo) {
+              console.log('[ProjectStore] Dart project detected, starting LSP...');
+              await startDartLsp(rootPath);
+            }
+          });
+          this.scheduleSerialActivationTask(
+            rootPath,
+            generation,
+            this.largeRepoMode ? 'background-ready' : 'heavy-bg',
+            mcpDelay,
+            async () => {
+              await mcpStore.initialize(rootPath);
+            },
+          );
+          if (!this.largeRepoMode) {
+            this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', semanticDelay, async () => {
+              await warmSemanticIndex(rootPath);
+            });
           }
-        })();
+          this.scheduleSerialActivationTask(rootPath, generation, 'background-ready', finalizeDelay, async () => {
+            this.backgroundReady = true;
+          });
+        });
       },
     });
+  }
+
+  private clearActivationTasks(): void {
+    for (const timer of this.activationTaskTimers) {
+      clearTimeout(timer);
+    }
+    this.activationTaskTimers.clear();
+  }
+
+  private isStartupCurrent(rootPath: string, generation: number): boolean {
+    return this.rootPath === rootPath && this.startupGeneration === generation;
+  }
+
+  private classifyLargeRepo(indexedCount: number, indexDurationMs: number): boolean {
+    return (
+      this.startupRootHasHeavyDirs ||
+      indexedCount > LARGE_REPO_FILE_THRESHOLD ||
+      indexDurationMs > LARGE_REPO_INDEX_MS_THRESHOLD
+    );
+  }
+
+  private scheduleActivationTask(
+    rootPath: string,
+    generation: number,
+    delayMs: number,
+    task: () => Promise<void>,
+  ): void {
+    const timer = setTimeout(() => {
+      this.activationTaskTimers.delete(timer);
+      if (!this.isStartupCurrent(rootPath, generation)) return;
+      void task().catch((error) => {
+        console.warn('[ProjectStore] Activation task failed:', error);
+      });
+    }, delayMs);
+    this.activationTaskTimers.add(timer);
+  }
+
+  private scheduleSerialActivationTask(
+    rootPath: string,
+    generation: number,
+    phase: ProjectStartupPhase,
+    delayMs: number,
+    task: () => Promise<void>,
+  ): void {
+    const timer = setTimeout(() => {
+      this.activationTaskTimers.delete(timer);
+      if (!this.isStartupCurrent(rootPath, generation)) return;
+      this.startupSerialChain = this.startupSerialChain.then(async () => {
+        if (!this.isStartupCurrent(rootPath, generation)) return;
+        this.startupPhase = phase;
+        await task();
+      }).catch((error) => {
+        console.warn('[ProjectStore] Serial activation task failed:', error);
+      });
+    }, delayMs);
+    this.activationTaskTimers.add(timer);
   }
 
   /**
@@ -262,13 +480,15 @@ class ProjectStore {
       return false;
     }
 
-    if (this.rootPath) {
-      await this.workspaceLifecycle.teardown({
-        removePersistence: false,
-        clearFileTree: false,
-        previousRootPath: this.rootPath,
-      });
-    }
+    const previousRootPath = this.rootPath;
+    const teardownPromise = previousRootPath
+      ? this.workspaceLifecycle.teardown({
+          removePersistence: false,
+          clearFileTree: false,
+          previousRootPath,
+          preserveVisualState: true,
+        })
+      : Promise.resolve();
 
     this.rootPath = path;
     if (typeof window !== 'undefined') {
@@ -278,9 +498,20 @@ class ProjectStore {
     this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
     this.selectedPaths.clear();
     this.expandedPaths = new Set();
+    this.startupRootHasHeavyDirs = entries.some((entry) =>
+      LARGE_REPO_HEAVY_DIRS.has(entry.name.toLowerCase()),
+    );
+    this.startupPhase = 'paint';
+    this.uiReady = true;
+    this.coreReady = false;
+    this.backgroundReady = false;
+    this.largeRepoMode = false;
+    this.indexedFileCount = 0;
+    this.initialIndexDurationMs = 0;
     this.loading = false;
     this.addToRecentProjects(path);
 
+    await teardownPromise;
     await this.workspaceLifecycle.activate({ rootPath: path });
 
     return true;
@@ -386,38 +617,13 @@ class ProjectStore {
       }
     }
 
-    // Notify LSPs about file changes (for closed files)
-    // Map internal event types to LSP types: create/modify/delete -> create/change/delete
-    const lspEvents = [];
-    for (const change of batch.changes) {
-      // "modify" in backend -> "change" in our LSP helper
-      const kind = change.kind === 'modify' ? 'change' : (change.kind as 'create' | 'change' | 'delete');
-
-      // Skip renames for simply notifying changed content, handled as delete+create or custom logic usually
-      // For now, treat rename as create of new file for analysis purposes
-      if (change.kind === 'rename') {
-        // handle as create of new path
-        if (change.absolutePaths.length > 1) {
-          lspEvents.push({ kind: 'create' as const, path: change.absolutePaths[1] });
-          lspEvents.push({ kind: 'delete' as const, path: change.absolutePaths[0] });
-        }
-        continue;
-      }
-
-      for (const absPath of change.absolutePaths) {
-        if (kind === 'create' || kind === 'change' || kind === 'delete') {
-          lspEvents.push({ kind, path: absPath });
-        }
-      }
-    }
-
+    const lspEvents = normalizeWatchedFileChanges(batch.changes);
     if (lspEvents.length > 0) {
-      // Notify Dart LSP
-      void notifyDartFileChanges(lspEvents);
+      dispatchWatchedFileChanges(lspEvents);
     }
 
-    // Debounce project-wide diagnostics
-    if (this.rootPath) {
+    // Debounce project-wide diagnostics only for relevant source/config changes.
+    if (this.rootPath && this.shouldTriggerProjectDiagnostics(batch)) {
       if (this.diagTimer) clearTimeout(this.diagTimer);
       this.diagTimer = setTimeout(() => {
         if (this.rootPath) {
@@ -472,6 +678,39 @@ class ProjectStore {
   private handleFileDeleted(absolutePath: string): void {
     // Remove from tree if present
     this.removeNode(absolutePath);
+  }
+
+  private shouldTriggerProjectDiagnostics(batch: FileChangeBatchEvent): boolean {
+    return batch.changes.some((change) =>
+      change.paths.some((relativePath) => this.isDiagnosticsRelevantPath(relativePath)),
+    );
+  }
+
+  private isDiagnosticsRelevantPath(relativePath: string): boolean {
+    const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+    if (!normalized) return false;
+
+    const segments = normalized
+      .split('/')
+      .map((segment) => segment.trim().toLowerCase())
+      .filter(Boolean);
+    if (segments.length === 0) return false;
+
+    if (segments.some((segment) => NON_DIAGNOSTIC_DIRS.has(segment))) {
+      return false;
+    }
+
+    const basename = segments[segments.length - 1];
+    if (DIAGNOSTIC_RELEVANT_FILENAMES.has(basename)) {
+      return true;
+    }
+
+    const dotIndex = basename.lastIndexOf('.');
+    if (dotIndex === -1) {
+      return false;
+    }
+
+    return DIAGNOSTIC_RELEVANT_EXTENSIONS.has(basename.slice(dotIndex));
   }
 
   /**
@@ -670,6 +909,13 @@ class ProjectStore {
       await stopEslintLsp();
       // Stop Svelte LSP sidecar
       await stopSvelteLsp();
+      // Stop HTML/CSS/JSON/YAML/XML servers as well
+      await stopHtmlLsp();
+      await stopCssLsp();
+      await stopJsonLsp();
+      await stopYamlLsp();
+      await stopXmlLsp();
+      await stopDartLsp();
       // Then dispose the registry
       await disposeLspRegistry();
     } catch (e) {
@@ -806,8 +1052,9 @@ class ProjectStore {
    * Find a node by path
    */
   findNode(path: string, nodes: TreeNode[] = this.tree): TreeNode | null {
+    const normalizedTarget = this.normalizePath(path);
     for (const node of nodes) {
-      if (node.path === path) return node;
+      if (this.normalizePath(node.path) === normalizedTarget) return node;
       if (node.children) {
         const found = this.findNode(path, node.children);
         if (found) return found;
@@ -834,9 +1081,10 @@ class ProjectStore {
    * Remove a node from the tree (after deletion)
    */
   removeNode(path: string): void {
+    const normalizedPath = this.normalizePath(path);
     const removeFromArray = (nodes: TreeNode[]): TreeNode[] => {
       return nodes.filter((node) => {
-        if (node.path === path) return false;
+        if (this.normalizePath(node.path) === normalizedPath) return false;
         if (node.children) {
           node.children = removeFromArray(node.children);
         }
@@ -846,12 +1094,18 @@ class ProjectStore {
 
     this.tree = removeFromArray(this.tree);
 
-    if (this.selectedPaths.has(path)) {
-      this.selectedPaths.delete(path);
-      this.selectedPaths = new Set(this.selectedPaths);
+    const nextSelected = new Set<string>();
+    let selectionChanged = false;
+    for (const selectedPath of this.selectedPaths) {
+      if (this.normalizePath(selectedPath) === normalizedPath) {
+        selectionChanged = true;
+        continue;
+      }
+      nextSelected.add(selectedPath);
     }
-
-    const normalizedPath = this.normalizePath(path);
+    if (selectionChanged) {
+      this.selectedPaths = nextSelected;
+    }
     let changed = false;
     const next = new Set<string>();
     for (const p of this.expandedPaths) {

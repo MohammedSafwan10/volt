@@ -30,6 +30,9 @@ export async function cleanupStaleBackendWatchers(): Promise<void> {
   await Promise.allSettled([
     invoke('stop_all_watch_commands'),
     invoke('stop_all_file_watches'),
+    invoke('cancel_index_workspace', { requestId: 0 }),
+    invoke('cancel_workspace_search', { requestId: 0 }),
+    invoke('lsp_stop_all'),
   ]);
 }
 

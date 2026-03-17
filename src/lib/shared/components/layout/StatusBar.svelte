@@ -3,7 +3,7 @@
   import { problemsStore } from '$shared/stores/problems.svelte';
   import { editorStore } from '$features/editor/stores/editor.svelte';
   import { projectStore } from '$shared/stores/project.svelte';
-  import { getGitBranch } from '$features/git/services/git';
+  import { gitStore } from '$features/git/stores/git.svelte';
   import { UIIcon } from '$shared/components/ui';
 
   const errors = $derived.by(() => problemsStore.errorCount);
@@ -21,19 +21,33 @@
     return opts.insertSpaces ? `Spaces: ${opts.tabSize}` : `Tab Size: ${opts.tabSize}`;
   });
 
-  // Git branch - fetched when project changes
-  let branch = $state<string | null>(null);
-
-  // Fetch git branch when project root changes
-  $effect(() => {
-    const rootPath = projectStore.rootPath;
-    if (rootPath) {
-      getGitBranch(rootPath).then((b) => {
-        branch = b;
-      });
-    } else {
-      branch = null;
+  const branch = $derived.by(() => {
+    if (!projectStore.rootPath || !gitStore.isRepo) return null;
+    return gitStore.currentBranch;
+  });
+  const workspaceStatus = $derived.by(() => {
+    if (!projectStore.rootPath || projectStore.backgroundReady) return null;
+    switch (projectStore.startupPhase) {
+      case 'paint':
+        return 'Opening workspace';
+      case 'light':
+        return 'Starting watchers';
+      case 'core-bg':
+        return projectStore.coreReady ? 'Warming workspace' : 'Indexing workspace';
+      case 'heavy-bg':
+        return projectStore.largeRepoMode ? 'Warming essentials' : 'Finishing startup';
+      case 'background-ready':
+        return projectStore.largeRepoMode ? 'Large repo mode' : 'Workspace ready';
+      default:
+        return null;
     }
+  });
+  const workspaceStatusTitle = $derived.by(() => {
+    if (!workspaceStatus) return null;
+    if (projectStore.largeRepoMode) {
+      return `Large workspace mode · ${projectStore.indexedFileCount.toLocaleString()} files indexed in ${projectStore.initialIndexDurationMs}ms`;
+    }
+    return workspaceStatus;
   });
 </script>
 
@@ -53,6 +67,13 @@
       <span class="icon error"><UIIcon name="error" size={14} /></span>
       <span>{errors}</span>
     </button>
+
+    {#if workspaceStatus}
+      <div class="status-item startup-status" title={workspaceStatusTitle ?? workspaceStatus}>
+        <span class="icon startup"><UIIcon name="spinner" size={14} /></span>
+        <span>{workspaceStatus}</span>
+      </div>
+    {/if}
   </div>
 
   <div class="status-center">
@@ -221,5 +242,26 @@
 
   .icon.error {
     color: var(--color-error);
+  }
+
+  .startup-status {
+    color: var(--color-text-secondary);
+  }
+
+  .startup-status .icon.startup {
+    color: var(--color-accent);
+  }
+
+  .startup-status .icon.startup :global(svg) {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

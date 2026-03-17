@@ -13,6 +13,8 @@
 
   // Track expanded files (SvelteSet is already reactive)
   const expandedFiles = new SvelteSet<string>();
+  const AUTO_EXPAND_FILE_LIMIT = 8;
+  let hasInitializedExpansion = $state(false);
 
   function getSeverityIconName(severity: string): UIIconName {
     switch (severity) {
@@ -143,17 +145,6 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     return expandedFiles.has(filePath);
   }
 
-  // Get problems sorted by severity (errors first)
-  function sortProblems(problems: Problem[]): Problem[] {
-    const severityOrder = { error: 0, warning: 1, info: 2, hint: 3 };
-    return [...problems].sort((a, b) => {
-      const severityDiff =
-        (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4);
-      if (severityDiff !== 0) return severityDiff;
-      return a.line - b.line;
-    });
-  }
-
   // Get file error/warning counts
   function getFileCounts(problems: Problem[]): {
     errors: number;
@@ -165,35 +156,45 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     };
   }
 
+  const visibleProblems = $derived(problemsStore.allProblems);
+
   function getVisibleProblemsForFile(filePath: string): Problem[] {
-    let problems = problemsStore.getProblemsForFile(filePath);
-
-    if (problemsStore.severityFilter !== "all") {
-      problems = problems.filter(
-        (p) => p.severity === problemsStore.severityFilter,
-      );
-    }
-
-    if (problemsStore.searchQuery) {
-      const query = problemsStore.searchQuery.toLowerCase();
-      problems = problems.filter(
-        (p) =>
-          p.message.toLowerCase().includes(query) ||
-          p.file.toLowerCase().includes(query) ||
-          p.source.toLowerCase().includes(query) ||
-          (p.code && p.code.toLowerCase().includes(query)),
-      );
-    }
-
-    return problems;
+    return visibleProblems.filter((problem) => problem.file === filePath);
   }
 
   function getVisibleFilePaths(): string[] {
-    const visibleFiles = new Set(problemsStore.allProblems.map((p) => p.file));
-    return problemsStore.filesWithProblems.filter((path) =>
-      visibleFiles.has(path),
-    );
+    const visibleFiles = new Set<string>();
+
+    for (const problem of visibleProblems) {
+      visibleFiles.add(problem.file);
+    }
+
+    return Array.from(visibleFiles);
   }
+
+  $effect(() => {
+    const filePaths = getVisibleFilePaths();
+
+    if (filePaths.length === 0) {
+      expandedFiles.clear();
+      hasInitializedExpansion = false;
+      return;
+    }
+
+    for (const filePath of Array.from(expandedFiles)) {
+      if (!filePaths.includes(filePath)) {
+        expandedFiles.delete(filePath);
+      }
+    }
+
+    if (hasInitializedExpansion) return;
+
+    for (const filePath of filePaths.slice(0, AUTO_EXPAND_FILE_LIMIT)) {
+      expandedFiles.add(filePath);
+    }
+
+    hasInitializedExpansion = true;
+  });
   
   // Handle filter change
   function handleFilterChange(filter: 'all' | 'error' | 'warning' | 'info'): void {
@@ -218,12 +219,13 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   function getFreshnessTone(status: string): "success" | "warning" | "muted" {
     if (status === "fresh") return "success";
-    if (status === "stale" || status === "updating") return "warning";
+    if (status === "stale" || status === "updating" || status === "warming") return "warning";
     return "muted";
   }
 
   function getFreshnessLabel(status: string): string {
     if (status === "updating") return "Diagnostics updating";
+    if (status === "warming") return "Diagnostics warming";
     if (status === "stale") return "Diagnostics stale";
     if (status === "fresh") return "Diagnostics fresh";
     return "Diagnostics idle";
@@ -344,26 +346,32 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   </div>
 
   {#if problemsStore.totalCount === 0 && problemsStore.totalUnfilteredCount === 0}
-    <div class="empty-state">
+    <div class="panel-body empty-state-shell">
+      <div class="empty-state">
       <div class="empty-icon"><UIIcon name="check" size={22} /></div>
       <p class="empty-title">No Problems</p>
       <p class="empty-description">
         {#if diagnosticsFreshness.status === "stale"}
           No current problems, but some diagnostics sources are stale
+        {:else if diagnosticsFreshness.status === "warming"}
+          No current problems; diagnostics are still warming up
         {:else if diagnosticsFreshness.status === "updating"}
           No current problems yet; diagnostics are still updating
         {:else}
           No errors or warnings detected in the workspace
         {/if}
       </p>
+      </div>
     </div>
   {:else if problemsStore.totalCount === 0}
-    <div class="empty-state">
+    <div class="panel-body empty-state-shell">
+      <div class="empty-state">
       <div class="empty-icon"><UIIcon name="filter" size={22} /></div>
       <p class="empty-title">No Matching Problems</p>
       <p class="empty-description">
         {problemsStore.totalUnfilteredCount} problems hidden by filters
       </p>
+      </div>
     </div>
   {:else}
     {@const visibleFilePaths = getVisibleFilePaths()}
@@ -377,6 +385,8 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
         : "s"}
       {#if diagnosticsFreshness.staleSources.length > 0}
         · stale sources: {diagnosticsFreshness.staleSources.join(", ")}
+      {:else if diagnosticsFreshness.hasWarmingSources}
+        · some diagnostics are warming up
       {:else if diagnosticsFreshness.isUpdating}
         · diagnostics still updating
       {/if}
@@ -420,7 +430,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
           {#if expanded}
             <div class="problems-items">
-              {#each sortProblems(problems) as problem (problem.id)}
+              {#each problems as problem (problem.id)}
                 <div class="problem-item-row">
                   <button
                     class="problem-item"
@@ -488,6 +498,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     overflow-x: auto;
     overflow-y: hidden;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .toolbar-summary {
@@ -652,12 +663,24 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     to { transform: rotate(360deg); }
   }
 
+  .panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .empty-state-shell {
+    display: flex;
+    align-items: stretch;
+  }
+
   .empty-state {
     display: flex;
+    flex: 1;
+    min-height: 0;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 100%;
     gap: 8px;
     color: var(--color-text-secondary);
     padding: 24px;
@@ -683,10 +706,11 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   }
 
   .results-meta {
-    padding: 4px 10px;
+    padding: 6px 10px;
     border-bottom: 1px solid var(--color-border);
     color: var(--color-text-secondary);
-    font-size: 10px;
+    font-size: 11px;
+    flex-shrink: 0;
   }
 
   .fix-all-btn {
@@ -718,39 +742,45 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     padding: 6px 8px 10px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .file-group {
     border: 1px solid var(--color-border);
-    border-radius: 6px;
+    border-radius: 8px;
     overflow: hidden;
     background: var(--color-bg-sidebar);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    flex-shrink: 0;
   }
 
   .file-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
-    padding: 6px 8px;
+    min-height: 42px;
+    padding: 8px 10px;
     background: var(--color-bg-sidebar);
     border: none;
     color: var(--color-text);
-    font-size: 11px;
+    font-size: 12px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.1s ease;
+    transition:
+      background 0.1s ease,
+      border-color 0.1s ease;
   }
 
   .file-header:hover {
-    background: var(--color-hover);
+    background: color-mix(in srgb, var(--color-hover) 82%, var(--color-bg-sidebar));
   }
 
   .expand-icon {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--color-text-secondary);
-    width: 12px;
+    width: 14px;
+    flex-shrink: 0;
   }
 
   .file-header-main {
@@ -758,20 +788,21 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     flex-direction: column;
     min-width: 0;
     flex: 1;
-    gap: 2px;
+    gap: 3px;
   }
 
   .file-name {
-    font-weight: 500;
+    font-weight: 600;
+    line-height: 1.3;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .file-path {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--color-text-secondary);
-    opacity: 0.75;
+    opacity: 0.95;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -783,10 +814,13 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   }
 
   .count-badge {
-    padding: 1px 5px;
-    border-radius: 10px;
-    font-size: 9px;
-    font-weight: 500;
+    min-width: 18px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
   }
 
   .count-badge.error {
@@ -802,16 +836,15 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   .problems-items {
     background: var(--color-bg);
     border-top: 1px solid var(--color-border);
-    max-height: 220px;
-    overflow-y: auto;
   }
 
   .problem-item-row {
     display: flex;
     align-items: stretch;
     width: 100%;
-    padding-right: 8px;
+    padding-right: 10px;
     border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    flex-shrink: 0;
   }
 
   .problem-item-row:last-child {
@@ -828,15 +861,16 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   .problem-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: flex-start;
+    gap: 10px;
     flex: 1;
     min-width: 0;
-    padding: 6px 8px 6px 24px;
+    padding: 9px 10px 9px 24px;
     background: transparent;
     border: none;
     color: var(--color-text);
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 1.4;
     text-align: left;
     cursor: pointer;
   }
@@ -849,23 +883,24 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    gap: 2px;
+    gap: 4px;
     flex: 1;
   }
 
   .problem-meta-line {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
+    flex-wrap: wrap;
   }
 
   .problem-action-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     border-radius: 4px;
     color: var(--color-text-secondary);
     background: transparent;
@@ -884,8 +919,9 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   .problem-icon {
     flex-shrink: 0;
-    width: 14px;
+    width: 16px;
     text-align: center;
+    margin-top: 1px;
   }
 
   .problem-icon.severity-error {
@@ -907,20 +943,20 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   .problem-message {
     flex: 1;
     word-break: break-word;
-    line-height: 1.4;
+    line-height: 1.45;
   }
 
   .problem-location {
     flex-shrink: 0;
     color: var(--color-text-secondary);
     font-family: monospace;
-    font-size: 9px;
+    font-size: 10px;
   }
 
   .problem-code {
     min-width: 0;
     color: var(--color-text-secondary);
-    font-size: 9px;
+    font-size: 10px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

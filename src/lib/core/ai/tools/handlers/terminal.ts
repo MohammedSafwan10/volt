@@ -1,5 +1,5 @@
 /**
- * Terminal tool handlers - Kiro-style with background process management
+ * Terminal tool handlers - with background process management
  * 
  * Tools:
  * - run_command: Execute command and wait for completion
@@ -22,6 +22,13 @@ let aiCommandQueue: Promise<ToolResult> = Promise.resolve({ success: true, outpu
 const recentAiCommands = new Map<string, { command: string; timestamp: number }>();
 const AI_QUEUE_WAIT_TIMEOUT_MS = 45_000;
 const AI_COMMAND_HARD_CAP_MS = 120_000;
+
+function resolveToolCwd(rawCwd: unknown): string | undefined {
+  if (typeof rawCwd === 'string' && rawCwd.trim()) {
+    return rawCwd.trim();
+  }
+  return projectStore.rootPath ?? undefined;
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
@@ -379,7 +386,7 @@ async function reconcileTrackedProcesses(): Promise<void> {
  */
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command).trim();
-  const cwd = args.cwd ? String(args.cwd) : undefined;
+  const cwd = resolveToolCwd(args.cwd);
   const timeout = typeof args.timeout === 'number' ? args.timeout : 90_000;
   const waitForExit = args.waitForExit === true;
   const allowDetach = args.detached !== false;
@@ -627,7 +634,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
  */
 export async function handleStartProcess(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command);
-  const cwd = args.cwd ? String(args.cwd) : undefined;
+  const cwd = resolveToolCwd(args.cwd);
   const blockedReason = getBlockedCommandReason(command);
   if (blockedReason) {
     return {

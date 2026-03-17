@@ -162,3 +162,24 @@ export interface HealthStatus {
   /** Detailed status message */
   message: string;
 }
+
+export interface RestartPolicy {
+  /** Whether the transport should try to recover automatically after unhealthy exits. */
+  enabled?: boolean;
+  /** Base backoff delay before restart. */
+  baseDelayMs?: number;
+  /** Maximum backoff delay before restart. */
+  maxDelayMs?: number;
+  /** Maximum restart attempts allowed inside the rolling window. */
+  maxAttempts?: number;
+  /** Rolling window used to cap restart attempts. */
+  windowMs?: number;
+}
+
+export const DEFAULT_RESTART_POLICY: Required<RestartPolicy> = {
+  enabled: false,
+  baseDelayMs: 750,
+  maxDelayMs: 15_000,
+  maxAttempts: 4,
+  windowMs: 120_000,
+};

@@ -68,8 +68,8 @@ use commands::mcp::{
     McpState,
 };
 use commands::search::{
-    cancel_workspace_search, replace_in_file, replace_one_in_file, workspace_search,
-    workspace_search_stream, SearchManagerState,
+    cancel_workspace_search, find_files_by_name, replace_in_file, replace_one_in_file,
+    workspace_search, workspace_search_stream, SearchManagerState,
 };
 use commands::semantic_index::{
     semantic_index_compact, semantic_index_query, semantic_index_rebuild,
@@ -277,6 +277,7 @@ pub fn run() {
             workspace_search,
             workspace_search_stream,
             cancel_workspace_search,
+            find_files_by_name,
             replace_in_file,
             replace_one_in_file,
             // File indexing
@@ -299,8 +300,11 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Kill all terminals when window closes
+                // Kill all terminal PTY sessions
                 let _ = terminal_kill_all();
+
+                // Kill all watch processes (tsc --watch, etc.)
+                let _ = stop_all_watch_commands();
 
                 // Stop all LSP servers
                 let app = window.app_handle().clone();
@@ -309,6 +313,12 @@ pub fn run() {
                     if let Some(ref manager) = *guard {
                         let _ = manager.stop_all();
                     }
+                }
+
+                // Stop all file watchers to release handles
+                {
+                    let watch_state: tauri::State<'_, FileWatchState> = app.state();
+                    watch_state.clear_all();
                 }
 
                 // Stop all MCP servers (spawn async task)

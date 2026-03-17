@@ -702,50 +702,57 @@ fn collect_paths(root_path: &str, requested: &[String]) -> Result<Vec<PathBuf>, 
 }
 
 #[tauri::command]
-pub fn semantic_index_upsert_files(
+pub async fn semantic_index_upsert_files(
     app: tauri::AppHandle,
     state: tauri::State<'_, SemanticIndexState>,
     args: SemanticUpsertArgs,
 ) -> Result<SemanticMutationResult, String> {
-    let enabled = semantic_enabled();
-    let backend = state
-        .runtime_meta
-        .lock()
-        .ok()
-        .map(|m| m.backend.clone())
-        .unwrap_or_else(semantic_backend_name);
-    if !enabled {
-        return Ok(SemanticMutationResult {
-            processed_files: 0,
-            processed_paths: Vec::new(),
-            semantic_enabled: false,
-            backend,
-        });
-    }
+    let state_clone = (*state).clone();
+    let app_clone = app.clone();
 
-    let _guard = state
-        .lock
-        .lock()
-        .map_err(|_| "Semantic index lock poisoned".to_string())?;
-    let mut conn = open_db(&app, &args.root_path)?;
-    let paths = collect_paths(&args.root_path, &args.paths)?;
-    let mut processed = Vec::new();
-
-    for abs in paths {
-        if upsert_file(&app, &state, &mut conn, &args.root_path, &abs).is_ok() {
-            processed.push(to_relative(
-                &strip_long_prefix(abs.to_string_lossy().to_string()),
-                &args.root_path,
-            ));
+    tokio::task::spawn_blocking(move || {
+        let enabled = semantic_enabled();
+        let backend = state_clone
+            .runtime_meta
+            .lock()
+            .ok()
+            .map(|m| m.backend.clone())
+            .unwrap_or_else(semantic_backend_name);
+        if !enabled {
+            return Ok(SemanticMutationResult {
+                processed_files: 0,
+                processed_paths: Vec::new(),
+                semantic_enabled: false,
+                backend,
+            });
         }
-    }
 
-    Ok(SemanticMutationResult {
-        processed_files: processed.len(),
-        processed_paths: processed,
-        semantic_enabled: true,
-        backend,
+        let _guard = state_clone
+            .lock
+            .lock()
+            .map_err(|_| "Semantic index lock poisoned".to_string())?;
+        let mut conn = open_db(&app_clone, &args.root_path)?;
+        let paths = collect_paths(&args.root_path, &args.paths)?;
+        let mut processed = Vec::new();
+
+        for abs in paths {
+            if upsert_file(&app_clone, &state_clone, &mut conn, &args.root_path, &abs).is_ok() {
+                processed.push(to_relative(
+                    &strip_long_prefix(abs.to_string_lossy().to_string()),
+                    &args.root_path,
+                ));
+            }
+        }
+
+        Ok(SemanticMutationResult {
+            processed_files: processed.len(),
+            processed_paths: processed,
+            semantic_enabled: true,
+            backend,
+        })
     })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]

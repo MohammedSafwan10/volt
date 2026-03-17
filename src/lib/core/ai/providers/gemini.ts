@@ -626,10 +626,15 @@ export const geminiProvider: AIProvider = {
         yield* processSSELine(line);
       }
     } finally {
-      await invokePromise;
+      try {
+        await invokePromise;
+      } catch (cleanupErr) {
+        // invokePromise rejection was already surfaced via the error variable;
+        // swallow here so the 'done' event always fires.
+        console.warn('[Gemini] invoke promise rejected during cleanup:', cleanupErr);
+      }
+      yield { type: 'done' };
     }
-
-    yield { type: 'done' };
 
     function* processSSELine(line: string): Generator<StreamChunk> {
       if (line.startsWith('data:')) {

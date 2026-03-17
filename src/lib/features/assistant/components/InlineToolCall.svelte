@@ -1,10 +1,7 @@
 <script lang="ts">
   /**
    * InlineToolCall - Displays tool activity inline within assistant messages
-   * Shows tool name, status, and expandable output like Kiro's UI
-   * Supports streaming progress for file write operations
-   *
-   * Kiro-style: Only shows approval for the FIRST pending terminal command
+   * Shows tool name, status, and expandable output
    */
   import { UIIcon, type UIIconName } from "$shared/components/ui";
   import { onMount } from "svelte";
@@ -14,7 +11,6 @@
   import type {
     ToolCall,
     ToolCallStatus,
-    StreamingProgress,
   } from "$features/assistant/stores/assistant.svelte";
   import type { Problem } from "$shared/stores/problems.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
@@ -22,17 +18,17 @@
 
   interface Props {
     toolCall: ToolCall;
-    /** Streaming progress for file write tools */
-    streamingProgress?: StreamingProgress | null;
+    compact?: boolean;
+    showApprovalInline?: boolean;
     onApprove?: () => void;
     onDeny?: () => void;
-    /** For terminal commands: is this the first pending one? (Kiro-style sequential approval) */
     isFirstPendingTerminal?: boolean;
   }
 
   let {
     toolCall,
-    streamingProgress,
+    compact = false,
+    showApprovalInline = true,
     onApprove,
     onDeny,
     isFirstPendingTerminal = true,
@@ -159,7 +155,8 @@
   const toolDisplayNames: Record<string, string> = {
     // Context & Search
     gather_context: "Gathering context",
-    workspace_search: "Searched workspace",
+    workspace_search: "Searched codebase",
+    find_files: "Found files",
     list_dir: "Listed directory",
     read_file: "Read file",
     // File operations
@@ -199,6 +196,7 @@
     // Context & Search
     gather_context: "search",
     workspace_search: "search",
+    find_files: "search",
     list_dir: "folder",
     read_file: "file",
     // File operations
@@ -255,6 +253,7 @@
     // Search/Read
     gather_context: "search",
     workspace_search: "search",
+    find_files: "search",
     list_dir: "search",
     read_file: "file",
     // Write/Edit
@@ -366,6 +365,10 @@
           ? ` in ${String(args.includePattern)}`
           : "";
         return query ? `"${query}"${pattern}` : "";
+      }
+      case "find_files": {
+        const query = args.query ? String(args.query) : "";
+        return query ? `"${query}"` : "";
       }
       case "delete_file":
       case "apply_patch":
@@ -484,21 +487,39 @@
   });
   const searchEngineBadge = $derived.by(() => {
     if (!searchTelemetry) return null;
-    const source = searchTelemetry.rgSource && searchTelemetry.rgSource !== "none"
-      ? `/${searchTelemetry.rgSource}`
-      : "";
-    return `${searchTelemetry.engine}${source}`;
+    if (searchTelemetry.engine === "rg" && !searchTelemetry.fallbackUsed) {
+      return searchTelemetry.rgSource === "bundled" ? "rg-bundled" : "rg";
+    }
+    if (searchTelemetry.engine === "rg" && searchTelemetry.fallbackUsed) {
+      return "retried";
+    }
+    if (searchTelemetry.engine === "legacy") {
+      return "legacy";
+    }
+    return "search";
   });
   const searchEngineTitle = $derived.by(() => {
     if (!searchTelemetry) return "";
-    const fallback = searchTelemetry.fallbackUsed
-      ? `, fallback: ${searchTelemetry.fallbackReason ?? "used"}`
-      : "";
-    return `Search engine ${searchTelemetry.engine}${searchTelemetry.rgSource ? ` (${searchTelemetry.rgSource})` : ""}, ${searchTelemetry.elapsedMs}ms${fallback}`;
+    if (searchTelemetry.engine === "rg" && !searchTelemetry.fallbackUsed) {
+      return `Search used ripgrep${searchTelemetry.rgSource ? ` (${searchTelemetry.rgSource})` : ""} in ${searchTelemetry.elapsedMs}ms`;
+    }
+    if (searchTelemetry.engine === "rg" && searchTelemetry.fallbackUsed) {
+      const reason = searchTelemetry.fallbackReason ?? "retried";
+      return `Search used ripgrep after one safe retry in ${searchTelemetry.elapsedMs}ms (${reason})`;
+    }
+    if (searchTelemetry.engine === "legacy") {
+      const reason = searchTelemetry.fallbackReason ?? "backend degraded mode";
+      return `Search used backend legacy mode in ${searchTelemetry.elapsedMs}ms (${reason})`;
+    }
+    const reason = searchTelemetry.fallbackReason ?? "backend unavailable";
+    return `Search backend was unavailable (${reason})`;
   });
   const isRunning = $derived(toolCall.status === "running");
   const isPending = $derived(
     toolCall.status === "pending" && toolCall.requiresApproval,
+  );
+  const isApprovedPending = $derived(
+    toolCall.status === "pending" && toolCall.reviewStatus === "accepted",
   );
   const isComplete = $derived(toolCall.status === "completed");
   const isFailed = $derived(toolCall.status === "failed");
@@ -510,13 +531,13 @@
     isTerminalToolName(toolCall.name),
   );
   const isBrowserTool = $derived(toolCall.name.startsWith("browser_"));
-
-  // For terminal commands, only show approval if this is the first pending one (Kiro-style)
   const shouldShowApproval = $derived(
+    showApprovalInline &&
     isPending &&
-      onApprove &&
-      onDeny &&
-      (!isTerminalTool || isFirstPendingTerminal),
+    !isApprovedPending &&
+    Boolean(onApprove) &&
+    Boolean(onDeny) &&
+    (!isTerminalTool || isFirstPendingTerminal),
   );
 
   // Get the command for terminal tools
@@ -528,14 +549,7 @@
   const isFileWriteTool = $derived(
     isFileMutatingTool(toolCall.name),
   );
-  const isStreaming = $derived(
-    isFileWriteTool && isRunning && streamingProgress != null,
-  );
-
-  // Format streaming progress
-  function formatProgress(progress: StreamingProgress): string {
-    return `${progress.linesWritten}/${progress.totalLines} lines`;
-  }
+  const isStreaming = $derived(false);
 
   function getFileExt(path: string): string {
     return path.split(".").pop()?.toLowerCase() || "";
@@ -666,6 +680,7 @@
 
 <div
   class="inline-tool-call {toolCall.status} category-{getToolCategory()}"
+  class:compact
   class:terminal-tool={isTerminalTool}
   role="article"
   aria-label="Tool: {getToolDisplayName()}"
@@ -707,9 +722,14 @@
               <span class="status-text">Failed</span>
             </span>
           {:else if isPending}
-            <span class="status-pill pending" title="Approval Needed">
+            <span
+              class="status-pill pending"
+              title={isApprovedPending ? "Queued" : "Approval Needed"}
+            >
               <UIIcon name="clock" size={12} />
-              <span class="status-text">Pending</span>
+              <span class="status-text"
+                >{isApprovedPending ? "Queued" : "Pending"}</span
+              >
             </span>
           {/if}
           {#if reusedTerminal}
@@ -736,10 +756,10 @@
         {#if files.length === 0}
           <span
             class="tool-icon category-{getToolCategory()}"
-            class:spinning={isRunning}
+            class:running-shimmer={isRunning}
           >
             {#if isRunning}
-              <UIIcon name="spinner" size={12} class="animate-spin" />
+              <UIIcon name="sparkle" size={12} class="shimmer-icon" />
             {:else}
               <UIIcon name={getToolIcon()} size={12} />
             {/if}
@@ -750,11 +770,6 @@
         >
         {#if isBrowserTool}
           <span class="tool-kind-badge">Browser</span>
-        {/if}
-        {#if isRunning}
-          <span class="live-indicator" aria-label="Tool is running"
-            >Working…</span
-          >
         {/if}
       </div>
 
@@ -795,21 +810,13 @@
               >
                 <div class="file-pill" class:is-loading={isRunning}>
                   {#if isRunning && !isStreaming}
-                    <UIIcon name="spinner" size={12} class="spinner-icon" />
+                    <UIIcon name="sparkle" size={12} class="shimmer-icon" />
                   {:else}
                     <UIIcon name={file.icon} size={12} />
                   {/if}
                   <span class="filename" class:loading-text={isRunning}
                     >{file.filename}</span
                   >
-                  {#if isStreaming && streamingProgress}
-                    <div class="pill-progress-bar">
-                      <div
-                        class="pill-progress-fill"
-                        style="width: {streamingProgress.percent}%"
-                      ></div>
-                    </div>
-                  {/if}
                 </div>
               </div>
             {/each}
@@ -901,11 +908,14 @@
         </button>
       </div>
     </div>
-  {:else if isPending && isTerminalTool && !isFirstPendingTerminal}
-    <!-- Queued terminal command - waiting for previous to complete -->
+  {:else if (isApprovedPending || (isPending && isTerminalTool && !isFirstPendingTerminal))}
     <div class="queued-bar">
       <UIIcon name="clock" size={12} />
-      <span>Queued - waiting for previous command</span>
+      <span
+        >{isApprovedPending
+          ? "Approved - waiting to run"
+          : "Queued - waiting for previous command"}</span
+      >
     </div>
   {/if}
 
@@ -1103,6 +1113,11 @@
     font-size: 12px;
   }
 
+  .inline-tool-call.compact {
+    margin: 2px 0;
+    font-size: 11px;
+  }
+
   /* Terminal Tool Next Level UI */
   .terminal-tool-container {
     margin: 4px 0;
@@ -1129,6 +1144,12 @@
     font-size: 13px;
     cursor: pointer;
     text-align: left;
+  }
+
+  .inline-tool-call.compact .terminal-header {
+    gap: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
   }
 
   .terminal-badge {
@@ -1242,6 +1263,12 @@
     border-radius: 6px;
   }
 
+  .inline-tool-call.compact .tool-header {
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+
   .tool-main-info {
     display: flex;
     align-items: center;
@@ -1281,8 +1308,9 @@
     background: color-mix(in srgb, #0ea5e9 10%, var(--color-bg-input));
   }
 
-  .tool-icon.spinning :global(svg) {
-    animation: spin 1s linear infinite;
+  .tool-icon.running-shimmer {
+    border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 12%, var(--color-bg-input));
   }
 
   @keyframes spin {
@@ -1301,13 +1329,10 @@
     font-size: 12px;
   }
 
-  .live-indicator {
-    font-size: 10px;
-    color: var(--color-text-secondary);
-    opacity: 0.9;
-    letter-spacing: 0.2px;
-    white-space: nowrap;
+  .inline-tool-call.compact .tool-name {
+    font-size: 11px;
   }
+
   .tool-kind-badge {
     font-size: 10px;
     font-weight: 600;
@@ -1340,6 +1365,10 @@
     flex: 1;
     min-width: 0;
     justify-content: flex-start;
+  }
+
+  .inline-tool-call.compact .header-right-meta {
+    gap: 4px;
   }
 
   .files-container {
@@ -1395,6 +1424,11 @@
     gap: 4px;
     min-width: 0;
     color: var(--color-text-secondary);
+  }
+
+  .shimmer-icon {
+    color: var(--color-accent);
+    animation: tool-text-shimmer 1.4s linear infinite;
   }
 
   .filename {
@@ -1470,6 +1504,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 200px;
+  }
+
+  .inline-tool-call.compact .tool-summary {
+    max-width: 150px;
+    font-size: 10px;
   }
 
   .tool-summary.is-line-range {

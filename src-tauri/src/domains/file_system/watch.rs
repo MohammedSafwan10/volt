@@ -57,6 +57,15 @@ impl Default for FileWatchState {
     }
 }
 
+impl FileWatchState {
+    /// Clear all active watchers (used during shutdown)
+    pub fn clear_all(&self) {
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.clear();
+        }
+    }
+}
+
 /// Error types for file watching
 #[derive(Clone, Debug, Serialize, thiserror::Error)]
 #[serde(tag = "type")]

@@ -439,74 +439,78 @@ pub async fn delete_path(path: String) -> Result<(), FileError> {
         return Err(FileError::InvalidPath { path });
     }
 
-    let path_buf = normalize_path(&path);
+    let path_clone = path.clone();
+    spawn_blocking(move || {
+        let path_buf = normalize_path(&path_clone);
 
-    if !path_buf.exists() {
-        return Err(FileError::NotFound { path });
-    }
+        if !path_buf.exists() {
+            return Err(FileError::NotFound { path: path_clone });
+        }
 
-    // Windows specific handling for large deletions like node_modules
-    #[cfg(windows)]
-    {
-        use std::thread;
-        use std::time::Duration;
+        // Windows specific handling for large deletions like node_modules
+        #[cfg(windows)]
+        {
+            use std::thread;
+            use std::time::Duration;
 
-        let mut last_error = None;
-        let mut last_error_kind = None;
-        for attempt in 0..5 {
-            if attempt > 0 {
-                // Exponential backoff: 50ms, 100ms, 200ms, 400ms
-                thread::sleep(Duration::from_millis(50 * (2u64.pow(attempt as u32 - 1))));
-            }
+            let mut last_error = None;
+            let mut last_error_kind = None;
+            for attempt in 0..5 {
+                if attempt > 0 {
+                    // Exponential backoff: 50ms, 100ms, 200ms, 400ms
+                    thread::sleep(Duration::from_millis(50 * (2u64.pow(attempt as u32 - 1))));
+                }
 
-            let result = if path_buf.is_dir() {
-                fs::remove_dir_all(&path_buf)
-            } else {
-                fs::remove_file(&path_buf)
-            };
+                let result = if path_buf.is_dir() {
+                    fs::remove_dir_all(&path_buf)
+                } else {
+                    fs::remove_file(&path_buf)
+                };
 
-            match result {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    last_error_kind = Some(e.kind());
-                    // If it's permission denied, it might be a readonly file or a locked file
-                    if e.kind() == std::io::ErrorKind::PermissionDenied {
-                        // Try to clear readonly attributes recursively if it's a directory
-                        if path_buf.is_dir() {
-                            let _ = clear_readonly_recursively(&path_buf);
-                        } else {
-                            if let Ok(metadata) = fs::metadata(&path_buf) {
-                                let mut permissions = metadata.permissions();
-                                if permissions.readonly() {
-                                    permissions.set_readonly(false);
-                                    let _ = fs::set_permissions(&path_buf, permissions);
+                match result {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        last_error_kind = Some(e.kind());
+                        // If it's permission denied, it might be a readonly file or a locked file
+                        if e.kind() == std::io::ErrorKind::PermissionDenied {
+                            // Try to clear readonly attributes recursively if it's a directory
+                            if path_buf.is_dir() {
+                                let _ = clear_readonly_recursively(&path_buf);
+                            } else {
+                                if let Ok(metadata) = fs::metadata(&path_buf) {
+                                    let mut permissions = metadata.permissions();
+                                    if permissions.readonly() {
+                                        permissions.set_readonly(false);
+                                        let _ = fs::set_permissions(&path_buf, permissions);
+                                    }
                                 }
                             }
                         }
+                        last_error = Some(e);
                     }
-                    last_error = Some(e);
                 }
             }
-        }
 
-        // Final Windows fallback: try native shell delete for stubborn paths (node_modules).
-        if let Some(std::io::ErrorKind::PermissionDenied) = last_error_kind {
-            if try_native_delete_windows(&path_buf) {
-                return Ok(());
+            // Final Windows fallback: try native shell delete for stubborn paths (node_modules).
+            if let Some(std::io::ErrorKind::PermissionDenied) = last_error_kind {
+                if try_native_delete_windows(&path_buf) {
+                    return Ok(());
+                }
+            }
+
+            if let Some(e) = last_error {
+                return Err(io_error_with_path(e, &path_clone));
             }
         }
 
-        if let Some(e) = last_error {
-            return Err(io_error_with_path(e, &path));
+        // Fallback/Non-Windows
+        if path_buf.is_dir() {
+            fs::remove_dir_all(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
+        } else {
+            fs::remove_file(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))
         }
-    }
-
-    // Fallback/Non-Windows
-    if path_buf.is_dir() {
-        fs::remove_dir_all(&path_buf).map_err(|e| io_error_with_path(e, &path))
-    } else {
-        fs::remove_file(&path_buf).map_err(|e| io_error_with_path(e, &path))
-    }
+    })
+    .await
 }
 
 #[cfg(windows)]

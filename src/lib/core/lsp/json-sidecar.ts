@@ -17,16 +17,29 @@ import {
   getLspRegistry,
   rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 
 // Server instance tracking
 let jsonServerTransport: LspTransport | null = null;
 let jsonServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let jsonSessionGeneration = 0;
+const jsonRecovery = createLspRecoveryController({
+  source: 'json',
+  restart: async () => {
+    await recoverJsonLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -166,7 +179,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  problemsStore.setProblemsForFile(filePath, problems, 'json');
+  setSourceProblemsForFile({
+    source: 'json',
+    generation: jsonSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -183,8 +201,17 @@ async function initializeServer(): Promise<void> {
 
       jsonServerTransport = await registry.startServer('json', {
         serverId: 'json-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 1000,
+          maxDelayMs: 12_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
       });
+      jsonServerTransport.configureHealth({ autoRestart: true });
+      jsonSessionGeneration = startSourceSession('json');
 
       jsonServerTransport.onMessage(handleLspMessage);
       jsonServerTransport.onError((error) => {
@@ -192,14 +219,16 @@ async function initializeServer(): Promise<void> {
       });
       jsonServerTransport.onExit(() => {
         console.log('[JSON LSP] Server exited');
-        problemsStore.markSourceStale('json');
+        jsonSessionGeneration = markSourceSessionStale('json');
+        jsonRecovery.schedule('transport exit');
         jsonServerTransport = null;
         jsonServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
       });
       jsonServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('json');
+        jsonSessionGeneration = startSourceSession('json');
+        markSourceSessionReady('json', jsonSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -255,6 +284,8 @@ async function initializeServer(): Promise<void> {
 
       await jsonServerTransport.sendNotification('initialized', {});
       jsonServerInitialized = true;
+      markSourceSessionReady('json', jsonSessionGeneration);
+      jsonRecovery.reset();
       console.log('[JSON LSP] Server initialized');
     } catch (error) {
       console.error('[JSON LSP] Failed to initialize:', error);
@@ -345,7 +376,11 @@ export async function notifyJsonDocumentClosed(filepath: string): Promise<void> 
   await jsonServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri: pathToUri(filepath) }
   });
-  problemsStore.clearProblemsForFile(filepath, 'json');
+  clearSourceProblemsForFile({
+    source: 'json',
+    generation: jsonSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 export async function notifyJsonDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -410,6 +445,13 @@ export async function ensureJsonLspStarted(): Promise<void> {
 /**
  * Stop the JSON LSP server
  */
+async function recoverJsonLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || jsonServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
+}
+
 export async function stopJsonLsp(): Promise<void> {
   if (!jsonServerTransport) return;
 
@@ -428,4 +470,6 @@ export async function stopJsonLsp(): Promise<void> {
   jsonServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
+  jsonSessionGeneration = markSourceSessionStale('json');
+  jsonRecovery.reset();
 }

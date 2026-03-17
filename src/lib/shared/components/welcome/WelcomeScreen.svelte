@@ -1,6 +1,7 @@
 <script lang="ts">
   import { projectStore } from '$shared/stores/project.svelte';
   import { openFolderDialog, openFileDialog } from '$core/services/file-system';
+  import { editorStore } from '$features/editor/stores/editor.svelte';
   import { UIIcon } from '$shared/components/ui';
 
   async function handleOpenFolder() {
@@ -13,12 +14,7 @@
   async function handleOpenFile() {
     const path = await openFileDialog();
     if (path) {
-      // For now, just show a toast - file opening will be implemented in editor tasks
-      const { showToast } = await import('$shared/stores/toast.svelte');
-      showToast({
-        message: 'File editor coming soon',
-        type: 'info'
-      });
+      await editorStore.openFile(path);
     }
   }
 

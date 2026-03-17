@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * ContextGatheringCard - Shows real-time context gathering progress
-   * Similar to Kiro's "Searched workspace" UI with bullet points
+   * Displays "Searched workspace" UI with bullet points
    */
   import { UIIcon, type UIIconName } from '$shared/components/ui';
   

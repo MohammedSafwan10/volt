@@ -605,30 +605,39 @@ pub async fn index_workspace_stream(
 
             // Emit batch when full or after timeout
             if batch.len() >= BATCH_SIZE || last_emit.elapsed() >= BATCH_MAX_LATENCY {
-                let _ = app.emit(
-                    "file-index://chunk",
-                    IndexChunkEvent {
-                        request_id,
-                        files: std::mem::take(&mut batch),
-                        total_count,
-                        done: false,
-                    },
-                );
+                if app
+                    .emit(
+                        "file-index://chunk",
+                        IndexChunkEvent {
+                            request_id,
+                            files: std::mem::take(&mut batch),
+                            total_count,
+                            done: false,
+                        },
+                    )
+                    .is_err()
+                {
+                    return;
+                }
                 last_emit = Instant::now();
             }
         }
 
         // Emit remaining files
-        if !batch.is_empty() {
-            let _ = app.emit(
-                "file-index://chunk",
-                IndexChunkEvent {
-                    request_id,
-                    files: batch,
-                    total_count,
-                    done: false,
-                },
-            );
+        if !batch.is_empty()
+            && app
+                .emit(
+                    "file-index://chunk",
+                    IndexChunkEvent {
+                        request_id,
+                        files: batch,
+                        total_count,
+                        done: false,
+                    },
+                )
+                .is_err()
+        {
+            return;
         }
 
         // Update in-memory cache only if it is complete.

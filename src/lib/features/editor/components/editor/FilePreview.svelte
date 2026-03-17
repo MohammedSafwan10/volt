@@ -216,7 +216,7 @@ import { showToast } from "$shared/stores/toast.svelte";
     {#if isMarkdown}
       {#if mode === "preview"}
         <div class="markdown-wrap">
-          <Markdown content={content} />
+          <Markdown content={content} profile="document" />
         </div>
       {:else}
         <pre class="source">{content}</pre>

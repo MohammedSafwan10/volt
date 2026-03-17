@@ -101,17 +101,22 @@ export function createTerminal(options?: ConstructorParameters<typeof Terminal>[
 		throw new Error('xterm not loaded. Call loadXterm() first.');
 	}
 
-	return new xtermModule.Terminal({
+	const terminalOptions = {
 		cursorBlink: true,
 		cursorStyle: 'bar',
 		fontSize: 13,
 		fontFamily: 'Consolas, "Courier New", monospace',
 		scrollback: 10000,
 		convertEol: true,
+		bellStyle: 'none',
 		theme: getTerminalTheme(),
 		allowProposedApi: true,
 		...options
-	});
+	} as ConstructorParameters<typeof Terminal>[0] & {
+		bellStyle?: 'none' | 'sound' | 'visual';
+	};
+
+	return new xtermModule.Terminal(terminalOptions);
 }
 
 /**

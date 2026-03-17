@@ -11,6 +11,16 @@ import type {
 
 export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
+  const completedToolResultIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role !== 'tool' || !msg.toolCalls?.length) continue;
+    for (const tc of msg.toolCalls) {
+      if (tc.id?.trim()) {
+        completedToolResultIds.add(tc.id);
+      }
+    }
+  }
 
   for (const msg of messages) {
     if (msg.role === 'system') {
@@ -49,7 +59,11 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
     }
 
     if (msg.role === 'assistant') {
-      const hasToolCalls = msg.inlineToolCalls && msg.inlineToolCalls.length > 0;
+      const resolvedToolCalls =
+        msg.inlineToolCalls?.filter(
+          (tc) => tc.id?.trim() && completedToolResultIds.has(tc.id),
+        ) ?? [];
+      const hasToolCalls = resolvedToolCalls.length > 0;
 
       if (hasToolCalls) {
         const parts: ContentPart[] = [];
@@ -58,8 +72,7 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
           parts.push({ type: 'text', text: msg.content });
         }
 
-        if (msg.inlineToolCalls) {
-          for (const tc of msg.inlineToolCalls) {
+        for (const tc of resolvedToolCalls) {
             parts.push({
               type: 'function_call',
               id: tc.id,
@@ -67,7 +80,6 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
               arguments: tc.arguments,
               thoughtSignature: tc.thoughtSignature,
             });
-          }
         }
 
         out.push({ role: 'assistant', content: msg.content, parts });

@@ -140,7 +140,7 @@ class UIStore {
    * Set bottom panel height (for resizing)
    */
   setBottomPanelHeight(height: number): void {
-    this.bottomPanelHeight = Math.max(100, Math.min(500, height));
+    this.bottomPanelHeight = Math.max(160, Math.min(500, height));
   }
 
   /**

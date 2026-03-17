@@ -169,9 +169,8 @@
       id: "file.closeFolder",
       label: "Close Folder",
       category: "File",
-      action: () => {
-        projectStore.closeProject();
-        editorStore.closeAllFiles(true);
+      action: async () => {
+        await projectStore.closeProject();
       },
       enabled: () => projectStore.rootPath !== null,
     },

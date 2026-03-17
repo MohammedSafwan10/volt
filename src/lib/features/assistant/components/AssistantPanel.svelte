@@ -56,11 +56,6 @@
     shouldRunAfterFileEdits,
   } from "./panel/verification-profiles";
   import { createToolLoopState } from "./panel/tool-loop-state";
-  import {
-    buildReadBeforeEditError,
-    getReadRequirement,
-    requiresReadBeforeEdit,
-  } from "./panel/tool-guards";
   import { selectAutoVerificationAction } from "./panel/auto-verification";
   import { createStreamGuards } from "./panel/stream-guards";
   import { createStreamingTextBuffer } from "./panel/streaming-text-buffer";
@@ -147,6 +142,16 @@
   });
 
   const isAssistantBusy = $derived.by(() => {
+    const currentConversationId = assistantStore.currentConversation?.id ?? null;
+    if (!currentConversationId) {
+      return assistantStore.isStreaming;
+    }
+
+    const currentRunState = assistantStore.getOpenConversationTabs().find(
+      (tab) => tab.id === currentConversationId,
+    );
+
+    if (currentRunState?.isRunning) return true;
     if (assistantStore.isStreaming) return true;
     return (
       assistantStore.agentLoopState === "running" ||
@@ -166,6 +171,14 @@
 
   function handleOpenPromptLibrary(): void {
     uiStore.setActiveSidebarPanel("prompts");
+  }
+
+  function isAssistantDebugEnabled(): boolean {
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem("volt.assistant.debug") === "true";
+    } catch {
+      return false;
+    }
   }
 
   $effect(() => {
@@ -189,45 +202,6 @@
       meta: result.meta,
       data: result.data,
     });
-  }
-
-  function shouldRequireEditConfirmation(userInput: string, mode: AIMode): boolean {
-    if (mode !== "agent") return false;
-    const text = userInput.trim().toLowerCase();
-    if (!text) return false;
-
-    const explicitImplementIntent =
-      /\b(implement|apply|patch|edit|modify|refactor|update|change|fix|add|create|remove|delete|write code|make it|do it|go ahead|proceed)\b/i.test(
-        text,
-      );
-    if (explicitImplementIntent) return false;
-
-    const ideationIntent =
-      /\b(what can|how can|ideas?|suggest|recommend|improve|better|enhance|optimi[sz]e|review)\b/i.test(
-        text,
-      );
-    return ideationIntent;
-  }
-
-  function shouldTreatAsConversationOnly(userInput: string, mode: AIMode): boolean {
-    if (mode !== "agent") return false;
-    const text = userInput.trim().toLowerCase();
-    if (!text) return false;
-    const normalized = text.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
-
-    const greetingOnly =
-      /^(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|hola|namaste)$/.test(
-        normalized,
-      );
-    const capabilityAsk =
-      /^(what can you do|wht can u do|what do you do|who are you|introduce yourself)$/.test(
-        normalized,
-      );
-    const hasExecutionIntent =
-      /\b(fix|implement|edit|change|update|create|build|run|debug|analyze|search|read file|open|check)\b/i.test(
-        text,
-      );
-    return (greetingOnly || capabilityAsk) && !hasExecutionIntent;
   }
 
   async function handleSend(): Promise<void> {
@@ -275,22 +249,6 @@
       workspaceRoot: projectStore.rootPath ?? undefined,
       mcpTools: mcpToolsInfo.length > 0 ? mcpToolsInfo : undefined,
     });
-    const requireEditConfirmation = shouldRequireEditConfirmation(
-      content,
-      assistantStore.currentMode,
-    );
-    const conversationOnlyTurn = shouldTreatAsConversationOnly(
-      content,
-      assistantStore.currentMode,
-    );
-    if (requireEditConfirmation) {
-      systemPrompt +=
-        "\n\nIntent guard: The user is asking for analysis/suggestions. Do NOT call file-mutating tools yet. First provide recommendations and ask for explicit confirmation before making code edits.";
-    }
-    if (conversationOnlyTurn) {
-      systemPrompt +=
-        "\n\nConversation guard: This user turn is greeting/capabilities chat. Do NOT perform proactive workspace scans or tool calls. Respond briefly and ask what concrete task they want next.";
-    }
 
     const runtimeContextBlock = buildRuntimeContextBlock({
       workspaceRoot: projectStore.rootPath,
@@ -395,10 +353,14 @@
 
     // Tool loop: keep streaming until model finishes without tool calls
     try {
-      await runToolLoop(conversationId, systemPrompt, selectedModel, tools, controller, 30, {
-        requireEditConfirmation,
-        conversationOnlyTurn,
-      });
+      await runToolLoop(
+        conversationId,
+        systemPrompt,
+        selectedModel,
+        tools,
+        controller,
+        30,
+      );
     } finally {
       // Always reset streaming state when done
       assistantStore.isStreaming = false;
@@ -423,7 +385,7 @@
   /**
    * Run the tool loop - stream model response, execute tools, send results back
    * Continues until model finishes without requesting tool calls
-   * Kiro-style: robust error recovery, continuation prompts, high iteration limit
+   * Robust error recovery, continuation prompts, high iteration limit
    */
   async function runToolLoop(
     conversationId: string,
@@ -432,10 +394,6 @@
     tools: ReturnType<typeof getAllToolsForMode>,
     controller: AbortController,
     maxIterations = 60,
-    options?: {
-      requireEditConfirmation?: boolean;
-      conversationOnlyTurn?: boolean;
-    },
   ): Promise<void> {
     const msgId = assistantStore.addAssistantMessage("", true);
     const goal = assistantStore.getConversationMessages(conversationId)
@@ -474,7 +432,7 @@
     let budgetExtensions = 0;
     let lastProgressAt = Date.now();
 
-    // Kiro-style: Track consecutive empty responses to detect stuck model
+    // Track consecutive empty responses to detect stuck model
     let consecutiveEmptyResponses = 0;
     const MAX_EMPTY_RESPONSES = 6;
     let recoveryRetryCount = 0;
@@ -486,7 +444,6 @@
       toolLoopState,
       assistantStore.getConversationMessages(conversationId),
     );
-    const strictReadBeforeEdit = isAgentMode;
     const trackingState = createToolTrackingState({
       isFileMutatingTool,
       normalizeQueueKey,
@@ -501,7 +458,6 @@
     const structuralMutationPaths = trackingState.structuralMutationPaths;
     const pendingVerificationState = trackingState.pendingVerificationState;
     const trackToolOutcome = trackingState.trackToolOutcome;
-    const doesPathExist = trackingState.doesPathExist;
     const agentRuntime = createAgentRuntime();
 
     // Streaming safety guards
@@ -536,6 +492,7 @@
         iteration,
         ...details,
       };
+      if (!isAssistantDebugEnabled()) return;
       if (level === "error") {
         console.error("[AssistantLoop]", payload);
       } else if (level === "warn") {
@@ -555,8 +512,6 @@
     let justProcessedToolResults = false;
     let completionNudgeCount = 0;
     const MAX_COMPLETION_NUDGES = 3;
-    let editConfirmationNudgeCount = 0;
-    let conversationGuardNudgeCount = 0;
     let pruneNotified = false;
     const finalizeOutcome = (
       outcome: "completed" | "failed" | "cancelled",
@@ -722,9 +677,9 @@
         result: ToolResult;
       }> = [];
       const toolIdCounts = new Map<string, number>();
+      const streamedToolIds = new Map<string, string>();
       let hadPlanModeViolationThisIteration = false;
       let warnedBrowserToolsDisabled = false;
-      let warnedReadBeforeEdit = false;
       let toolCallSeenThisIteration = false;
       let stalledAbortReason: string | null = null;
 
@@ -779,7 +734,7 @@
         sliceChars: 120,
         onFlush: (text) => assistantStore.appendTextToMessage(msgId, text, true),
       });
-        // REMOVED: visibleCharBudget - show full responses like Kiro
+        // REMOVED: visibleCharBudget - show full responses
         const stallWatchdog = setInterval(() => {
           if (controller.signal.aborted) return;
           const idleFor = Date.now() - lastProgressAt;
@@ -873,6 +828,25 @@
 
           if (chunk.type === "tool_call" && chunk.toolCall) {
             lastProgressAt = Date.now();
+            const toolCallArgs = chunk.toolCall.arguments;
+            const toolCallName = normalizeToolName(chunk.toolCall.name);
+            const rawToolCallId =
+              (chunk.toolCall.id && chunk.toolCall.id.trim()) ||
+              `tool_${crypto.randomUUID().slice(0, 8)}`;
+            const existingStreamedId = streamedToolIds.get(rawToolCallId);
+            let toolCallId = existingStreamedId;
+            if (!toolCallId) {
+              const seenCount = toolIdCounts.get(rawToolCallId) ?? 0;
+              toolIdCounts.set(rawToolCallId, seenCount + 1);
+              toolCallId =
+                seenCount === 0 ? rawToolCallId : `${rawToolCallId}__${seenCount + 1}`;
+              streamedToolIds.set(rawToolCallId, toolCallId);
+            }
+            const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
+            const isPartialToolCall = Boolean(chunk.partial);
+            if (isPartialToolCall) {
+              continue;
+            }
             await textBuffer.flushNow();
             // End any active thinking part before adding tool call
             assistantStore.endThinkingPart(msgId);
@@ -880,16 +854,9 @@
             // Keep already-streamed text visible when tools begin.
             // Tool cards are shown inline without retracting prior narration.
             hasToolsInConversation = true;
-            const toolCallArgs = chunk.toolCall.arguments;
-            const toolCallName = normalizeToolName(chunk.toolCall.name);
-            const rawToolCallId =
-              (chunk.toolCall.id && chunk.toolCall.id.trim()) ||
-              `tool_${crypto.randomUUID().slice(0, 8)}`;
-            const seenCount = toolIdCounts.get(rawToolCallId) ?? 0;
-            toolIdCounts.set(rawToolCallId, seenCount + 1);
-            const toolCallId =
-              seenCount === 0 ? rawToolCallId : `${rawToolCallId}__${seenCount + 1}`;
-            const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
+            const existingInlineToolCall = assistantStore.messages
+              .find((msg) => msg.id === msgId)
+              ?.inlineToolCalls?.find((tc) => tc.id === toolCallId);
 
             // DEDUPLICATION: Check if we already have this exact tool call in this iteration
             // This prevents the AI from running the same command twice in one response
@@ -933,7 +900,15 @@
                 endTime: Date.now(),
               };
               if (toolCallName !== "attempt_completion") {
-                assistantStore.addToolCallToMessage(msgId, skippedToolCall);
+                if (existingInlineToolCall) {
+                  assistantStore.updateToolCallInMessage(
+                    msgId,
+                    toolCallId,
+                    skippedToolCall,
+                  );
+                } else {
+                  assistantStore.addToolCallToMessage(msgId, skippedToolCall);
+                }
               }
               continue;
             }
@@ -945,67 +920,17 @@
             );
             const isInternalCompletionTool = toolCallName === "attempt_completion";
             const capabilities = getToolCapabilities(toolCallName);
-            const editBlockedByIntentGuard =
-              options?.requireEditConfirmation === true &&
-              isFileMutatingTool(toolCallName);
-            const blockedByConversationGuard =
-              options?.conversationOnlyTurn === true &&
-              !(
-                toolCallName === "attempt_completion" ||
-                toolCallName === "ask_followup_question"
-              );
             const isPlanModeViolation =
               isPlanMode &&
               (isTerminalToolName(toolCallName) ||
                 (capabilities.isMutating &&
                   toolCallName !== "write_plan_file"));
-            let readGuardError: string | null = null;
-            if (
-              strictReadBeforeEdit &&
-              validation.valid &&
-              !editBlockedByIntentGuard &&
-              !blockedByConversationGuard &&
-              !isPlanModeViolation &&
-              requiresReadBeforeEdit(toolCallName)
-            ) {
-              const requirement = getReadRequirement(toolCallName, toolCallArgs);
-              if (requirement) {
-                for (const requiredPath of requirement.paths) {
-                  if (
-                    requirement.allowIfTargetMissing &&
-                    !(await doesPathExist(requiredPath))
-                  ) {
-                    continue;
-                  }
-                  const freshness = toolLoopState.checkFreshRead(
-                    requiredPath,
-                    requirement.requiredKind,
-                  );
-                  if (!freshness.ok) {
-                    readGuardError = buildReadBeforeEditError(
-                      requiredPath,
-                      requirement.requiredKind,
-                    );
-                    break;
-                  }
-                }
-              }
-            }
-            const blockedByReadGuard = Boolean(readGuardError);
-            const effectiveValidationError = blockedByConversationGuard
-              ? "Tool blocked: greeting/capabilities turns should not run proactive tools. Respond directly and wait for a concrete task."
-              : editBlockedByIntentGuard
-              ? "Edit blocked: user asked for suggestions/analysis. Ask for explicit confirmation before changing files."
-              : isPlanModeViolation
-                ? `Tool "${toolCallName}" is not allowed in plan mode. In plan mode, use READ tools and optionally "write_plan_file" only.`
-                : blockedByReadGuard
-                  ? (readGuardError ?? "Read-before-edit guard blocked this tool call.")
-                : (validation.error ?? "Invalid tool call");
+            const effectiveValidationError = isPlanModeViolation
+              ? `Tool "${toolCallName}" is not allowed in plan mode. In plan mode, use READ tools and optionally "write_plan_file" only.`
+              : (validation.error ?? "Invalid tool call");
             const status: ToolCall["status"] =
               validation.valid &&
-              !editBlockedByIntentGuard &&
-              !blockedByConversationGuard &&
-              !blockedByReadGuard
+              !isPlanModeViolation
               ? "pending"
               : "failed";
             const toolCall: ToolCall = {
@@ -1018,14 +943,15 @@
               error: effectiveValidationError,
               endTime:
                 validation.valid &&
-                !editBlockedByIntentGuard &&
-                !blockedByReadGuard
+                !isPlanModeViolation
                   ? undefined
                   : Date.now(),
             };
 
-            if (!isInternalCompletionTool) {
+            if (!isInternalCompletionTool && !existingInlineToolCall) {
               assistantStore.addToolCallToMessage(msgId, toolCall);
+            } else if (!isInternalCompletionTool && existingInlineToolCall) {
+              assistantStore.updateToolCallInMessage(msgId, toolCallId, toolCall);
             }
 
             // Track every tool call (valid or invalid) so we can always attach a tool result
@@ -1039,17 +965,11 @@
 
             if (
               !validation.valid ||
-              editBlockedByIntentGuard ||
-              blockedByConversationGuard ||
-              blockedByReadGuard ||
               isPlanModeViolation
             ) {
               loopLog("warn", "tool_blocked_or_invalid", {
                 toolName: toolCallName,
                 toolCallId,
-                blockedByReadGuard,
-                blockedByConversationGuard,
-                editBlockedByIntentGuard,
                 isPlanModeViolation,
                 validationError: validation.error ?? null,
                 effectiveValidationError,
@@ -1077,53 +997,8 @@
                 result: {
                   success: false,
                   error: effectiveValidationError ?? "Invalid tool call",
-                  meta: blockedByReadGuard
-                    ? {
-                        code: "READ_REQUIRED_BEFORE_EDIT",
-                      }
-                    : undefined,
                 },
               });
-
-              if (editBlockedByIntentGuard && editConfirmationNudgeCount < 2) {
-                editConfirmationNudgeCount++;
-                assistantStore.addToolMessage({
-                  id: `edit_confirm_guard_${Date.now()}`,
-                  name: "_system_edit_confirmation_guard",
-                  arguments: {},
-                  status: "completed",
-                  output:
-                    "The user asked for suggestions, not direct edits. Provide recommendations first and ask if they want you to implement changes.",
-                });
-              }
-              if (blockedByConversationGuard && conversationGuardNudgeCount < 2) {
-                conversationGuardNudgeCount++;
-                assistantStore.addToolMessage({
-                  id: `conversation_guard_${Date.now()}`,
-                  name: "_system_conversation_guard",
-                  arguments: {},
-                  status: "completed",
-                  output:
-                    "This turn is greeting/capabilities chat. Do not run workspace or browser tools; reply briefly and ask for the concrete task.",
-                });
-              }
-              if (blockedByReadGuard && !warnedReadBeforeEdit) {
-                warnedReadBeforeEdit = true;
-                showToast({
-                  message:
-                    "Edit blocked: AI must read the target file first (read-before-edit guard).",
-                  type: "info",
-                });
-                assistantStore.addToolMessage({
-                  id: `read_guard_${Date.now()}`,
-                  name: "_system_read_before_edit_guard",
-                  arguments: {},
-                  status: "completed",
-                  output:
-                    effectiveValidationError ??
-                    "Read-before-edit guard blocked a file mutation.",
-                });
-              }
 
               // CRITICAL: If a file-modifying tool fails validation, mark it so we can skip
               // running subsequent tools that might depend on it (like eslint after write_file)
@@ -1213,7 +1088,9 @@
                 : "";
               const filePath =
                 isFileEdit && rawFilePath
-                  ? normalizeQueueKey(rawFilePath)
+                  ? toolCallName === "delete_file"
+                    ? "__delete_file_serial__"
+                    : normalizeQueueKey(rawFilePath)
                   : null;
 
               // Group file edits by path for sequential execution
@@ -1567,7 +1444,6 @@
               repeatedFailureHint,
             },
             isAgentMode,
-            conversationOnlyTurn: Boolean(options?.conversationOnlyTurn),
             completionNudgeCount,
             maxCompletionNudges: MAX_COMPLETION_NUDGES,
             provider: aiSettingsStore.selectedProvider,
@@ -2042,7 +1918,6 @@
       conversationId?: string;
       messageId?: string;
       abortSignal?: AbortSignal;
-      updateInline?: boolean;
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
@@ -2056,11 +1931,10 @@
       executeToolCall,
       getToolIdempotencyKey,
       updateToolCall: (toolCallId, patch) => {
-        if (options?.updateInline && options.messageId) {
+        if (options?.messageId) {
           assistantStore.updateToolCallInMessage(options.messageId, toolCallId, patch);
           return;
         }
-        assistantStore.updateToolCall(toolCallId, patch);
       },
     });
   }
@@ -2282,42 +2156,6 @@
     })();
   }
 
-  async function handleToolApprove(toolCall: ToolCall): Promise<void> {
-    // Validate tool call against current mode (use router validation to avoid drift)
-    const validation = validateTool(
-      toolCall.name,
-      toolCall.arguments,
-      assistantStore.currentMode,
-    );
-    if (!validation.valid) {
-      showToast({
-        message: validation.error ?? "Tool call is not allowed",
-        type: "warning",
-      });
-      assistantStore.updateToolCall(toolCall.id, {
-        status: "cancelled",
-        error: validation.error,
-        endTime: Date.now(),
-      });
-      return;
-    }
-
-    // Execute the approved tool
-    const result = await executeToolAndUpdate(
-      toolCall,
-      undefined,
-      assistantStore.abortController?.signal,
-    );
-    recordToolResult(toolCall, result);
-  }
-
-  function handleToolDeny(toolCall: ToolCall): void {
-    assistantStore.updateToolCall(toolCall.id, {
-      status: "cancelled",
-      endTime: Date.now(),
-    });
-  }
-
   async function handleRevertRequested(messageId: string): Promise<void> {
     pendingRevertId = messageId;
     // Show loading toast while gathering metadata
@@ -2345,9 +2183,9 @@
   }
 
   /**
-   * Handle tool approval from inline display in message
-   * Supports streaming progress for file write operations
-   * OPTIMIZED: Execute immediately on approval instead of waiting for tool loop
+   * Handle tool approval from inline display in message.
+   * Approvals only unlock execution; the tool loop remains the single executor
+   * so terminal commands cannot race each other or bypass queue ordering.
    */
   async function handleToolApproveInMessage(
     messageId: string,
@@ -2373,20 +2211,29 @@
       return;
     }
 
-    const result = await executeToolAndUpdate(
-      toolCall,
-      {
-        conversationId,
-        messageId,
-        abortSignal:
-          assistantStore.currentConversation?.id === conversationId
-            ? assistantStore.abortController?.signal
-            : undefined,
-        updateInline: true,
-      },
-    );
+    const approvedArguments =
+      isTerminalToolName(toolCall.name) &&
+      !(
+        typeof toolCall.arguments.cwd === "string" &&
+        toolCall.arguments.cwd.trim()
+      ) &&
+      projectStore.rootPath
+        ? {
+            ...toolCall.arguments,
+            cwd: projectStore.rootPath,
+          }
+        : toolCall.arguments;
 
-    recordToolResult(toolCall, result);
+    assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
+      arguments: approvedArguments,
+      reviewStatus: "accepted",
+      meta: {
+        approvedAt: Date.now(),
+        liveStatus: isTerminalToolName(toolCall.name)
+          ? "Queued..."
+          : "Approved...",
+      },
+    });
   }
 
   /**
@@ -2398,6 +2245,7 @@
   ): void {
     assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
       status: "cancelled",
+      reviewStatus: "rejected",
       endTime: Date.now(),
     });
   }
@@ -2599,6 +2447,7 @@
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
       isStreaming={assistantStore.isStreaming}
+      scrollRevision={assistantStore.chatScrollRevision}
       onQuickPrompt={handleQuickPrompt}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}

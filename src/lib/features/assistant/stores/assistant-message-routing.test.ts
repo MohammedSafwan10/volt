@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   findConversationIdByMessageId,
+  sanitizeVisibleAssistantText,
   stripSystemReminderTags,
 } from './assistant-message-routing';
 
@@ -30,5 +31,13 @@ describe('assistant message routing helpers', () => {
 
     expect(result.visibleContent).toBe('Hello\n\nWorld');
     expect(result.hiddenReminderBlock).toBe('Secret mode switch');
+  });
+
+  it('sanitizes internal assistant control blocks from visible text', () => {
+    expect(
+      sanitizeVisibleAssistantText(
+        'Hi\n<system_context>secret</system_context>\n<smart_context>more</smart_context>\n<system-reminder>x</system-reminder>\nDone',
+      ),
+    ).toBe('Hi\n\nDone');
   });
 });

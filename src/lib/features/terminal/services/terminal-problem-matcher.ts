@@ -13,12 +13,27 @@ export function setTerminalProblemMatcherProjectRootResolver(
  * TerminalProblemMatcher - Parses terminal output for errors and warnings
  * Pipes matched problems to the problemsStore
  */
-class TerminalProblemMatcher {
+interface TerminalProblemInfo {
+    file: string;
+    line: number;
+    column: number;
+    severity: Problem['severity'];
+    message: string;
+    code?: string;
+}
+
+interface TerminalProblemGroup {
+    filePath: string;
+    source: string;
+    problems: Problem[];
+}
+
+export class TerminalProblemMatcher {
     private unlisten: (() => void) | null = null;
     private unlistenExit: (() => void) | null = null;
     private buffer = new Map<string, string>(); // terminalId -> partial line buffer
     private bufferFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    private problemsByKey = new Map<string, { filePath: string; source: string; problems: Problem[] }>();
+    private problemsByTerminal = new Map<string, Map<string, TerminalProblemGroup>>();
     private static readonly BUFFER_FLUSH_MS = 100;
 
     // Common error patterns
@@ -69,12 +84,11 @@ class TerminalProblemMatcher {
         if (this.unlisten) return;
 
         const unlistenFn = await onTerminalData((event) => {
-            this.handleData(event.terminalId, event.data);
+            void this.handleData(event.terminalId, event.data);
         });
 
         const unlistenExitFn = await onTerminalExit((event) => {
-            this.flushBuffer(event.terminalId);
-            this.clearBuffer(event.terminalId);
+            void this.handleTerminalExit(event.terminalId);
         });
 
         this.unlisten = () => {
@@ -116,11 +130,11 @@ class TerminalProblemMatcher {
 
         // Process completed lines
         for (const line of lines) {
-            await this.processLine(line.trim());
+            await this.processLine(terminalId, line.trim());
         }
     }
 
-    private async processLine(line: string): Promise<boolean> {
+    private async processLine(terminalId: string, line: string): Promise<boolean> {
         // Strip ANSI escape codes
         const cleanLine = line.replace(/\x1B\[[0-9;]*[mK]/g, '');
 
@@ -128,7 +142,7 @@ class TerminalProblemMatcher {
             const match = cleanLine.match(pattern.regex);
             if (match) {
                 const info = pattern.map(match);
-                await this.addProblem(info, pattern.source);
+                await this.addProblem(terminalId, info, pattern.source);
                 return true;
             }
         }
@@ -150,10 +164,16 @@ class TerminalProblemMatcher {
     private async flushBuffer(terminalId: string): Promise<void> {
         const buffered = this.buffer.get(terminalId);
         if (!buffered) return;
-        const matched = await this.processLine(buffered.trim());
+        const matched = await this.processLine(terminalId, buffered.trim());
         if (matched) {
             this.clearBuffer(terminalId);
         }
+    }
+
+    private async handleTerminalExit(terminalId: string): Promise<void> {
+        await this.flushBuffer(terminalId);
+        this.clearBuffer(terminalId);
+        this.clearTerminalProblems(terminalId);
     }
 
     private clearBuffer(terminalId: string): void {
@@ -163,7 +183,68 @@ class TerminalProblemMatcher {
         this.bufferFlushTimers.delete(terminalId);
     }
 
-    private async addProblem(info: any, source: string): Promise<void> {
+    private groupKey(filePath: string, source: string): string {
+        return `${source}::${filePath}`;
+    }
+
+    private problemFingerprint(problem: Pick<Problem, 'file' | 'line' | 'column' | 'endLine' | 'endColumn' | 'severity' | 'source' | 'code' | 'message'>): string {
+        return [
+            problem.file,
+            problem.line,
+            problem.column,
+            problem.endLine,
+            problem.endColumn,
+            problem.severity,
+            problem.source,
+            problem.code ?? '',
+            problem.message.trim(),
+        ].join('|');
+    }
+
+    private getTerminalGroups(terminalId: string): Map<string, TerminalProblemGroup> {
+        let groups = this.problemsByTerminal.get(terminalId);
+        if (!groups) {
+            groups = new Map<string, TerminalProblemGroup>();
+            this.problemsByTerminal.set(terminalId, groups);
+        }
+        return groups;
+    }
+
+    private syncProblemsForFile(filePath: string, source: string): void {
+        const fingerprints = new Set<string>();
+        const aggregated: Problem[] = [];
+
+        for (const groups of this.problemsByTerminal.values()) {
+            const group = groups.get(this.groupKey(filePath, source));
+            if (!group) continue;
+            for (const problem of group.problems) {
+                const fingerprint = this.problemFingerprint(problem);
+                if (fingerprints.has(fingerprint)) continue;
+                fingerprints.add(fingerprint);
+                aggregated.push(problem);
+            }
+        }
+
+        if (aggregated.length === 0) {
+            problemsStore.clearProblemsForFile(filePath, source);
+            return;
+        }
+
+        problemsStore.setProblemsForFile(filePath, aggregated, source);
+    }
+
+    private clearTerminalProblems(terminalId: string): void {
+        const groups = this.problemsByTerminal.get(terminalId);
+        if (!groups) return;
+
+        this.problemsByTerminal.delete(terminalId);
+
+        for (const group of groups.values()) {
+            this.syncProblemsForFile(group.filePath, group.source);
+        }
+    }
+
+    private async addProblem(terminalId: string, info: TerminalProblemInfo, source: string): Promise<void> {
         const rootPath = resolveProjectRootPath?.() ?? null;
         if (!rootPath) return;
 
@@ -177,7 +258,7 @@ class TerminalProblemMatcher {
         const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
         const problem: Problem = {
-            id: `terminal-${filePath}-${info.line}-${info.column}-${info.message.substring(0, 20)}`,
+            id: `terminal-${terminalId}-${filePath}-${info.line}-${info.column}-${info.severity}-${info.code ?? ''}-${info.message}`,
             file: filePath,
             fileName,
             line: info.line,
@@ -190,13 +271,15 @@ class TerminalProblemMatcher {
             code: info.code
         };
 
-        const key = `${source}::${filePath}`;
-        const existing = this.problemsByKey.get(key) || { filePath, source, problems: [] };
+        const key = this.groupKey(filePath, source);
+        const groups = this.getTerminalGroups(terminalId);
+        const existing = groups.get(key) || { filePath, source, problems: [] };
+        const fingerprint = this.problemFingerprint(problem);
 
-        if (!existing.problems.some((p) => p.id === problem.id)) {
+        if (!existing.problems.some((p) => this.problemFingerprint(p) === fingerprint)) {
             existing.problems = [...existing.problems, problem];
-            this.problemsByKey.set(key, existing);
-            problemsStore.setProblemsForFile(filePath, existing.problems, source);
+            groups.set(key, existing);
+            this.syncProblemsForFile(filePath, source);
         }
     }
     /**
@@ -209,10 +292,16 @@ class TerminalProblemMatcher {
         }
         this.bufferFlushTimers.clear();
 
-        for (const entry of this.problemsByKey.values()) {
-            problemsStore.clearProblemsForFile(entry.filePath, entry.source);
+        const cleared = new Set<string>();
+        for (const groups of this.problemsByTerminal.values()) {
+            for (const entry of groups.values()) {
+                const key = this.groupKey(entry.filePath, entry.source);
+                if (cleared.has(key)) continue;
+                cleared.add(key);
+                problemsStore.clearProblemsForFile(entry.filePath, entry.source);
+            }
         }
-        this.problemsByKey.clear();
+        this.problemsByTerminal.clear();
     }
 }
 

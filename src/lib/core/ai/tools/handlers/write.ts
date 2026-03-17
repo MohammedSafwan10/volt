@@ -13,7 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { projectStore } from "$shared/stores/project.svelte";
 import { editorStore } from "$features/editor/stores/editor.svelte";
 import { fileService, type FileDocument } from "$core/services/file-service";
-import { setModelValue } from "$core/services/monaco-models";
+import { revealLine, setModelValue, setReviewHighlight } from "$core/services/monaco-models";
 import { notifyDocumentChanged as notifyTsDocumentChanged } from "$core/lsp/typescript-sidecar";
 import { notifyEslintDocumentChanged } from "$core/lsp/eslint-sidecar";
 import { notifySvelteDocumentChanged } from "$core/lsp/svelte-sidecar";
@@ -46,7 +46,12 @@ import {
   fixEscapedNewlines,
   validateSyntax,
 } from "$core/ai/tools/handlers/write-utils";
-import { applyCodexPatch, parseCodexPatch } from "$core/ai/tools/handlers/write-patch";
+import {
+  applyCodexPatch,
+  getCodexPatchLineStats,
+  parseCodexPatch,
+} from "$core/ai/tools/handlers/write-patch";
+import type { ToolRuntimeContext } from "$core/ai/tools/runtime";
 
 interface PostEditProblem {
   id: string;
@@ -147,6 +152,35 @@ async function writeFileWithSync(
   return { success: true, newVersion: result.newVersion };
 }
 
+function emitRuntimeUpdate(
+  runtime: ToolRuntimeContext | undefined,
+  liveStatus: string,
+  meta?: Record<string, unknown>,
+): void {
+  runtime?.onUpdate?.({
+    liveStatus,
+    meta,
+  });
+}
+
+function findOpenEditorPath(path: string, normalizedPath: string, relativePath?: string): string | null {
+  const fileName = relativePath?.split(/[/\\]/).pop() ?? path.split(/[/\\]/).pop() ?? "";
+  const existing = editorStore.openFiles.find(
+    (f) =>
+      f.path === path ||
+      f.path === normalizedPath ||
+      (relativePath ? f.path.endsWith("/" + relativePath) || f.path.endsWith("\\" + relativePath) : false) ||
+      (fileName ? f.path.endsWith("/" + fileName) || f.path.endsWith("\\" + fileName) : false),
+  );
+  return existing?.path ?? null;
+}
+
+interface EditorSyncOptions {
+  relativePath?: string;
+  firstChangedLine?: number;
+  lastChangedLine?: number;
+}
+
 /**
  * Sync editor with file service (lightweight - file service handles the heavy lifting)
  */
@@ -154,24 +188,43 @@ async function syncEditorWithDisk(
   path: string,
   normalizedPath: string,
   content: string,
+  options: EditorSyncOptions = {},
+  runtime?: ToolRuntimeContext,
 ): Promise<void> {
   try {
-    // Update Monaco model directly (handles disposed models)
+    emitRuntimeUpdate(runtime, "Syncing editor...");
+    let existingPath = findOpenEditorPath(path, normalizedPath, options.relativePath);
+    if (!existingPath) {
+      emitRuntimeUpdate(runtime, "Opening file...");
+      const opened = await editorStore.openFile(path);
+      if (opened) {
+        existingPath = findOpenEditorPath(path, normalizedPath, options.relativePath);
+      }
+    }
     setModelValue(normalizedPath, content);
+    const syncedPath = existingPath ?? normalizedPath;
+    if (existingPath) {
+      editorStore.setActiveFile(existingPath);
+      editorStore.updateContent(existingPath, content);
+      editorStore.markSaved(existingPath);
+    } else {
+      const existing = editorStore.openFiles.find((f) => f.path === normalizedPath || f.path === path);
+      if (existing) {
+        existing.content = content;
+        existing.originalContent = content;
+        editorStore.markSaved(existing.path);
+      }
+    }
 
-    // Reload in editor store
-    const existing = editorStore.openFiles.find(
-      (f) =>
-        f.path === path ||
-        f.path === normalizedPath ||
-        f.path.endsWith("/" + path.split(/[/\\]/).pop()) ||
-        f.path.endsWith("\\" + path.split(/[/\\]/).pop()),
-    );
-
-    if (existing) {
-      existing.content = content;
-      existing.originalContent = content;
-      await editorStore.reloadFile(existing.path);
+    if (
+      typeof options.firstChangedLine === "number" &&
+      typeof options.lastChangedLine === "number"
+    ) {
+      emitRuntimeUpdate(runtime, "Highlighting changes...");
+      setReviewHighlight(syncedPath, options.firstChangedLine, options.lastChangedLine);
+      if (editorStore.activeFile?.path === syncedPath) {
+        revealLine(syncedPath, options.firstChangedLine);
+      }
     }
   } catch (err) {
     console.error("[write] Error syncing editor:", err);
@@ -186,6 +239,7 @@ async function syncEditorWithDisk(
 async function getPostEditDiagnostics(
   absolutePath: string,
   relativePath: string,
+  runtime?: ToolRuntimeContext,
 ): Promise<{
   errorCount: number;
   warningCount: number;
@@ -287,7 +341,7 @@ async function getPostEditDiagnostics(
 
       const collectDiagnostics = async (): Promise<PostEditDiagnosticsResult> => {
         const { handleGetDiagnostics } = await import("$core/ai/tools/handlers/diagnostics");
-        const result = await handleGetDiagnostics({ paths: [relativePath] });
+        const result = await handleGetDiagnostics({ paths: [relativePath] }, runtime);
 
         if (!result.success) {
           return { errorCount: 0, warningCount: 0, fileCount: 0, problems: [] };
@@ -342,13 +396,17 @@ async function getPostEditDiagnostics(
 /**
  * Write/create a file
  */
-export async function handleWriteFile(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleWriteFile(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
   const rawContent = String(args.text ?? args.content ?? "");
   const content = fixEscapedNewlines(rawContent);
   const force = args.force === true;
+  emitRuntimeUpdate(runtime, "Reading file...");
 
   // ALWAYS read fresh from disk to avoid stale cache issues
   let before = "";
@@ -383,6 +441,7 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   }
 
   // Write with verification and retry logic
+  emitRuntimeUpdate(runtime, isNewFile ? "Creating file..." : "Writing file...");
   const writeResult = await writeFileWithSync(
     path,
     content,
@@ -400,8 +459,14 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
     } catch {}
   }
 
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, content);
+
   // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, content);
+  await syncEditorWithDisk(path, normalizedPath, content, {
+    relativePath,
+    firstChangedLine,
+    lastChangedLine,
+  }, runtime);
 
   // If file wasn't open, open it now
   try {
@@ -420,15 +485,13 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
   const newLines = content.split("\n").length;
   const oldLines = before.split("\n").length;
 
-  // Calculate changed line range for highlighting
-  const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, content);
   const diffStats = calculateDiffStats(before, content);
 
-  // Get diagnostics after edit (Kiro-style auto-check)
+  // Get diagnostics after edit (auto-check)
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   // Build output message
   let output = isNewFile
@@ -480,12 +543,16 @@ export async function handleWriteFile(args: Record<string, unknown>): Promise<To
 /**
  * Append to existing file
  */
-export async function handleAppendFile(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleAppendFile(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
   const rawText = String(args.text ?? args.content ?? "");
   const textToAppend = fixEscapedNewlines(rawText);
+  emitRuntimeUpdate(runtime, "Reading file...");
 
   // ALWAYS read fresh from disk
   let existing = "";
@@ -503,23 +570,27 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
   const newContent = existing + (needsNewline ? "\n" : "") + textToAppend;
 
   // Write with verification
+  emitRuntimeUpdate(runtime, "Appending to file...");
   const writeResult = await writeFileWithSync(path, newContent, expectedVersion, existing);
   if (!writeResult.success) {
     return { success: false, error: `Failed to append: ${writeResult.error}` };
   }
 
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, newContent);
-
   const addedLines = textToAppend.split("\n").length;
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(existing, newContent);
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, newContent, {
+    relativePath,
+    firstChangedLine,
+    lastChangedLine,
+  }, runtime);
   const diffStats = calculateDiffStats(existing, newContent);
 
   // Get diagnostics after edit
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   let output = `Appended to ${relativePath} (+${addedLines} lines)`;
   if (diagnostics.errorCount > 0) {
@@ -564,7 +635,10 @@ export async function handleAppendFile(args: Record<string, unknown>): Promise<T
 /**
  * Replace text in file (str_replace / apply_edit)
  */
-export async function handleStrReplace(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleStrReplace(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
@@ -573,6 +647,7 @@ export async function handleStrReplace(args: Record<string, unknown>): Promise<T
   const oldStr = fixEscapedNewlines(rawOldStr);
   const newStr = fixEscapedNewlines(rawNewStr);
   const force = args.force === true;
+  emitRuntimeUpdate(runtime, "Reading file...");
 
   // ALWAYS read fresh from disk
   let content = "";
@@ -586,6 +661,7 @@ export async function handleStrReplace(args: Record<string, unknown>): Promise<T
   }
 
   // Find match
+  emitRuntimeUpdate(runtime, "Matching snippet...");
   const match = findBestMatch(content, oldStr);
   if (!match) {
     const preview = oldStr.slice(0, 80).replace(/\n/g, "\\n");
@@ -631,13 +707,11 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
   }
 
   // Write with verification
+  emitRuntimeUpdate(runtime, "Applying replacement...");
   const writeResult = await writeFileWithSync(path, newContent, expectedVersion, content);
   if (!writeResult.success) {
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
-
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, newContent);
 
   const oldLines = oldStr.split("\n").length;
   const newLines = newStr.split("\n").length;
@@ -645,13 +719,19 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
 
   // Calculate changed line range for highlighting
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, newContent);
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, newContent, {
+    relativePath,
+    firstChangedLine,
+    lastChangedLine,
+  }, runtime);
   const diffStats = calculateDiffStats(content, newContent);
 
   // Get diagnostics after edit
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   let output = `Edited ${relativePath}: ${oldLines} → ${newLines} lines${confidence}`;
   if (diagnostics.errorCount > 0) {
@@ -702,11 +782,15 @@ IMPORTANT: The file content may have changed from previous edits. Call read_file
  * Edits are applied bottom-to-top so that earlier indices remain valid.
  * Rejects overlapping matches with a clear error.
  */
-export async function handleMultiReplace(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleMultiReplace(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
   const rawEdits = args.edits;
+  emitRuntimeUpdate(runtime, "Applying batched edits...");
 
   // Validate edits array
   if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
@@ -815,18 +899,21 @@ export async function handleMultiReplace(args: Record<string, unknown>): Promise
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
-  // Sync editor
-  await syncEditorWithDisk(path, normalizedPath, resultContent);
-
   // Stats
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, resultContent);
+  // Sync editor
+  await syncEditorWithDisk(path, normalizedPath, resultContent, {
+    relativePath,
+    firstChangedLine,
+    lastChangedLine,
+  });
   const diffStats = calculateDiffStats(content, resultContent);
 
   // Diagnostics
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   // Build summary
   const confidences = matches
@@ -879,7 +966,10 @@ export async function handleMultiReplace(args: Record<string, unknown>): Promise
 /**
  * Apply Codex patch hunks to one file atomically.
  */
-export async function handleApplyPatch(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleApplyPatch(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
@@ -888,6 +978,7 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
     typeof args.expected_version === "number" && Number.isFinite(args.expected_version)
       ? Math.floor(args.expected_version)
       : undefined;
+  emitRuntimeUpdate(runtime, "Parsing patch...");
 
   let parsedPatch: {
     path: string;
@@ -907,6 +998,7 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
 
   let before = "";
   let expectedVersion: number | undefined = expectedVersionArg;
+  emitRuntimeUpdate(runtime, "Reading file...");
   try {
     const contentDoc = await readFileDocumentFresh(path);
     before = contentDoc.content;
@@ -928,6 +1020,7 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
 
   let after: string;
   try {
+    emitRuntimeUpdate(runtime, "Applying patch...");
     after = applyCodexPatch(before, parsedPatch.hunks);
   } catch (err) {
     return { success: false, error: extractErrorMessage(err) };
@@ -947,17 +1040,21 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
-  await syncEditorWithDisk(path, normalizedPath, after);
-
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, after);
+  await syncEditorWithDisk(path, normalizedPath, after, {
+    relativePath,
+    firstChangedLine,
+    lastChangedLine,
+  }, runtime);
   const diffStats = calculateDiffStats(before, after);
+  const patchStats = getCodexPatchLineStats(parsedPatch.hunks);
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   let output = `Applied ${parsedPatch.hunks.length} patch hunk${parsedPatch.hunks.length > 1 ? "s" : ""} to ${relativePath}`;
-  output += ` | +${diffStats.added} -${diffStats.removed} lines`;
+  output += ` | +${patchStats.added} -${patchStats.removed} lines`;
   if (diagnostics.errorCount > 0) {
     output += ` ⚠️ ${diagnostics.errorCount} error${diagnostics.errorCount > 1 ? "s" : ""}`;
   }
@@ -982,8 +1079,8 @@ export async function handleApplyPatch(args: Record<string, unknown>): Promise<T
         afterContent: after.length <= 100_000 ? after : null,
         firstChangedLine,
         lastChangedLine,
-        added: diffStats.added,
-        removed: diffStats.removed,
+        added: patchStats.added,
+        removed: patchStats.removed,
         errorCount: diagnostics.errorCount,
         warningCount: diagnostics.warningCount,
       },
@@ -1162,7 +1259,10 @@ export async function handleRenamePath(args: Record<string, unknown>): Promise<T
 /**
  * Replace a range of lines in a file
  */
-export async function handleReplaceLines(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleReplaceLines(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
@@ -1171,6 +1271,7 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   const rawContent = String(args.content ?? "");
   const newContent = fixEscapedNewlines(rawContent);
   const force = args.force === true;
+  emitRuntimeUpdate(runtime, "Reading file...");
 
   // Validate line numbers
   if (isNaN(startLine) || isNaN(endLine) || startLine < 1 || endLine < startLine) {
@@ -1202,6 +1303,7 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
   }
 
   // Build new content
+  emitRuntimeUpdate(runtime, "Replacing lines...");
   const before = lines.slice(0, startLine - 1);
   const after = lines.slice(actualEndLine);
   const newLines = newContent.split("\n");
@@ -1230,18 +1332,21 @@ export async function handleReplaceLines(args: Record<string, unknown>): Promise
     return { success: false, error: `Failed to write: ${writeResult.error}` };
   }
 
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, resultContent);
-
   const replacedLines = actualEndLine - startLine + 1;
   const insertedLines = newLines.length;
+  // Force sync editor with the new disk content
+  await syncEditorWithDisk(path, normalizedPath, resultContent, {
+    relativePath,
+    firstChangedLine: startLine,
+    lastChangedLine: startLine + insertedLines - 1,
+  }, runtime);
   const diffStats = calculateDiffStats(content, resultContent);
 
   // Get diagnostics after edit
   const diagnostics =
     args.postEditDiagnostics === false
       ? EMPTY_DIAGNOSTICS
-      : await getPostEditDiagnostics(path, relativePath);
+      : await getPostEditDiagnostics(path, relativePath, runtime);
 
   let output = `Replaced lines ${startLine}-${actualEndLine} (${replacedLines} lines → ${insertedLines} lines) in ${relativePath}`;
   if (diagnostics.errorCount > 0) {

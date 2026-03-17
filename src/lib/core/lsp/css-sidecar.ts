@@ -17,10 +17,16 @@ import {
   getLspRegistry,
   rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
@@ -29,9 +35,36 @@ import { getAllFiles } from '$core/services/file-index';
 let cssServerTransport: LspTransport | null = null;
 let cssServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let cssSessionGeneration = 0;
+const cssRecovery = createLspRecoveryController({
+  source: 'css',
+  restart: async () => {
+    await recoverCssLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
+const PROJECT_ANALYSIS_BATCH_SIZE = 10;
+const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
+let projectAnalysisRunId = 0;
+
+function normalizeCssFilePath(filepath: string): string {
+  return filepath.replace(/\\/g, '/');
+}
+
+function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
+  const active = new Set(
+    Array.from(openDocuments.keys()).map((path) => normalizeCssFilePath(path)),
+  );
+
+  return [...files].sort((a, b) => {
+    const aActive = active.has(normalizeCssFilePath(a.path)) ? 0 : 1;
+    const bActive = active.has(normalizeCssFilePath(b.path)) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return normalizeCssFilePath(a.path).localeCompare(normalizeCssFilePath(b.path));
+  });
+}
 
 async function rehydrateOpenDocuments(): Promise<void> {
   await rehydrateTrackedDocuments(openDocuments, notifyCssDocumentOpened);
@@ -167,7 +200,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  problemsStore.setProblemsForFile(filePath, problems, 'css');
+  setSourceProblemsForFile({
+    source: 'css',
+    generation: cssSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -184,8 +222,17 @@ async function initializeServer(): Promise<void> {
 
       cssServerTransport = await registry.startServer('css', {
         serverId: 'css-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 1000,
+          maxDelayMs: 12_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
       });
+      cssServerTransport.configureHealth({ autoRestart: true });
+      cssSessionGeneration = startSourceSession('css');
 
       cssServerTransport.onMessage(handleLspMessage);
       cssServerTransport.onError((error) => {
@@ -193,14 +240,16 @@ async function initializeServer(): Promise<void> {
       });
       cssServerTransport.onExit(() => {
         console.log('[CSS LSP] Server exited');
-        problemsStore.markSourceStale('css');
+        cssSessionGeneration = markSourceSessionStale('css');
+        cssRecovery.schedule('transport exit');
         cssServerTransport = null;
         cssServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
       });
       cssServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('css');
+        cssSessionGeneration = startSourceSession('css');
+        markSourceSessionReady('css', cssSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -259,6 +308,8 @@ async function initializeServer(): Promise<void> {
 
       await cssServerTransport.sendNotification('initialized', {});
       cssServerInitialized = true;
+      markSourceSessionReady('css', cssSessionGeneration);
+      cssRecovery.reset();
       console.log('[CSS LSP] Server initialized');
     } catch (error) {
       console.error('[CSS LSP] Failed to initialize:', error);
@@ -349,7 +400,11 @@ export async function notifyCssDocumentClosed(filepath: string): Promise<void> {
   await cssServerTransport.sendNotification('textDocument/didClose', {
     textDocument: { uri: pathToUri(filepath) }
   });
-  problemsStore.clearProblemsForFile(filepath, 'css');
+  clearSourceProblemsForFile({
+    source: 'css',
+    generation: cssSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 export async function notifyCssDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -477,6 +532,13 @@ export async function ensureCssLspStarted(): Promise<void> {
 /**
  * Stop the CSS LSP server
  */
+async function recoverCssLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || cssServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
+}
+
 export async function stopCssLsp(): Promise<void> {
   if (!cssServerTransport) return;
 
@@ -495,6 +557,8 @@ export async function stopCssLsp(): Promise<void> {
   cssServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
+  cssSessionGeneration = markSourceSessionStale('css');
+  cssRecovery.reset();
 }
 
 /**
@@ -503,8 +567,10 @@ export async function stopCssLsp(): Promise<void> {
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
+  const runId = ++projectAnalysisRunId;
+
   const allFiles = getAllFiles();
-  const cssFiles = allFiles.filter(f => isCssFile(f.path));
+  const cssFiles = prioritizeProjectFiles(allFiles.filter(f => isCssFile(f.path)));
 
   if (cssFiles.length === 0) {
     console.log('[CSS LSP] No CSS/SCSS files found for background analysis.');
@@ -513,21 +579,34 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
   console.log(`[CSS LSP] Starting project-wide analysis of ${cssFiles.length} files...`);
 
-  // Process in small batches to avoid blocking
+  let processedSinceYield = 0;
+
   for (const file of cssFiles) {
-    console.log(`[CSS LSP] Background analyzing: ${file.path}`);
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
+    const normalizedPath = normalizeCssFilePath(file.path);
+
     // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(file.path)) continue;
+    if (openDocuments.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     if (content) {
       // This will automatically initialize server if needed
-      await notifyCssDocumentOpened(file.path, content);
-      console.log(`[CSS LSP] Sent ${file.path} to server`);
+      await notifyCssDocumentOpened(normalizedPath, content);
+      processedSinceYield += 1;
 
-      // If we've opened many files, yield to event loop
-      if (cssFiles.indexOf(file) % 5 === 0) {
-        await new Promise(r => setTimeout(r, 0));
+      if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
+        processedSinceYield = 0;
+        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        if (runId !== projectAnalysisRunId) {
+          return;
+        }
       }
     }
   }

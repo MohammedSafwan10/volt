@@ -9,7 +9,7 @@
  */
 
 import type { AIMode } from './ai.svelte';
-import { doesToolRequireApproval, getToolByName } from '$core/ai/tools/definitions';
+import { doesToolRequireApproval, getToolByName, setBrowserToolsEnabled as setDefsBrowserEnabled } from '$core/ai/tools/definitions';
 import type { ContentType } from '$core/services/token-counter';
 import { readFile } from '$core/services/file-system';
 import { invoke } from '@tauri-apps/api/core';
@@ -32,6 +32,7 @@ import {
 } from './assistant/utils';
 import {
   findConversationIdByMessageId as resolveConversationIdByMessageId,
+  sanitizeVisibleAssistantText,
   stripSystemReminderTags,
 } from './assistant-message-routing';
 import {
@@ -93,7 +94,7 @@ export interface ToolCall {
   reviewStatus?: ToolCallReviewStatus;
 }
 
-// Content part types for interleaved rendering (like Kiro/Cursor)
+// Content part types for interleaved rendering
 export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'tool'; toolCall: ToolCall }
@@ -113,7 +114,7 @@ export interface AssistantMessage {
   isThinking?: boolean; // Currently in thinking phase
   // For inline tool display - tool calls that belong to this message
   inlineToolCalls?: ToolCall[];
-  // Ordered content parts for interleaved text + tool rendering (like Kiro)
+  // Ordered content parts for interleaved text + tool rendering
   contentParts?: ContentPart[];
   // System summary marker (for auto-summary)
   isSummary?: boolean;
@@ -151,7 +152,6 @@ interface ConversationRuntimeState {
   abortController: AbortController | null;
   agentLoopState: AgentLoopState;
   agentLoopMeta: Record<string, unknown>;
-  activeToolCalls: ToolCall[];
 }
 
 interface ConversationScopedStatePatch {
@@ -168,7 +168,6 @@ interface ConversationScopedStatePatch {
   abortController?: AbortController | null;
   agentLoopState?: AgentLoopState;
   agentLoopMeta?: Record<string, unknown>;
-  activeToolCalls?: ToolCall[];
 }
 
 interface ConversationSummaryLike {
@@ -180,7 +179,16 @@ interface ConversationSummaryLike {
   mode?: string;
 }
 
+function isAssistantDebugEnabled(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.localStorage.getItem('volt.assistant.debug') === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function debugAssistantSession(event: string, details: Record<string, unknown> = {}): void {
+  if (!isAssistantDebugEnabled()) return;
   console.info('[AssistantSession]', { event, ...details, at: Date.now() });
 }
 
@@ -295,9 +303,8 @@ class AssistantStore {
   abortController = $state<AbortController | null>(null);
   agentLoopState = $state<AgentLoopState>('completed');
   agentLoopMeta = $state<Record<string, unknown>>({});
+  chatScrollRevision = $state(0);
 
-  // Current tool calls being displayed
-  activeToolCalls = $state<ToolCall[]>([]);
   browserToolsEnabled = $state(false);
   private runStates = $state<Record<string, { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>>({});
   private conversationRuntimeState = $state<Record<string, ConversationRuntimeState>>({});
@@ -354,7 +361,6 @@ class AssistantStore {
     }
     // Clear current state
     this.messages = [];
-    this.activeToolCalls = [];
     this.pendingAttachments = [];
     this.inputValue = "";
     this.inputHistory = [];
@@ -406,7 +412,6 @@ class AssistantStore {
     }
 
     // Clear current state
-    this.activeToolCalls = [];
     this.pendingAttachments = [];
     this.inputValue = "";
     this.historyIndex = -1;
@@ -421,7 +426,7 @@ class AssistantStore {
       const base: AssistantMessage = {
         id: msg.id,
         role: msg.role as MessageRole,
-        content: msg.content,
+        content: sanitizeVisibleAssistantText(msg.content),
         timestamp: msg.timestamp,
       };
 
@@ -602,7 +607,6 @@ class AssistantStore {
         abortController: null,
         agentLoopState: 'completed',
         agentLoopMeta: {},
-        activeToolCalls: [],
       },
     };
     this.ensureConversationTab(conversation.id);
@@ -634,7 +638,6 @@ class AssistantStore {
       abortController: null,
       agentLoopState: 'completed',
       agentLoopMeta: {},
-      activeToolCalls: [],
     };
   }
 
@@ -719,7 +722,6 @@ class AssistantStore {
     this.abortController = runtime.abortController;
     this.agentLoopState = runtime.agentLoopState;
     this.agentLoopMeta = { ...runtime.agentLoopMeta };
-    this.activeToolCalls = [...runtime.activeToolCalls];
     debugAssistantSession('sync_runtime_to_active_view', {
       conversationId,
       messageCount: runtime.messages.length,
@@ -745,9 +747,16 @@ class AssistantStore {
         messages: nextRuntime.messages,
         updatedAt: Date.now(),
       };
+      if (patch.messages) {
+        this.bumpChatScrollRevision();
+      }
     }
 
     return nextRuntime;
+  }
+
+  private bumpChatScrollRevision(): void {
+    this.chatScrollRevision += 1;
   }
 
   private updateConversationMessages(
@@ -777,7 +786,6 @@ class AssistantStore {
         abortController: this.abortController,
         agentLoopState: this.agentLoopState,
         agentLoopMeta: { ...this.agentLoopMeta },
-        activeToolCalls: [...this.activeToolCalls],
       },
     };
     debugAssistantSession('commit_active_view_to_runtime', {
@@ -786,6 +794,29 @@ class AssistantStore {
       isStreaming: this.isStreaming,
       agentLoopState: this.agentLoopState,
     });
+  }
+
+  private syncActiveComposerState(
+    patch: Partial<
+      Pick<
+        ConversationRuntimeState,
+        | 'inputValue'
+        | 'attachedContext'
+        | 'inputHistory'
+        | 'historyIndex'
+        | 'draftValue'
+        | 'draftAttachments'
+        | 'pendingAttachments'
+        | 'currentMode'
+      >
+    >,
+  ): void {
+    const conversationId = this.currentConversation?.id;
+    if (!conversationId) return;
+    this.updateConversationRuntime(conversationId, (runtime) => ({
+      ...runtime,
+      ...patch,
+    }));
   }
 
   getConversationMessages(conversationId: string): AssistantMessage[] {
@@ -1049,6 +1080,7 @@ class AssistantStore {
 
   setBrowserToolsEnabled(enabled: boolean): void {
     this.browserToolsEnabled = enabled;
+    setDefsBrowserEnabled(enabled);
     this.saveBrowserToolsEnabled();
   }
 
@@ -1063,6 +1095,13 @@ class AssistantStore {
 
     const convId = this.currentConversation?.id;
     if (!convId) return;
+    this.syncActiveComposerState({ currentMode: mode });
+    if (this.currentConversation) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        mode,
+      };
+    }
 
     // Persist mode so reload restores the same UX state (e.g. Plan CTA visibility).
     chatHistoryStore.updateMode(convId, mode).catch((err) => {
@@ -1082,6 +1121,12 @@ class AssistantStore {
     this.historyIndex = -1;
     this.draftValue = "";
     this.draftAttachments = [];
+    this.syncActiveComposerState({
+      inputHistory: [...this.inputHistory],
+      historyIndex: this.historyIndex,
+      draftValue: this.draftValue,
+      draftAttachments: [...this.draftAttachments],
+    });
   }
 
   navigateHistory(
@@ -1098,6 +1143,11 @@ class AssistantStore {
       } else if (this.historyIndex > 0) {
         this.historyIndex--;
       }
+      this.syncActiveComposerState({
+        historyIndex: this.historyIndex,
+        draftValue: this.draftValue,
+        draftAttachments: [...this.draftAttachments],
+      });
       return this.inputHistory[this.historyIndex] ?? null;
     } else {
       // Down
@@ -1105,10 +1155,12 @@ class AssistantStore {
 
       if (this.historyIndex < this.inputHistory.length - 1) {
         this.historyIndex++;
+        this.syncActiveComposerState({ historyIndex: this.historyIndex });
         return this.inputHistory[this.historyIndex] ?? null;
       } else {
         // Returned to draft
         this.historyIndex = -1;
+        this.syncActiveComposerState({ historyIndex: this.historyIndex });
         return {
           content: this.draftValue,
           attachments: [...this.draftAttachments],
@@ -1177,11 +1229,12 @@ class AssistantStore {
       this.enforceInMemoryBudget();
     } else {
       this.messages = [...this.messages, message];
+      this.bumpChatScrollRevision();
       this.enforceInMemoryBudget();
     }
 
     // Clear pending attachments after adding to message
-    this.pendingAttachments = [];
+    this.setPendingAttachments([]);
 
     this.saveCurrentConversationId();
     if (conversationId) {
@@ -1212,6 +1265,7 @@ class AssistantStore {
     } else {
       this.messages = [...this.messages, msg];
     }
+    this.bumpChatScrollRevision();
     this.enforceInMemoryBudget();
 
     if (this.currentConversation) {
@@ -1229,6 +1283,7 @@ class AssistantStore {
     if (existing) {
       const updated = { ...existing, content, timestamp: Date.now(), isSummary: true };
       this.messages = this.messages.map(m => m.id === existing.id ? updated : m);
+      this.bumpChatScrollRevision();
       if (this.currentConversation) {
         this.currentConversation.messages = this.messages;
       }
@@ -1246,6 +1301,7 @@ class AssistantStore {
     const nonSystem = this.messages.filter(m => m.role !== 'system');
     const keep = nonSystem.slice(-keepLastMessages);
     this.messages = summaryMsg ? [summaryMsg, ...keep] : keep;
+    this.bumpChatScrollRevision();
     if (this.currentConversation) {
       this.currentConversation.messages = this.messages;
     }
@@ -1269,6 +1325,7 @@ class AssistantStore {
       }
     } else {
       this.messages = [...this.messages, message];
+      this.bumpChatScrollRevision();
       this.enforceInMemoryBudget();
     }
 
@@ -1307,6 +1364,7 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => messages.map(updateMessage));
     } else {
       this.messages = this.messages.map(updateMessage);
+      this.bumpChatScrollRevision();
     }
 
     // Also update in currentConversation
@@ -1330,6 +1388,7 @@ class AssistantStore {
     this.messages = this.messages.map(msg =>
       msg.id === id ? { ...msg, thinking: safeThinking, isThinking } : msg
     );
+    this.bumpChatScrollRevision();
 
     // Persist to database immediately
     this.persistMessageToHistory(id);
@@ -1352,6 +1411,7 @@ class AssistantStore {
       }
     } else {
       this.messages = [...this.messages, message];
+      this.bumpChatScrollRevision();
       this.enforceInMemoryBudget();
     }
 
@@ -1366,21 +1426,6 @@ class AssistantStore {
     this.saveCurrentConversationId();
     this.persistMessageToHistory(id);
     return id;
-  }
-
-  // Tool call management
-  addToolCall(toolCall: ToolCall): void {
-    this.activeToolCalls = [...this.activeToolCalls, toolCall];
-  }
-
-  updateToolCall(id: string, updates: Partial<ToolCall>): void {
-    this.activeToolCalls = this.activeToolCalls.map(tc =>
-      tc.id === id ? { ...tc, ...updates } : tc
-    );
-  }
-
-  clearToolCalls(): void {
-    this.activeToolCalls = [];
   }
 
   /**
@@ -1400,9 +1445,23 @@ class AssistantStore {
               : (msg.content?.length ?? 0),
         },
       };
-      const inlineToolCalls = [...(msg.inlineToolCalls || []), ensuredToolCall];
+      const existingInline = (msg.inlineToolCalls || []).some(
+        (tc) => tc.id === ensuredToolCall.id,
+      );
+      const existingPart = (msg.contentParts || []).some(
+        (part) => part.type === "tool" && part.toolCall.id === ensuredToolCall.id,
+      );
+      if (existingInline && existingPart) {
+        return msg;
+      }
+
+      const inlineToolCalls = existingInline
+        ? [...(msg.inlineToolCalls || [])]
+        : [...(msg.inlineToolCalls || []), ensuredToolCall];
       const contentParts = [...(msg.contentParts || [])];
-      contentParts.push({ type: "tool", toolCall: ensuredToolCall });
+      if (!existingPart) {
+        contentParts.push({ type: "tool", toolCall: ensuredToolCall });
+      }
       return { ...msg, inlineToolCalls, contentParts };
     };
 
@@ -1410,6 +1469,7 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => messages.map(addToolCall));
     } else {
       this.messages = this.messages.map(addToolCall);
+      this.bumpChatScrollRevision();
     }
 
     // Persist to database immediately
@@ -1471,6 +1531,7 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => messages.map(patchToolCall));
     } else {
       this.messages = this.messages.map(patchToolCall);
+      this.bumpChatScrollRevision();
     }
 
     if (conversationId) {
@@ -1490,6 +1551,15 @@ class AssistantStore {
    * Helper to persist a specific message to history database
    */
   private persistDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private cancelPendingPersists(messageIds: string[]): void {
+    for (const messageId of messageIds) {
+      const timer = this.persistDebounceTimers.get(messageId);
+      if (!timer) continue;
+      clearTimeout(timer);
+      this.persistDebounceTimers.delete(messageId);
+    }
+  }
 
   private async persistMessageToHistory(messageId: string, immediate = false): Promise<void> {
     // Debounce rapid persists during streaming (every text chunk triggers this)
@@ -1633,6 +1703,7 @@ class AssistantStore {
       }
     } else {
       this.messages = this.messages.map(appendText);
+      this.bumpChatScrollRevision();
       this.enforceInMemoryBudget();
     }
     if (conversationId) {
@@ -1703,6 +1774,7 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => messages.map(appendThinking));
     } else {
       this.messages = this.messages.map(appendThinking);
+      this.bumpChatScrollRevision();
     }
 
     // Persist to database immediately
@@ -1758,6 +1830,7 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => messages.map(endThinking));
     } else {
       this.messages = this.messages.map(endThinking);
+      this.bumpChatScrollRevision();
     }
 
     // Persist to database immediately
@@ -1816,6 +1889,7 @@ class AssistantStore {
       }
       return msg;
     });
+    this.bumpChatScrollRevision();
     if (this.currentConversation) {
       this.currentConversation.messages = this.messages;
     }
@@ -1838,6 +1912,7 @@ class AssistantStore {
         : msg;
 
     this.messages = this.messages.map(applyPatch);
+    this.bumpChatScrollRevision();
     if (this.currentConversation) {
       this.currentConversation = {
         ...this.currentConversation,
@@ -1878,15 +1953,22 @@ class AssistantStore {
     );
     if (!exists) {
       this.attachedContext = [...this.attachedContext, context];
+      this.syncActiveComposerState({
+        attachedContext: [...this.attachedContext],
+      });
     }
   }
 
   removeContext(index: number): void {
     this.attachedContext = this.attachedContext.filter((_, i) => i !== index);
+    this.syncActiveComposerState({
+      attachedContext: [...this.attachedContext],
+    });
   }
 
   clearContext(): void {
     this.attachedContext = [];
+    this.syncActiveComposerState({ attachedContext: [] });
   }
 
   // New attachment model methods
@@ -1928,7 +2010,7 @@ class AssistantStore {
       checksum: generateChecksum(safeContent)
     };
 
-    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    this.setPendingAttachments([...this.pendingAttachments, attachment]);
     return { success: true };
   }
 
@@ -1953,7 +2035,7 @@ class AssistantStore {
       checksum: generateChecksum(safeContent)
     };
 
-    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    this.setPendingAttachments([...this.pendingAttachments, attachment]);
     return { success: true };
   }
 
@@ -1976,7 +2058,7 @@ class AssistantStore {
       label: path.split('/').pop() ?? path
     };
 
-    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    this.setPendingAttachments([...this.pendingAttachments, attachment]);
     return { success: true };
   }
 
@@ -2028,7 +2110,7 @@ class AssistantStore {
       checksum: generateChecksum(base64Data.slice(0, 1000)) // Only hash first 1000 chars for perf
     };
 
-    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    this.setPendingAttachments([...this.pendingAttachments, attachment]);
     return { success: true };
   }
 
@@ -2045,7 +2127,7 @@ class AssistantStore {
     selector: string;
   }): { success: boolean; error?: string } {
     // Remove any existing element attachment (only one at a time)
-    this.pendingAttachments = this.pendingAttachments.filter(a => a.type !== 'element');
+    this.setPendingAttachments(this.pendingAttachments.filter(a => a.type !== 'element'));
 
     const label = element.id
       ? `<${element.tagName}#${element.id}>`
@@ -2064,7 +2146,7 @@ class AssistantStore {
       label,
     };
 
-    this.pendingAttachments = [...this.pendingAttachments, attachment];
+    this.setPendingAttachments([...this.pendingAttachments, attachment]);
     return { success: true };
   }
 
@@ -2072,14 +2154,14 @@ class AssistantStore {
    * Remove a pending attachment by ID
    */
   removeAttachment(id: string): void {
-    this.pendingAttachments = this.pendingAttachments.filter(a => a.id !== id);
+    this.setPendingAttachments(this.pendingAttachments.filter(a => a.id !== id));
   }
 
   /**
    * Clear all pending attachments
    */
   clearAttachments(): void {
-    this.pendingAttachments = [];
+    this.setPendingAttachments([]);
   }
 
   /**
@@ -2226,15 +2308,8 @@ class AssistantStore {
     const nextMessages = runtime.messages
       .map(cancelStreamingMessage)
       .map(cancelInlineToolCalls);
-    const nextActiveToolCalls = runtime.activeToolCalls.map(tc =>
-      tc.status === 'running' || tc.status === 'pending'
-        ? { ...tc, status: 'cancelled' as ToolCallStatus, endTime: Date.now() }
-        : tc
-    );
-
     this.applyConversationStatePatch(conversationId, {
       messages: nextMessages,
-      activeToolCalls: nextActiveToolCalls,
       isStreaming: false,
       abortController: null,
       agentLoopState: nextLoopState,
@@ -2309,11 +2384,13 @@ class AssistantStore {
         state,
       });
     }
-    console.info('[AssistantLoop] state', {
-      from: previous,
-      to: state,
-      meta,
-    });
+    if (isAssistantDebugEnabled()) {
+      console.info('[AssistantLoop] state', {
+        from: previous,
+        to: state,
+        meta,
+      });
+    }
     agentTelemetryStore.record({
       type: 'agent.loop.state_transition',
       timestamp: Date.now(),
@@ -2327,7 +2404,6 @@ class AssistantStore {
   clearConversation(): void {
     const previousConversationId = this.currentConversation?.id ?? null;
     this.messages = [];
-    this.activeToolCalls = [];
     this.inputValue = '';
     this.attachedContext = [];
     this.pendingAttachments = [];
@@ -2348,10 +2424,19 @@ class AssistantStore {
       this.draftValue = value;
       this.draftAttachments = [...this.pendingAttachments];
     }
+    this.syncActiveComposerState({
+      inputValue: this.inputValue,
+      historyIndex: this.historyIndex,
+      draftValue: this.draftValue,
+      draftAttachments: [...this.draftAttachments],
+    });
   }
 
   setPendingAttachments(attachments: MessageAttachment[]): void {
     this.pendingAttachments = [...attachments];
+    this.syncActiveComposerState({
+      pendingAttachments: [...this.pendingAttachments],
+    });
   }
 
   // Helper to format message with context
@@ -2804,20 +2889,54 @@ class AssistantStore {
 
     // 3. Restore user message text and context to input (as a draft)
     const userMsg = this.messages[index];
-    if (userMsg.role === 'user') {
-      this.inputValue = userMsg.content;
+    const truncatedMessages = this.messages.slice(0, index);
+    const removedMessageIds = messagesToTruncate.map((message) => message.id);
+    this.cancelPendingPersists(removedMessageIds);
 
-      // Restore attached context so the user can easily refine/resend
-      if (userMsg.contextMentions) {
-        this.attachedContext = [...userMsg.contextMentions];
-      }
-      if (userMsg.attachments) {
-        this.pendingAttachments = [...userMsg.attachments];
-      }
+    let restoredInputValue = '';
+    let restoredContext: AttachedContext[] = [];
+    let restoredAttachments: MessageAttachment[] = [];
+    if (userMsg.role === 'user') {
+      restoredInputValue = userMsg.content;
+      restoredContext = userMsg.contextMentions ? [...userMsg.contextMentions] : [];
+      restoredAttachments = userMsg.attachments ? [...userMsg.attachments] : [];
     }
 
-    // 4. Truncate in-memory history
-    this.messages = this.messages.slice(0, index);
+    // 4. Truncate in-memory history and reset composer/runtime state
+    const currentConversationId = this.currentConversation?.id ?? null;
+    if (currentConversationId) {
+      this.applyConversationStatePatch(currentConversationId, {
+        messages: truncatedMessages,
+        inputValue: restoredInputValue,
+        attachedContext: restoredContext,
+        pendingAttachments: restoredAttachments,
+        draftValue: restoredInputValue,
+        draftAttachments: [...restoredAttachments],
+        historyIndex: -1,
+        isStreaming: false,
+        abortController: null,
+        agentLoopState: 'completed',
+        agentLoopMeta: {},
+      });
+      this.markConversationRunState(currentConversationId, {
+        isStreaming: false,
+        agentLoopState: 'completed',
+        lastError: null,
+      });
+    } else {
+      this.messages = truncatedMessages;
+      this.bumpChatScrollRevision();
+      this.inputValue = restoredInputValue;
+      this.attachedContext = restoredContext;
+      this.pendingAttachments = restoredAttachments;
+      this.draftValue = restoredInputValue;
+      this.draftAttachments = [...restoredAttachments];
+      this.historyIndex = -1;
+      this.isStreaming = false;
+      this.abortController = null;
+      this.agentLoopState = 'completed';
+      this.agentLoopMeta = {};
+    }
 
     // 5. Truncate persistent history
     if (this.currentConversation) {

@@ -287,6 +287,25 @@ export async function validateOpenRouterKey(apiKey: string): Promise<{ success: 
   }
 }
 
+function getStreamedToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  complete: boolean;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { arguments: {}, complete: false };
+  }
+
+  try {
+    return {
+      arguments: JSON.parse(trimmed) as Record<string, unknown>,
+      complete: true,
+    };
+  } catch {
+    return { arguments: {}, complete: false };
+  }
+}
+
 /**
  * OpenRouter AI Provider implementation
  */
@@ -417,7 +436,17 @@ export const openRouterProvider: AIProvider = {
     let buffer = '';
 
     // Track tool calls being built up across chunks
-    const pendingToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
+    const pendingToolCalls: Map<
+      number,
+      {
+        id: string;
+        name: string;
+        arguments: string;
+        emittedPartial: boolean;
+        emittedArgsKey: string | null;
+        emittedFinal: boolean;
+      }
+    > = new Map();
     let sawDeltaContent = false;
     let fallbackAccumulated = '';
 
@@ -442,7 +471,7 @@ export const openRouterProvider: AIProvider = {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-        const jsonStr = line.slice(5).trim();
+        const jsonStr = trimmed.slice(5).trim();
         if (!jsonStr || jsonStr === '[DONE]') continue;
 
         try {
@@ -501,13 +530,44 @@ export const openRouterProvider: AIProvider = {
                   pendingToolCalls.set(idx, {
                     id: tc.id || `call_${Date.now()}_${idx}`,
                     name: tc.function?.name || '',
-                    arguments: ''
+                    arguments: '',
+                    emittedPartial: false,
+                    emittedArgsKey: null,
+                    emittedFinal: false,
                   });
                 }
 
                 const pending = pendingToolCalls.get(idx)!;
                 if (tc.function?.name) pending.name = tc.function.name;
                 if (tc.function?.arguments) pending.arguments += tc.function.arguments;
+
+                if (!pending.name) {
+                  continue;
+                }
+
+                const parsed = getStreamedToolArguments(pending.arguments);
+                const argsKey = JSON.stringify(parsed.arguments);
+                const shouldEmit =
+                  !pending.emittedPartial ||
+                  argsKey !== pending.emittedArgsKey;
+
+                if (!shouldEmit) {
+                  continue;
+                }
+
+                yield {
+                  type: 'tool_call',
+                  partial: true,
+                  toolCall: {
+                    id: pending.id,
+                    name: pending.name,
+                    arguments: parsed.arguments,
+                  }
+                };
+
+                pending.emittedPartial = true;
+                pending.emittedArgsKey = argsKey;
+                pending.emittedFinal = false;
               }
             }
           }
@@ -518,16 +578,17 @@ export const openRouterProvider: AIProvider = {
     } finally {
       // Final tool call emission if stream ended
       for (const [, tc] of pendingToolCalls) {
-        try {
-          yield {
-            type: 'tool_call',
-            toolCall: {
-              id: tc.id,
-              name: tc.name,
-              arguments: JSON.parse(tc.arguments)
-            }
-          };
-        } catch { }
+        if (!tc.name) continue;
+        const parsed = getStreamedToolArguments(tc.arguments);
+        yield {
+          type: 'tool_call',
+          partial: false,
+          toolCall: {
+            id: tc.id,
+            name: tc.name,
+            arguments: parsed.arguments
+          }
+        };
       }
       yield { type: 'done' };
       await invokePromise;

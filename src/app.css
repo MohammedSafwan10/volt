@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
+@source "../node_modules/svelte-streamdown/**/*";
+
 /* Dark Modern (VS Code inspired) theme colors */
 :root {
   /* Background colors */

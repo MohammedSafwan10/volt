@@ -68,6 +68,8 @@
   let MonacoEditorComponent = $state<any | null>(null);
   let MonacoDiffEditorComponent = $state<any | null>(null);
   let monacoFeatureLoading = $state(false);
+  let xtermWarmStarted = $state(false);
+  let mcpInitStarted = $state(false);
 
   function getFileExt(path: string): string {
     const name = path.split(/[/\\]/).pop() ?? path;
@@ -192,22 +194,29 @@
     openGoToLine();
   }
 
-  // VS Code-like: warm Monaco and xterm at app startup so first use feels instant.
-  // Also initialize auto-save listeners.
+  function ensureXtermWarm(): void {
+    if (xtermWarmStarted) return;
+    xtermWarmStarted = true;
+    logOutput("Volt", "Warming terminal on first use...");
+    void loadXterm();
+  }
+
+  function ensureMcpInitialized(): void {
+    if (mcpInitStarted) return;
+    mcpInitStarted = true;
+    logOutput("Volt", "Initializing MCP on demand...");
+    void mcpStore.initialize(projectStore.rootPath ?? undefined);
+  }
+
+  // Initialize lightweight app services immediately.
   onMount(() => {
     logOutput("Volt", "Volt IDE started");
-    logOutput("Volt", "Warming up terminal...");
-    void loadXterm();
     const telemetryDebug =
       typeof localStorage !== "undefined" &&
       localStorage.getItem("volt.runtimeTelemetry.log") === "1";
     runtimeTelemetry.start(30_000, telemetryDebug);
     initAutoSave();
     logOutput("Volt", "Auto-save initialized");
-
-    // Initialize MCP servers (global, works without project)
-    logOutput("Volt", "Initializing MCP servers...");
-    void mcpStore.initialize();
 
     // Initialize ProjectStore (restores last project)
     // We do this here instead of in the store constructor to avoid HMR loops
@@ -251,6 +260,18 @@
         handleOpenGoToLine as EventListener,
       );
     };
+  });
+
+  $effect(() => {
+    if (uiStore.bottomPanelOpen && bottomPanelStore.activeTab === "terminal") {
+      ensureXtermWarm();
+    }
+  });
+
+  $effect(() => {
+    if (uiStore.sidebarOpen && uiStore.activeSidebarPanel === "mcp") {
+      ensureMcpInitialized();
+    }
   });
 
   // Handle file selection from file tree
@@ -811,5 +832,6 @@
     flex-direction: column;
     background: var(--color-bg-panel);
     border-top: 1px solid var(--color-border);
+    flex-shrink: 0;
   }
 </style>

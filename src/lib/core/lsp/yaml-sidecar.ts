@@ -21,12 +21,27 @@ import {
   rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
 } from './sidecar/document-lifecycle';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  clearSourceProblemsForFile,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectYamlLsp, isYamlLspAvailable, type YamlLspInfo } from './yaml-sdk';
 
 let yamlServerTransport: LspTransport | null = null;
 let yamlServerInitialized = false;
+let yamlSessionGeneration = 0;
+const yamlRecovery = createLspRecoveryController({
+  source: 'yaml',
+  restart: async () => {
+    await recoverYamlLspAfterExit();
+  },
+});
 
 // Track open documents
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -127,7 +142,18 @@ export async function initializeServer(): Promise<boolean> {
 
     // Start the server via registry
     const registry = getLspRegistry();
-    yamlServerTransport = await registry.startServer('yaml', { cwd: rootPath });
+    yamlServerTransport = await registry.startServer('yaml', {
+      cwd: rootPath,
+      restartPolicy: {
+        enabled: true,
+        baseDelayMs: 1000,
+        maxDelayMs: 12_000,
+        maxAttempts: 4,
+        windowMs: 120_000,
+      },
+    });
+    yamlServerTransport.configureHealth({ autoRestart: true });
+    yamlSessionGeneration = startSourceSession('yaml');
 
     if (!yamlServerTransport) {
       console.error('[YAML LSP] Failed to start server');
@@ -138,13 +164,15 @@ export async function initializeServer(): Promise<boolean> {
     yamlServerTransport.onMessage(handleServerMessage);
     yamlServerTransport.onExit(() => {
       console.log('[YAML LSP] Server exited');
-      problemsStore.markSourceStale('yaml');
+      yamlSessionGeneration = markSourceSessionStale('yaml');
+      yamlRecovery.schedule('transport exit');
       yamlServerTransport = null;
       yamlServerInitialized = false;
       openDocuments.clear();
     });
     yamlServerTransport.onRestart(async () => {
-      problemsStore.markSourceFresh('yaml');
+      yamlSessionGeneration = startSourceSession('yaml');
+      markSourceSessionReady('yaml', yamlSessionGeneration);
       await rehydrateOpenDocuments();
     });
 
@@ -226,6 +254,8 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     yamlServerInitialized = true;
+    markSourceSessionReady('yaml', yamlSessionGeneration);
+    yamlRecovery.reset();
     console.log('[YAML LSP] Server initialized successfully');
     return true;
   } catch (error) {
@@ -301,7 +331,12 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
   });
 
   // Update problems store
-  problemsStore.setProblemsForFile(filepath, problems, 'yaml');
+  setSourceProblemsForFile({
+    source: 'yaml',
+    generation: yamlSessionGeneration,
+    filePath: filepath,
+    problems,
+  });
 }
 
 /**
@@ -413,7 +448,11 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   });
 
   // Clear diagnostics for this file
-  problemsStore.clearProblemsForFile(filepath, 'yaml');
+  clearSourceProblemsForFile({
+    source: 'yaml',
+    generation: yamlSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -495,6 +534,17 @@ export async function formatDocument(filepath: string): Promise<unknown> {
 /**
  * Stop the YAML LSP server
  */
+async function recoverYamlLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || yamlServerTransport) {
+    return;
+  }
+
+  const initialized = await initializeServer();
+  if (!initialized) {
+    throw new Error('YAML LSP restart failed');
+  }
+}
+
 export async function stopYamlLsp(): Promise<void> {
   if (!yamlServerTransport) return;
 
@@ -512,9 +562,11 @@ export async function stopYamlLsp(): Promise<void> {
     console.error('[YAML LSP] Shutdown error:', error);
   } finally {
     const registry = getLspRegistry();
-    registry.stopServer('yaml');
+    void registry.stopServer('yaml');
     yamlServerTransport = null;
     yamlServerInitialized = false;
     openDocuments.clear();
+    yamlSessionGeneration = markSourceSessionStale('yaml');
+    yamlRecovery.reset();
   }
 }

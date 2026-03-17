@@ -4,8 +4,8 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
-use std::time::Duration;
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Git-specific errors with user-friendly messages
@@ -287,12 +287,26 @@ pub struct GitDiff {
     pub truncated: bool, // True if diff was too large and truncated
 }
 
-// Helper to check if git is installed
+// Helper to check if git is installed (cached with 60s TTL)
+// Avoids spawning `git --version` on every single command
 fn check_git_installed() -> Result<(), GitError> {
-    let output = Command::new("git").arg("--version").output();
+    static CACHE: OnceLock<Mutex<(bool, Instant)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new((false, Instant::now() - Duration::from_secs(120))));
 
+    if let Ok(guard) = cache.lock() {
+        if guard.0 && guard.1.elapsed() < Duration::from_secs(60) {
+            return Ok(());
+        }
+    }
+
+    let output = Command::new("git").arg("--version").output();
     match output {
-        Ok(result) if result.status.success() => Ok(()),
+        Ok(result) if result.status.success() => {
+            if let Ok(mut guard) = cache.lock() {
+                *guard = (true, Instant::now());
+            }
+            Ok(())
+        }
         _ => Err(GitError::GitNotInstalled),
     }
 }
@@ -691,11 +705,13 @@ pub async fn git_switch_branch(path: String, branch: String) -> Result<(), GitEr
     let dir = Path::new(&path);
 
     // First check for uncommitted changes
+    // Check for conflicts and tracked file changes — block those
+    // But allow untracked files (standard git behavior)
     let status = git_status_internal(&path).await?;
     if status.has_conflicts || !status.conflicted.is_empty() {
         return Err(GitError::MergeConflicts);
     }
-    if !status.staged.is_empty() || !status.unstaged.is_empty() || !status.untracked.is_empty() {
+    if !status.staged.is_empty() || !status.unstaged.is_empty() {
         return Err(GitError::UncommittedChanges);
     }
 

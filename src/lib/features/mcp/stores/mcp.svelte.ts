@@ -328,24 +328,29 @@ class McpStore {
   }
 
   /** Start a specific server */
-  async startServer(serverId: string): Promise<void> {
+  async startServer(serverId: string, options?: { showErrorToast?: boolean }): Promise<void> {
     const existing = this.startPromises.get(serverId);
     if (existing) {
       return existing;
     }
 
-    const startPromise = this.startServerInternal(serverId).finally(() => {
+    const startPromise = this.startServerInternal(
+      serverId,
+      options?.showErrorToast ?? true,
+    ).finally(() => {
       this.startPromises.delete(serverId);
     });
     this.startPromises.set(serverId, startPromise);
     return startPromise;
   }
 
-  private async startServerInternal(serverId: string): Promise<void> {
+  private async startServerInternal(serverId: string, showErrorToast: boolean): Promise<void> {
     const config = this.mergedConfig.mcpServers?.[serverId];
     if (!config) {
       logOutput('MCP', `[ERROR] Server '${serverId}' not found in config`);
-      showToast({ message: `Server '${serverId}' not found in config`, type: 'error' });
+      if (showErrorToast) {
+        showToast({ message: `Server '${serverId}' not found in config`, type: 'error' });
+      }
       return;
     }
 
@@ -426,7 +431,7 @@ class McpStore {
         const timer = setTimeout(() => {
           this.retryTimers.delete(serverId);
           logOutput('MCP', `Retrying connection to '${serverId}'...`);
-          this.startServer(serverId).catch(() => {
+          this.startServer(serverId, { showErrorToast }).catch(() => {
             // Error already handled in startServer
           });
         }, McpStore.RETRY_DELAY_MS);
@@ -435,10 +440,14 @@ class McpStore {
       } else if (attempt >= McpStore.MAX_RETRY_ATTEMPTS) {
         // Max retries reached - show toast once
         this.retryAttempts.delete(serverId);
-        showToast({ message: `${serverId} failed after ${attempt} attempts. Check connection.`, type: 'error' });
+        if (showErrorToast) {
+          showToast({ message: `${serverId} failed after ${attempt} attempts. Check connection.`, type: 'error' });
+        }
       } else {
         // Non-timeout error - show immediately
-        showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
+        if (showErrorToast) {
+          showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
+        }
       }
     }
   }
@@ -600,7 +609,8 @@ class McpStore {
     if (!config.mcpServers) return;
 
     const isDefaultDisabledServer = (serverId: string, serverConfig: McpServerConfig): boolean =>
-      serverId === 'brave-search' && serverConfig.disabled === undefined;
+      (serverId === 'brave-search' || serverId === 'fetch') &&
+      serverConfig.disabled === undefined;
 
     // First, populate all servers from config (including disabled ones)
     for (const [serverId, serverConfig] of Object.entries(config.mcpServers)) {
@@ -629,7 +639,7 @@ class McpStore {
     // Start all servers with a stagger to avoid resource contention
     for (const [serverId] of enabledServers) {
       // Fire and forget - don't block initialization
-      this.startServer(serverId).catch(err => {
+      this.startServer(serverId, { showErrorToast: false }).catch(err => {
         logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${err}`);
       });
       // Small stagger to prevent CPU spikes

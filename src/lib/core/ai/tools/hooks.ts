@@ -26,7 +26,7 @@ export function afterToolHook(
     return { parseCategory: 'none' };
   }
 
-  const message = `${result.error} ${result.output}`.toLowerCase();
+  const message = `${result.error ?? ''} ${result.output ?? ''}`.toLowerCase();
   if (ctx.toolName === 'apply_patch') {
     if (message.includes('malformed patch')) {
       return { parseCategory: 'patch_parse' };

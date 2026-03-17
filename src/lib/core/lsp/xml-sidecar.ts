@@ -21,12 +21,27 @@ import {
   rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
 } from './sidecar/document-lifecycle';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  clearSourceProblemsForFile,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectXmlLsp, isXmlLspAvailable, type XmlLspInfo } from './xml-sdk';
 
 let xmlServerTransport: LspTransport | null = null;
 let xmlServerInitialized = false;
+let xmlSessionGeneration = 0;
+const xmlRecovery = createLspRecoveryController({
+  source: 'xml',
+  restart: async () => {
+    await recoverXmlLspAfterExit();
+  },
+});
 
 // Track open documents
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -149,7 +164,18 @@ export async function initializeServer(): Promise<boolean> {
 
     // Start the server via registry
     const registry = getLspRegistry();
-    xmlServerTransport = await registry.startServer('xml', { cwd: rootPath });
+    xmlServerTransport = await registry.startServer('xml', {
+      cwd: rootPath,
+      restartPolicy: {
+        enabled: true,
+        baseDelayMs: 1000,
+        maxDelayMs: 12_000,
+        maxAttempts: 4,
+        windowMs: 120_000,
+      },
+    });
+    xmlServerTransport.configureHealth({ autoRestart: true });
+    xmlSessionGeneration = startSourceSession('xml');
 
     if (!xmlServerTransport) {
       console.error('[XML LSP] Failed to start server');
@@ -160,13 +186,15 @@ export async function initializeServer(): Promise<boolean> {
     xmlServerTransport.onMessage(handleServerMessage);
     xmlServerTransport.onExit(() => {
       console.log('[XML LSP] Server exited');
-      problemsStore.markSourceStale('xml');
+      xmlSessionGeneration = markSourceSessionStale('xml');
+      xmlRecovery.schedule('transport exit');
       xmlServerTransport = null;
       xmlServerInitialized = false;
       openDocuments.clear();
     });
     xmlServerTransport.onRestart(async () => {
-      problemsStore.markSourceFresh('xml');
+      xmlSessionGeneration = startSourceSession('xml');
+      markSourceSessionReady('xml', xmlSessionGeneration);
       await rehydrateOpenDocuments();
     });
 
@@ -264,6 +292,8 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     xmlServerInitialized = true;
+    markSourceSessionReady('xml', xmlSessionGeneration);
+    xmlRecovery.reset();
     console.log('[XML LSP] Server initialized successfully');
     return true;
   } catch (error) {
@@ -337,7 +367,12 @@ function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): voi
     };
   });
 
-  problemsStore.setProblemsForFile(filepath, problems, 'xml');
+  setSourceProblemsForFile({
+    source: 'xml',
+    generation: xmlSessionGeneration,
+    filePath: filepath,
+    problems,
+  });
 }
 
 /**
@@ -445,7 +480,11 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
     textDocument: { uri },
   });
 
-  problemsStore.clearProblemsForFile(filepath, 'xml');
+  clearSourceProblemsForFile({
+    source: 'xml',
+    generation: xmlSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -544,6 +583,17 @@ export async function renameSymbol(filepath: string, line: number, character: nu
 /**
  * Stop the XML LSP server
  */
+async function recoverXmlLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || xmlServerTransport) {
+    return;
+  }
+
+  const initialized = await initializeServer();
+  if (!initialized) {
+    throw new Error('XML LSP restart failed');
+  }
+}
+
 export async function stopXmlLsp(): Promise<void> {
   if (!xmlServerTransport) return;
 
@@ -559,9 +609,11 @@ export async function stopXmlLsp(): Promise<void> {
     console.error('[XML LSP] Shutdown error:', error);
   } finally {
     const registry = getLspRegistry();
-    registry.stopServer('xml');
+    void registry.stopServer('xml');
     xmlServerTransport = null;
     xmlServerInitialized = false;
     openDocuments.clear();
+    xmlSessionGeneration = markSourceSessionStale('xml');
+    xmlRecovery.reset();
   }
 }

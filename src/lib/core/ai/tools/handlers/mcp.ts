@@ -421,9 +421,15 @@ export async function executeMcpTool(
     );
   }
 
+  const MCP_TOOL_TIMEOUT_MS = 60_000; // 60 seconds
   try {
-    const result = await mcpStore.callTool(serverId, actualToolName, normalizedArgs);
-    
+    const result = await Promise.race([
+      mcpStore.callTool(serverId, actualToolName, normalizedArgs),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`MCP tool "${actualToolName}" timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)), MCP_TOOL_TIMEOUT_MS)
+      ),
+    ]);
+
     // Format result for AI
     let output: string;
     if (typeof result === 'string') {
@@ -453,24 +459,34 @@ export async function executeMcpTool(
       },
     );
   } catch (error) {
-    const msg = String(error ?? '');
+    const msg = extractMcpError(error);
     if (msg.includes('Server') && msg.includes('not found')) {
       const availableServers = getKnownServerIds();
       const suggestions = availableServers.length > 0
         ? `Available MCP servers: ${availableServers.join(', ')}`
         : 'No MCP servers are currently configured/connected.';
-      const merged = `MCP tool error: ${error}. ${suggestions}`;
+      const merged = `MCP tool error: ${msg}. ${suggestions}`;
       return mcpFailure(merged, {
         code: 'MCP_SERVER_NOT_FOUND',
         serverId,
         toolName: actualToolName,
       });
     }
-    return mcpFailure(`MCP tool error: ${error}`, {
+    return mcpFailure(`MCP tool error: ${msg}`, {
       code: 'MCP_TOOL_ERROR',
       serverId,
       toolName: actualToolName,
     });
+  }
+}
+
+function extractMcpError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error ?? 'Unknown MCP error');
   }
 }
 

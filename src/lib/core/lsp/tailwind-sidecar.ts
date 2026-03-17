@@ -12,8 +12,18 @@
  * - Must read workspace tailwind.config.*
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  getLspRegistry,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { registerTailwindMonacoProviders, disposeTailwindMonacoProviders } from './tailwind-monaco-providers';
 
@@ -21,6 +31,13 @@ import { registerTailwindMonacoProviders, disposeTailwindMonacoProviders } from 
 let tailwindServerTransport: LspTransport | null = null;
 let tailwindServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+let tailwindSessionGeneration = 0;
+const tailwindRecovery = createLspRecoveryController({
+  source: 'tailwindcss',
+  restart: async () => {
+    await recoverTailwindLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -205,7 +222,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
   }));
 
   // Merge with existing problems (don't overwrite TS problems)
-  problemsStore.setProblemsForFile(filePath, problems, 'tailwindcss');
+  setSourceProblemsForFile({
+    source: 'tailwindcss',
+    generation: tailwindSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 
@@ -228,8 +250,17 @@ async function initializeServer(): Promise<void> {
       // Start the Tailwind server
       tailwindServerTransport = await registry.startServer('tailwind', {
         serverId: 'tailwind-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 1000,
+          maxDelayMs: 12_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
       });
+      tailwindServerTransport.configureHealth({ autoRestart: true });
+      tailwindSessionGeneration = startSourceSession('tailwindcss');
 
       // Set up message handler
       tailwindServerTransport.onMessage(handleLspMessage);
@@ -242,14 +273,16 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       tailwindServerTransport.onExit(() => {
         console.log('[Tailwind LSP] Server exited');
-        problemsStore.markSourceStale('tailwindcss');
+        tailwindSessionGeneration = markSourceSessionStale('tailwindcss');
+        tailwindRecovery.schedule('transport exit');
         tailwindServerTransport = null;
         tailwindServerInitialized = false;
         initializationPromise = null;
         openDocuments.clear();
       });
       tailwindServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('tailwindcss');
+        tailwindSessionGeneration = startSourceSession('tailwindcss');
+        markSourceSessionReady('tailwindcss', tailwindSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -348,6 +381,8 @@ async function initializeServer(): Promise<void> {
       await tailwindServerTransport.sendNotification('initialized', {});
 
       tailwindServerInitialized = true;
+      markSourceSessionReady('tailwindcss', tailwindSessionGeneration);
+      tailwindRecovery.reset();
 
       // Register Monaco providers
       registerTailwindMonacoProviders();
@@ -481,7 +516,11 @@ export async function notifyTailwindDocumentClosed(filepath: string): Promise<vo
   });
 
   // Clear Tailwind problems for this file
-  problemsStore.clearProblemsForFile(filepath, 'tailwindcss');
+  clearSourceProblemsForFile({
+    source: 'tailwindcss',
+    generation: tailwindSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 
@@ -698,6 +737,8 @@ export async function stopTailwindLsp(): Promise<void> {
   tailwindServerInitialized = false;
   initializationPromise = null;
   openDocuments.clear();
+  tailwindSessionGeneration = markSourceSessionStale('tailwindcss');
+  tailwindRecovery.reset();
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -716,4 +757,11 @@ export async function restartTailwindLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
+}
+
+async function recoverTailwindLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || tailwindServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
 }

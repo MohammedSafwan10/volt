@@ -20,6 +20,7 @@
     messages: AssistantMessage[];
     currentMode?: AIMode;
     isStreaming?: boolean;
+    scrollRevision?: number;
     onQuickPrompt?: (prompt: string) => void;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
@@ -36,6 +37,7 @@
     messages,
     currentMode = "ask",
     isStreaming = false,
+    scrollRevision = 0,
     onQuickPrompt,
     onToolApprove,
     onToolDeny,
@@ -55,6 +57,37 @@
   let isFollowing = $state(true);
   let showJumpButton = $state(false);
 
+  function getActiveAssistantIndex(): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (
+        message.role === "assistant" &&
+        (message.isStreaming || message.streamState === "active")
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  const activeAssistantIndex = $derived(getActiveAssistantIndex());
+  const activeAssistantMessage = $derived(
+    activeAssistantIndex >= 0 ? messages[activeAssistantIndex] : null,
+  );
+  const historyMessages = $derived(
+    messages.filter((m, index) => m.role !== "tool" && index !== activeAssistantIndex),
+  );
+
+  function syncScrollStateFromContainer(): void {
+    if (!containerRef) return;
+    const scrollTop = containerRef.scrollTop;
+    const { scrollHeight, clientHeight } = containerRef;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const atBottom = distanceFromBottom < 40;
+    userNearBottom = atBottom;
+    showJumpButton = distanceFromBottom > 200;
+  }
+
   function openImagePreview(img: ImageAttachment): void {
     previewImage = {
       src: `data:${img.mimeType};base64,${img.data}`,
@@ -72,12 +105,10 @@
 
   function handleScroll(): void {
     if (!containerRef) return;
-    const { scrollTop, scrollHeight, clientHeight } = containerRef;
+    syncScrollStateFromContainer();
+    const { scrollHeight, clientHeight, scrollTop } = containerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-
     const atBottom = distanceFromBottom < 40;
-    userNearBottom = atBottom;
-    showJumpButton = distanceFromBottom > 200;
 
     // If we're streaming and user manually scrolls up, stop following
     if (!atBottom && isFollowing && (isStreaming || messages.length > 0)) {
@@ -95,44 +126,34 @@
 
   function jumpToBottom(): void {
     if (!containerRef) return;
+    const targetTop = Math.max(0, containerRef.scrollHeight - containerRef.clientHeight);
     containerRef.scrollTo({
-      top: containerRef.scrollHeight,
+      top: targetTop,
       behavior: "smooth",
     });
+    syncScrollStateFromContainer();
     isFollowing = true;
-    userNearBottom = true;
-    showJumpButton = false;
   }
 
   function scrollToBottom(behavior: ScrollBehavior = "auto"): void {
     if (!containerRef) return;
+    const targetTop = Math.max(0, containerRef.scrollHeight - containerRef.clientHeight);
     containerRef.scrollTo({
-      top: containerRef.scrollHeight,
+      top: targetTop,
       behavior,
     });
+    syncScrollStateFromContainer();
   }
 
   // Auto-scroll effect
   $effect(() => {
-    // Track dependencies for streaming content
-    messages.forEach((m) => {
-      void m.content;
-      void m.thinking;
-      void m.isStreaming;
-      void m.streamState;
-      if (m.contentParts) {
-        m.contentParts.forEach((p) => {
-          if (p.type === "text") void p.text;
-          if (p.type === "thinking") void p.thinking;
-          if (p.type === "tool") {
-            void p.toolCall.status;
-            void p.toolCall.output;
-            void p.toolCall.streamingProgress;
-          }
-        });
-      }
-    });
     void messages.length;
+    void scrollRevision;
+    const lastMessage = messages[messages.length - 1];
+    const lastMessageId = lastMessage?.id;
+    const lastMessageRole = lastMessage?.role;
+    const lastMessageStreaming = lastMessage?.isStreaming;
+    const lastMessageState = lastMessage?.streamState;
 
     if (!containerRef) return;
 
@@ -140,15 +161,17 @@
     // 1. If user just sent a message, always scroll to bottom
     // 2. If we are streaming and currently following, scroll to bottom
     // 3. If a new message arrived and we were at the bottom, follow it
-    const lastMsgIsUser =
-      messages.length > 0 && messages[messages.length - 1].role === "user";
+    const lastMsgIsUser = lastMessageRole === "user";
     const shouldScroll = lastMsgIsUser || isFollowing;
+    void lastMessageId;
+    void lastMessageStreaming;
+    void lastMessageState;
 
     if (shouldScroll) {
       // Use requestAnimationFrame to ensure DOM is updated
       let timer: number | undefined;
       const rafId = requestAnimationFrame(() => {
-        scrollToBottom(lastMsgIsUser ? "smooth" : "auto");
+        scrollToBottom("auto");
 
         // Secondary safety check for dynamic height elements (like images/code blocks)
         timer = window.setTimeout(() => {
@@ -245,6 +268,7 @@
     const plan = findPlanFileCreated();
     if (plan && onStartImplementation) onStartImplementation(plan);
   }
+
 </script>
 
 <div class="message-list-wrapper">
@@ -253,34 +277,51 @@
     bind:this={containerRef}
     onscroll={handleScroll}
     role="log"
-    aria-live="polite"
+    aria-live={isStreaming ? "off" : "polite"}
+    aria-relevant="additions"
   >
     {#if messages.length === 0}
       <EmptyState {currentMode} {onQuickPrompt} />
     {:else}
-      {#each messages as message, msgIdx (message.id)}
-        {#if message.role === "user"}
-          <UserMessage
-            {message}
-            expanded={expandedMessages[message.id]}
-            onToggleExpand={() => toggleMessage(message.id)}
-            onImageClick={openImagePreview}
-            {onRevert}
-          />
-        {:else if message.role === "assistant"}
+      {#each historyMessages as message (message.id)}
+        {@const originalIdx = messages.findIndex((m) => m.id === message.id)}
+        <div class="message-row">
+          {#if message.role === "user"}
+            <UserMessage
+              {message}
+              expanded={expandedMessages[message.id]}
+              onToggleExpand={() => toggleMessage(message.id)}
+              onImageClick={openImagePreview}
+              {onRevert}
+            />
+          {:else if message.role === "assistant"}
+            <AssistantMessageRow
+              {message}
+              msgIdx={originalIdx}
+              showStreamingFallback={isStreaming &&
+                isLatestAssistantMessage(originalIdx)}
+              renderMode="history"
+              elapsedTime={getMessageElapsedTime(message, originalIdx)}
+            />
+          {:else if message.role === "system"}
+            <SystemMessage {message} />
+          {/if}
+        </div>
+      {/each}
+
+      {#if activeAssistantMessage}
+        <div class="active-turn-shell">
           <AssistantMessageRow
-            {message}
-            {msgIdx}
-            showStreamingFallback={isStreaming &&
-              isLatestAssistantMessage(msgIdx)}
+            message={activeAssistantMessage}
+            msgIdx={activeAssistantIndex}
+            showStreamingFallback={true}
+            renderMode="active"
             {onToolApprove}
             {onToolDeny}
-            elapsedTime={getMessageElapsedTime(message, msgIdx)}
+            elapsedTime={null}
           />
-        {:else if message.role === "system"}
-          <SystemMessage {message} />
-        {/if}
-      {/each}
+        </div>
+      {/if}
     {/if}
 
     {#if showStartImplementation}
@@ -327,12 +368,18 @@
   }
 
   .message-list {
-    display: flex;
-    flex-direction: column;
     padding: 12px;
     overflow-y: auto;
     height: 100%;
-    gap: 8px;
+    overflow-anchor: none;
+  }
+
+  .message-row {
+    padding-bottom: 8px;
+  }
+
+  .active-turn-shell {
+    margin-top: 8px;
   }
 
   .jump-to-bottom {

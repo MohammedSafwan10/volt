@@ -10,15 +10,47 @@ export interface StreamingTextBufferOptions {
   onFlush: (text: string) => void;
 }
 
+type ChunkingMode = "smooth" | "catch_up";
+
+const ENTER_QUEUE_DEPTH = 8;
+const ENTER_OLDEST_AGE_MS = 120;
+const EXIT_QUEUE_DEPTH = 2;
+const EXIT_OLDEST_AGE_MS = 40;
+const EXIT_HOLD_MS = 250;
+const REENTER_HOLD_MS = 250;
+const SEVERE_QUEUE_DEPTH = 64;
+const SEVERE_OLDEST_AGE_MS = 300;
+
+interface QueuedChunk {
+  text: string;
+  queuedAt: number;
+}
+
+function splitIntoChunks(text: string, sliceChars: number): string[] {
+  if (!text) return [];
+  if (text.length <= sliceChars) return [text];
+  const chunks: string[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    chunks.push(text.slice(cursor, cursor + sliceChars));
+    cursor += sliceChars;
+  }
+  return chunks;
+}
+
 export function createStreamingTextBuffer(
   options: StreamingTextBufferOptions,
 ): StreamingTextBuffer {
   const intervalMs = Math.max(10, options.intervalMs ?? 45);
   const sliceChars = Math.max(20, options.sliceChars ?? 120);
 
-  let buffer = "";
+  let pendingText = "";
+  let queue: QueuedChunk[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
   let activeFlush: Promise<void> | null = null;
+  let mode: ChunkingMode = "smooth";
+  let belowExitThresholdSince: number | null = null;
+  let lastCatchUpExitAt: number | null = null;
 
   const schedule = () => {
     if (timer) return;
@@ -28,6 +60,90 @@ export function createStreamingTextBuffer(
     }, intervalMs);
   };
 
+  const enqueue = (text: string, queuedAt = Date.now()) => {
+    for (const chunk of splitIntoChunks(text, sliceChars)) {
+      queue.push({ text: chunk, queuedAt });
+    }
+  };
+
+  const moveReadyTextToQueue = (forcePartial: boolean) => {
+    if (!pendingText) return;
+
+    let committedUpTo = 0;
+    let newlineIndex = pendingText.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const segment = pendingText.slice(committedUpTo, newlineIndex + 1);
+      if (segment) enqueue(segment);
+      committedUpTo = newlineIndex + 1;
+      newlineIndex = pendingText.indexOf("\n", committedUpTo);
+    }
+
+    if (committedUpTo > 0) {
+      pendingText = pendingText.slice(committedUpTo);
+    }
+
+    if (
+      pendingText &&
+      (forcePartial || pendingText.length >= sliceChars * 2)
+    ) {
+      const partial = pendingText;
+      pendingText = "";
+      enqueue(partial);
+    }
+  };
+
+  const getOldestAgeMs = (now: number): number | null => {
+    const oldest = queue[0];
+    return oldest ? Math.max(0, now - oldest.queuedAt) : null;
+  };
+
+  const isSevereBacklog = (queuedLines: number, oldestAgeMs: number | null): boolean =>
+    queuedLines >= SEVERE_QUEUE_DEPTH ||
+    (oldestAgeMs !== null && oldestAgeMs >= SEVERE_OLDEST_AGE_MS);
+
+  const decideDrainCount = (now: number): number => {
+    if (queue.length === 0) {
+      if (mode === "catch_up") {
+        lastCatchUpExitAt = now;
+      }
+      mode = "smooth";
+      belowExitThresholdSince = null;
+      return 0;
+    }
+
+    const oldestAgeMs = getOldestAgeMs(now);
+
+    if (mode === "smooth") {
+      const shouldEnter =
+        queue.length >= ENTER_QUEUE_DEPTH ||
+        (oldestAgeMs !== null && oldestAgeMs >= ENTER_OLDEST_AGE_MS);
+      const reentryBlocked =
+        lastCatchUpExitAt !== null &&
+        now - lastCatchUpExitAt < REENTER_HOLD_MS &&
+        !isSevereBacklog(queue.length, oldestAgeMs);
+      if (shouldEnter && !reentryBlocked) {
+        mode = "catch_up";
+        belowExitThresholdSince = null;
+        lastCatchUpExitAt = null;
+      }
+    } else {
+      const shouldExit =
+        queue.length <= EXIT_QUEUE_DEPTH &&
+        (oldestAgeMs === null || oldestAgeMs <= EXIT_OLDEST_AGE_MS);
+      if (!shouldExit) {
+        belowExitThresholdSince = null;
+      } else if (belowExitThresholdSince === null) {
+        belowExitThresholdSince = now;
+      } else if (now - belowExitThresholdSince >= EXIT_HOLD_MS) {
+        mode = "smooth";
+        belowExitThresholdSince = null;
+        lastCatchUpExitAt = now;
+      }
+    }
+
+    return mode === "catch_up" ? queue.length : 1;
+  };
+
   const flush = async (force: boolean): Promise<void> => {
     if (activeFlush) {
       if (force) await activeFlush;
@@ -35,16 +151,21 @@ export function createStreamingTextBuffer(
     }
 
     activeFlush = (async () => {
-      while (buffer.length > 0) {
-        const next = buffer.slice(0, sliceChars);
-        buffer = buffer.slice(sliceChars);
-        options.onFlush(next);
+      moveReadyTextToQueue(force);
+
+      while (queue.length > 0) {
+        const drainCount = force ? queue.length : decideDrainCount(Date.now());
+        if (drainCount <= 0) break;
+
+        const batch = queue.splice(0, drainCount).map((item) => item.text);
+        if (batch.length === 0) break;
+        options.onFlush(batch.join(""));
 
         if (!force) break;
         await new Promise((resolve) => setTimeout(resolve, 8));
       }
 
-      if (buffer.length > 0) {
+      if (pendingText.length > 0 || queue.length > 0) {
         schedule();
       }
     })();
@@ -56,7 +177,7 @@ export function createStreamingTextBuffer(
   return {
     append(chunk: string) {
       if (!chunk) return;
-      buffer += chunk;
+      pendingText += chunk;
       schedule();
     },
     flushNow() {

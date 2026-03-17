@@ -22,9 +22,15 @@ import type {
   HealthHandler,
   HealthConfig,
   HealthStatus,
+  RestartPolicy,
 } from './types';
-import { DEFAULT_HEALTH_CONFIG } from './types';
+import { DEFAULT_HEALTH_CONFIG, DEFAULT_RESTART_POLICY } from './types';
 import { getHealthProbe, isResponsiveProtocolError } from './health';
+import {
+  createLspRecoveryController,
+  type LspRecoveryController,
+  type LspRecoveryState,
+} from './recovery';
 
 /** Pending request tracking */
 interface PendingRequest {
@@ -56,6 +62,8 @@ export class LspTransport {
   private isRestarting = false;
   private preserveHandlersOnStop = false;
   private restartCount = 0;
+  private restartPolicy: Required<RestartPolicy> = { ...DEFAULT_RESTART_POLICY };
+  private recoveryController: LspRecoveryController;
 
   // Health monitoring state
   private healthConfig: Required<HealthConfig>;
@@ -75,6 +83,12 @@ export class LspTransport {
     this.serverId = serverId;
     this.serverType = serverType;
     this.healthConfig = { ...DEFAULT_HEALTH_CONFIG, ...healthConfig };
+    this.recoveryController = createLspRecoveryController({
+      source: serverId,
+      restart: async () => {
+        await this.restartFromSavedConfig();
+      },
+    });
   }
 
   /** Get the server ID */
@@ -115,6 +129,7 @@ export class LspTransport {
     exitHandlers: number;
     healthHandlers: number;
     restartCount: number;
+    recoveryState: LspRecoveryState;
   } {
     return {
       id: this.serverId,
@@ -128,6 +143,7 @@ export class LspTransport {
       exitHandlers: this.exitHandlers.size,
       healthHandlers: this.healthHandlers.size,
       restartCount: this.restartCount,
+      recoveryState: this.recoveryController.state,
     };
   }
 
@@ -412,10 +428,10 @@ export class LspTransport {
         this.stopHealthMonitoring();
 
         // Auto-restart if configured
-        if (this.healthConfig.autoRestart) {
+        if (this.healthConfig.autoRestart && this.restartPolicy.enabled) {
           console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
           this.notifyError(`Server unhealthy, attempting restart...`);
-          await this.restartFromSavedConfig();
+          this.recoveryController.schedule('health-check failure');
         }
       }
     }
@@ -506,13 +522,40 @@ configureHealth(config: HealthConfig): void {
   this.healthConfig = { ...this.healthConfig, ...config };
 
   // Restart monitoring if enabled state changed
-  if(this.isConnected) {
-  this.stopHealthMonitoring();
-  if (this.healthConfig.enabled) {
-    this.startHealthMonitoring();
+  if (this.isConnected) {
+    this.stopHealthMonitoring();
+    if (this.healthConfig.enabled) {
+      this.startHealthMonitoring();
+    }
   }
 }
+
+configureRestartPolicy(policy: RestartPolicy): void {
+  this.restartPolicy = { ...this.restartPolicy, ...policy };
+  this.recoveryController.dispose();
+
+  if (!this.restartPolicy.enabled) {
+    this.recoveryController = createLspRecoveryController({
+      source: this.serverId,
+      restart: async () => {
+        await this.restartFromSavedConfig();
+      },
+      maxAttempts: 0,
+    });
+    return;
   }
+
+  this.recoveryController = createLspRecoveryController({
+    source: this.serverId,
+    restart: async () => {
+      await this.restartFromSavedConfig();
+    },
+    baseDelayMs: this.restartPolicy.baseDelayMs,
+    maxDelayMs: this.restartPolicy.maxDelayMs,
+    maxAttempts: this.restartPolicy.maxAttempts,
+    windowMs: this.restartPolicy.windowMs,
+  });
+}
 
   /**
    * Send a JSON-RPC request and wait for response
@@ -693,6 +736,7 @@ this.restartHandlers.clear();
 }
 this.pendingRequests.clear();
 this.responseTimes = [];
+this.recoveryController.reset();
   }
 
   private async restartFromSavedConfig(): Promise<void> {
@@ -724,6 +768,7 @@ this.responseTimes = [];
       }
 
       this.restartCount += 1;
+      this.recoveryController.reset();
 
       for (const handler of this.restartHandlers) {
         await handler();

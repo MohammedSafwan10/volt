@@ -76,7 +76,7 @@
     uiStore.closeMenus();
     const path = await openFileDialog();
     if (path) {
-      showToast({ message: `Opening file: ${path}`, type: "info" });
+      await editorStore.openFile(path);
     }
   }
 
@@ -92,9 +92,10 @@
     }
   }
 
-  function handleCloseFolder() {
+  async function handleCloseFolder() {
     uiStore.closeMenus();
-    projectStore.closeProject();
+    await projectStore.closeProject();
+    uiStore.setActiveSidebarPanel("explorer");
   }
 
   async function handleExit() {

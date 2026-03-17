@@ -12,6 +12,22 @@ export interface ParsedCodexPatch {
   hunks: ParsedPatchHunk[];
 }
 
+export function getCodexPatchLineStats(
+  hunks: ParsedPatchHunk[],
+): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.op === 'add') added++;
+      else if (line.op === 'remove') removed++;
+    }
+  }
+
+  return { added, removed };
+}
+
 function normalizePatchText(patch: string): string {
   const normalized = patch.replace(/\r\n/g, '\n').trim();
 

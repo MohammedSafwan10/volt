@@ -9,7 +9,7 @@
  */
 
 import { LspTransport, createTransport, stopAllServers } from './transport';
-import type { LspServerType, HealthConfig, HealthStatus } from './types';
+import type { LspServerType, HealthConfig, HealthStatus, RestartPolicy } from './types';
 import { isExternalServerType } from './types';
 import { detectYamlLsp } from '../yaml-sdk';
 import { getLemminxCommand } from '../xml-sdk';
@@ -167,6 +167,7 @@ class LspRegistry {
       cwd?: string;
       env?: Record<string, string>;
       health?: HealthConfig;
+      restartPolicy?: RestartPolicy;
       command?: string;
       args?: string[];
     }
@@ -180,6 +181,9 @@ class LspRegistry {
 
     // Create transport with optional health config
     const transport = createTransport(serverId, serverType, options?.health);
+    if (options?.restartPolicy) {
+      transport.configureRestartPolicy(options.restartPolicy);
+    }
 
     // Check if this is an external server type
     if (isExternalServerType(serverType)) {

@@ -1,4 +1,9 @@
 import type { ToolResult } from '$core/ai/tools';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
+import {
+  createToolRuntimeContext,
+  getInitialToolLiveStatus,
+} from './tool-live-updates';
 
 export interface PendingToolCall {
   id: string;
@@ -59,7 +64,7 @@ interface ApprovalExecutorDeps {
   executeToolCall: (
     toolName: string,
     args: Record<string, unknown>,
-    options: { signal: AbortSignal; idempotencyKey: string },
+    options: { signal: AbortSignal; idempotencyKey: string; runtime?: ToolRuntimeContext },
   ) => Promise<ToolResult>;
   getToolIdempotencyKey: (
     scope: string,
@@ -150,6 +155,9 @@ export async function processToolsNeedingApproval(
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: 'running',
         startTime: Date.now(),
+        meta: {
+          liveStatus: getInitialToolLiveStatus(toolCall.name),
+        },
       });
 
       try {
@@ -161,13 +169,19 @@ export async function processToolsNeedingApproval(
             toolCall.name,
             toolCall.arguments,
           ),
+          runtime: createToolRuntimeContext((patch) => {
+            deps.updateToolCallInMessage(messageId, toolCall.id, patch);
+          }),
         });
         toolResults.push({ id: toolCall.id, name: toolCall.name, result });
         deps.updateToolCallInMessage(messageId, toolCall.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
           error: result.error,
-          meta: result.meta,
+          meta: {
+            ...(result.meta ?? {}),
+            liveStatus: undefined,
+          },
           data: result.data,
           endTime: Date.now(),
           streamingProgress: undefined,
@@ -185,7 +199,11 @@ export async function processToolsNeedingApproval(
         deps.updateToolCallInMessage(messageId, toolCall.id, {
           status: 'failed',
           error,
+          meta: {
+            liveStatus: undefined,
+          },
           endTime: Date.now(),
+          streamingProgress: undefined,
         });
         const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, {
           success: false,
@@ -275,6 +293,9 @@ export async function processToolsNeedingApproval(
     deps.updateToolCallInMessage(messageId, toolCall.id, {
       status: 'running',
       startTime: Date.now(),
+      meta: {
+        liveStatus: getInitialToolLiveStatus(toolCall.name),
+      },
     });
 
     try {
@@ -286,15 +307,22 @@ export async function processToolsNeedingApproval(
           toolCall.name,
           toolCall.arguments,
         ),
+        runtime: createToolRuntimeContext((patch) => {
+          deps.updateToolCallInMessage(messageId, toolCall.id, patch);
+        }),
       });
       toolResults.push({ id: toolCall.id, name: toolCall.name, result });
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: result.success ? 'completed' : 'failed',
         output: result.output,
         error: result.error,
-        meta: result.meta,
+        meta: {
+          ...(result.meta ?? {}),
+          liveStatus: undefined,
+        },
         data: result.data,
         endTime: Date.now(),
+        streamingProgress: undefined,
       });
       deps.trackToolOutcome(toolCall.name, toolCall.arguments, result);
       const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, result);
@@ -310,7 +338,11 @@ export async function processToolsNeedingApproval(
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: 'failed',
         error,
+        meta: {
+          liveStatus: undefined,
+        },
         endTime: Date.now(),
+        streamingProgress: undefined,
       });
       const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, {
         success: false,

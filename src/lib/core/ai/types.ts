@@ -97,6 +97,7 @@ export interface StreamChunk {
   content?: string;
   thinking?: string; // Thinking/reasoning content from model
   toolCall?: ToolCall;
+  partial?: boolean;
   error?: string;
 }
 

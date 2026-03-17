@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { logOutput } from '$features/terminal/stores/output.svelte';
 import { writable } from 'svelte/store';
+import { registerCleanup } from '$core/services/hmr-cleanup';
 
 // Emits a monotonic tick whenever the in-memory index changes.
 // Used by Quick Open UI to refresh results as chunks stream in.
@@ -95,6 +96,7 @@ let indexTimestamp = 0; // When index was last completed
 let unlistenChunk: UnlistenFn | null = null;
 let unlistenDone: UnlistenFn | null = null;
 let unlistenError: UnlistenFn | null = null;
+let cleanupRegistered = false;
 
 /**
  * Precompute normalized fields for an IndexedFile.
@@ -183,6 +185,28 @@ async function cleanupListeners(): Promise<void> {
   }
 }
 
+async function cleanupIndexingForReload(): Promise<void> {
+  if (indexing && currentRequestId > 0) {
+    try {
+      await invoke('cancel_index_workspace', { requestId: currentRequestId });
+    } catch {
+      // Best-effort cancellation during reload/HMR.
+    }
+  }
+
+  indexing = false;
+  currentRequestId = 0;
+  indexCompletePromise = null;
+  indexCompleteResolver = null;
+  await cleanupListeners();
+}
+
+function ensureIndexCleanupRegistered(): void {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+  registerCleanup('file-index', () => cleanupIndexingForReload());
+}
+
 // Track active indexing promise to allow awaiting completion
 let indexCompletePromise: Promise<void> | null = null;
 let indexCompleteResolver: (() => void) | null = null;
@@ -191,6 +215,7 @@ let indexCompleteResolver: (() => void) | null = null;
  * Index all files in a project directory using streaming Rust backend
  */
 export async function indexProject(rootPath: string, useCache = true): Promise<void> {
+  ensureIndexCleanupRegistered();
   // If already indexed this path and not forcing refresh, skip
   if (indexedRoot === rootPath && fileIndex.length > 0 && useCache && !indexing) return;
 

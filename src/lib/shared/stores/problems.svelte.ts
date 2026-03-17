@@ -56,6 +56,21 @@ export interface ProblemsByFile {
   [filePath: string]: Problem[];
 }
 
+function problemSortValue(severity: ProblemSeverity): number {
+  switch (severity) {
+    case 'error':
+      return 0;
+    case 'warning':
+      return 1;
+    case 'info':
+      return 2;
+    case 'hint':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
 class ProblemsStore {
   private readonly NATIVE_SOURCE = 'monaco-native';
 
@@ -88,6 +103,8 @@ class ProblemsStore {
   /** Update timeout for activity indicator */
   private updateTimeout: ReturnType<typeof setTimeout> | null = null;
   private sourceUpdateTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private freshnessNow = $state(Date.now());
+  private freshnessTicker: ReturnType<typeof setInterval> | null = null;
 
   /** Get all problems as a flat array (with filters applied) */
   get allProblems(): Problem[] {
@@ -109,12 +126,27 @@ class ProblemsStore {
       );
     }
     
-    return problems;
+    return this.sortProblems(problems);
   }
   
   /** Get all problems WITHOUT filters (for counts) */
   get allProblemsUnfiltered(): Problem[] {
-    return this.getDedupedProblems();
+    return this.sortProblems(this.getDedupedProblems());
+  }
+
+  private sortProblems(problems: Problem[]): Problem[] {
+    return [...problems].sort((a, b) => {
+      const severityDiff = problemSortValue(a.severity) - problemSortValue(b.severity);
+      if (severityDiff !== 0) return severityDiff;
+
+      const fileDiff = this.normalizePath(a.file).localeCompare(this.normalizePath(b.file));
+      if (fileDiff !== 0) return fileDiff;
+
+      if (a.line !== b.line) return a.line - b.line;
+      if (a.column !== b.column) return a.column - b.column;
+
+      return a.message.localeCompare(b.message);
+    });
   }
 
   /**
@@ -182,7 +214,28 @@ class ProblemsStore {
     return this.allProblemsUnfiltered.length;
   }
 
+  private ensureFreshnessTicker(): void {
+    const hasTrackedSources = Object.keys(this.sourceStates).length > 0;
+    if (!hasTrackedSources) {
+      this.stopFreshnessTicker();
+      return;
+    }
+
+    if (this.freshnessTicker) return;
+    this.freshnessTicker = setInterval(() => {
+      this.freshnessNow = Date.now();
+    }, 1000);
+  }
+
+  private stopFreshnessTicker(): void {
+    if (!this.freshnessTicker) return;
+    clearInterval(this.freshnessTicker);
+    this.freshnessTicker = null;
+  }
+
   get diagnosticsFreshness(): DiagnosticFreshnessSummary {
+    this.ensureFreshnessTicker();
+
     const snapshots = Object.values(this.sourceStates).map((source): DiagnosticSourceSnapshot => ({
       source: source.source,
       lastUpdated: source.lastUpdated,
@@ -192,7 +245,7 @@ class ProblemsStore {
       problemCount: this.allProblemsUnfiltered.filter((problem) => problem.source === source.source).length,
     }));
 
-    return summarizeDiagnosticSources(snapshots);
+    return summarizeDiagnosticSources(snapshots, this.freshnessNow);
   }
   
   /** Set severity filter */
@@ -383,6 +436,7 @@ class ProblemsStore {
       clearTimeout(timeout);
     }
     this.sourceUpdateTimeouts.clear();
+    this.stopFreshnessTicker();
   }
 
   /**
@@ -391,6 +445,13 @@ class ProblemsStore {
   getProblemsForFile(filePath: string): Problem[] {
     const normalizedPath = this.normalizePath(filePath);
     return this.problemsByFile[normalizedPath] || [];
+  }
+
+  getDedupedProblemsForFile(filePath: string): Problem[] {
+    const normalizedPath = this.normalizePath(filePath);
+    return this.allProblemsUnfiltered.filter(
+      (problem) => this.normalizePath(problem.file) === normalizedPath,
+    );
   }
 
   /**

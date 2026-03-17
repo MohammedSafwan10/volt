@@ -59,6 +59,13 @@ describe('ToolLoopState', () => {
     expect(check.ok).toBe(true);
   });
 
+  it('accepts list_dir evidence for directory delete checks', () => {
+    const state = createToolLoopState();
+    state.recordToolOutcome('list_dir', { path: '.agent' }, { success: true }, 10);
+    const check = state.checkFreshRead('.agent', 'outline');
+    expect(check.ok).toBe(true);
+  });
+
   it('records read_code symbol metadata as read evidence', () => {
     const state = createToolLoopState();
     state.recordToolOutcome(

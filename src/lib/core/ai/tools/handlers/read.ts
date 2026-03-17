@@ -1,7 +1,7 @@
 /**
- * Read tool handlers - read_file, list_dir, and optional legacy readers
+ * Read tool handlers - read_file, list_dir, file_outline
  * 
- * Kiro-style features:
+ * Features:
  * - Explanation parameter for intelligent pruning
  * - Line numbers in output
  * - Smart truncation
@@ -10,6 +10,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$core/services/file-service';
 import { resolvePath, truncateOutput, formatWithLineNumbers, type ToolResult } from '$core/ai/tools/utils';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
 
 /**
  * Extract keywords from explanation for content relevance scoring
@@ -157,12 +158,16 @@ function pruneContent(content: string, explanation: string, maxLines = 300): {
 
 /**
  * Read a single file with optional line slice
- * Kiro-style: includes line numbers, intelligent pruning based on explanation
+ * Includes line numbers, intelligent pruning based on explanation
  */
-export async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleReadFile(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const explanation = args.explanation ? String(args.explanation) : '';
   const path = resolvePath(relativePath);
+  runtime?.onUpdate?.({ liveStatus: 'Reading file...' });
 
   let content: string;
   try {
@@ -203,7 +208,7 @@ export async function handleReadFile(args: Record<string, unknown>): Promise<Too
     relevantRanges = pruneResult.relevantRanges;
   }
 
-  // Format with line numbers (Kiro-style)
+  // Format with line numbers
   const formatted = formatWithLineNumbers(output, startLine);
 
   // Add header
@@ -235,11 +240,17 @@ export async function handleReadFile(args: Record<string, unknown>): Promise<Too
 /**
  * Read multiple files at once
  */
-export async function handleReadFiles(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleReadFiles(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const paths = args.paths as string[] | undefined;
   if (!paths || !Array.isArray(paths) || paths.length === 0) {
     return { success: false, error: 'No paths provided' };
   }
+  runtime?.onUpdate?.({
+    liveStatus: paths.length === 1 ? 'Reading file...' : `Reading ${paths.length} files...`,
+  });
 
   const results: string[] = [];
   let totalLines = 0;
@@ -315,7 +326,7 @@ export async function handleListDir(args: Record<string, unknown>): Promise<Tool
 
 /**
  * Get file tree structure (recursive directory listing)
- * BETTER than Kiro's listDirectory:
+ * List directory contents:
  * - Shows file type icons/emojis
  * - Shows file counts per directory
  * - Smarter directory skipping
@@ -589,17 +600,21 @@ function formatSize(bytes: number): string {
 
 /**
  * Read code file with smart structure analysis
- * VOLT EXCLUSIVE - Better than Kiro's readFile:
+ * Smart code reader:
  * - Shows file structure (functions, classes, exports)
  * - Can read specific symbol by name
  * - Auto-detects and highlights important sections
  * - LARGE FILE SAFE: Skips structure analysis for huge files
  */
-export async function handleReadCode(args: Record<string, unknown>): Promise<ToolResult> {
+export async function handleReadCode(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
   const relativePath = String(args.path);
   const symbolName = args.symbol ? String(args.symbol) : '';
   const showStructure = args.structure !== false; // Default true
   const path = resolvePath(relativePath);
+  runtime?.onUpdate?.({ liveStatus: 'Reading code...' });
 
   let content: string;
   try {

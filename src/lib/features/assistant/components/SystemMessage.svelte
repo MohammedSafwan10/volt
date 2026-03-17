@@ -17,7 +17,7 @@
     <span>{isSummary ? "Conversation Summary" : "System"}</span>
   </div>
   <div class="system-body">
-    <Markdown content={message.content} />
+    <Markdown content={message.content} profile="chat" />
   </div>
 </div>
 

@@ -38,3 +38,12 @@ export function stripSystemReminderTags(content: string): {
     hiddenReminderBlock: reminders.join('\n\n'),
   };
 }
+
+export function sanitizeVisibleAssistantText(content: string): string {
+  return content
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    .replace(/<system_context>[\s\S]*?<\/system_context>/gi, '')
+    .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

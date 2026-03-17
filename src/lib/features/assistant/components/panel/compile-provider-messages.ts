@@ -32,6 +32,26 @@ function hasFunctionResponse(message: ChatMessage): boolean {
   return Boolean(message.parts?.some((part) => isFunctionPart(part, 'function_response')));
 }
 
+function getFunctionCallIds(message: ChatMessage): Set<string> {
+  const ids = new Set<string>();
+  for (const part of message.parts ?? []) {
+    if (part.type === 'function_call' && part.id) {
+      ids.add(part.id);
+    }
+  }
+  return ids;
+}
+
+function getFunctionResponseIds(message: ChatMessage): Set<string> {
+  const ids = new Set<string>();
+  for (const part of message.parts ?? []) {
+    if (part.type === 'function_response' && part.id) {
+      ids.add(part.id);
+    }
+  }
+  return ids;
+}
+
 function serializeMessageForTokenEstimate(message: ChatMessage): string {
   const role = message.role;
   const parts = message.parts ?? [{ type: 'text', text: message.content } as ContentPart];
@@ -86,21 +106,77 @@ function splitMessages(messages: ChatMessage[]): { system: ChatMessage[]; nonSys
   return { system, nonSystem };
 }
 
-function buildProtectedTail(nonSystem: ChatMessage[], tailCount = DEFAULT_TAIL_MESSAGES): ChatMessage[] {
-  if (nonSystem.length <= tailCount) return [...nonSystem];
+interface MessageBlock {
+  messages: ChatMessage[];
+  containsFunctionExchange: boolean;
+  isComplete: boolean;
+}
 
-  let start = Math.max(0, nonSystem.length - tailCount);
-  let tail = nonSystem.slice(start);
+function buildMessageBlocks(nonSystem: ChatMessage[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
 
-  // Ensure we don't leave orphan function_response messages in tail.
-  // If the tail starts with function_response without preceding function_call,
-  // extend the tail backwards until the corresponding assistant function_call boundary.
+  for (let i = 0; i < nonSystem.length; i++) {
+    const current = nonSystem[i];
+
+    if (!hasFunctionCall(current)) {
+      blocks.push({
+        messages: [current],
+        containsFunctionExchange: hasFunctionResponse(current),
+        isComplete: !hasFunctionResponse(current),
+      });
+      continue;
+    }
+
+    const callIds = getFunctionCallIds(current);
+    const responseIds = new Set<string>();
+    const blockMessages: ChatMessage[] = [current];
+    let j = i + 1;
+
+    while (j < nonSystem.length && hasFunctionResponse(nonSystem[j])) {
+      blockMessages.push(nonSystem[j]);
+      for (const responseId of getFunctionResponseIds(nonSystem[j])) {
+        responseIds.add(responseId);
+      }
+      j += 1;
+    }
+
+    i = j - 1;
+
+    const isComplete =
+      callIds.size > 0 &&
+      Array.from(callIds).every((id) => responseIds.has(id));
+
+    blocks.push({
+      messages: blockMessages,
+      containsFunctionExchange: true,
+      isComplete,
+    });
+  }
+
+  return blocks;
+}
+
+function flattenBlocks(blocks: MessageBlock[]): ChatMessage[] {
+  return blocks.flatMap((block) => block.messages);
+}
+
+function estimateBlockTokens(block: MessageBlock): number {
+  return estimateMessagesTokens(block.messages);
+}
+
+function buildProtectedTail(blocks: MessageBlock[], tailCount = DEFAULT_TAIL_MESSAGES): MessageBlock[] {
+  if (blocks.length <= tailCount) return [...blocks];
+
+  let start = Math.max(0, blocks.length - tailCount);
+  let tail = blocks.slice(start);
+
+  // Ensure the tail starts at a safe boundary. If the first protected block is an
+  // incomplete function exchange or starts with function responses only, extend backwards.
   while (start > 0) {
     const first = tail[0];
-    if (!hasFunctionResponse(first)) break;
+    if (!first.containsFunctionExchange || first.isComplete) break;
     start -= 1;
-    tail = nonSystem.slice(start);
-    if (hasFunctionCall(nonSystem[start])) break;
+    tail = blocks.slice(start);
   }
 
   return tail;
@@ -117,33 +193,42 @@ export function compileProviderMessages(
   const budgetTokens = Math.max(1024, inputTokens - safetyBuffer - reserveOutput);
 
   const { system, nonSystem } = splitMessages(providerMessages);
-  const protectedTail = buildProtectedTail(nonSystem);
-  const protectedTailStart = Math.max(0, nonSystem.length - protectedTail.length);
-  const historyPool = nonSystem.slice(0, protectedTailStart);
+  const allBlocks = buildMessageBlocks(nonSystem).filter(
+    (block) => !block.containsFunctionExchange || block.isComplete,
+  );
+  const protectedTail = buildProtectedTail(allBlocks);
+  const protectedTailStart = Math.max(0, allBlocks.length - protectedTail.length);
+  const historyPool = allBlocks.slice(0, protectedTailStart);
 
-  const protectedTokens = estimateMessagesTokens([...system, ...protectedTail]);
+  const protectedMessages = flattenBlocks(protectedTail);
+  const protectedTokens = estimateMessagesTokens([...system, ...protectedMessages]);
   if (protectedTokens >= budgetTokens) {
+    const compiled = [...system, ...protectedMessages];
     return {
-      messages: [...system, ...protectedTail],
-      didPrune: nonSystem.length > protectedTail.length,
+      messages: compiled,
+      didPrune: compiled.length < providerMessages.length,
       estimatedTokens: protectedTokens,
       budgetTokens,
     };
   }
 
   // Add newest history first while staying under budget, then restore chronological order.
-  const selectedHistory: ChatMessage[] = [];
+  const selectedHistory: MessageBlock[] = [];
   let runningTokens = protectedTokens;
   for (let i = historyPool.length - 1; i >= 0; i--) {
     const candidate = historyPool[i];
-    const candidateTokens = estimateMessageTokens(candidate);
+    const candidateTokens = estimateBlockTokens(candidate);
     if (runningTokens + candidateTokens > budgetTokens) continue;
     selectedHistory.push(candidate);
     runningTokens += candidateTokens;
   }
   selectedHistory.reverse();
 
-  const compiled = [...system, ...selectedHistory, ...protectedTail];
+  const compiled = [
+    ...system,
+    ...flattenBlocks(selectedHistory),
+    ...protectedMessages,
+  ];
   return {
     messages: compiled,
     didPrune: compiled.length < providerMessages.length,

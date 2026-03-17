@@ -78,6 +78,12 @@ function collectReadPaths(
   if (toolName === 'file_outline') {
     const path = typeof args.path === 'string' ? args.path : '';
     if (path) records.push({ path, kind: 'outline' });
+    return records;
+  }
+
+  if (toolName === 'list_dir') {
+    const path = typeof args.path === 'string' ? args.path : '';
+    if (path) records.push({ path, kind: 'outline' });
   }
 
   return records;

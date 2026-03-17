@@ -53,10 +53,11 @@ export type {
   HealthHandler,
   HealthConfig,
   HealthStatus,
+  RestartPolicy,
 } from './types';
 
 // Constants
-export { DEFAULT_HEALTH_CONFIG } from './types';
+export { DEFAULT_HEALTH_CONFIG, DEFAULT_RESTART_POLICY } from './types';
 
 // Transport
 export {
@@ -79,3 +80,29 @@ export {
   rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
 } from './document-lifecycle';
+
+export {
+  clearSourceProblemsForFile,
+  getSourceSessionGeneration,
+  isCurrentSourceGeneration,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  resetSourceSessions,
+  setSourceProblemsForFile,
+  startSourceSession,
+} from './diagnostics';
+
+export {
+  createLspRecoveryController,
+  LspRecoveryController,
+  type LspRecoveryControllerOptions,
+  type LspRecoveryState,
+} from './recovery';
+
+export {
+  dispatchWatchedFileChanges,
+  normalizeWatchedFileChanges,
+  resetWatchedFileDispatch,
+  type WatchedFileChange,
+  type WatchedFileChangeKind,
+} from './watched-files';

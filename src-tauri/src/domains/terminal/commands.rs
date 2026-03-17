@@ -606,7 +606,13 @@ pub fn terminal_get_scrollback(
         return Ok(full.clone());
     }
 
-    Ok(full[full.len() - limit..].to_string())
+    // Find a UTF-8 safe byte offset (floor_char_boundary equivalent for stable Rust)
+    // Walking backwards from the target offset to find the nearest char boundary
+    let mut start = full.len() - limit;
+    while start > 0 && !full.is_char_boundary(start) {
+        start -= 1;
+    }
+    Ok(full[start..].to_string())
 }
 
 /// Kill all active terminals

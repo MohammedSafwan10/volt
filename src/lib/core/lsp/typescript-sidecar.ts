@@ -17,8 +17,18 @@
  * - Must respect workspace tsconfig.json (paths/baseUrl) for Next.js
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  getLspRegistry,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
@@ -29,6 +39,13 @@ let tsServerTransport: LspTransport | null = null;
 let tsServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
+let tsSessionGeneration = 0;
+const tsRecovery = createLspRecoveryController({
+  source: 'typescript',
+  restart: async () => {
+    await recoverTsLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -45,6 +62,9 @@ async function rehydrateOpenDocuments(): Promise<void> {
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 75;
+const PROJECT_ANALYSIS_BATCH_SIZE = 10;
+const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
+let projectAnalysisRunId = 0;
 
 // Pending open operations (to prevent race conditions)
 const openingDocuments = new Map<string, Promise<void>>();
@@ -208,7 +228,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  problemsStore.setProblemsForFile(filePath, problems, 'typescript');
+  setSourceProblemsForFile({
+    source: 'typescript',
+    generation: tsSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -236,8 +261,17 @@ async function initializeServer(): Promise<void> {
       // Start the TypeScript server
       tsServerTransport = await registry.startServer('typescript', {
         serverId: 'typescript-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 750,
+          maxDelayMs: 10_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
       });
+      tsServerTransport.configureHealth({ autoRestart: true });
+      tsSessionGeneration = startSourceSession('typescript');
 
       // Set up message handler
       tsServerTransport.onMessage(handleLspMessage);
@@ -250,7 +284,8 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       tsServerTransport.onExit(() => {
         console.log('[TS LSP] Server exited');
-        problemsStore.markSourceStale('typescript');
+        tsSessionGeneration = markSourceSessionStale('typescript');
+        tsRecovery.schedule('transport exit');
         tsServerTransport = null;
         tsServerInitialized = false;
         initializationPromise = null;
@@ -258,7 +293,8 @@ async function initializeServer(): Promise<void> {
         openDocuments.clear();
       });
       tsServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('typescript');
+        tsSessionGeneration = startSourceSession('typescript');
+        markSourceSessionReady('typescript', tsSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -398,6 +434,8 @@ async function initializeServer(): Promise<void> {
 
       tsServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
+      markSourceSessionReady('typescript', tsSessionGeneration);
+      tsRecovery.reset();
 
       // Register Monaco providers to use the sidecar for completions/hover/definition
       registerTsMonacoProviders();
@@ -420,6 +458,19 @@ function normalizePath(filepath: string): string {
     normalized = normalized[0].toLowerCase() + normalized.slice(1);
   }
   return normalized;
+}
+
+function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
+  const active = new Set(
+    Array.from(openDocuments.keys()).map((path) => normalizePath(path)),
+  );
+
+  return [...files].sort((a, b) => {
+    const aActive = active.has(normalizePath(a.path)) ? 0 : 1;
+    const bActive = active.has(normalizePath(b.path)) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return normalizePath(a.path).localeCompare(normalizePath(b.path));
+  });
 }
 
 /**
@@ -562,7 +613,11 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   });
 
   // Clear TypeScript problems for this file
-  problemsStore.clearProblemsForFile(normalizedPath, 'typescript');
+  clearSourceProblemsForFile({
+    source: 'typescript',
+    generation: tsSessionGeneration,
+    filePath: normalizedPath,
+  });
 }
 
 /**
@@ -571,8 +626,10 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
+  const runId = ++projectAnalysisRunId;
+
   const allFiles = getAllFiles();
-  const tsJsFiles = allFiles.filter(f => isTsJsFile(f.path));
+  const tsJsFiles = prioritizeProjectFiles(allFiles.filter(f => isTsJsFile(f.path)));
 
   if (tsJsFiles.length === 0) {
     console.log('[TS LSP] No JS/TS files found for background analysis.');
@@ -581,8 +638,13 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
   console.log(`[TS LSP] Starting project-wide analysis of ${tsJsFiles.length} files...`);
 
-  // Process singly with delay to avoid blocking LSP server
+  let processedSinceYield = 0;
+
   for (const file of tsJsFiles) {
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     // console.log(`[TS LSP] Background analyzing: ${file.path}`);
     const normalizedPath = normalizePath(file.path);
 
@@ -590,12 +652,22 @@ export async function startProjectWideAnalysis(): Promise<void> {
     if (openDocuments.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     if (content) {
       // This will automatically initialize server if needed
       await notifyDocumentOpened(normalizedPath, content);
+      processedSinceYield += 1;
 
-      // Intentional delay to let the server breathe and process other requests (Code Actions, etc.)
-      await new Promise(r => setTimeout(r, 50));
+      if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
+        processedSinceYield = 0;
+        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        if (runId !== projectAnalysisRunId) {
+          return;
+        }
+      }
     }
   }
 }
@@ -1034,6 +1106,8 @@ export async function stopTsLsp(): Promise<void> {
   initializationPromise = null;
   initializedRootPath = null;
   openDocuments.clear();
+  tsSessionGeneration = markSourceSessionStale('typescript');
+  tsRecovery.reset();
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -1052,6 +1126,13 @@ export async function restartTsLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
+}
+
+async function recoverTsLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || tsServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
 }
 
 /**

@@ -160,6 +160,25 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
+function getStreamedToolArguments(raw: string): {
+  arguments: Record<string, unknown>;
+  complete: boolean;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { arguments: {}, complete: false };
+  }
+
+  try {
+    return {
+      arguments: JSON.parse(trimmed) as Record<string, unknown>,
+      complete: true,
+    };
+  } catch {
+    return { arguments: {}, complete: false };
+  }
+}
+
 function toMistralTools(tools: ToolDefinition[]): MistralTool[] {
   return tools.map((tool) => ({
     type: 'function',
@@ -393,7 +412,17 @@ export const mistralProvider: AIProvider = {
         if (resolveNext) resolveNext(null);
       });
 
-    const pendingToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+    const pendingToolCalls = new Map<
+      number,
+      {
+        id: string;
+        name: string;
+        arguments: string;
+        emittedPartial: boolean;
+        emittedArgsKey: string | null;
+        emittedFinal: boolean;
+      }
+    >();
     const streamToolIdMap = new Map<string, string>();
     const streamUsedToolIds = new Set<string>();
 
@@ -441,7 +470,10 @@ export const mistralProvider: AIProvider = {
               pendingToolCalls.set(idx, {
                 id: normalizeMistralToolId(call.id || fallbackRaw, streamToolIdMap, streamUsedToolIds),
                 name: call.function?.name || '',
-                arguments: ''
+                arguments: '',
+                emittedPartial: false,
+                emittedArgsKey: null,
+                emittedFinal: false,
               });
             }
             const pending = pendingToolCalls.get(idx);
@@ -451,6 +483,30 @@ export const mistralProvider: AIProvider = {
             }
             if (call.function?.name) pending.name = call.function.name;
             if (call.function?.arguments) pending.arguments += call.function.arguments;
+
+            if (!pending.name) continue;
+
+            const parsed = getStreamedToolArguments(pending.arguments);
+            const argsKey = JSON.stringify(parsed.arguments);
+            const shouldEmit =
+              !pending.emittedPartial ||
+              argsKey !== pending.emittedArgsKey;
+
+            if (!shouldEmit) continue;
+
+            yield {
+              type: 'tool_call',
+              partial: true,
+              toolCall: {
+                id: pending.id,
+                name: pending.name,
+                arguments: parsed.arguments,
+              }
+            };
+
+            pending.emittedPartial = true;
+            pending.emittedArgsKey = argsKey;
+            pending.emittedFinal = false;
           }
         }
       } catch {
@@ -460,8 +516,10 @@ export const mistralProvider: AIProvider = {
 
     for (const [, pending] of pendingToolCalls) {
       if (!pending.name) continue;
+      const parsed = getStreamedToolArguments(pending.arguments);
       yield {
         type: 'tool_call',
+        partial: false,
         toolCall: {
           id: normalizeMistralToolId(
             pending.id || `end_${Date.now()}`,
@@ -469,7 +527,7 @@ export const mistralProvider: AIProvider = {
             streamUsedToolIds
           ),
           name: pending.name,
-          arguments: parseToolArguments(pending.arguments)
+          arguments: parsed.complete ? parsed.arguments : parseToolArguments(pending.arguments)
         }
       };
     }

@@ -14,8 +14,18 @@
  * - Must respect workspace svelte.config.js
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem } from '$shared/stores/problems.svelte';
+import {
+  getLspRegistry,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
+import { type Problem } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
@@ -32,6 +42,13 @@ let svelteServerTransport: LspTransport | null = null;
 let svelteServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
+let svelteSessionGeneration = 0;
+const svelteRecovery = createLspRecoveryController({
+  source: 'svelte',
+  restart: async () => {
+    await recoverSvelteLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -48,6 +65,26 @@ async function rehydrateOpenDocuments(): Promise<void> {
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_DEBOUNCE_MS = 150;
+const PROJECT_ANALYSIS_BATCH_SIZE = 10;
+const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
+let projectAnalysisRunId = 0;
+
+function normalizeSvelteFilePath(filepath: string): string {
+  return filepath.replace(/\\/g, '/');
+}
+
+function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
+  const active = new Set(
+    Array.from(openDocuments.keys()).map((path) => normalizeSvelteFilePath(path)),
+  );
+
+  return [...files].sort((a, b) => {
+    const aActive = active.has(normalizeSvelteFilePath(a.path)) ? 0 : 1;
+    const bActive = active.has(normalizeSvelteFilePath(b.path)) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return normalizeSvelteFilePath(a.path).localeCompare(normalizeSvelteFilePath(b.path));
+  });
+}
 
 /**
  * Check if a file is a Svelte file
@@ -121,7 +158,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  problemsStore.setProblemsForFile(filePath, problems, 'svelte');
+  setSourceProblemsForFile({
+    source: 'svelte',
+    generation: svelteSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -149,8 +191,17 @@ async function initializeServer(): Promise<void> {
       // Start the Svelte server
       svelteServerTransport = await registry.startServer('svelte', {
         serverId: 'svelte-main',
-        cwd: projectStore.rootPath ?? undefined
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 750,
+          maxDelayMs: 10_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
       });
+      svelteServerTransport.configureHealth({ autoRestart: true });
+      svelteSessionGeneration = startSourceSession('svelte');
 
       // Set up message handler
       svelteServerTransport.onMessage(handleLspMessage);
@@ -163,7 +214,8 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       svelteServerTransport.onExit(() => {
         console.log('[Svelte LSP] Server exited');
-        problemsStore.markSourceStale('svelte');
+        svelteSessionGeneration = markSourceSessionStale('svelte');
+        svelteRecovery.schedule('transport exit');
         svelteServerTransport = null;
         svelteServerInitialized = false;
         initializationPromise = null;
@@ -171,7 +223,8 @@ async function initializeServer(): Promise<void> {
         openDocuments.clear();
       });
       svelteServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('svelte');
+        svelteSessionGeneration = startSourceSession('svelte');
+        markSourceSessionReady('svelte', svelteSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -314,6 +367,8 @@ async function initializeServer(): Promise<void> {
 
       svelteServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
+      markSourceSessionReady('svelte', svelteSessionGeneration);
+      svelteRecovery.reset();
 
       // Register Monaco providers
       registerSvelteMonacoProviders();
@@ -446,7 +501,11 @@ export async function notifySvelteDocumentClosed(filepath: string): Promise<void
   });
 
   // Clear Svelte problems for this file
-  problemsStore.clearProblemsForFile(filepath, 'svelte');
+  clearSourceProblemsForFile({
+    source: 'svelte',
+    generation: svelteSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 /**
@@ -796,6 +855,8 @@ export async function stopSvelteLsp(): Promise<void> {
   initializationPromise = null;
   initializedRootPath = null;
   openDocuments.clear();
+  svelteSessionGeneration = markSourceSessionStale('svelte');
+  svelteRecovery.reset();
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -816,6 +877,13 @@ export async function restartSvelteLsp(): Promise<void> {
   }
 }
 
+async function recoverSvelteLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || svelteServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
+}
+
 /**
  * Ensure the Svelte LSP is started for the current workspace.
  * Useful for features like Symbol Search that should be able to bootstrap LSP.
@@ -831,26 +899,44 @@ export async function ensureSvelteLspStarted(): Promise<void> {
 export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
+  const runId = ++projectAnalysisRunId;
+
   const allFiles = getAllFiles();
-  const svelteFiles = allFiles.filter(f => isSvelteFile(f.path));
+  const svelteFiles = prioritizeProjectFiles(allFiles.filter(f => isSvelteFile(f.path)));
 
   if (svelteFiles.length === 0) return;
 
   console.log(`[Svelte LSP] Starting project-wide analysis of ${svelteFiles.length} files...`);
 
-  // Process in small batches to avoid blocking
+  let processedSinceYield = 0;
+
   for (const file of svelteFiles) {
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
+    const normalizedPath = normalizeSvelteFilePath(file.path);
+
     // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(file.path)) continue;
+    if (openDocuments.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
+    if (runId !== projectAnalysisRunId) {
+      return;
+    }
+
     if (content) {
       // This will automatically initialize server if needed
-      await notifySvelteDocumentOpened(file.path, content);
+      await notifySvelteDocumentOpened(normalizedPath, content);
 
-      // If we've opened many files, yield to event loop
-      if (svelteFiles.indexOf(file) % 5 === 0) {
-        await new Promise(r => setTimeout(r, 0));
+      processedSinceYield += 1;
+
+      if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
+        processedSinceYield = 0;
+        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        if (runId !== projectAnalysisRunId) {
+          return;
+        }
       }
     }
   }

@@ -36,6 +36,8 @@ describe('tool-guards', () => {
     const readError = buildReadBeforeEditError('src/app.ts', 'read');
     const outlineError = buildReadBeforeEditError('src/app.ts', 'outline');
     expect(readError).toContain('read_file');
+    expect(outlineError).toContain('list_dir');
+    expect(outlineError).toContain('file_outline');
     expect(outlineError).toContain('read_file');
     expect(readError).toContain('offset');
   });

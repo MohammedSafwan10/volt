@@ -191,7 +191,33 @@
         }
       ]
     },
-    "fs:allow-watch",
-    "fs:allow-unwatch"
+    {
+      "identifier": "fs:allow-watch",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$APPDATA/**" },
+        { "path": "$LOCALDATA/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$CACHE/**" },
+        { "path": "$RESOURCE/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-unwatch",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$APPDATA/**" },
+        { "path": "$LOCALDATA/**" },
+        { "path": "$TEMP/**" },
+        { "path": "$CACHE/**" },
+        { "path": "$RESOURCE/**" }
+      ]
+    }
   ]
 }

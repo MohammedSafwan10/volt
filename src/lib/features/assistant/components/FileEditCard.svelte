@@ -9,10 +9,12 @@
   import { uiStore } from "$shared/stores/ui.svelte";
   import { problemsStore } from "$shared/stores/problems.svelte";
   import type { ToolCall } from "$features/assistant/stores/assistant.svelte";
+  import { getFileEditDiffStats } from "./file-edit-stats";
 
   interface Props {
     toolCall: ToolCall;
     groupedToolCalls?: ToolCall[];
+    compact?: boolean;
     onFullDiff?: (tc: ToolCall, allToolCalls?: ToolCall[]) => void;
     onRevert?: (tc: ToolCall) => void;
     onUndoRevert?: (tc: ToolCall) => void;
@@ -23,6 +25,7 @@
   let {
     toolCall,
     groupedToolCalls = [],
+    compact = false,
     onFullDiff,
     onRevert,
     onUndoRevert,
@@ -62,16 +65,9 @@
   });
 
   const fileExt = $derived(filename.split(".").pop()?.toLowerCase() || "");
-
-  const editMode = $derived.by(() => {
-    const name = toolCall.name === "apply_edit" ? "str_replace" : toolCall.name;
-    if (name === "write_file" || name === "create_file") return "Write";
-    if (name === "append_file") return "Append";
-    if (name === "apply_patch") return "Patch";
-    if (name === "replace_lines") return "Lines";
-    if (name === "str_replace") return "Replace";
-    return "Edit";
-  });
+  const isDeleteTool = $derived.by(
+    () => toolCall.name === "delete_file" || toolCall.name === "delete_path",
+  );
 
   function getFileIcon(ext: string): any {
     switch (ext) {
@@ -111,68 +107,38 @@
   }
 
   const fileIcon = $derived(getFileIcon(fileExt));
-
-  // Diff stats from meta or calculated from arguments
-  const diffStats = $derived.by(() => {
-    let added = 0;
-    let removed = 0;
-    let hasStats = false;
-
-    for (const tc of allToolCalls) {
-      const meta = tc.meta as Record<string, any> | undefined;
-      const stats = meta?.fileEdit as Record<string, any> | undefined;
-
-      if (
-        stats &&
-        (typeof stats.added === "number" || typeof stats.removed === "number")
-      ) {
-        // Use server-provided stats if available
-        if (typeof stats.added === "number") added += stats.added;
-        if (typeof stats.removed === "number") removed += stats.removed;
-        hasStats = true;
-      } else {
-        // Fallback: Calculate from arguments
-        const args = tc.arguments as Record<string, any>;
-        const name = tc.name;
-
-        if (name === "replace_file_content") {
-          if (args.ReplacementContent) {
-            added += (args.ReplacementContent.match(/\n/g) || []).length + 1;
-            hasStats = true;
-          }
-          if (args.TargetContent) {
-            removed += (args.TargetContent.match(/\n/g) || []).length + 1;
-            hasStats = true;
-          }
-        } else if (
-          name === "multi_replace_file_content" &&
-          Array.isArray(args.ReplacementChunks)
-        ) {
-          for (const chunk of args.ReplacementChunks) {
-            if (chunk.ReplacementContent) {
-              added += (chunk.ReplacementContent.match(/\n/g) || []).length + 1;
-              hasStats = true;
-            }
-            if (chunk.TargetContent) {
-              removed += (chunk.TargetContent.match(/\n/g) || []).length + 1;
-              hasStats = true;
-            }
-          }
-        } else if (name === "write_to_file") {
-          if (args.CodeContent) {
-            added += (args.CodeContent.match(/\n/g) || []).length + 1;
-            hasStats = true;
-          }
-        }
-      }
-    }
-
-    if (!hasStats) return null;
-    return { added, removed };
+  const statusIcon = $derived.by(() => {
+    if (isAllFailed) return "error";
+    if (isDeleteTool) return "trash";
+    return "pencil";
   });
+  function isNoopEdit(tc: ToolCall): boolean {
+    const output = typeof tc.output === "string" ? tc.output.trim() : "";
+    if (output.startsWith("No changes:")) return true;
+
+    const meta = tc.meta as Record<string, unknown> | undefined;
+    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+    const beforeContent = fileEdit?.beforeContent;
+    const afterContent = fileEdit?.afterContent;
+    return (
+      typeof beforeContent === "string" &&
+      typeof afterContent === "string" &&
+      beforeContent === afterContent
+    );
+  }
+
+  const isNoopCard = $derived.by(
+    () =>
+      allToolCalls.length > 0 &&
+      allToolCalls.every(
+        (tc) => tc.status === "completed" && !tc.meta?.fileDeleted && isNoopEdit(tc),
+      ),
+  );
+  const diffStats = $derived(getFileEditDiffStats(allToolCalls));
 
   function canRevertEdit(tc: ToolCall): boolean {
     if (tc.status !== "completed" || revertedIds.has(tc.id)) return false;
+    if (isNoopEdit(tc)) return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     return typeof fileEdit?.beforeContent === "string";
@@ -180,6 +146,7 @@
 
   function canViewDiffEdit(tc: ToolCall): boolean {
     if (tc.status !== "completed") return false;
+    if (isNoopEdit(tc)) return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
     // We can view diff if we have beforeContent OR if it's a new file (beforeContent might be empty)
@@ -198,6 +165,16 @@
     runningCount > 0 && successCount === 0 && failedCount === 0,
   );
   const isAllFailed = $derived(failedCount > 0 && successCount === 0);
+  const currentLiveStatus = $derived.by(() => {
+    const active = allToolCalls.find(
+      (tc) =>
+        tc.status === "running" &&
+        typeof (tc.meta as any)?.liveStatus === "string" &&
+        String((tc.meta as any).liveStatus).trim().length > 0,
+    );
+    if (!active) return "";
+    return String((active.meta as any).liveStatus).trim();
+  });
 
   async function handleFileClick(path: string | undefined) {
     if (!path) return;
@@ -213,11 +190,14 @@
 
   function getStatusText(): string {
     if (isReverted) return "Reverted";
+    if (isNoopCard) return "Unchanged";
     if (queuedCount > 0 && writingCount === 0 && runningCount === 0)
       return "Queued";
-    if (writingCount > 0) return "Writing";
-    if (isAllRunning) return "Editing";
+    if (currentLiveStatus) return currentLiveStatus;
+    if (writingCount > 0 || isAllRunning) return isDeleteTool ? "Deleting..." : "Editing...";
     if (isAllFailed) return "Failed";
+
+    if (isDeleteTool) return "Deleted";
 
     const meta = toolCall.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
@@ -231,11 +211,6 @@
   );
 
   // Real-time progress tracking
-  const activeStreamingTC = $derived(
-    allToolCalls.find((tc) => tc.status === "running" && tc.streamingProgress),
-  );
-  const progress = $derived(activeStreamingTC?.streamingProgress);
-
   const diagnosticsSummary = $derived.by(() => {
     let errorCount = 0;
     let warningCount = 0;
@@ -362,6 +337,7 @@
 
 <div
   class="edit-card"
+  class:compact
   class:success={hasAnyComplete && !isAllFailed && !isReverted}
   class:failed={isAllFailed}
   class:running={isAllRunning}
@@ -376,8 +352,10 @@
     <!-- Combined Status & File Info Block -->
     <div class="main-info">
       <div class="status-indicator">
-        <UIIcon name={isAllFailed ? "error" : "pencil"} size={13} />
-        <span class="status-label">{statusText}</span>
+        <UIIcon name={statusIcon} size={13} />
+        {#if statusText}
+          <span class="status-label">{statusText}</span>
+        {/if}
       </div>
 
       <div
@@ -398,23 +376,12 @@
         title={toolCall.arguments.path as string}
       >
         {#if isAllRunning}
-          <UIIcon name="spinner" size={13} class="spinner-icon" />
+          <UIIcon name="pencil" size={13} class="shimmer-icon" />
         {:else}
           <UIIcon name={fileIcon} size={13} />
         {/if}
         <span class="filename">{filename}</span>
-
-        {#if progress}
-          <div class="pill-progress-bar">
-            <div
-              class="pill-progress-fill"
-              style="width: {progress.percent}%"
-            ></div>
-          </div>
-        {/if}
       </div>
-
-      <span class="edit-mode-badge">{editMode}</span>
 
       <!-- Stats - Always show if available -->
       {#if diffStats}
@@ -496,10 +463,20 @@
           <span class="sub-status"
             >{tcReverted
               ? "Reverted"
+              : isNoopEdit(tc)
+                ? "Unchanged"
+              : tc.name === "delete_file" || tc.name === "delete_path"
+                ? tc.status === "failed"
+                  ? "Failed"
+                  : (tc.meta as any)?.editPhase === "queued"
+                    ? "Queued"
+                    : (tc.meta as any)?.editPhase === "writing"
+                      ? "Deleting"
+                      : "Deleted"
               : (tc.meta as any)?.editPhase === "queued"
                 ? "Queued"
                 : (tc.meta as any)?.editPhase === "writing"
-                  ? "Writing"
+                  ? "Editing"
                   : tc.status === "failed"
                     ? "Failed"
                     : "Edited"}</span
@@ -611,6 +588,10 @@
     background: transparent;
   }
 
+  .edit-card.compact {
+    margin: 2px 0;
+  }
+
   .card-row {
     display: flex;
     align-items: center;
@@ -621,12 +602,22 @@
     font-size: 13px;
   }
 
+  .edit-card.compact .card-row {
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+
   .main-info {
     display: flex;
     align-items: center;
     gap: 10px;
     flex: 1;
     min-width: 0;
+  }
+
+  .edit-card.compact .main-info {
+    gap: 8px;
   }
 
   .status-indicator {
@@ -659,14 +650,26 @@
     border-color: var(--color-accent);
   }
 
-  .file-pill.is-loading {
-    border-color: var(--color-accent);
-    background: rgba(var(--color-accent-rgb), 0.05);
+  .edit-card.compact :global(.file-pill) {
+    padding: 1px 6px;
   }
 
-  :global(.spinner-icon) {
-    animation: spin 1s linear infinite;
+  .file-pill.is-loading {
+    border-color: var(--color-accent);
+    background:
+      linear-gradient(
+        90deg,
+        rgba(var(--color-accent-rgb), 0.05) 0%,
+        rgba(var(--color-accent-rgb), 0.14) 50%,
+        rgba(var(--color-accent-rgb), 0.05) 100%
+      );
+    background-size: 220% 100%;
+    animation: file-pill-shimmer 1.35s linear infinite;
+  }
+
+  .shimmer-icon {
     color: var(--color-accent);
+    animation: file-pill-shimmer 1.35s linear infinite;
   }
 
   @keyframes spin {
@@ -678,19 +681,13 @@
     }
   }
 
-  .pill-progress-bar {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 1.5px;
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .pill-progress-fill {
-    height: 100%;
-    background: var(--color-accent);
-    transition: width 0.1s ease-out;
+  @keyframes file-pill-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
   }
 
   .filename {
@@ -701,6 +698,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+
+  .edit-card.compact .filename {
+    font-size: 12px;
   }
 
   .diff-stats {
@@ -749,6 +750,10 @@
     flex-shrink: 0;
   }
 
+  .edit-card.compact .actions {
+    gap: 6px;
+  }
+
   .action-btn-text {
     background: transparent;
     border: 1px solid var(--color-border);
@@ -759,6 +764,11 @@
     transition: all 0.15s ease;
     white-space: nowrap;
     font-weight: 500;
+  }
+
+  .edit-card.compact .action-btn-text {
+    padding: 2px 6px;
+    font-size: 10px;
   }
 
   .action-btn-text:hover {

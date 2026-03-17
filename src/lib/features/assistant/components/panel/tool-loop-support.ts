@@ -3,6 +3,7 @@ import type { ToolResult } from '$core/ai/tools';
 type ToolCallState = {
   id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  reviewStatus?: 'pending' | 'accepted' | 'rejected';
 };
 
 type MessageState = {
@@ -118,7 +119,12 @@ export function waitForToolApprovals(
 
       const allResolved = toolIds.every((toolId) => {
         const tool = message.inlineToolCalls?.find((entry) => entry.id === toolId);
-        return tool && tool.status !== 'pending';
+        return (
+          !!tool &&
+          (tool.status !== 'pending' ||
+            tool.reviewStatus === 'accepted' ||
+            tool.reviewStatus === 'rejected')
+        );
       });
 
       if (allResolved) {

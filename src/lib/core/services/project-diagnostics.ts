@@ -29,6 +29,13 @@ interface CommandResult {
     stderr: string;
 }
 
+interface DiagnosticsRunToken {
+    id: number;
+    rootPath: string;
+}
+
+type SidecarKey = 'css' | 'html' | 'typescript' | 'svelte' | 'eslint' | 'dart';
+
 async function getSystemInfo(): Promise<SystemCapabilities> {
     return invoke('get_system_info');
 }
@@ -38,13 +45,17 @@ async function getSystemInfo(): Promise<SystemCapabilities> {
  * This runs independent of the LSP to catch build/compilation errors across the entire project.
  */
 export class ProjectDiagnostics {
+    private static readonly SIDECAR_RETRY_COOLDOWN_MS = 60_000;
     private isWindows = false;
     private isRunning = false;
     private lastRun = 0;
     private pendingRoot: string | null = null;
     private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly MIN_INTERVAL_MS = 15000;
+    private readonly MIN_INTERVAL_MS = 2500;
     private eslintBuildFiles = new Set<string>();
+    private requestedRunId = 0;
+    private activeRunToken: DiagnosticsRunToken | null = null;
+    private sidecarRetryAfter = new Map<SidecarKey, number>();
 
     constructor() {
         this.checkPlatform();
@@ -55,10 +66,24 @@ export class ProjectDiagnostics {
         this.isRunning = false;
         this.lastRun = 0;
         this.eslintBuildFiles.clear();
+        this.requestedRunId = 0;
+        this.activeRunToken = null;
+        this.sidecarRetryAfter.clear();
         if (this.scheduledTimer) {
             clearTimeout(this.scheduledTimer);
             this.scheduledTimer = null;
         }
+    }
+
+    private beginRun(rootPath: string): DiagnosticsRunToken {
+        this.requestedRunId += 1;
+        const token = { id: this.requestedRunId, rootPath };
+        this.activeRunToken = token;
+        return token;
+    }
+
+    private isRunCurrent(token: DiagnosticsRunToken): boolean {
+        return this.activeRunToken?.id === token.id && this.requestedRunId === token.id;
     }
 
     private async checkPlatform() {
@@ -99,12 +124,14 @@ export class ProjectDiagnostics {
             return;
         }
 
+        this.isRunning = true;
+
         // Ensure platform detection is finished
         await this.checkPlatform();
 
-        console.log('[ProjectDiagnostics] Starting project-wide analysis...');
+        const runToken = this.beginRun(rootPath);
 
-        this.isRunning = true;
+        console.log('[ProjectDiagnostics] Starting project-wide analysis...');
 
         // Run detections in parallel
         // NOTE: We skip runTscDiagnostics here because tsc-watcher.ts handles
@@ -112,12 +139,15 @@ export class ProjectDiagnostics {
         try {
             await Promise.allSettled([
                 // this.runTscDiagnostics(rootPath), // Handled by tsc-watcher.ts
-                this.runEslintDiagnostics(rootPath),
-                this.runLspDiagnostics(rootPath)
+                this.runEslintDiagnostics(rootPath, runToken),
+                this.runLspDiagnostics(rootPath, runToken)
             ]);
         } finally {
             this.lastRun = Date.now();
             this.isRunning = false;
+            if (this.activeRunToken?.id === runToken.id) {
+                this.activeRunToken = null;
+            }
             console.log('[ProjectDiagnostics] Analysis complete.');
 
             // If another request came in while running, schedule next run
@@ -133,13 +163,16 @@ export class ProjectDiagnostics {
      * Trigger background analysis in LSP sidecars for non-build project types
      * (HTML, CSS, standalone JS) - and now Dart/Flutter (LSP only)
      */
-    private async runLspDiagnostics(rootPath: string): Promise<void> {
+    private async runLspDiagnostics(rootPath: string, token: DiagnosticsRunToken): Promise<void> {
         try {
+            if (!this.isRunCurrent(token)) return;
+
             // Ensure index is ready for THIS root path
             const currentIndexedRoot = getIndexedRoot();
             if (rootPath && (currentIndexedRoot !== rootPath || !isIndexReady() || isIndexing())) {
                 console.log('[ProjectDiagnostics] Waiting for file index to be ready for', rootPath);
                 await indexProject(rootPath);
+                if (!this.isRunCurrent(token)) return;
             }
 
             let allFiles = getAllFiles();
@@ -150,6 +183,7 @@ export class ProjectDiagnostics {
                 console.log('[ProjectDiagnostics] Index returned 0 files - forcing re-index without cache...');
                 await clearIndex(true); // Clear backend cache
                 await indexProject(rootPath, false); // Re-index without using cache
+                if (!this.isRunCurrent(token)) return;
                 allFiles = getAllFiles();
                 console.log(`[ProjectDiagnostics] Re-index complete. Found ${allFiles.length} files`);
             }
@@ -157,28 +191,25 @@ export class ProjectDiagnostics {
             console.log('[ProjectDiagnostics] Starting background LSP analysis discovery...');
 
             const analysisPromises: Promise<any>[] = [
-                startCssAnalysis(),
-                startHtmlAnalysis(),
-                startTsAnalysis(),
-                startSvelteAnalysis(),
-                startEslintAnalysis().catch((err) => {
-                    const type = (err as { type?: string })?.type;
-                    if (type === 'ServerAlreadyRunning') {
-                        // Benign reload/HMR race: server is already alive.
-                        console.log('[ProjectDiagnostics] ESLint sidecar already running, continuing');
-                        return;
-                    }
-                    throw err;
-                })
+                this.startSidecarAnalysis('css', () => startCssAnalysis(), token),
+                this.startSidecarAnalysis('html', () => startHtmlAnalysis(), token),
+                this.startSidecarAnalysis('typescript', () => startTsAnalysis(), token),
+                this.startSidecarAnalysis('svelte', () => startSvelteAnalysis(), token),
+                this.startSidecarAnalysis('eslint', () => startEslintAnalysis(), token),
             ];
 
             // Specific check for Dart projects to start LSP and run analysis
             if (await this.fileExists(rootPath, 'pubspec.yaml')) {
                 console.log('[ProjectDiagnostics] Detected Dart/Flutter project. Starting Dart LSP...');
                 analysisPromises.push(
-                    startDartLsp(rootPath).then(() => startDartAnalysis())
+                    this.startSidecarAnalysis('dart', async () => {
+                        await startDartLsp(rootPath);
+                        await startDartAnalysis();
+                    }, token)
                 );
             }
+
+            if (!this.isRunCurrent(token)) return;
 
             // Start discovery loops
             await Promise.all(analysisPromises);
@@ -186,6 +217,61 @@ export class ProjectDiagnostics {
             console.log('[ProjectDiagnostics] Background LSP analysis discovery complete.');
         } catch (e) {
             console.warn('[ProjectDiagnostics] Failed to trigger LSP analysis:', e);
+        }
+    }
+
+    private isSidecarCoolingDown(sidecar: SidecarKey): boolean {
+        return (this.sidecarRetryAfter.get(sidecar) ?? 0) > Date.now();
+    }
+
+    private noteSidecarFailure(sidecar: SidecarKey, error: unknown): boolean {
+        const typedError = error as { type?: string; message?: string } | undefined;
+        const type = typedError?.type ?? '';
+        const message = typedError?.message ?? String(error ?? '');
+
+        if (type === 'ServerAlreadyRunning') {
+            console.log(`[ProjectDiagnostics] ${sidecar} sidecar already running, continuing`);
+            return true;
+        }
+
+        const shouldCooldown =
+            type === 'ServerNotFound' ||
+            type === 'SpawnFailed' ||
+            type === 'SendFailed' ||
+            type === 'ProcessError' ||
+            /transport not connected/i.test(message) ||
+            /server exited/i.test(message) ||
+            /spawn failed/i.test(message);
+
+        if (!shouldCooldown) {
+            return false;
+        }
+
+        const retryAt = Date.now() + ProjectDiagnostics.SIDECAR_RETRY_COOLDOWN_MS;
+        this.sidecarRetryAfter.set(sidecar, retryAt);
+        console.warn(
+            `[ProjectDiagnostics] ${sidecar} sidecar unavailable; delaying retries for ${ProjectDiagnostics.SIDECAR_RETRY_COOLDOWN_MS / 1000}s`,
+            error,
+        );
+        return true;
+    }
+
+    private async startSidecarAnalysis(
+        sidecar: SidecarKey,
+        start: () => Promise<void>,
+        token: DiagnosticsRunToken,
+    ): Promise<void> {
+        if (!this.isRunCurrent(token) || this.isSidecarCoolingDown(sidecar)) {
+            return;
+        }
+
+        try {
+            await start();
+        } catch (error) {
+            if (this.noteSidecarFailure(sidecar, error)) {
+                return;
+            }
+            throw error;
         }
     }
 
@@ -286,8 +372,10 @@ export class ProjectDiagnostics {
     /**
      * Run ESLint for project-wide linting
      */
-    private async runEslintDiagnostics(rootPath: string): Promise<void> {
+    private async runEslintDiagnostics(rootPath: string, token: DiagnosticsRunToken): Promise<void> {
         try {
+            if (!this.isRunCurrent(token)) return;
+
             // Check for eslint config
             const hasConfig = await Promise.race([
                 this.fileExists(rootPath, '.eslintrc.json'),
@@ -295,6 +383,7 @@ export class ProjectDiagnostics {
                 this.fileExists(rootPath, 'eslint.config.js')
             ]);
 
+            if (!this.isRunCurrent(token)) return;
             if (!hasConfig) return;
 
             console.log('[ProjectDiagnostics] Running eslint...');
@@ -308,6 +397,8 @@ export class ProjectDiagnostics {
                 args,
                 cwd: rootPath
             });
+
+            if (!this.isRunCurrent(token)) return;
 
             // ESLint returns exit code 1 if errors found, which is fine.
             this.parseEslintOutput(result.stdout, rootPath);

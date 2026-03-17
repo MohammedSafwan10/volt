@@ -95,7 +95,7 @@ export async function sendChat(
 /**
  * Stream a chat request using the current provider
  * Automatically retrieves the API key from secure storage
- * Includes retry logic for transient network failures (like Kiro)
+ * Includes retry logic for transient network failures
  */
 export async function* streamChat(
   request: Omit<ChatRequest, 'model'>,
@@ -111,7 +111,7 @@ export async function* streamChat(
     return;
   }
 
-  // Retry configuration (like Kiro)
+  // Retry configuration
   const MAX_RETRIES = 3;
   const INITIAL_DELAY_MS = 1000;
   const STREAM_IDLE_TIMEOUT_MS = getStreamIdleTimeoutMs(aiSettingsStore.selectedProvider, model);

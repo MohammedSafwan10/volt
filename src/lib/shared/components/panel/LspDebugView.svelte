@@ -59,6 +59,10 @@
       <span class="summary-label">Stale Sources</span>
       <span class="summary-value">{diagnosticsFreshness.staleSources.length}</span>
     </div>
+    <div class="summary-card">
+      <span class="summary-label">Warming Sources</span>
+      <span class="summary-value">{diagnosticsFreshness.sourceStatuses.filter((source) => source.status === 'warming').length}</span>
+    </div>
   </div>
 
   <div class="debug-section">
@@ -109,10 +113,13 @@
     <div class="freshness-meta">
       <span>Status: {diagnosticsFreshness.status}</span>
       <span>Updating: {diagnosticsFreshness.isUpdating ? 'yes' : 'no'}</span>
+      <span>Warming: {diagnosticsFreshness.hasWarmingSources ? 'yes' : 'no'}</span>
       <span>Sources: {diagnosticsFreshness.activeSources.length}</span>
     </div>
     {#if diagnosticsFreshness.staleSources.length > 0}
       <div class="stale-sources">Stale: {diagnosticsFreshness.staleSources.join(', ')}</div>
+    {:else if diagnosticsFreshness.hasWarmingSources}
+      <div class="stale-sources">Warming: {diagnosticsFreshness.sourceStatuses.filter((source) => source.status === 'warming').map((source) => source.source).join(', ')}</div>
     {/if}
   </div>
 </div>

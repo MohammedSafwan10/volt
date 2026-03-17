@@ -8,7 +8,7 @@
  * Active runtime context assembly now lives in context-v2.ts.
  * 
  * A production-grade context gathering system inspired by:
- * - Kiro: Sub-agents, semantic search, intelligent file discovery
+ * - Advanced: Sub-agents, semantic search, intelligent file discovery
  * - Cursor: Rules system, symbol extraction, smart truncation
  * - Claude Code: Hierarchical memory, project understanding
  * - GitHub Copilot: Relevance scoring, context prioritization

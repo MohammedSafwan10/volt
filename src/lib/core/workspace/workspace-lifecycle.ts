@@ -6,6 +6,7 @@ export interface WorkspaceTeardownContext {
   previousRootPath: string | null;
   removePersistence: boolean;
   clearFileTree: boolean;
+  preserveVisualState?: boolean;
 }
 
 export interface WorkspaceServiceHooks {

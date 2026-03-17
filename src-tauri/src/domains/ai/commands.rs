@@ -2,9 +2,62 @@ use bytes::Bytes;
 use futures::StreamExt;
 use keyring::Entry;
 use serde_json::Value;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tauri::ipc::Channel;
 
 const KEYRING_SERVICE: &str = "volt";
+
+/// Shared HTTP client with timeout and connection pooling.
+/// Using OnceLock ensures a single instance is created on first use.
+/// This avoids creating a new client per request (wastes connections)
+/// and ensures all requests have a timeout (prevents infinite hangs).
+fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(15))
+            .pool_max_idle_per_host(5)
+            .build()
+            .expect("Failed to create HTTP client")
+    })
+}
+
+/// Validate model name to prevent URL path injection.
+/// Only allows alphanumeric chars, dots, hyphens, underscores, and colons.
+fn validate_model_name(model: &str) -> Result<(), String> {
+    if model.is_empty() {
+        return Err("Model name cannot be empty".to_string());
+    }
+    if model.len() > 128 {
+        return Err("Model name too long".to_string());
+    }
+    if !model.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':' || c == '/') {
+        return Err(format!("Invalid model name: {}", model));
+    }
+    // Reject path traversal attempts
+    if model.contains("..") {
+        return Err("Invalid model name: contains '..'".to_string());
+    }
+    Ok(())
+}
+
+/// Resolve an API key: prefer the IPC-passed key, fall back to keyring.
+/// This allows the frontend to gradually stop sending keys over IPC.
+fn resolve_api_key(ipc_key: &str, provider: &str) -> Result<String, String> {
+    let trimmed = ipc_key.trim();
+    if !trimmed.is_empty() {
+        return Ok(trimmed.to_string());
+    }
+    let entry = keyring_entry(provider)?;
+    match entry.get_password() {
+        Ok(key) if !key.trim().is_empty() => Ok(key),
+        Ok(_) => Err(format!("No API key configured for {provider}")),
+        Err(keyring::Error::NoEntry) => Err(format!("No API key configured for {provider}")),
+        Err(e) => Err(format!("Failed to read API key for {provider}: {e}")),
+    }
+}
 
 fn provider_keyring_username(provider: &str) -> Result<String, String> {
     match provider {
@@ -38,8 +91,6 @@ pub fn ai_get_api_key(provider: String) -> Result<Option<String>, String> {
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(err) => {
-            // Avoid exposing platform-specific error strings to the UI.
-            // If the entry doesn't exist, treat it as "no key configured".
             if matches!(err, keyring::Error::NoEntry) {
                 Ok(None)
             } else {
@@ -87,11 +138,11 @@ pub async fn anthropic_proxy(
     api_key: String,
     anthropic_version: String,
 ) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "anthropic")?;
     let response = client
         .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
+        .header("x-api-key", &api_key)
         .header("anthropic-version", anthropic_version)
         .header("content-type", "application/json")
         .json(&body)
@@ -123,11 +174,11 @@ pub async fn anthropic_proxy_stream(
     anthropic_version: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "anthropic")?;
     let response = client
         .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
+        .header("x-api-key", &api_key)
         .header("anthropic-version", anthropic_version)
         .header("content-type", "application/json")
         .json(&body)
@@ -160,8 +211,8 @@ pub async fn anthropic_proxy_stream(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn openai_proxy(body: Value, api_key: String) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "openai")?;
 
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
@@ -192,8 +243,8 @@ pub async fn openai_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "openai")?;
 
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
@@ -243,8 +294,8 @@ pub async fn openai_proxy_stream(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn openrouter_proxy(body: Value, api_key: String) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "openrouter")?;
 
     let response = client
         .post("https://openrouter.ai/api/v1/chat/completions")
@@ -277,8 +328,8 @@ pub async fn openrouter_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "openrouter")?;
 
     let response = client
         .post("https://openrouter.ai/api/v1/chat/completions")
@@ -333,8 +384,9 @@ pub async fn openrouter_proxy_stream(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn gemini_proxy(body: Value, api_key: String, model: String) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    validate_model_name(&model)?;
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "gemini")?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
         model
@@ -342,7 +394,7 @@ pub async fn gemini_proxy(body: Value, api_key: String, model: String) -> Result
 
     let response = client
         .post(&url)
-        .header("x-goog-api-key", api_key)
+        .header("x-goog-api-key", &api_key)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -370,8 +422,9 @@ pub async fn gemini_proxy_stream(
     model: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    validate_model_name(&model)?;
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "gemini")?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
         model
@@ -379,7 +432,7 @@ pub async fn gemini_proxy_stream(
 
     let response = client
         .post(&url)
-        .header("x-goog-api-key", api_key)
+        .header("x-goog-api-key", &api_key)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -425,8 +478,8 @@ pub async fn gemini_proxy_stream(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn mistral_proxy(body: Value, api_key: String) -> Result<Value, String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "mistral")?;
 
     let response = client
         .post("https://api.mistral.ai/v1/chat/completions")
@@ -457,8 +510,8 @@ pub async fn mistral_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let api_key = api_key.trim();
+    let client = shared_http_client();
+    let api_key = resolve_api_key(&api_key, "mistral")?;
 
     let response = client
         .post("https://api.mistral.ai/v1/chat/completions")

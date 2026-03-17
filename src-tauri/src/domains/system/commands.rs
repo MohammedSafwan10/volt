@@ -153,34 +153,38 @@ pub async fn run_command(
     args: Vec<String>,
     cwd: Option<String>,
 ) -> Result<CommandResult, String> {
-    use std::process::Command;
-
     validate_command_invocation(&command, &cwd)?;
 
-    // On Windows, hide the console window
-    let mut cmd = if cfg!(windows) {
-        use std::os::windows::process::CommandExt;
-        let mut c = Command::new(command);
-        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        c
-    } else {
-        Command::new(command)
-    };
+    tokio::task::spawn_blocking(move || {
+        use std::process::Command;
 
-    if let Some(path) = cwd {
-        cmd.current_dir(path);
-    }
+        // On Windows, hide the console window
+        let mut cmd = if cfg!(windows) {
+            use std::os::windows::process::CommandExt;
+            let mut c = Command::new(&command);
+            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            c
+        } else {
+            Command::new(&command)
+        };
 
-    let output = cmd
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+        if let Some(path) = cwd {
+            cmd.current_dir(path);
+        }
 
-    Ok(CommandResult {
-        exit_code: output.status.code().unwrap_or(0),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        let output = cmd
+            .args(args)
+            .output()
+            .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+        Ok(CommandResult {
+            exit_code: output.status.code().unwrap_or(0),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
     })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Get an environment variable
@@ -223,6 +227,17 @@ pub fn open_path_scoped(
             .map_err(|e| format!("Failed to resolve base directory: {}", e))?;
         if !canonical_target.starts_with(&canonical_base) {
             return Err("Path is outside the allowed project directory".to_string());
+        }
+    } else {
+        // Without a base_dir, restrict to user's home directory for safety
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "Cannot determine home directory for path validation".to_string())?;
+        let canonical_home = Path::new(&home)
+            .canonicalize()
+            .map_err(|e| format!("Cannot resolve home directory: {}", e))?;
+        if !canonical_target.starts_with(&canonical_home) {
+            return Err("Without a project context, paths must be within your home directory".to_string());
         }
     }
 
@@ -329,28 +344,37 @@ pub async fn start_watch_command(
     thread::spawn(move || {
         loop {
             thread::sleep(std::time::Duration::from_millis(500));
-            let mut processes = match WATCH_PROCESSES.lock() {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            if let Some(child) = processes.get_mut(&watch_id_exit) {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        let _ = app.emit(
-                            &format!("watch://{}//exit", watch_id_exit),
-                            status.code().unwrap_or(-1),
-                        );
-                        processes.remove(&watch_id_exit);
-                        return;
-                    }
-                    Ok(None) => {} // Still running
-                    Err(_) => {
-                        processes.remove(&watch_id_exit);
-                        return;
-                    }
+            // Minimize lock duration: only hold while calling try_wait
+            let wait_result = {
+                let mut processes = match WATCH_PROCESSES.lock() {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                match processes.get_mut(&watch_id_exit) {
+                    Some(child) => Some(child.try_wait()),
+                    None => None,
                 }
-            } else {
-                return; // Process removed (stopped externally)
+            }; // Lock released here
+
+            match wait_result {
+                Some(Ok(Some(status))) => {
+                    let _ = app.emit(
+                        &format!("watch://{}//exit", watch_id_exit),
+                        status.code().unwrap_or(-1),
+                    );
+                    if let Ok(mut p) = WATCH_PROCESSES.lock() {
+                        p.remove(&watch_id_exit);
+                    }
+                    return;
+                }
+                Some(Ok(None)) => {} // Still running
+                Some(Err(_)) => {
+                    if let Ok(mut p) = WATCH_PROCESSES.lock() {
+                        p.remove(&watch_id_exit);
+                    }
+                    return;
+                }
+                None => return, // Process removed externally
             }
         }
     });

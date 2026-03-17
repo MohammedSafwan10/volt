@@ -346,6 +346,7 @@ export const anthropicProvider: AIProvider = {
                 break;
             }
 
+            // Check error BEFORE null-break so errors from invoke are never swallowed
             if (error) {
                 yield { type: 'error', error: mapAnthropicError({ type: 'error', message: String(error) }) };
                 return;
@@ -373,6 +374,15 @@ export const anthropicProvider: AIProvider = {
                                 name: event.content_block.name,
                                 input: ''
                             };
+                            yield {
+                                type: 'tool_call',
+                                partial: true,
+                                toolCall: {
+                                    id: activeToolUse.id,
+                                    name: activeToolUse.name,
+                                    arguments: {}
+                                }
+                            };
                         }
                     } else if (event.type === 'content_block_delta') {
                         if (event.delta.type === 'text_delta') {
@@ -388,6 +398,7 @@ export const anthropicProvider: AIProvider = {
                                 const args = JSON.parse(activeToolUse.input || '{}');
                                 yield {
                                     type: 'tool_call',
+                                    partial: false,
                                     toolCall: {
                                         id: activeToolUse.id,
                                         name: activeToolUse.name,
@@ -410,6 +421,39 @@ export const anthropicProvider: AIProvider = {
                 }
             }
         }
+
+        // Flush remaining buffer — if the last SSE chunk didn't end with \n,
+        // there may be a partial data line left in `buffer` that was never processed.
+        if (buffer.trim()) {
+            const remaining = buffer.trim();
+            if (remaining.startsWith('data:')) {
+                const jsonStr = remaining.slice(5).trim();
+                if (jsonStr && jsonStr !== '[DONE]') {
+                    try {
+                        const event = JSON.parse(jsonStr);
+                        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+                            yield { type: 'content', content: event.delta.text };
+                        } else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+                            yield { type: 'thinking', thinking: event.delta.thinking };
+                        } else if (event.type === 'content_block_stop' && activeToolUse) {
+                            try {
+                                const args = JSON.parse(activeToolUse.input || '{}');
+                                yield {
+                                    type: 'tool_call',
+                                    partial: false,
+                                    toolCall: { id: activeToolUse.id, name: activeToolUse.name, arguments: args }
+                                };
+                            } catch { /* malformed tool JSON */ }
+                            activeToolUse = null;
+                        } else if (event.type === 'error') {
+                            yield { type: 'error', error: mapAnthropicError(event.error) };
+                            return;
+                        }
+                    } catch { /* partial/invalid JSON in buffer tail */ }
+                }
+            }
+        }
+
         yield { type: 'done' };
         await invokePromise;
     },

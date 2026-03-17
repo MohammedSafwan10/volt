@@ -280,6 +280,28 @@ async function streamContentAsync(
 
   // Track scroll listener for cleanup
   let scrollListenerDispose: (() => void) | null = null;
+  let liveDecorationIds: string[] = [];
+  const clearLiveDecorations = (): void => {
+    if (liveDecorationIds.length === 0) return;
+    liveDecorationIds = model.deltaDecorations(liveDecorationIds, []);
+  };
+  const updateLiveDecorations = (
+    startLine: number,
+    startColumn: number,
+    endLine: number,
+    endColumn: number,
+  ): void => {
+    liveDecorationIds = model.deltaDecorations(liveDecorationIds, [
+      {
+        range: new monaco.Range(startLine, startColumn, endLine, endColumn),
+        options: {
+          className: 'ai-edit-highlight',
+          linesDecorationsClassName: 'ai-edit-line-decoration',
+          isWholeLine: false,
+        },
+      },
+    ]);
+  };
 
   if (autoScroll) {
     // Listen for scroll events to detect when user scrolls away
@@ -351,6 +373,9 @@ async function streamContentAsync(
       const now = Date.now();
       if (now - lastProgressAt >= progressThrottleMs) {
         lastProgressAt = now;
+        const highlightEndLine = model.getLineCount();
+        const highlightEndColumn = model.getLineMaxColumn(highlightEndLine);
+        updateLiveDecorations(1, 1, highlightEndLine, highlightEndColumn);
 
         // Auto-scroll to keep cursor visible - but only if user hasn't scrolled away
         if (autoScroll && !session.userScrolledAway) {
@@ -402,6 +427,7 @@ async function streamContentAsync(
     const errorMsg = err instanceof Error ? err.message : 'Streaming error';
     session.onError?.(errorMsg);
   } finally {
+    clearLiveDecorations();
     // Clean up scroll listener
     scrollListenerDispose?.();
     activeSessions.delete(session.id);
@@ -669,6 +695,29 @@ async function streamEditContentAsync(
   let currentColumn = startPosition.column;
 
   let linesWritten = 0;
+  let liveDecorationIds: string[] = [];
+  const clearLiveDecorations = (): void => {
+    if (liveDecorationIds.length === 0) return;
+    liveDecorationIds = model.deltaDecorations(liveDecorationIds, []);
+  };
+  const updateLiveDecorations = (): void => {
+    const endColumn = Math.max(1, currentColumn);
+    liveDecorationIds = model.deltaDecorations(liveDecorationIds, [
+      {
+        range: new monaco.Range(
+          startPosition.lineNumber,
+          startPosition.column,
+          currentLine,
+          endColumn,
+        ),
+        options: {
+          className: 'ai-edit-highlight',
+          linesDecorationsClassName: 'ai-edit-line-decoration',
+          isWholeLine: false,
+        },
+      },
+    ]);
+  };
 
   const restoreOriginal = (reason: string): void => {
     try {
@@ -741,6 +790,7 @@ async function streamEditContentAsync(
       const now = Date.now();
       if (now - lastProgressAt >= progressThrottleMs) {
         lastProgressAt = now;
+        updateLiveDecorations();
 
         // Reveal cursor (throttled)
         editor.revealPosition(new monaco.Position(currentLine, currentColumn));
@@ -782,6 +832,7 @@ async function streamEditContentAsync(
     session.active = false;
     restoreOriginal(err instanceof Error ? err.message : 'Streaming error');
   } finally {
+    clearLiveDecorations();
     activeSessions.delete(session.id);
   }
 }

@@ -138,6 +138,14 @@ fn init_db(path: &PathBuf) -> Result<Connection, String> {
     conn.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
 
+    // Enable WAL mode for better concurrent read/write performance
+    // Prevents "database is locked" errors when multiple commands access the DB
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA busy_timeout = 5000;"
+    )
+    .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
+
     Ok(conn)
 }
 
@@ -341,10 +349,22 @@ pub async fn chat_save_message<R: Runtime>(
 
     if message.role == "user" && is_first_user_msg {
         // Auto-generate title from first user message (first 50 chars)
-        let title = if message.content.len() > 50 {
-            format!("{}...", &message.content[..50])
-        } else {
-            message.content.clone()
+        // Use char_indices for UTF-8 safe slicing (byte slicing panics on multi-byte chars)
+        let title = {
+            let mut end = message.content.len();
+            let mut count = 0;
+            for (idx, _) in message.content.char_indices() {
+                count += 1;
+                if count == 50 {
+                    end = idx + message.content[idx..].chars().next().map_or(0, |c| c.len_utf8());
+                    break;
+                }
+            }
+            if count > 50 || (count == 50 && end < message.content.len()) {
+                format!("{}...", &message.content[..end])
+            } else {
+                message.content.clone()
+            }
         };
 
         conn.execute(
@@ -490,7 +510,9 @@ pub async fn chat_search_conversations<R: Runtime>(
     let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
     let conn = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    let search_pattern = format!("%{}%", query);
+    // Escape LIKE wildcards so literal '%' and '_' in user input match correctly
+    let escaped_query = query.replace('%', "\\%").replace('_', "\\_");
+    let search_pattern = format!("%{}%", escaped_query);
 
     let mut stmt = conn
         .prepare(
@@ -498,7 +520,7 @@ pub async fn chat_search_conversations<R: Runtime>(
                 c.first_user_message, c.is_pinned, c.mode
          FROM conversations c
          LEFT JOIN messages m ON c.id = m.conversation_id
-         WHERE c.title LIKE ?1 OR m.content LIKE ?1
+         WHERE c.title LIKE ?1 ESCAPE '\\' OR m.content LIKE ?1 ESCAPE '\\'
          ORDER BY c.is_pinned DESC, c.updated_at DESC",
         )
         .map_err(|e| format!("Failed to prepare search query: {}", e))?;

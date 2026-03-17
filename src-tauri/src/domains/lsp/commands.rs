@@ -19,20 +19,32 @@ impl<R: Runtime> Default for LspManagerState<R> {
     }
 }
 
-/// Initialize the LSP manager (called on app startup)
-fn ensure_manager<R: Runtime>(
-    state: &State<'_, LspManagerState<R>>,
-    app_handle: &AppHandle<R>,
-) -> Result<(), LspError> {
-    let mut manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    if manager_opt.is_none() {
-        *manager_opt = Some(LspManager::new(app_handle.clone()));
+impl<R: Runtime> LspManagerState<R> {
+    /// Ensure the manager is initialized, then run a closure with a reference to it.
+    /// This eliminates the repetitive ensure→lock→unwrap pattern in every command.
+    fn with_manager<T>(
+        &self,
+        app_handle: &AppHandle<R>,
+        f: impl FnOnce(&LspManager<R>) -> Result<T, LspError>,
+    ) -> Result<T, LspError> {
+        // Ensure initialized
+        {
+            let mut manager_opt = self.0.lock().map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire lock: {}", e),
+            })?;
+            if manager_opt.is_none() {
+                *manager_opt = Some(LspManager::new(app_handle.clone()));
+            }
+        }
+        // Run the closure
+        let manager_opt = self.0.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire lock: {}", e),
+        })?;
+        let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
+            message: "LSP manager not initialized".to_string(),
+        })?;
+        f(manager)
     }
-
-    Ok(())
 }
 
 /// Start a language server sidecar
@@ -48,16 +60,6 @@ pub async fn lsp_start_server<R: Runtime>(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<LspServerInfo, LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
     let config = LspServerConfig {
         server_id,
         server_type,
@@ -68,7 +70,7 @@ pub async fn lsp_start_server<R: Runtime>(
         env,
     };
 
-    manager.start_server(config)
+    state.with_manager(&app_handle, |manager| manager.start_server(config))
 }
 
 /// Start an external language server (from user's PATH, e.g., Dart, Rust Analyzer)
@@ -83,16 +85,6 @@ pub async fn lsp_start_external_server<R: Runtime>(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<LspServerInfo, LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
     let config = ExternalLspConfig {
         server_id,
         server_type,
@@ -102,7 +94,7 @@ pub async fn lsp_start_external_server<R: Runtime>(
         env,
     };
 
-    manager.start_external_server(config)
+    state.with_manager(&app_handle, |manager| manager.start_external_server(config))
 }
 
 /// Stop a language server sidecar
@@ -112,17 +104,7 @@ pub async fn lsp_stop_server<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     server_id: String,
 ) -> Result<(), LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    manager.stop_server(&server_id)
+    state.with_manager(&app_handle, |manager| manager.stop_server(&server_id))
 }
 
 /// Stop all language server sidecars
@@ -131,17 +113,7 @@ pub async fn lsp_stop_all<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, LspManagerState<R>>,
 ) -> Result<(), LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    manager.stop_all()
+    state.with_manager(&app_handle, |manager| manager.stop_all())
 }
 
 /// Send a JSON-RPC message to a language server
@@ -152,17 +124,7 @@ pub async fn lsp_send_message<R: Runtime>(
     server_id: String,
     message: String,
 ) -> Result<(), LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    manager.send_message(&server_id, &message)
+    state.with_manager(&app_handle, |manager| manager.send_message(&server_id, &message))
 }
 
 /// List all running language servers
@@ -171,17 +133,7 @@ pub async fn lsp_list_servers<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, LspManagerState<R>>,
 ) -> Result<Vec<LspServerInfo>, LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    manager.list_servers()
+    state.with_manager(&app_handle, |manager| manager.list_servers())
 }
 
 /// Get info about a specific language server
@@ -191,17 +143,7 @@ pub async fn lsp_get_server_info<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     server_id: String,
 ) -> Result<LspServerInfo, LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    manager.get_server_info(&server_id)
+    state.with_manager(&app_handle, |manager| manager.get_server_info(&server_id))
 }
 
 /// Check if a language server is running
@@ -211,15 +153,5 @@ pub async fn lsp_is_server_running<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     server_id: String,
 ) -> Result<bool, LspError> {
-    ensure_manager(&state, &app_handle)?;
-
-    let manager_opt = state.0.lock().map_err(|e| LspError::ProcessError {
-        message: format!("Failed to acquire lock: {}", e),
-    })?;
-
-    let manager = manager_opt.as_ref().ok_or_else(|| LspError::ProcessError {
-        message: "LSP manager not initialized".to_string(),
-    })?;
-
-    Ok(manager.is_server_running(&server_id))
+    state.with_manager(&app_handle, |manager| Ok(manager.is_server_running(&server_id)))
 }

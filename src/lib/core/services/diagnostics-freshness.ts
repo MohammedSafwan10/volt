@@ -1,4 +1,4 @@
-export type DiagnosticSourceHealth = 'idle' | 'updating' | 'fresh' | 'stale';
+export type DiagnosticSourceHealth = 'idle' | 'updating' | 'fresh' | 'warming' | 'stale';
 
 export interface DiagnosticSourceSnapshot {
   source: string;
@@ -12,6 +12,8 @@ export interface DiagnosticSourceSnapshot {
 export interface DiagnosticFreshnessSummary {
   status: DiagnosticSourceHealth;
   isUpdating: boolean;
+  hasFreshSources: boolean;
+  hasWarmingSources: boolean;
   lastUpdated: number;
   activeSources: string[];
   staleSources: string[];
@@ -19,6 +21,7 @@ export interface DiagnosticFreshnessSummary {
 }
 
 export const DIAGNOSTICS_FRESH_MS = 15_000;
+export const DIAGNOSTICS_WARMING_MS = 45_000;
 
 export function getDiagnosticSourceHealth(
   lastUpdated: number,
@@ -30,6 +33,7 @@ export function getDiagnosticSourceHealth(
   if (isStale) return 'stale';
   if (!lastUpdated) return 'idle';
   if (now - lastUpdated <= DIAGNOSTICS_FRESH_MS) return 'fresh';
+  if (now - lastUpdated <= DIAGNOSTICS_WARMING_MS) return 'warming';
   return 'stale';
 }
 
@@ -52,6 +56,8 @@ export function summarizeDiagnosticSources(
     .filter((source) => source.status === 'stale')
     .map((source) => source.source);
   const isUpdating = sourceStatuses.some((source) => source.status === 'updating');
+  const hasFreshSources = sourceStatuses.some((source) => source.status === 'fresh');
+  const hasWarmingSources = sourceStatuses.some((source) => source.status === 'warming');
   const lastUpdated = sourceStatuses.reduce(
     (latest, source) => Math.max(latest, source.lastUpdated),
     0,
@@ -62,13 +68,17 @@ export function summarizeDiagnosticSources(
     status = 'updating';
   } else if (staleSources.length > 0) {
     status = 'stale';
-  } else if (sourceStatuses.some((source) => source.status === 'fresh')) {
+  } else if (hasFreshSources) {
     status = 'fresh';
+  } else if (hasWarmingSources) {
+    status = 'warming';
   }
 
   return {
     status,
     isUpdating,
+    hasFreshSources,
+    hasWarmingSources,
     lastUpdated,
     activeSources,
     staleSources,

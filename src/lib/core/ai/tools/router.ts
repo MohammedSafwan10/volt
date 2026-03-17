@@ -30,6 +30,7 @@ import { getToolCapabilities } from '$core/ai/tools/capabilities';
 import { toolObservabilityStore } from '$features/assistant/stores/tool-observability.svelte';
 import { agentTelemetryStore } from '$features/assistant/stores/agent-telemetry.svelte';
 import { afterToolHook, beforeToolHook } from '$core/ai/tools/hooks';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
 
 // Timeout for tool operations (30 seconds default)
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -66,6 +67,7 @@ export function normalizeToolName(toolName: string): string {
 export interface ToolExecutionOptions {
   signal?: AbortSignal;
   idempotencyKey?: string;
+  runtime?: ToolRuntimeContext;
 }
 
 /**
@@ -132,13 +134,7 @@ export function validateToolCall(
     const suffix = suggestion ? ` Did you mean "${suggestion}"?` : '';
     return { valid: false, error: `Unknown tool: ${canonicalToolName}.${suffix}`, requiresApproval: false };
   }
-  if (RETIRED_TOOL_NAMES.has(canonicalToolName)) {
-    return {
-      valid: false,
-      error: `Tool "${canonicalToolName}" was removed from strict profile. Use read_file/workspace_search/apply_patch/run_command equivalents.`,
-      requiresApproval: false,
-    };
-  }
+  // If tool is in definitions, proceed to mode/param checks
 
   // Check if tool is allowed in current mode
   if (!isToolAllowed(canonicalToolName, mode)) {
@@ -452,7 +448,7 @@ async function executeToolCallInternal(
   args: Record<string, unknown>,
   options: ToolExecutionOptions & { signature: string }
 ): Promise<CanonicalToolResult> {
-  const { signal, idempotencyKey, signature } = options;
+  const { signal, idempotencyKey, signature, runtime } = options;
   if (RETIRED_TOOL_NAMES.has(toolName)) {
     return normalizeToolResult(
       toolName,
@@ -506,13 +502,12 @@ async function executeToolCallInternal(
 
   while (attempt < maxAttempts) {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = timeoutMs === 0
-      ? new Promise<ToolResult>(() => undefined)
-      : new Promise<ToolResult>((resolve) => {
-        timeoutId = setTimeout(() => {
-          resolve({ success: false, error: 'Tool execution timed out' });
-        }, timeoutMs);
-      });
+    const effectiveTimeout = timeoutMs === 0 ? MAX_TIMEOUT_MS : timeoutMs;
+    const timeoutPromise = new Promise<ToolResult>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({ success: false, error: 'Tool execution timed out' });
+      }, effectiveTimeout);
+    });
 
     let abortHandler: (() => void) | undefined;
     const abortPromise = new Promise<ToolResult>((resolve) => {
@@ -530,7 +525,7 @@ async function executeToolCallInternal(
         startedAt: execStarted,
       });
       const result = await Promise.race([
-        handler(args),
+        handler(args, runtime),
         timeoutPromise,
         ...(signal ? [abortPromise] : [])
       ]);
@@ -687,7 +682,6 @@ function shouldRetryTool(toolName: string, toolDef: ReturnType<typeof getToolByN
   return category === 'workspace_read' ||
     category === 'workspace_search' ||
     category === 'diagnostics' ||
-    category === 'editor_context' ||
     category === 'browser';
 }
 

@@ -16,7 +16,6 @@ interface NoToolOutcomeInput {
   maxEmptyResponses: number;
   state: NoToolOutcomeState;
   isAgentMode: boolean;
-  conversationOnlyTurn: boolean;
   completionNudgeCount: number;
   maxCompletionNudges: number;
   provider: string;
@@ -219,7 +218,6 @@ export function resolveNoToolOutcome(input: NoToolOutcomeInput): NoToolOutcomeRe
   if (
     handled.decision === 'complete' &&
     input.isAgentMode &&
-    !input.conversationOnlyTurn &&
     next.fullContent.trim().length > 0
   ) {
     return {
@@ -235,24 +233,6 @@ export function resolveNoToolOutcome(input: NoToolOutcomeInput): NoToolOutcomeRe
         loopLogLevel: 'info',
         loopLogEvent: 'loop_completed',
         loopLogDetails: { reason: 'implicit_content_completion', provider: input.provider },
-      },
-    };
-  }
-
-  if (handled.decision === 'complete' && input.isAgentMode && input.conversationOnlyTurn) {
-    return {
-      action: 'terminal',
-      state: next,
-      completionNudgeCount: input.completionNudgeCount,
-      terminalOutcome: {
-        status: 'completed',
-        reason: 'conversation_only_completion',
-        streamState: 'completed',
-        loopStateMeta: { iteration: input.iteration, reason: 'conversation_only_completion' },
-        finalizeMeta: { iteration: input.iteration },
-        loopLogLevel: 'info',
-        loopLogEvent: 'loop_completed',
-        loopLogDetails: { reason: 'conversation_only_completion' },
       },
     };
   }

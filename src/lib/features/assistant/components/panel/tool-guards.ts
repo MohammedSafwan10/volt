@@ -69,7 +69,7 @@ export function getReadRequirement(
 
 export function buildReadBeforeEditError(path: string, requiredKind: ReadRequirementKind): string {
   if (requiredKind === 'outline') {
-    return `Read-before-edit guard: inspect "${path}" before deleting it. Run read_file({ path: "${path}", offset: 0, limit: 120 }).`;
+    return `Read-before-edit guard: inspect "${path}" before deleting it. Use list_dir({ path: "${path}" }) for directories, or file_outline({ path: "${path}" }) / read_file({ path: "${path}", offset: 0, limit: 120 }) for files.`;
   }
   return `Read-before-edit guard: read "${path}" before editing. Use focused reads: read_file({ path: "${path}", offset, limit }).`;
 }

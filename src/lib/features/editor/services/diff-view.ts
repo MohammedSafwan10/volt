@@ -86,7 +86,7 @@ export function isFullDiffViewActive(): boolean {
 }
 
 /**
- * Open a file and highlight the changed lines (Kiro-style diff view)
+ * Open a file and highlight the changed lines (diff view)
  * - Opens/focuses the actual file in the editor
  * - Highlights changed lines with green background
  * - Scrolls to the changed area

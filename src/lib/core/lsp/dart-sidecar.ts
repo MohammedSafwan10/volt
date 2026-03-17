@@ -19,8 +19,18 @@
  * - Requires Dart SDK installed on user's system
  */
 
-import { getLspRegistry, type LspTransport, type JsonRpcMessage } from './sidecar';
-import { problemsStore, type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
+import {
+  getLspRegistry,
+  markSourceSessionReady,
+  markSourceSessionStale,
+  setSourceProblemsForFile,
+  clearSourceProblemsForFile,
+  startSourceSession,
+  createLspRecoveryController,
+  type LspTransport,
+  type JsonRpcMessage,
+} from './sidecar';
+import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectDartSdk, isDartAvailable, type DartSdkInfo } from './dart-sdk';
 import { readFileQuiet } from '$core/services/file-system';
@@ -33,6 +43,13 @@ let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
 let dartSdkInfo: DartSdkInfo | null = null;
 let isAnalyzing = false;
+let dartSessionGeneration = 0;
+const dartRecovery = createLspRecoveryController({
+  source: 'dart',
+  restart: async () => {
+    await recoverDartLspAfterExit();
+  },
+});
 
 // Document tracking
 const openDocuments = new Map<string, { version: number; content: string }>();
@@ -208,7 +225,12 @@ function handleDiagnostics(params: PublishDiagnosticsParams): void {
     code: diag.code?.toString()
   }));
 
-  problemsStore.setProblemsForFile(filePath, problems, 'dart');
+  setSourceProblemsForFile({
+    source: 'dart',
+    generation: dartSessionGeneration,
+    filePath,
+    problems,
+  });
 }
 
 /**
@@ -267,9 +289,18 @@ async function initializeServer(): Promise<void> {
       dartServerTransport = await registry.startServer('dart', {
         serverId: 'dart-main',
         cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 1000,
+          maxDelayMs: 12_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
         command: dartSdkInfo.dartPath,
         args: ['language-server', '--client-id', 'volt-ide', '--client-version', '1.0.0']
       });
+      dartServerTransport.configureHealth({ autoRestart: true });
+      dartSessionGeneration = startSourceSession('dart');
 
       // Set up message handler
       dartServerTransport.onMessage(handleLspMessage);
@@ -282,7 +313,8 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       dartServerTransport.onExit(() => {
         console.log('[Dart LSP] Server exited');
-        problemsStore.markSourceStale('dart');
+        dartSessionGeneration = markSourceSessionStale('dart');
+        dartRecovery.schedule('transport exit');
         dartServerTransport = null;
         dartServerInitialized = false;
         initializationPromise = null;
@@ -290,7 +322,8 @@ async function initializeServer(): Promise<void> {
         openDocuments.clear();
       });
       dartServerTransport.onRestart(async () => {
-        problemsStore.markSourceFresh('dart');
+        dartSessionGeneration = startSourceSession('dart');
+        markSourceSessionReady('dart', dartSessionGeneration);
         await rehydrateOpenDocuments();
       });
 
@@ -431,6 +464,8 @@ async function initializeServer(): Promise<void> {
 
       dartServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
+      markSourceSessionReady('dart', dartSessionGeneration);
+      dartRecovery.reset();
 
       console.log('[Dart LSP] Using Dart SDK:', dartSdkInfo);
     } catch (error) {
@@ -554,7 +589,11 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   });
 
   // Clear diagnostics for this file
-  problemsStore.clearProblemsForFile(filepath, 'dart');
+  clearSourceProblemsForFile({
+    source: 'dart',
+    generation: dartSessionGeneration,
+    filePath: filepath,
+  });
 }
 
 /**
@@ -705,6 +744,8 @@ export async function stopDartLsp(): Promise<void> {
   initializationPromise = null;
   initializedRootPath = null;
   openDocuments.clear();
+  dartSessionGeneration = markSourceSessionStale('dart');
+  dartRecovery.reset();
 
   for (const timer of diagnosticDebounceTimers.values()) {
     clearTimeout(timer);
@@ -722,6 +763,13 @@ export async function restartDartLsp(): Promise<void> {
   }
 }
 
+async function recoverDartLspAfterExit(): Promise<void> {
+  if (!projectStore.rootPath || dartServerTransport || initializationPromise) {
+    return;
+  }
+  await initializeServer();
+}
+
 /**
  * Check if the Dart LSP is running
  */
@@ -737,32 +785,6 @@ export async function startDartLsp(rootPath: string): Promise<void> {
   if (!rootPath) return;
   // initializeServer already checks for rootPath and SDK availability
   await initializeServer();
-}
-
-/**
- * Notify the server about file changes on disk (created, changed, deleted)
- * Used by the file watcher to keep the LSP in sync with external changes (e.g. AI edits, git)
- */
-export async function notifyFileChanges(events: Array<{ kind: 'create' | 'change' | 'delete', path: string }>): Promise<void> {
-  if (!dartServerTransport || !dartServerInitialized) return;
-
-  const changes = events.map(event => {
-    let type: 1 | 2 | 3;
-    switch (event.kind) {
-      case 'create': type = 1; break;
-      case 'change': type = 2; break;
-      case 'delete': type = 3; break;
-      default: type = 2;
-    }
-    return {
-      uri: pathToUri(event.path),
-      type
-    };
-  });
-
-  await dartServerTransport.sendNotification('workspace/didChangeWatchedFiles', {
-    changes
-  });
 }
 
 /**
@@ -793,18 +815,37 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
   console.log(`[Dart LSP] Starting project-wide analysis of ${dartFiles.length} files...`);
 
-  // Process files with delay to avoid overwhelming the server
+  const runId = ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId ?? 0) + 1;
+  (startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId = runId;
+
+  let processedSinceYield = 0;
+
   for (const file of dartFiles) {
+    if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+      return;
+    }
+
     const normalizedPath = file.path.replace(/\\/g, '/');
 
     // Skip if already open
     if (openDocuments.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
+    if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+      return;
+    }
+
     if (content) {
       await notifyDocumentOpened(normalizedPath, content);
-      // Small delay to let server process
-      await new Promise(r => setTimeout(r, 50));
+      processedSinceYield += 1;
+
+      if (processedSinceYield >= 10) {
+        processedSinceYield = 0;
+        await new Promise(r => setTimeout(r, 20));
+        if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+          return;
+        }
+      }
     }
   }
 

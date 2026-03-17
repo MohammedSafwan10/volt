@@ -6,6 +6,7 @@
   import { mcpStore, type McpServerState } from "$features/mcp/stores/mcp.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
   import { assistantStore } from "$features/assistant/stores/assistant.svelte";
+  import { projectStore } from "$shared/stores/project.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
 
@@ -14,6 +15,7 @@
 
   // Get actual config path on mount and auto-open the config file
   onMount(async () => {
+    void mcpStore.initialize(projectStore.rootPath ?? undefined);
     try {
       const path = await invoke<string>("get_mcp_config_path");
       configPath = path
