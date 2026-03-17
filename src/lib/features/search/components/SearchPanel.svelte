@@ -34,9 +34,9 @@
       case 'rg-system':
         return 'Search: rg (system)';
       case 'legacy-fallback':
-        return 'Search: legacy fallback';
+        return 'Search: backend legacy';
       default:
-        return 'Search: unknown';
+        return 'Search: unavailable';
     }
   });
   const semanticStatusLabel = $derived.by(() => {
@@ -289,7 +289,10 @@
           <button
             class="option-btn"
             class:active={searchStore.caseSensitive}
-            onclick={() => searchStore.toggleCaseSensitive()}
+            onclick={() => {
+              searchStore.toggleCaseSensitive();
+              if (projectStore.rootPath && searchStore.query.trim()) void searchStore.search(projectStore.rootPath);
+            }}
             title="Match Case (Alt+C)"
             aria-label="Match Case"
             aria-pressed={searchStore.caseSensitive}
@@ -299,7 +302,10 @@
           <button
             class="option-btn"
             class:active={searchStore.wholeWord}
-            onclick={() => searchStore.toggleWholeWord()}
+            onclick={() => {
+              searchStore.toggleWholeWord();
+              if (projectStore.rootPath && searchStore.query.trim()) void searchStore.search(projectStore.rootPath);
+            }}
             title="Match Whole Word (Alt+W)"
             aria-label="Match Whole Word"
             aria-pressed={searchStore.wholeWord}
@@ -309,7 +315,10 @@
           <button
             class="option-btn"
             class:active={searchStore.useRegex}
-            onclick={() => searchStore.toggleRegex()}
+            onclick={() => {
+              searchStore.toggleRegex();
+              if (projectStore.rootPath && searchStore.query.trim()) void searchStore.search(projectStore.rootPath);
+            }}
             title="Use Regular Expression (Alt+R)"
             aria-label="Use Regular Expression"
             aria-pressed={searchStore.useRegex}

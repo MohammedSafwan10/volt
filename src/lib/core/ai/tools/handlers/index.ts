@@ -104,6 +104,7 @@ export {
  * Tool handler map - maps tool names to handlers
  */
 import type { ToolResult } from '$core/ai/tools/utils';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
 import {
   handleCommandStatus,
   handleGetProcessOutput,
@@ -115,7 +116,10 @@ import {
   handleStopProcess,
 } from '$core/ai/tools/handlers/terminal';
 
-type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+type ToolHandler = (
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+) => Promise<ToolResult>;
 
 function browserResult(result: unknown, success = true, error?: string): ToolResult {
   const warnings =
@@ -132,9 +136,9 @@ function browserResult(result: unknown, success = true, error?: string): ToolRes
 export const toolHandlers: Record<string, ToolHandler> = {
   // Read
   'list_dir': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleListDir(args)),
-  'read_file': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleReadFile(args)),
-  'read_files': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleReadFiles(args)),
-  'read_code': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleReadCode(args)),
+  'read_file': (args, runtime) => import('$core/ai/tools/handlers/read').then(m => m.handleReadFile(args, runtime)),
+  'read_files': (args, runtime) => import('$core/ai/tools/handlers/read').then(m => m.handleReadFiles(args, runtime)),
+  'read_code': (args, runtime) => import('$core/ai/tools/handlers/read').then(m => m.handleReadCode(args, runtime)),
   'file_outline': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleFileOutline(args)),
   'get_file_tree': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleGetFileTree(args)),
   'get_file_info': (args) => import('$core/ai/tools/handlers/read').then(m => m.handleGetFileInfo(args)),
@@ -142,7 +146,6 @@ export const toolHandlers: Record<string, ToolHandler> = {
   // Search
   'workspace_search': (args) => import('$core/ai/tools/handlers/search').then(m => m.handleWorkspaceSearch(args)),
   'find_files': (args) => import('$core/ai/tools/handlers/search').then(m => m.handleFindFiles(args)),
-  'search_symbols': (args) => import('$core/ai/tools/handlers/search').then(m => m.handleSearchSymbols(args)),
 
   // Editor
   'get_active_file': () => import('$core/ai/tools/handlers/editor').then(m => m.handleGetActiveFile()),
@@ -150,12 +153,12 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'get_open_files': () => import('$core/ai/tools/handlers/editor').then(m => m.handleGetOpenFiles()),
 
   // Write
-  'write_file': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleWriteFile(args)),
-  'append_file': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleAppendFile(args)),
-  'str_replace': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleStrReplace(args)),
-  'apply_patch': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleApplyPatch(args)),
-  'multi_replace': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleMultiReplace(args)),
-  'replace_lines': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleReplaceLines(args)),
+  'write_file': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleWriteFile(args, runtime)),
+  'append_file': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleAppendFile(args, runtime)),
+  'str_replace': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleStrReplace(args, runtime)),
+  'apply_patch': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleApplyPatch(args, runtime)),
+  'multi_replace': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleMultiReplace(args, runtime)),
+  'replace_lines': (args, runtime) => import('$core/ai/tools/handlers/write').then(m => m.handleReplaceLines(args, runtime)),
   'create_dir': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleCreateDir(args)),
   'delete_file': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleDeleteFile(args)),
   'rename_path': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleRenamePath(args)),
@@ -175,8 +178,8 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'send_terminal_input': (args) => handleSendTerminalInput(args),
 
   // Diagnostics
-  'get_diagnostics': (args) => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetDiagnostics(args)),
-  'get_tool_metrics': () => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetToolMetrics()),
+  'get_diagnostics': (args, runtime) => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetDiagnostics(args, runtime)),
+  'get_tool_metrics': (_args, runtime) => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetToolMetrics(runtime)),
   'attempt_completion': (args) => import('$core/ai/tools/handlers/workflow').then(m => m.handleAttemptCompletion(args)),
 
   // LSP Code Intelligence

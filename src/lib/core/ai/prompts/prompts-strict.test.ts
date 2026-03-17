@@ -34,17 +34,29 @@ describe('strict prompts', () => {
     expect(prompt).not.toContain('unified diff style');
   });
 
-  it('agent prompt excludes retired tool guidance', () => {
+  it('agent prompt includes extended tools', () => {
     const prompt = getSystemPrompt({
       mode: 'agent',
       provider: 'gemini',
       model: 'test',
     });
-    expect(prompt).not.toContain('str_replace');
+    // These are now active tools that should be in the prompt
+    expect(prompt).toContain('str_replace');
+    expect(prompt).toContain('find_files');
+    expect(prompt).toContain('file_outline');
+    expect(prompt).toContain('write_file');
+    expect(prompt).toContain('start_process');
+  });
+
+  it('agent prompt excludes truly retired tools', () => {
+    const prompt = getSystemPrompt({
+      mode: 'agent',
+      provider: 'gemini',
+      model: 'test',
+    });
+    // These are retired and should NOT appear
     expect(prompt).not.toContain('multi_replace');
     expect(prompt).not.toContain('replace_lines');
-    expect(prompt).not.toContain('find_files');
-    expect(prompt).not.toContain('search_symbols');
     expect(prompt).not.toContain('get_file_tree');
     expect(prompt).not.toContain('read_code');
   });

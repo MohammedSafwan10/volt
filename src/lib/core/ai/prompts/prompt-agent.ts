@@ -1,5 +1,7 @@
 import { joinPromptWithBudget } from '$core/ai/prompts/prompt-budget';
 import { buildCategoryToolGuidance } from '$core/ai/tool-guidance';
+import { getToolsForMode } from '$core/ai/tools/definitions';
+import type { ToolDefinition } from '$core/ai/types';
 import {
   buildMcpSection,
   buildProviderOverlay,
@@ -25,30 +27,50 @@ You are Volt, a coding agent. Execute tasks safely and naturally.
 4. Usually work in sequence: discover -> read -> patch -> diagnostics -> respond.
 5. If blocked, recover using the canonical matrix below.`;
 
-const STRICT_TOOL_SURFACE = `# STRICT TOOL SURFACE
+function buildToolSurface(): string {
+  const tools = getToolsForMode('agent');
+  const toolLines = tools.map((tool: ToolDefinition) => {
+    const params = tool.parameters as Record<string, unknown>;
+    const props = params.properties as Record<string, unknown> | undefined;
+    const required = (params.required as string[]) || [];
+    if (!props || Object.keys(props).length === 0) {
+      return `- ${tool.name}()`;
+    }
+    const argList = Object.keys(props).map(key => {
+      const isRequired = required.includes(key);
+      return isRequired ? key : `${key}?`;
+    }).join(', ');
+    return `- ${tool.name}(${argList})`;
+  }).join('\n');
+
+  return `# TOOL SURFACE
 
 Built-in tools:
-- list_dir
-- read_file(path, offset?, limit?, explanation?)
-- workspace_search(query, includePattern?, caseSensitive?)
-- apply_patch(path, patch, expected_version?, postEditDiagnostics?)
-- run_command(command, cwd?, timeout?)
-- get_diagnostics(paths?)
-- attempt_completion(result, summary?)
+${toolLines}
 
 Retired tools are invalid and must not be called.`;
+}
 
 const STRICT_WORKFLOW = `# WORKFLOW
 
-1. Discover with workspace_search/list_dir.
-2. Read exact evidence using read_file with offset/limit.
-3. Edit with apply_patch using Codex patch grammar only.
+1. Discover with workspace_search, find_files, or list_dir.
+2. Understand structure with file_outline, then read_file(offset, limit) for details.
+3. Edit with str_replace for single changes, apply_patch for multi-hunk edits, write_file for new files.
 4. Verify with get_diagnostics.
 5. When the task is done, respond naturally with the result. Use tools only when needed.
 
 Execution priorities:
-- Prefer workspace_search/list_dir over run_command for exploration.
+- Prefer file_outline before full read_file to understand file structure cheaply.
+- Prefer workspace_search/find_files over run_command for exploration.
+- Use workspace_search for code/content lookup and exact snippets.
+- Use find_files when you mainly know a filename, path fragment, or extension pattern.
+- workspace_search is literal by default; use isRegex: true only for intentional regex patterns.
+- If a query includes characters like { ( [ but you want exact text, keep literal mode.
+- If a literal case-sensitive search misses once, you may retry once with caseSensitive set to false.
+- Never broaden beyond the requested includePattern/scope automatically; change tactics explicitly if the scoped search still misses.
 - Prefer narrow read_file slices over whole-file reads.
+- Prefer str_replace for simple edits, apply_patch for complex multi-hunk edits.
+- Use start_process for dev servers, run_command for short tasks.
 - Prefer one high-signal tool call over many speculative ones.
 - If the same tactic fails twice, switch tactics instead of repeating it.`;
 
@@ -85,7 +107,7 @@ const STRICT_RECOVERY = `# RECOVERY MATRIX
 export function buildAgentPrompt(options: AgentPromptOptions): string {
   const parts: string[] = [
     AGENT_IDENTITY,
-    STRICT_TOOL_SURFACE,
+    buildToolSurface(),
     STRICT_WORKFLOW,
     STRICT_PATCH_CONTRACT,
     STRICT_RECOVERY,

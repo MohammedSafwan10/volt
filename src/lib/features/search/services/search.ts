@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { showToast } from '$shared/stores/toast.svelte';
 import { logOutput } from '$features/terminal/stores/output.svelte';
+import { registerCleanup } from '$core/services/hmr-cleanup';
 
 /** Search options */
 export interface SearchOptions {
@@ -113,6 +114,33 @@ export interface SearchErrorEvent {
   error: SearchError;
 }
 
+const activeSearchUnlisteners = new Map<number, UnlistenFn>();
+let searchCleanupRegistered = false;
+
+function ensureSearchCleanupRegistered(): void {
+  if (searchCleanupRegistered) return;
+  searchCleanupRegistered = true;
+  registerCleanup('workspace-search-streams', async () => {
+    const active = Array.from(activeSearchUnlisteners.entries());
+    activeSearchUnlisteners.clear();
+
+    await Promise.all(
+      active.map(async ([requestId, unlisten]) => {
+        try {
+          unlisten();
+        } catch {
+          // Listener already detached.
+        }
+        try {
+          await cancelWorkspaceSearch(requestId);
+        } catch {
+          // Best-effort cancellation during reload/HMR.
+        }
+      }),
+    );
+  });
+}
+
 function isSearchError(error: unknown): error is SearchError {
   return (
     typeof error === 'object' &&
@@ -195,6 +223,7 @@ export async function workspaceSearchStream(
     onError?: (error: SearchErrorEvent) => void;
   }
 ): Promise<UnlistenFn> {
+  ensureSearchCleanupRegistered();
   const chunkUnlisten = await listen<SearchChunkEvent>('search://chunk', (event) => {
     if (event.payload.requestId !== options.requestId) return;
     handlers.onChunk(event.payload);
@@ -215,11 +244,15 @@ export async function workspaceSearchStream(
     // ignore (best-effort)
   });
 
-  return () => {
+  const unlisten = () => {
+    activeSearchUnlisteners.delete(options.requestId);
     chunkUnlisten();
     doneUnlisten();
     errorUnlisten();
   };
+
+  activeSearchUnlisteners.set(options.requestId, unlisten);
+  return unlisten;
 }
 
 /** Replace options */

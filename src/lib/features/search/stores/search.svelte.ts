@@ -18,6 +18,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { setModelValue } from '$core/services/monaco-models';
 import { editorStore } from '$features/editor/stores/editor.svelte';
 import { showToast } from '$shared/stores/toast.svelte';
+import { registerCleanup } from '$core/services/hmr-cleanup';
 
 export type { SearchResults, FileSearchResult, SearchMatch };
 export type FileMatches = FileSearchResult;
@@ -77,10 +78,10 @@ class SearchStore {
     rgSource: string;
   }): SearchEngineStatus {
     if (!telemetry) return this.searchEngineStatus;
+    if (telemetry.engine === 'rg' && telemetry.rgSource === 'bundled') return 'rg-bundled';
+    if (telemetry.engine === 'rg' && telemetry.rgSource === 'system') return 'rg-system';
     if (telemetry.engine === 'legacy') return 'legacy-fallback';
-    if (telemetry.rgSource === 'bundled') return 'rg-bundled';
-    if (telemetry.rgSource === 'system') return 'rg-system';
-    return 'legacy-fallback';
+    return 'unknown';
   }
 
   private mapSemanticStatus(backend: string): SemanticBackendStatus {
@@ -517,3 +518,7 @@ class SearchStore {
 
 // Singleton instance
 export const searchStore = new SearchStore();
+
+registerCleanup('search-store', () => {
+  searchStore.clear();
+});

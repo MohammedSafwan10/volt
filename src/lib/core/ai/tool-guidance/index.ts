@@ -6,7 +6,6 @@ import {
 } from '$core/ai/tools/definitions';
 import { BROWSER_GUIDANCE } from '$core/ai/tool-guidance/browser';
 import { DIAGNOSTICS_GUIDANCE } from '$core/ai/tool-guidance/diagnostics';
-import { EDITOR_CONTEXT_GUIDANCE } from '$core/ai/tool-guidance/editor-context';
 import { FILE_WRITE_GUIDANCE } from '$core/ai/tool-guidance/file-write';
 import { TERMINAL_GUIDANCE } from '$core/ai/tool-guidance/terminal';
 import { WORKSPACE_READ_GUIDANCE } from '$core/ai/tool-guidance/workspace-read';
@@ -15,7 +14,6 @@ import { WORKSPACE_SEARCH_GUIDANCE } from '$core/ai/tool-guidance/workspace-sear
 const CATEGORY_ORDER: ToolCategory[] = [
   'workspace_read',
   'workspace_search',
-  'editor_context',
   'file_write',
   'terminal',
   'diagnostics',
@@ -25,7 +23,6 @@ const CATEGORY_ORDER: ToolCategory[] = [
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
   workspace_read: 'Workspace Read',
   workspace_search: 'Workspace Search',
-  editor_context: 'Editor Context',
   file_write: 'File Write',
   terminal: 'Terminal',
   diagnostics: 'Diagnostics',
@@ -35,7 +32,6 @@ const CATEGORY_LABELS: Record<ToolCategory, string> = {
 const CATEGORY_GUIDANCE: Record<ToolCategory, string> = {
   workspace_read: WORKSPACE_READ_GUIDANCE,
   workspace_search: WORKSPACE_SEARCH_GUIDANCE,
-  editor_context: EDITOR_CONTEXT_GUIDANCE,
   file_write: FILE_WRITE_GUIDANCE,
   terminal: TERMINAL_GUIDANCE,
   diagnostics: DIAGNOSTICS_GUIDANCE,

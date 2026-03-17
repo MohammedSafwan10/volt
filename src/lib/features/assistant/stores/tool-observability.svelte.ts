@@ -46,7 +46,6 @@ const LATENCY_BUDGETS_MS: Record<string, { warn: number; critical: number }> = {
   find_files: { warn: 1800, critical: 4500 },
   read_code: { warn: 1800, critical: 4500 },
   file_outline: { warn: 1200, critical: 3000 },
-  search_symbols: { warn: 1800, critical: 4500 },
   // Write/edit
   write_file: { warn: 2500, critical: 7000 },
   append_file: { warn: 2500, critical: 7000 },

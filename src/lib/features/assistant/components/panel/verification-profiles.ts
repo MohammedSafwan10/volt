@@ -5,8 +5,7 @@ export type PlanningPhase = 'discover' | 'read' | 'edit' | 'verify' | 'other';
 export function classifyPlanningPhase(toolName: string): PlanningPhase {
   if (
     toolName === 'workspace_search' ||
-    toolName === 'find_files' ||
-    toolName === 'search_symbols'
+    toolName === 'find_files'
   ) {
     return 'discover';
   }

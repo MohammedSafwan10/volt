@@ -29,7 +29,6 @@ const PATH_VALIDATED_TOOLS = new Set([
   'get_file_info',
   'workspace_search',
   'find_files',
-  'search_symbols',
   'write_file',
   'append_file',
   'str_replace',

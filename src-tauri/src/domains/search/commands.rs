@@ -507,6 +507,23 @@ fn escape_glob_for_rg(pattern: &str) -> String {
     }
 }
 
+fn configure_walk_builder(builder: &mut WalkBuilder, include_hidden: bool) {
+    builder.hidden(!include_hidden);
+    if include_hidden {
+        builder
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .ignore(false);
+    } else {
+        builder
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .ignore(true);
+    }
+}
+
 fn build_rg_args(options: &SearchOptions) -> Vec<String> {
     let mut args = vec![
         "--json".to_string(),
@@ -519,6 +536,7 @@ fn build_rg_args(options: &SearchOptions) -> Vec<String> {
 
     if options.include_hidden {
         args.push("--hidden".to_string());
+        args.push("--no-ignore-vcs".to_string());
     }
     if !options.case_sensitive {
         args.push("-i".to_string());
@@ -551,7 +569,6 @@ fn build_rg_args(options: &SearchOptions) -> Vec<String> {
     };
 
     args.push(query);
-    args.push(options.root_path.clone());
     args
 }
 
@@ -564,6 +581,7 @@ fn build_rg_files_args(options: &FindFilesOptions) -> Vec<String> {
     ];
     if options.include_hidden {
         args.push("--hidden".to_string());
+        args.push("--no-ignore-vcs".to_string());
     }
     for pattern in &options.include_patterns {
         args.push("-g".to_string());
@@ -577,7 +595,6 @@ fn build_rg_files_args(options: &FindFilesOptions) -> Vec<String> {
             args.push(format!("!{}", pattern));
         }
     }
-    args.push(options.root_path.clone());
     args
 }
 
@@ -601,12 +618,24 @@ fn file_matches_query(relative_path: &str, query_tokens: &[String]) -> bool {
     if query_tokens.is_empty() {
         return false;
     }
-    let rel = relative_path.to_ascii_lowercase();
+    let rel = relative_path.to_ascii_lowercase().replace('\\', "/");
     let file_name = relative_path
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(relative_path)
         .to_ascii_lowercase();
+
+    if query_tokens.len() == 1 {
+        let token = &query_tokens[0];
+        if token.starts_with('.') {
+            if rel == *token
+                || rel.starts_with(&format!("{}/", token))
+                || rel.contains(&format!("/{}/", token))
+            {
+                return true;
+            }
+        }
+    }
 
     query_tokens
         .iter()
@@ -659,14 +688,21 @@ fn rg_search_sync(
     options: &SearchOptions,
     current_search_id: Arc<AtomicU64>,
 ) -> Result<(SearchResults, RgCommandInfo), RgSearchError> {
+    let started = Instant::now();
     let max_results = if options.max_results == 0 {
         10000
     } else {
         options.max_results
     };
+    let sync_match_budget = if options.include_hidden {
+        Duration::from_millis(1200)
+    } else {
+        Duration::from_millis(1800)
+    };
     let rg_command = resolve_rg_command(app)?;
     let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_args(options))
+        .current_dir(&options.root_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -754,6 +790,10 @@ fn rg_search_sync(
             }
         }
 
+        if total_matches > 0 && started.elapsed() >= sync_match_budget {
+            truncated = true;
+        }
+
         if truncated {
             let _ = child.kill();
             break;
@@ -800,6 +840,7 @@ fn rg_search_stream(
     let rg_command = resolve_rg_command(app)?;
     let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_args(options))
+        .current_dir(&options.root_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -943,6 +984,7 @@ fn rg_search_stream(
                 }
                 if truncated {
                     let _ = child.kill();
+                    break;
                 }
             }
             "end" => {
@@ -1034,6 +1076,7 @@ fn rg_find_files(
     let rg_command = resolve_rg_command(app)?;
     let mut cmd = Command::new(&rg_command.path);
     cmd.args(build_rg_files_args(options))
+        .current_dir(&options.root_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -1042,7 +1085,7 @@ fn rg_find_files(
         .map_err(|e| RgSearchError::Failed(format!("Failed to start rg --files: {e}")))?;
 
     let status_code = output.status.code().unwrap_or(2);
-    if status_code != 0 {
+    if status_code != 0 && status_code != 1 {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(RgSearchError::Failed(format!(
             "rg --files exited with status {}{}",
@@ -1082,12 +1125,7 @@ fn legacy_find_files(
     let exclude_globs = build_globset(&options.exclude_patterns)?;
 
     let mut builder = WalkBuilder::new(root_path);
-    builder
-        .hidden(!options.include_hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true);
+    configure_walk_builder(&mut builder, options.include_hidden);
 
     let mut files = Vec::new();
     for entry in builder.build() {
@@ -1213,12 +1251,7 @@ fn legacy_search_sync(
     let exclude_globs = build_globset(&exclude_patterns)?;
 
     let mut builder = WalkBuilder::new(root_path);
-    builder
-        .hidden(!include_hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true);
+    configure_walk_builder(&mut builder, include_hidden);
 
     let walker = builder.build();
 
@@ -1306,12 +1339,7 @@ fn legacy_search_stream(
     let exclude_globs = build_globset(&exclude_patterns)?;
 
     let mut builder = WalkBuilder::new(root_path);
-    builder
-        .hidden(!include_hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true);
+    configure_walk_builder(&mut builder, include_hidden);
 
     let walker = builder.build();
 
@@ -1446,7 +1474,7 @@ fn legacy_search_stream(
 /// Perform workspace search
 #[tauri::command]
 pub async fn workspace_search(
-    state: tauri::State<'_, SearchManagerState>,
+    _state: tauri::State<'_, SearchManagerState>,
     app: AppHandle,
     options: SearchOptions,
 ) -> Result<SearchResults, SearchError> {
@@ -1474,18 +1502,15 @@ pub async fn workspace_search(
         });
     }
 
-    // Ensure we can cancel in-flight searches by starting a new request_id
+    // Sync workspace_search calls should not cancel each other.
+    // Keep global cancellation for the streaming/UI search path only.
     if options.request_id == 0 {
         return Err(SearchError::InvalidRange {
             message: "requestId is required".to_string(),
         });
     }
 
-    state
-        .current_search_id
-        .store(options.request_id, Ordering::SeqCst);
-
-    let current_search_id = state.current_search_id.clone();
+    let current_search_id = Arc::new(AtomicU64::new(options.request_id));
     let mode = SearchEngineMode::from_input(options.engine.as_deref());
     let options_for_task = options;
     let app_for_task = app.clone();
@@ -1943,13 +1968,18 @@ pub async fn workspace_search_stream(
         })();
 
         if let Err(err) = run {
-            let _ = app_for_scan.emit(
-                "search://error",
-                SearchErrorEvent {
-                    request_id,
-                    error: err,
-                },
-            );
+            if app_for_scan
+                .emit(
+                    "search://error",
+                    SearchErrorEvent {
+                        request_id,
+                        error: err,
+                    },
+                )
+                .is_err()
+            {
+                return;
+            }
             let _ = app_for_scan.emit(
                 "search://done",
                 SearchDoneEvent {

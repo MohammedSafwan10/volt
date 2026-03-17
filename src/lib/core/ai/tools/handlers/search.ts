@@ -1,33 +1,160 @@
 /**
- * Search tool handlers - workspace_search and optional legacy search helpers
- * 
- * BETTER than Kiro:
- * - Smart result grouping by relevance
- * - Code-aware context (shows full function when match is inside)
+ * Search tool handlers
+ *
+ * - Result grouping by relevance
+ * - Code-aware context (shows surrounding lines)
  * - Deduplication of overlapping matches
- * - Clear file:line format for easy navigation
+ * - file:line format for easy navigation
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { fileService } from '$core/services/file-service';
-import { getIndexAge, indexProject, isIndexReady, searchFiles } from '$core/services/file-index';
 import { projectStore } from '$shared/stores/project.svelte';
 import { truncateOutput, resolvePath, type ToolResult } from '$core/ai/tools/utils';
 import { getWorkspaceSymbols as getTsWorkspaceSymbols, isTsLspConnected, ensureTsLspStarted } from '$core/lsp/typescript-sidecar';
 import { getWorkspaceSymbols as getDartWorkspaceSymbols, isDartLspRunning } from '$core/lsp/dart-sidecar';
 
+interface WorkspaceSearchTelemetry {
+  requestedEngine: string;
+  engine: string;
+  fallbackUsed: boolean;
+  fallbackReason?: string | null;
+  elapsedMs: number;
+  rgSource?: string;
+  rgPath?: string | null;
+}
+
+interface WorkspaceSearchInvokeResult {
+  files: Array<{
+    path: string;
+    matches: Array<{ line: number; lineContent: string }>;
+  }>;
+  totalMatches: number;
+  truncated: boolean;
+  telemetry?: WorkspaceSearchTelemetry;
+}
+
+interface WorkspaceSearchRequest {
+  query: string;
+  rootPath: string;
+  isRegex: boolean;
+  includeHidden: boolean;
+  caseSensitive: boolean;
+  includePattern: string;
+  excludePattern: string;
+}
+
+interface WorkspaceSearchAttempt {
+  result: WorkspaceSearchInvokeResult;
+  fallbackNote: string | null;
+}
+
+function getDefaultExcludePatterns(includeHidden: boolean): string[] {
+  const patterns = ['node_modules/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**'];
+  if (!includeHidden) {
+    patterns.push('.git/**', '.next/**');
+  }
+  return patterns;
+}
+
+function normalizeWorkspaceRoot(root: string): string {
+  return root.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function didWorkspaceRootChange(startRoot: string, currentRoot: string): boolean {
+  return normalizeWorkspaceRoot(startRoot) !== normalizeWorkspaceRoot(currentRoot);
+}
+
+function isCancelledSearchError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const maybeType = 'type' in error ? (error as { type?: unknown }).type : undefined;
+    if (maybeType === 'Cancelled') return true;
+  }
+  if (error instanceof Error) {
+    return /cancelled/i.test(error.message);
+  }
+  if (typeof error === 'string') {
+    return /cancelled/i.test(error);
+  }
+  return false;
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildWorkspaceSearchOptions(request: WorkspaceSearchRequest): Record<string, unknown> {
+  const { query, rootPath, isRegex, includeHidden, caseSensitive, includePattern, excludePattern } = request;
+  const excludePatterns = excludePattern
+    ? [excludePattern, ...getDefaultExcludePatterns(includeHidden)]
+    : getDefaultExcludePatterns(includeHidden);
+  return {
+    query,
+    rootPath,
+    useRegex: isRegex,
+    includeHidden,
+    caseSensitive,
+    includePatterns: includePattern ? [includePattern] : [],
+    excludePatterns,
+    maxResults: 50,
+    requestId: Date.now(),
+  };
+}
+
+async function runWorkspaceSearchAttempt(
+  request: WorkspaceSearchRequest,
+): Promise<WorkspaceSearchInvokeResult> {
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await invoke<WorkspaceSearchInvokeResult>('workspace_search', {
+        options: buildWorkspaceSearchOptions(request),
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isCancelledSearchError(error) || attempt === maxAttempts - 1) {
+        throw error;
+      }
+      await delay(30 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+async function resolveWorkspaceSearch(
+  request: WorkspaceSearchRequest,
+): Promise<WorkspaceSearchAttempt> {
+  const primary = await runWorkspaceSearchAttempt(request);
+  if (primary.totalMatches > 0 || request.isRegex || !request.caseSensitive) {
+    return { result: primary, fallbackNote: null };
+  }
+
+  const relaxed = await runWorkspaceSearchAttempt({
+    ...request,
+    caseSensitive: false,
+  });
+  if (relaxed.totalMatches > 0) {
+    return {
+      result: relaxed,
+      fallbackNote: 'Retried with caseSensitive: false after an exact-scope miss',
+    };
+  }
+
+  return { result: primary, fallbackNote: null };
+}
+
 /**
  * Search workspace for text/regex patterns
- * BETTER than Kiro's grepSearch:
- * - Shows 2 lines context (same as Kiro)
- * - Groups results by file with clear formatting
- * - Deduplicates overlapping context
- * - Shows file:line format for easy navigation
- * - Caps at 50 matches (same as Kiro)
- * - Truncates long lines at 120 chars
+ * - Shows 2 lines of context around each match
+ * - Groups results by file
+ * - Deduplicates overlapping context lines
+ * - Caps at 50 matches, truncates long lines at 120 chars
  */
 export async function handleWorkspaceSearch(args: Record<string, unknown>): Promise<ToolResult> {
   const query = String(args.query);
+  const isRegex = args.isRegex === true;
+  const includeHidden = Boolean(args.includeHidden);
   const includePattern = args.includePattern ? String(args.includePattern) : '';
   const excludePattern = args.excludePattern ? String(args.excludePattern) : '';
   const caseSensitive = Boolean(args.caseSensitive);
@@ -38,74 +165,116 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
     return { success: false, error: 'Search query cannot be empty' };
   }
 
-  // Smart query enhancement based on explanation
-  // If explanation mentions specific file types, auto-add include pattern
-  let smartIncludePattern = includePattern;
-  if (!includePattern && explanation) {
-    const expLower = explanation.toLowerCase();
-    if (expLower.includes('component') || expLower.includes('svelte')) {
-      smartIncludePattern = '**/*.svelte';
-    } else if (expLower.includes('react') || expLower.includes('jsx')) {
-      smartIncludePattern = '**/*.{tsx,jsx}';
-    } else if (expLower.includes('style') || expLower.includes('css')) {
-      smartIncludePattern = '**/*.{css,scss,sass,less}';
-    } else if (expLower.includes('test') || expLower.includes('spec')) {
-      smartIncludePattern = '**/*.{test,spec}.{ts,tsx,js,jsx}';
-    } else if (expLower.includes('config')) {
-      smartIncludePattern = '**/*.{json,yaml,yml,toml,config.*}';
-    }
+  if (!workspaceRoot) {
+    return { success: false, error: 'No workspace open' };
   }
 
+  // Use the include pattern exactly as the AI specified — don't modify it.
+  // The AI is smart enough to set its own glob patterns.
+
   try {
-    const result = await invoke<{
-      files: Array<{
-        path: string;
-        matches: Array<{ line: number; lineContent: string }>;
-      }>;
-      totalMatches: number;
-      truncated: boolean;
-      telemetry?: {
-        requestedEngine: string;
-        engine: string;
-        fallbackUsed: boolean;
-        fallbackReason?: string | null;
-        elapsedMs: number;
-        rgSource?: string;
-        rgPath?: string | null;
-      };
-    }>('workspace_search', {
-      options: {
-        query,
-        rootPath: workspaceRoot,
-        useRegex: true,
-        caseSensitive,
-        includePatterns: smartIncludePattern ? [smartIncludePattern] : [],
-        excludePatterns: excludePattern
-          ? [excludePattern, 'node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**']
-          : ['node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**'],
-        maxResults: 50,
-        requestId: Date.now()
-      }
+    const { result, fallbackNote } = await resolveWorkspaceSearch({
+      query,
+      rootPath: workspaceRoot,
+      isRegex,
+      includeHidden,
+      caseSensitive,
+      includePattern,
+      excludePattern,
     });
+    const currentWorkspaceRoot = projectStore.rootPath || '';
+    const workspaceChanged = didWorkspaceRootChange(
+      workspaceRoot,
+      currentWorkspaceRoot,
+    );
+
+    if (workspaceChanged) {
+      let msg = `Search result is stale for "${query}"`;
+      msg += isRegex ? '\nMode: regex' : '\nMode: literal';
+      msg += `\nWorkspace root used: ${workspaceRoot}`;
+      msg += `\nCurrent workspace root: ${currentWorkspaceRoot || '(none)'}`;
+      if (includeHidden) {
+        msg += '\nInclude hidden: true';
+      }
+      if (includePattern) {
+        msg += `\nInclude pattern: ${includePattern}`;
+      }
+      if (result.telemetry) {
+        msg += `\nEngine: ${result.telemetry.engine}`;
+        if (result.telemetry.fallbackUsed && result.telemetry.fallbackReason) {
+          msg += `\nFallback: ${result.telemetry.fallbackReason}`;
+        }
+      }
+      msg += '\nThe open workspace changed before this search completed. Retry the search.';
+      return {
+        success: true,
+        output: msg,
+        meta: result.telemetry
+          ? {
+              staleWorkspaceResult: true,
+              searchWorkspaceRoot: workspaceRoot,
+              currentWorkspaceRoot,
+              searchTelemetry: {
+                engine: result.telemetry.engine,
+                rgSource: result.telemetry.rgSource ?? 'none',
+                rgPath: result.telemetry.rgPath ?? null,
+                fallbackUsed: result.telemetry.fallbackUsed,
+                fallbackReason: result.telemetry.fallbackReason ?? null,
+                elapsedMs: result.telemetry.elapsedMs,
+              },
+            }
+          : {
+              staleWorkspaceResult: true,
+              searchWorkspaceRoot: workspaceRoot,
+              currentWorkspaceRoot,
+            },
+      };
+    }
 
     if (result.totalMatches === 0) {
       // Helpful message with suggestions
       let msg = `No matches for "${query}"`;
-      if (caseSensitive) {
+      if (isRegex) {
+        msg += '\nMode: regex';
+        msg += '\nTip: If this was intended as plain text, retry with isRegex: false or omit isRegex.';
+      } else {
+        msg += '\nMode: literal';
+      }
+      msg += `\nWorkspace root: ${workspaceRoot}`;
+      if (includeHidden) {
+        msg += '\nInclude hidden: true';
+      }
+      if (caseSensitive && !isRegex) {
         msg += '\nTip: Try with caseSensitive: false';
       }
       if (includePattern) {
-        msg += `\nSearched in: ${includePattern}`;
+        msg += `\nInclude pattern: ${includePattern}`;
+      }
+      if (excludePattern) {
+        msg += `\nExclude pattern: ${excludePattern}`;
+      }
+      if (result.telemetry) {
+        msg += `\nEngine: ${result.telemetry.engine}`;
+        if (result.telemetry.fallbackUsed && result.telemetry.fallbackReason) {
+          msg += `\nFallback: ${result.telemetry.fallbackReason}`;
+        }
+      }
+      if (fallbackNote) {
+        msg += `\n${fallbackNote}`;
       }
       return { success: true, output: msg };
     }
 
-    // Format output - clean, scannable format like Kiro but better
+    // Format output - clean, scannable format
     const lines: string[] = [];
     const fileCount = result.files.length;
     const matchCount = result.totalMatches;
 
     lines.push(`Found ${matchCount} match${matchCount > 1 ? 'es' : ''} in ${fileCount} file${fileCount > 1 ? 's' : ''}`);
+    lines.push(`Workspace root: ${workspaceRoot}`);
+    if (includeHidden) {
+      lines.push('Include hidden: true');
+    }
     if (result.telemetry) {
       const fallback = result.telemetry.fallbackUsed && result.telemetry.fallbackReason
         ? `, fallback: ${result.telemetry.fallbackReason}`
@@ -114,6 +283,15 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
           : '';
       const source = result.telemetry.rgSource ? `, source: ${result.telemetry.rgSource}` : '';
       lines.push(`Engine: ${result.telemetry.engine} (${result.telemetry.elapsedMs}ms${source}${fallback})`);
+    }
+    if (includePattern) {
+      lines.push(`Include pattern: ${includePattern}`);
+    }
+    if (excludePattern) {
+      lines.push(`Exclude pattern: ${excludePattern}`);
+    }
+    if (fallbackNote) {
+      lines.push(fallbackNote);
     }
     if (result.truncated) {
       lines.push('(results truncated)');
@@ -163,11 +341,8 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
             const content = truncateLine(fileLines[i] || '', 120);
             const isMatch = i + 1 === lineNum;
 
-            if (isMatch) {
-              lines.push(`${num} │ ${content}  ◀── MATCH`);
-            } else {
-              lines.push(`${num} │ ${content}`);
-            }
+            const marker = isMatch ? '>' : ' ';
+            lines.push(`${marker}${num} │ ${content}`);
           }
           lines.push('');
         } else {
@@ -199,6 +374,7 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
       truncated,
       meta: result.telemetry
         ? {
+            searchWorkspaceRoot: workspaceRoot,
             searchTelemetry: {
               engine: result.telemetry.engine,
               rgSource: result.telemetry.rgSource ?? 'none',
@@ -217,6 +393,12 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
       : typeof err === 'object' && err !== null
         ? JSON.stringify(err)
         : String(err);
+    if (/regex|pattern/i.test(message)) {
+      const hint = isRegex
+        ? 'The regex appears invalid. Fix the pattern or retry with isRegex: false for literal text search.'
+        : 'The query appears to contain regex-like characters. Retry without regex mode or escape special characters.';
+      return { success: false, error: `Search failed: ${message}\nHint: ${hint}` };
+    }
     return { success: false, error: `Search failed: ${message}` };
   }
 }
@@ -240,11 +422,8 @@ function truncateLine(line: string, maxLen: number): string {
 
 /**
  * Find files by name (fuzzy search)
- * BETTER than Kiro's fileSearch:
- * - Shows file type with icon/emoji
  * - Groups by directory for easier scanning
- * - Shows file size for context
- * - Highlights why it matched (name vs path)
+ * - Shows file type extension
  */
 export async function handleFindFiles(args: Record<string, unknown>): Promise<ToolResult> {
   const query = String(args.query);
@@ -257,81 +436,122 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   const includePattern = args.includePattern ? String(args.includePattern) : '';
   const excludePattern = args.excludePattern ? String(args.excludePattern) : '';
   const includeHidden = Boolean(args.includeHidden);
+  const excludePatterns = excludePattern
+    ? [excludePattern, ...getDefaultExcludePatterns(includeHidden)]
+    : getDefaultExcludePatterns(includeHidden);
+
+  function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
 
   try {
     let results: Array<{ name: string; relativePath: string }>;
-    let engineLabel = 'legacy-index';
+    let engineLabel = 'unknown';
     let rgSource: string | null = null;
     let rgPath: string | null = null;
     let elapsedMs = 0;
-    let fallbackNote = '';
+    let fallbackUsed = false;
+    let fallbackReason: string | null = null;
 
-    try {
-      const rgResult = await invoke<{
-        files: string[];
-        totalFiles: number;
-        truncated: boolean;
-        engine: string;
-        fallbackUsed: boolean;
-        fallbackReason?: string | null;
-        elapsedMs: number;
-        rgSource?: string | null;
-        rgPath?: string | null;
-      }>('find_files_by_name', {
-        options: {
-          query,
-          rootPath: workspaceRoot,
-          includeHidden,
-          includePatterns: includePattern ? [includePattern] : [],
-          excludePatterns: excludePattern
-            ? [excludePattern, 'node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**']
-            : ['node_modules/**', '.git/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**'],
-          maxResults: 25,
-        }
-      });
-      engineLabel = rgResult.engine;
-      rgSource = rgResult.rgSource ?? null;
-      rgPath = rgResult.rgPath ?? null;
-      elapsedMs = rgResult.elapsedMs ?? 0;
-      if (rgResult.fallbackUsed && rgResult.fallbackReason) {
-        fallbackNote = ` (fallback: ${rgResult.fallbackReason})`;
+    const backendResult = await invoke<{
+      files: string[];
+      totalFiles: number;
+      truncated: boolean;
+      engine: string;
+      fallbackUsed: boolean;
+      fallbackReason?: string | null;
+      elapsedMs: number;
+      rgSource?: string | null;
+      rgPath?: string | null;
+    }>('find_files_by_name', {
+      options: {
+        query,
+        rootPath: workspaceRoot,
+        includeHidden,
+        engine: 'rg',
+        includePatterns: includePattern ? [includePattern] : [],
+        excludePatterns,
+        maxResults: 25,
       }
-      results = rgResult.files.map((relativePath) => ({
-        relativePath,
-        name: relativePath.split('/').pop() || relativePath,
-      }));
-    } catch {
-      // Ensure index is ready and fresh (re-index if older than 5 minutes)
-      const maxAgeMs = 5 * 60 * 1000; // 5 minutes
-      const indexAge = getIndexAge();
-      const isStale = indexAge > maxAgeMs;
+    });
+    const currentWorkspaceRoot = projectStore.rootPath || '';
+    const workspaceChanged = didWorkspaceRootChange(
+      workspaceRoot,
+      currentWorkspaceRoot,
+    );
+    engineLabel = backendResult.engine;
+    rgSource = backendResult.rgSource ?? null;
+    rgPath = backendResult.rgPath ?? null;
+    elapsedMs = backendResult.elapsedMs ?? 0;
+    fallbackUsed = backendResult.fallbackUsed;
+    fallbackReason = backendResult.fallbackReason ?? null;
+    results = backendResult.files.map((relativePath) => ({
+      relativePath,
+      name: relativePath.split('/').pop() || relativePath,
+    }));
 
-      if (!isIndexReady() || isStale) {
-        if (workspaceRoot) {
-          await indexProject(workspaceRoot, true);
-        }
+    if (workspaceChanged) {
+      let msg = `Find files result is stale for "${query}"`;
+      msg += `\nWorkspace root used: ${workspaceRoot}`;
+      msg += `\nCurrent workspace root: ${currentWorkspaceRoot || '(none)'}`;
+      if (includePattern) {
+        msg += `\nInclude pattern: ${includePattern}`;
       }
-      results = searchFiles(query, [], 25);
-      engineLabel = 'legacy-index';
-      fallbackNote = ' (fallback: file index)';
+      msg += `\nSearch backend: ${engineLabel}`;
+      msg += `\nFallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`;
+      msg += '\nThe open workspace changed before this search completed. Retry the search.';
+      return {
+        success: true,
+        output: msg,
+        meta: {
+          staleWorkspaceResult: true,
+          searchWorkspaceRoot: workspaceRoot,
+          currentWorkspaceRoot,
+          searchTelemetry: {
+            engine: engineLabel,
+            rgSource: rgSource ?? (engineLabel === 'rg' ? 'unknown' : 'none'),
+            rgPath,
+            fallbackUsed,
+            fallbackReason,
+            elapsedMs,
+          },
+        },
+      };
     }
 
     if (results.length === 0) {
       // Helpful suggestions
       let msg = `No files matching "${query}"`;
+      msg += `\nWorkspace root: ${workspaceRoot}`;
+      if (includePattern) {
+        msg += `\nInclude pattern: ${includePattern}`;
+      }
       if (query.includes('.')) {
         msg += `\nTip: Try without extension, e.g. "${query.split('.')[0]}"`;
       }
       if (query.length < 3) {
         msg += '\nTip: Try a longer search term';
       }
+      msg += `\nSearch backend: ${engineLabel}`;
+      msg += `\nFallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`;
       return { success: true, output: msg };
     }
 
     // Format with file type indicators and grouping
     const lines: string[] = [];
     lines.push(`Found ${results.length} file${results.length > 1 ? 's' : ''} matching "${query}":`);
-    lines.push(`Engine: ${engineLabel}${fallbackNote}`);
+    lines.push(`Workspace root: ${workspaceRoot}`);
+    lines.push(`Search backend: ${engineLabel}`);
+    lines.push(`Fallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`);
+    if (includePattern) {
+      lines.push(`Include pattern: ${includePattern}`);
+    }
     lines.push('');
 
     // Group by parent directory for easier scanning
@@ -346,28 +566,16 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     // If all in same dir or few results, show flat list
     if (byDir.size <= 2 || results.length <= 8) {
       for (const file of results) {
-        const icon = getFileIcon(file.name);
-        lines.push(`${icon} ${file.relativePath}`);
+        lines.push(`  ${file.relativePath}`);
       }
     } else {
       // Group by directory
       for (const [dir, files] of byDir) {
         if (files.length === 0) continue;
-        lines.push(`📁 ${dir}/`);
+        lines.push(`${dir}/`);
         for (const file of files) {
-          const icon = getFileIcon(file.name);
-          lines.push(`   ${icon} ${file.name}`);
+          lines.push(`  ${file.name}`);
         }
-      }
-    }
-
-    // Smart suggestions - find related files
-    const relatedSuggestions = getRelatedFileSuggestions(results, query);
-    if (relatedSuggestions.length > 0) {
-      lines.push('');
-      lines.push('💡 Related files you might want:');
-      for (const suggestion of relatedSuggestions) {
-        lines.push(`   ${suggestion}`);
       }
     }
 
@@ -379,12 +587,13 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
       success: true,
         output: lines.join('\n'),
         meta: {
+          searchWorkspaceRoot: workspaceRoot,
           searchTelemetry: {
             engine: engineLabel,
             rgSource: rgSource ?? (engineLabel === 'rg' ? 'unknown' : 'none'),
             rgPath,
-            fallbackUsed: fallbackNote.length > 0,
-            fallbackReason: fallbackNote || null,
+            fallbackUsed,
+            fallbackReason,
             elapsedMs,
           },
         },
@@ -400,73 +609,11 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   }
 }
 
-/**
- * Get icon/emoji for file type
- */
-function getFileIcon(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
 
-  const icons: Record<string, string> = {
-    // Code
-    'ts': '📘', 'tsx': '⚛️', 'js': '📒', 'jsx': '⚛️',
-    'svelte': '🔶', 'vue': '💚', 'py': '🐍', 'rs': '🦀',
-    'go': '🐹', 'java': '☕', 'rb': '💎', 'php': '🐘',
-    // Web
-    'html': '🌐', 'css': '🎨', 'scss': '🎨', 'sass': '🎨', 'less': '🎨',
-    // Config
-    'json': '📋', 'yaml': '📋', 'yml': '📋', 'toml': '📋',
-    'xml': '📋', 'env': '🔐',
-    // Docs
-    'md': '📝', 'txt': '📄', 'pdf': '📕',
-    // Data
-    'sql': '🗃️', 'db': '🗃️', 'csv': '📊',
-    // Assets
-    'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'gif': '🖼️', 'svg': '🎨',
-    'ico': '🖼️', 'webp': '🖼️',
-    // Other
-    'lock': '🔒', 'gitignore': '🙈',
-  };
-
-  return icons[ext] || '📄';
-}
-
-/**
- * Get smart suggestions for related files
- * VOLT EXCLUSIVE - Kiro doesn't have this!
- */
-function getRelatedFileSuggestions(results: Array<{ name: string; relativePath: string }>, query: string): string[] {
-  const suggestions: string[] = [];
-
-  if (results.length === 0) return suggestions;
-
-  // Check if searching for a component - suggest test/story files
-  const firstResult = results[0];
-  const baseName = firstResult.name.replace(/\.[^.]+$/, '');
-  const ext = firstResult.name.split('.').pop()?.toLowerCase() || '';
-
-  // Component file patterns
-  const componentExts = ['svelte', 'tsx', 'jsx', 'vue'];
-  if (componentExts.includes(ext)) {
-    suggestions.push(`${baseName}.test.${ext === 'svelte' ? 'ts' : ext} (test file)`);
-    suggestions.push(`${baseName}.stories.${ext === 'svelte' ? 'ts' : ext} (storybook)`);
-  }
-
-  // If searching for a store, suggest related components
-  if (query.toLowerCase().includes('store') || firstResult.relativePath.includes('store')) {
-    suggestions.push(`Components using this store`);
-  }
-
-  // If searching for types/interfaces, suggest implementations
-  if (firstResult.relativePath.includes('types') || query.toLowerCase().includes('type')) {
-    suggestions.push(`Files importing these types`);
-  }
-
-  return suggestions.slice(0, 3); // Max 3 suggestions
-}
 
 /**
  * Search for symbols (functions, classes, variables) using LSP
- * Like Kiro's symbol search - finds definitions across the codebase
+ * Uses workspace symbol queries from connected LSPs with regex text fallback.
  */
 export async function handleSearchSymbols(args: Record<string, unknown>): Promise<ToolResult> {
   const query = String(args.query);
@@ -562,10 +709,12 @@ export async function handleSearchSymbols(args: Record<string, unknown>): Promis
     return { success: true, output: text };
 
   } catch (err) {
-    // LSP not available - fallback to text search
+    // LSP not available - fallback to text search with broader pattern
+    // Covers: function declarations, arrow functions, class/interface/type/enum,
+    // const/let/var assignments, Dart keywords, decorators/annotations
     const fallbackResult = await handleWorkspaceSearch({
-      query: `(function|class|const|let|var|interface|type|enum|void|final|late|dynamic|bool|int|double|String)\\s+${query}\\b`,
-      includePattern: '**/*.{ts,tsx,js,jsx,svelte,vue,dart}',
+      query: `(function|class|const|let|var|interface|type|enum|export|def|fn|pub|async|final|late|dynamic|@)\\s*${query}\\b|\\b${query}\\s*(=|:)\\s*(\\(|async|function|class)`,
+      includePattern: '**/*.{ts,tsx,js,jsx,svelte,vue,dart,rs,py,go}',
       caseSensitive: false
     });
 
