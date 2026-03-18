@@ -17,25 +17,15 @@
 
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
+import { sendDidSaveForTrackedDocument } from './sidecar/document-lifecycle';
 import {
-  rehydrateTrackedDocuments,
-  sendDidSaveForTrackedDocument,
-} from './sidecar/document-lifecycle';
-import {
-  clearSourceProblemsForFile,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
-import { detectXmlLsp, isXmlLspAvailable, type XmlLspInfo } from './xml-sdk';
+import { detectXmlLsp, isXmlLspAvailable } from './xml-sdk';
 
 let xmlServerTransport: LspTransport | null = null;
 let xmlServerInitialized = false;
-let xmlSessionGeneration = 0;
 const xmlRecovery = createLspRecoveryController({
   source: 'xml',
   restart: async () => {
@@ -44,12 +34,6 @@ const xmlRecovery = createLspRecoveryController({
 });
 
 // Track open documents
-const openDocuments = new Map<string, { version: number; content: string }>();
-
-async function rehydrateOpenDocuments(): Promise<void> {
-  await rehydrateTrackedDocuments(openDocuments, notifyDocumentOpened);
-}
-
 // Debounce diagnostics
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -108,23 +92,6 @@ function pathToUri(filepath: string): string {
 }
 
 /**
- * Convert URI to file path
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
-}
-
-/**
  * Check if XML LSP is available
  */
 export async function checkXmlLspAvailable(): Promise<boolean> {
@@ -175,7 +142,6 @@ export async function initializeServer(): Promise<boolean> {
       },
     });
     xmlServerTransport.configureHealth({ autoRestart: true });
-    xmlSessionGeneration = startSourceSession('xml');
 
     if (!xmlServerTransport) {
       console.error('[XML LSP] Failed to start server');
@@ -186,16 +152,9 @@ export async function initializeServer(): Promise<boolean> {
     xmlServerTransport.onMessage(handleServerMessage);
     xmlServerTransport.onExit(() => {
       console.log('[XML LSP] Server exited');
-      xmlSessionGeneration = markSourceSessionStale('xml');
       xmlRecovery.schedule('transport exit');
       xmlServerTransport = null;
       xmlServerInitialized = false;
-      openDocuments.clear();
-    });
-    xmlServerTransport.onRestart(async () => {
-      xmlSessionGeneration = startSourceSession('xml');
-      markSourceSessionReady('xml', xmlSessionGeneration);
-      await rehydrateOpenDocuments();
     });
 
     // Send initialize request
@@ -292,7 +251,6 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     xmlServerInitialized = true;
-    markSourceSessionReady('xml', xmlSessionGeneration);
     xmlRecovery.reset();
     console.log('[XML LSP] Server initialized successfully');
     return true;
@@ -321,58 +279,6 @@ function handleServerMessage(message: any): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as { uri: string; diagnostics: unknown[] });
-    }
-  }
-}
-
-/**
- * Handle diagnostics from the server
- */
-function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): void {
-  const filepath = uriToPath(params.uri);
-  const fileName = filepath.split(/[\\/]/).pop() || filepath;
-
-  const problems: Problem[] = params.diagnostics.map((diag: unknown, index: number) => {
-    const d = diag as {
-      range: { start: { line: number; character: number }; end: { line: number; character: number } };
-      message: string;
-      severity?: number;
-      code?: string | number;
-      source?: string;
-    };
-
-    const severityMap: Record<number, ProblemSeverity> = {
-      1: 'error',
-      2: 'warning',
-      3: 'info',
-      4: 'hint',
-    };
-
-    return {
-      id: `xml-${filepath}-${d.range.start.line}-${d.range.start.character}-${index}`,
-      file: filepath,
-      fileName,
-      line: d.range.start.line + 1,
-      column: d.range.start.character + 1,
-      endLine: d.range.end.line + 1,
-      endColumn: d.range.end.character + 1,
-      message: d.message,
-      severity: severityMap[d.severity || 1] || 'error',
-      source: d.source || 'lemminx',
-      code: d.code?.toString(),
-    };
-  });
-
-  setSourceProblemsForFile({
-    source: 'xml',
-    generation: xmlSessionGeneration,
-    filePath: filepath,
-    problems,
-  });
 }
 
 /**
@@ -384,39 +290,9 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
 
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!xmlServerTransport || !xmlServerInitialized) return;
 
-  const uri = pathToUri(filepath);
-  const languageId = getLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await xmlServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await xmlServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content,
-    },
-  });
+  await xmlServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
 }
 
 /**
@@ -425,17 +301,6 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
 export async function notifyDocumentChanged(filepath: string, content: string): Promise<void> {
   if (!isXmlFile(filepath)) return;
   if (!xmlServerTransport || !xmlServerInitialized) return;
-
-  const doc = openDocuments.get(filepath);
-  if (!doc) {
-    await notifyDocumentOpened(filepath, content);
-    return;
-  }
-
-  doc.version++;
-  doc.content = content;
-
-  const uri = pathToUri(filepath);
 
   const existingTimer = diagnosticDebounceTimers.get(filepath);
   if (existingTimer) {
@@ -449,13 +314,7 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
 
       if (!xmlServerTransport || !xmlServerInitialized) return;
 
-      await xmlServerTransport.sendNotification('textDocument/didChange', {
-        textDocument: {
-          uri,
-          version: doc.version,
-        },
-        contentChanges: [{ text: content }],
-      });
+      await xmlServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
     }, 200)
   );
 }
@@ -467,24 +326,13 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!isXmlFile(filepath)) return;
   if (!xmlServerTransport || !xmlServerInitialized) return;
 
-  openDocuments.delete(filepath);
-
   const timer = diagnosticDebounceTimers.get(filepath);
   if (timer) {
     clearTimeout(timer);
     diagnosticDebounceTimers.delete(filepath);
   }
 
-  const uri = pathToUri(filepath);
-  await xmlServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri },
-  });
-
-  clearSourceProblemsForFile({
-    source: 'xml',
-    generation: xmlSessionGeneration,
-    filePath: filepath,
-  });
+  await xmlServerTransport.closeDocument(filepath);
 }
 
 export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -492,10 +340,9 @@ export async function notifyDocumentSaved(filepath: string, content: string): Pr
   await sendDidSaveForTrackedDocument({
     filepath,
     content,
-    openDocuments,
     transport: xmlServerTransport,
     initialized: xmlServerInitialized,
-    ensureOpen: notifyDocumentOpened,
+    languageId: getLanguageId(filepath),
     pathToUri,
   });
 }
@@ -612,8 +459,6 @@ export async function stopXmlLsp(): Promise<void> {
     void registry.stopServer('xml');
     xmlServerTransport = null;
     xmlServerInitialized = false;
-    openDocuments.clear();
-    xmlSessionGeneration = markSourceSessionStale('xml');
     xmlRecovery.reset();
   }
 }

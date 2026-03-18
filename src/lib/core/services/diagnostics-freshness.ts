@@ -66,12 +66,12 @@ export function summarizeDiagnosticSources(
   let status: DiagnosticSourceHealth = 'idle';
   if (isUpdating) {
     status = 'updating';
-  } else if (staleSources.length > 0) {
-    status = 'stale';
   } else if (hasFreshSources) {
     status = 'fresh';
   } else if (hasWarmingSources) {
     status = 'warming';
+  } else if (staleSources.length > 0) {
+    status = 'stale';
   }
 
   return {

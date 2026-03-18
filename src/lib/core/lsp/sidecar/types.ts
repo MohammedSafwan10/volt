@@ -79,6 +79,19 @@ export interface LspError {
   message?: string;
 }
 
+export interface LspTrackedDocumentSyncResult {
+  kind: 'noop' | 'open' | 'change';
+  uri: string;
+  version: number;
+}
+
+export interface LspTrackedDocumentInfo {
+  filePath: string;
+  uri: string;
+  languageId: string;
+  version: number;
+}
+
 /** JSON-RPC request message */
 export interface JsonRpcRequest {
   jsonrpc: '2.0';

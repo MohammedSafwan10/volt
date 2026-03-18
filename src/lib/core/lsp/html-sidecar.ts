@@ -15,18 +15,11 @@
 
 import {
   getLspRegistry,
-  rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  clearSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
@@ -35,7 +28,6 @@ import { getAllFiles } from '$core/services/file-index';
 let htmlServerTransport: LspTransport | null = null;
 let htmlServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-let htmlSessionGeneration = 0;
 const htmlRecovery = createLspRecoveryController({
   source: 'html',
   restart: async () => {
@@ -43,8 +35,6 @@ const htmlRecovery = createLspRecoveryController({
   },
 });
 
-// Document tracking
-const openDocuments = new Map<string, { version: number; content: string }>();
 const PROJECT_ANALYSIS_BATCH_SIZE = 10;
 const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
 let projectAnalysisRunId = 0;
@@ -53,11 +43,7 @@ function normalizeHtmlFilePath(filepath: string): string {
   return filepath.replace(/\\/g, '/');
 }
 
-function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
-  const active = new Set(
-    Array.from(openDocuments.keys()).map((path) => normalizeHtmlFilePath(path)),
-  );
-
+function prioritizeProjectFiles<T extends { path: string }>(files: T[], active: Set<string>): T[] {
   return [...files].sort((a, b) => {
     const aActive = active.has(normalizeHtmlFilePath(a.path)) ? 0 : 1;
     const bActive = active.has(normalizeHtmlFilePath(b.path)) ? 0 : 1;
@@ -66,8 +52,13 @@ function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
   });
 }
 
-async function rehydrateOpenDocuments(): Promise<void> {
-  await rehydrateTrackedDocuments(openDocuments, notifyHtmlDocumentOpened);
+async function getTrackedDocumentPaths(): Promise<Set<string>> {
+  if (!htmlServerTransport || !htmlServerInitialized) {
+    return new Set();
+  }
+
+  const tracked = await htmlServerTransport.listTrackedDocuments();
+  return new Set(tracked.map((document) => normalizeHtmlFilePath(document.filePath)));
 }
 
 /**
@@ -120,35 +111,6 @@ function uriToPath(uri: string): string {
 }
 
 /**
- * Map LSP severity to our severity
- */
-function mapSeverity(lspSeverity: number): ProblemSeverity {
-  switch (lspSeverity) {
-    case 1: return 'error';
-    case 2: return 'warning';
-    case 3: return 'info';
-    case 4: return 'hint';
-    default: return 'info';
-  }
-}
-
-interface Diagnostic {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
-  message: string;
-  severity?: number;
-  code?: number | string;
-  source?: string;
-}
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-/**
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
@@ -165,41 +127,6 @@ function handleLspMessage(message: JsonRpcMessage): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as PublishDiagnosticsParams);
-    }
-  }
-}
-
-/**
- * Handle diagnostics from the LSP server
- */
-function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = uriToPath(params.uri);
-  const fileName = filePath.split(/[/\\]/).pop() || filePath;
-
-  const problems: Problem[] = params.diagnostics.map((diag, index) => ({
-    id: `html:${filePath}:${diag.range.start.line}:${diag.range.start.character}:${index}`,
-    file: filePath,
-    fileName,
-    line: diag.range.start.line + 1,
-    column: diag.range.start.character + 1,
-    endLine: diag.range.end.line + 1,
-    endColumn: diag.range.end.character + 1,
-    message: diag.message,
-    severity: mapSeverity(diag.severity ?? 1),
-    source: diag.source || 'html',
-    code: diag.code?.toString()
-  }));
-
-  setSourceProblemsForFile({
-    source: 'html',
-    generation: htmlSessionGeneration,
-    filePath,
-    problems,
-  });
 }
 
 /**
@@ -225,7 +152,6 @@ async function initializeServer(): Promise<void> {
           windowMs: 120_000,
         },
       });
-      htmlSessionGeneration = startSourceSession('html');
 
       // Disable health monitoring for HTML server to prevent false positive timeouts
       // HTML server can be slow to respond during initial project load
@@ -237,17 +163,10 @@ async function initializeServer(): Promise<void> {
       });
       htmlServerTransport.onExit(() => {
         console.log('[HTML LSP] Server exited');
-        htmlSessionGeneration = markSourceSessionStale('html');
         htmlRecovery.schedule('transport exit');
         htmlServerTransport = null;
         htmlServerInitialized = false;
         initializationPromise = null;
-        openDocuments.clear();
-      });
-      htmlServerTransport.onRestart(async () => {
-        htmlSessionGeneration = startSourceSession('html');
-        markSourceSessionReady('html', htmlSessionGeneration);
-        await rehydrateOpenDocuments();
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -302,7 +221,6 @@ async function initializeServer(): Promise<void> {
 
       await htmlServerTransport.sendNotification('initialized', {});
       htmlServerInitialized = true;
-      markSourceSessionReady('html', htmlSessionGeneration);
       htmlRecovery.reset();
       console.log('[HTML LSP] Server initialized');
     } catch (error) {
@@ -326,39 +244,10 @@ export async function notifyHtmlDocumentOpened(filepath: string, content: string
   // Initialize server if needed
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!htmlServerTransport || !htmlServerInitialized) return;
 
-  const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await htmlServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await htmlServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content
-    }
-  });
+  await htmlServerTransport.syncDocument(filepath, languageId, content);
 }
 
 /**
@@ -368,19 +257,7 @@ export async function notifyHtmlDocumentChanged(filepath: string, content: strin
   if (!isHtmlFile(filepath)) return;
   if (!htmlServerTransport || !htmlServerInitialized) return;
 
-  const existing = openDocuments.get(filepath);
-  if (!existing) {
-    await notifyHtmlDocumentOpened(filepath, content);
-    return;
-  }
-
-  existing.version++;
-  existing.content = content;
-
-  await htmlServerTransport.sendNotification('textDocument/didChange', {
-    textDocument: { uri: pathToUri(filepath), version: existing.version },
-    contentChanges: [{ text: content }]
-  });
+  await htmlServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
 }
 
 /**
@@ -388,17 +265,7 @@ export async function notifyHtmlDocumentChanged(filepath: string, content: strin
  */
 export async function notifyHtmlDocumentClosed(filepath: string): Promise<void> {
   if (!htmlServerTransport || !htmlServerInitialized) return;
-  if (!openDocuments.has(filepath)) return;
-
-  openDocuments.delete(filepath);
-  await htmlServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri: pathToUri(filepath) }
-  });
-  clearSourceProblemsForFile({
-    source: 'html',
-    generation: htmlSessionGeneration,
-    filePath: filepath,
-  });
+  await htmlServerTransport.closeDocument(filepath);
 }
 
 export async function notifyHtmlDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -406,10 +273,9 @@ export async function notifyHtmlDocumentSaved(filepath: string, content: string)
   await sendDidSaveForTrackedDocument({
     filepath,
     content,
-    openDocuments,
     transport: htmlServerTransport,
     initialized: htmlServerInitialized,
-    ensureOpen: notifyHtmlDocumentOpened,
+    languageId: getLanguageId(filepath),
     pathToUri,
   });
 }
@@ -550,8 +416,6 @@ export async function stopHtmlLsp(): Promise<void> {
   htmlServerTransport = null;
   htmlServerInitialized = false;
   initializationPromise = null;
-  openDocuments.clear();
-  htmlSessionGeneration = markSourceSessionStale('html');
   htmlRecovery.reset();
 }
 
@@ -562,9 +426,13 @@ export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
   const runId = ++projectAnalysisRunId;
+  const trackedDocumentPaths = await getTrackedDocumentPaths();
 
   const allFiles = getAllFiles();
-  const htmlFiles = prioritizeProjectFiles(allFiles.filter(f => isHtmlFile(f.path)));
+  const htmlFiles = prioritizeProjectFiles(
+    allFiles.filter((f) => isHtmlFile(f.path)),
+    trackedDocumentPaths,
+  );
 
   if (htmlFiles.length === 0) {
     console.log('[HTML LSP] No HTML files found for background analysis.');
@@ -583,7 +451,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     const normalizedPath = normalizeHtmlFilePath(file.path);
 
     // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(normalizedPath)) continue;
+    if (trackedDocumentPaths.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
     if (runId !== projectAnalysisRunId) {
@@ -593,6 +461,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     if (content) {
       // This will automatically initialize server if needed
       await notifyHtmlDocumentOpened(normalizedPath, content);
+      trackedDocumentPaths.add(normalizedPath);
       processedSinceYield += 1;
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {

@@ -350,7 +350,6 @@ function createColorProvider(monaco: typeof Monaco): Monaco.languages.DocumentCo
 export function registerTailwindMonacoProviders(): void {
   const monaco = getMonaco();
   if (!monaco) {
-    console.warn('[Tailwind Monaco Providers] Monaco not loaded');
     return;
   }
   
@@ -378,7 +377,6 @@ export function registerTailwindMonacoProviders(): void {
     registeredDisposables.push(colorDisposable);
   }
   
-  console.log('[Tailwind Monaco Providers] Registered providers for:', TAILWIND_LANGUAGES);
 }
 
 /**
@@ -389,5 +387,4 @@ export function disposeTailwindMonacoProviders(): void {
     disposable.dispose();
   }
   registeredDisposables.length = 0;
-  console.log('[Tailwind Monaco Providers] Disposed all providers');
 }

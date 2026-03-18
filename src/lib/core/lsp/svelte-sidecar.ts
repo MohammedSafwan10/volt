@@ -16,25 +16,17 @@
 
 import {
   getLspRegistry,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  clearSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { type Problem } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
 import { registerSvelteMonacoProviders, disposeSvelteMonacoProviders } from './svelte-monaco-providers';
 import {
   getSvelteLanguageId,
-  mapSvelteSeverity,
   sveltePathToUri,
-  svelteUriToPath,
 } from './svelte-sidecar-utils';
 
 // Server instance tracking
@@ -42,25 +34,12 @@ let svelteServerTransport: LspTransport | null = null;
 let svelteServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
-let svelteSessionGeneration = 0;
 const svelteRecovery = createLspRecoveryController({
   source: 'svelte',
   restart: async () => {
     await recoverSvelteLspAfterExit();
   },
 });
-
-// Document tracking
-const openDocuments = new Map<string, { version: number; content: string }>();
-
-async function rehydrateOpenDocuments(): Promise<void> {
-  if (!svelteServerTransport || !svelteServerInitialized) return;
-  const docs = Array.from(openDocuments.entries());
-  openDocuments.clear();
-  for (const [filepath, doc] of docs) {
-    await notifySvelteDocumentOpened(filepath, doc.content);
-  }
-}
 
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -73,17 +52,22 @@ function normalizeSvelteFilePath(filepath: string): string {
   return filepath.replace(/\\/g, '/');
 }
 
-function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
-  const active = new Set(
-    Array.from(openDocuments.keys()).map((path) => normalizeSvelteFilePath(path)),
-  );
-
+function prioritizeProjectFiles<T extends { path: string }>(files: T[], active: Set<string>): T[] {
   return [...files].sort((a, b) => {
     const aActive = active.has(normalizeSvelteFilePath(a.path)) ? 0 : 1;
     const bActive = active.has(normalizeSvelteFilePath(b.path)) ? 0 : 1;
     if (aActive !== bActive) return aActive - bActive;
     return normalizeSvelteFilePath(a.path).localeCompare(normalizeSvelteFilePath(b.path));
   });
+}
+
+async function getTrackedDocumentPaths(): Promise<Set<string>> {
+  if (!svelteServerTransport || !svelteServerInitialized) {
+    return new Set();
+  }
+
+  const tracked = await svelteServerTransport.listTrackedDocuments();
+  return new Set(tracked.map((document) => normalizeSvelteFilePath(document.filePath)));
 }
 
 /**
@@ -112,9 +96,7 @@ function handleLspMessage(message: JsonRpcMessage): void {
 
   // Handle notifications
   if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as PublishDiagnosticsParams);
-    } else if (message.method === 'window/logMessage') {
+    if (message.method === 'window/logMessage') {
       const params = message.params as { type: number; message: string };
       console.log(`[Svelte LSP] ${params.message}`);
     }
@@ -130,40 +112,6 @@ interface Diagnostic {
   severity?: number;
   code?: number | string;
   source?: string;
-}
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-/**
- * Handle diagnostics from the LSP server
- */
-function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = svelteUriToPath(params.uri);
-  const fileName = filePath.split(/[/\\]/).pop() || filePath;
-
-  const problems: Problem[] = params.diagnostics.map((diag, index) => ({
-    id: `svelte:${filePath}:${diag.range.start.line}:${diag.range.start.character}:${index}`,
-    file: filePath,
-    fileName,
-    line: diag.range.start.line + 1, // LSP is 0-based, we use 1-based
-    column: diag.range.start.character + 1,
-    endLine: diag.range.end.line + 1,
-    endColumn: diag.range.end.character + 1,
-    message: diag.message,
-    severity: mapSvelteSeverity(diag.severity ?? 1),
-    source: diag.source || 'svelte',
-    code: diag.code?.toString()
-  }));
-
-  setSourceProblemsForFile({
-    source: 'svelte',
-    generation: svelteSessionGeneration,
-    filePath,
-    problems,
-  });
 }
 
 /**
@@ -201,7 +149,6 @@ async function initializeServer(): Promise<void> {
         },
       });
       svelteServerTransport.configureHealth({ autoRestart: true });
-      svelteSessionGeneration = startSourceSession('svelte');
 
       // Set up message handler
       svelteServerTransport.onMessage(handleLspMessage);
@@ -214,18 +161,11 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       svelteServerTransport.onExit(() => {
         console.log('[Svelte LSP] Server exited');
-        svelteSessionGeneration = markSourceSessionStale('svelte');
         svelteRecovery.schedule('transport exit');
         svelteServerTransport = null;
         svelteServerInitialized = false;
         initializationPromise = null;
         initializedRootPath = null;
-        openDocuments.clear();
-      });
-      svelteServerTransport.onRestart(async () => {
-        svelteSessionGeneration = startSourceSession('svelte');
-        markSourceSessionReady('svelte', svelteSessionGeneration);
-        await rehydrateOpenDocuments();
       });
 
       // Send initialize request
@@ -367,7 +307,6 @@ async function initializeServer(): Promise<void> {
 
       svelteServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      markSourceSessionReady('svelte', svelteSessionGeneration);
       svelteRecovery.reset();
 
       // Register Monaco providers
@@ -393,39 +332,10 @@ export async function notifySvelteDocumentOpened(filepath: string, content: stri
   // Initialize server if needed
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!svelteServerTransport || !svelteServerInitialized) return;
 
-  const uri = sveltePathToUri(filepath);
   const languageId = getSvelteLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await svelteServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await svelteServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content
-    }
-  });
+  await svelteServerTransport.syncDocument(filepath, languageId, content);
 }
 
 /**
@@ -434,19 +344,6 @@ export async function notifySvelteDocumentOpened(filepath: string, content: stri
 export async function notifySvelteDocumentChanged(filepath: string, content: string): Promise<void> {
   if (!isSvelteFile(filepath)) return;
   if (!svelteServerTransport || !svelteServerInitialized) return;
-
-  const doc = openDocuments.get(filepath);
-  if (!doc) {
-    // Document wasn't opened, open it now
-    await notifySvelteDocumentOpened(filepath, content);
-    return;
-  }
-
-  // Update version
-  doc.version++;
-  doc.content = content;
-
-  const uri = sveltePathToUri(filepath);
 
   // Debounce the change notification
   const existingTimer = diagnosticDebounceTimers.get(filepath);
@@ -459,14 +356,7 @@ export async function notifySvelteDocumentChanged(filepath: string, content: str
 
     if (!svelteServerTransport || !svelteServerInitialized) return;
 
-    // Send didChange notification with full content
-    await svelteServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: doc.version
-      },
-      contentChanges: [{ text: content }]
-    });
+    await svelteServerTransport.syncDocument(filepath, getSvelteLanguageId(filepath), content);
   }, DIAGNOSTIC_DEBOUNCE_MS));
 }
 
@@ -477,6 +367,7 @@ export async function notifySvelteDocumentSaved(filepath: string, content: strin
   if (!isSvelteFile(filepath)) return;
   if (!svelteServerTransport || !svelteServerInitialized) return;
 
+  await svelteServerTransport.syncDocument(filepath, getSvelteLanguageId(filepath), content);
   const uri = sveltePathToUri(filepath);
 
   await svelteServerTransport.sendNotification('textDocument/didSave', {
@@ -492,20 +383,7 @@ export async function notifySvelteDocumentClosed(filepath: string): Promise<void
   if (!isSvelteFile(filepath)) return;
   if (!svelteServerTransport || !svelteServerInitialized) return;
 
-  openDocuments.delete(filepath);
-
-  const uri = sveltePathToUri(filepath);
-
-  await svelteServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri }
-  });
-
-  // Clear Svelte problems for this file
-  clearSourceProblemsForFile({
-    source: 'svelte',
-    generation: svelteSessionGeneration,
-    filePath: filepath,
-  });
+  await svelteServerTransport.closeDocument(filepath);
 }
 
 /**
@@ -854,8 +732,6 @@ export async function stopSvelteLsp(): Promise<void> {
   svelteServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
-  openDocuments.clear();
-  svelteSessionGeneration = markSourceSessionStale('svelte');
   svelteRecovery.reset();
 
   // Clear all diagnostic timers
@@ -900,9 +776,13 @@ export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
   const runId = ++projectAnalysisRunId;
+  const trackedDocumentPaths = await getTrackedDocumentPaths();
 
   const allFiles = getAllFiles();
-  const svelteFiles = prioritizeProjectFiles(allFiles.filter(f => isSvelteFile(f.path)));
+  const svelteFiles = prioritizeProjectFiles(
+    allFiles.filter((f) => isSvelteFile(f.path)),
+    trackedDocumentPaths,
+  );
 
   if (svelteFiles.length === 0) return;
 
@@ -918,7 +798,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     const normalizedPath = normalizeSvelteFilePath(file.path);
 
     // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(normalizedPath)) continue;
+    if (trackedDocumentPaths.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
     if (runId !== projectAnalysisRunId) {
@@ -928,6 +808,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     if (content) {
       // This will automatically initialize server if needed
       await notifySvelteDocumentOpened(normalizedPath, content);
+      trackedDocumentPaths.add(normalizedPath);
 
       processedSinceYield += 1;
 

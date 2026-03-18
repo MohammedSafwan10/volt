@@ -51,4 +51,18 @@ describe('diagnostics-freshness', () => {
     expect(summary.hasFreshSources).toBe(false);
     expect(summary.hasWarmingSources).toBe(true);
   });
+
+  it('prefers fresh aggregate status over unrelated stale sources', () => {
+    const summary = summarizeDiagnosticSources(
+      [
+        { source: 'typescript', lastUpdated: 99_500, isUpdating: false, isStale: false, fileCount: 2, problemCount: 1 },
+        { source: 'eslint', lastUpdated: 10_000, isUpdating: false, isStale: true, fileCount: 1, problemCount: 3 },
+      ],
+      100_000,
+    );
+
+    expect(summary.status).toBe('fresh');
+    expect(summary.staleSources).toEqual(['eslint']);
+    expect(summary.hasFreshSources).toBe(true);
+  });
 });

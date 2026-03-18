@@ -9,9 +9,11 @@
 //! - Clean shutdown on app/project close
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::path::BaseDirectory;
 use tauri::Manager;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -85,6 +87,12 @@ pub struct ExternalLspConfig {
     pub env: Option<HashMap<String, String>>,
 }
 
+#[derive(Debug, Clone)]
+enum SavedServerConfig {
+    Sidecar(LspServerConfig),
+    External(ExternalLspConfig),
+}
+
 /// Information about a running LSP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerInfo {
@@ -124,9 +132,167 @@ struct RunningServer {
     pid: u32,
 }
 
+#[derive(Debug, Clone)]
+struct TrackedDocumentState {
+    uri: String,
+    language_id: String,
+    version: i64,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDiagnosticProblem {
+    file: String,
+    file_name: String,
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+    message: String,
+    severity: String,
+    code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDiagnosticsEvent {
+    server_id: String,
+    source: String,
+    file_path: String,
+    problems: Vec<LspDiagnosticProblem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDiagnosticsClearFileEvent {
+    server_id: String,
+    source: String,
+    file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDiagnosticsSourceStateEvent {
+    server_id: String,
+    source: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspTrackedDocumentSyncResult {
+    kind: String,
+    uri: String,
+    version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspTrackedDocumentInfo {
+    pub file_path: String,
+    pub uri: String,
+    pub language_id: String,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspProjectDiagnosticsPlan {
+    pub action: String,
+    pub run_id: Option<u64>,
+    pub root_path: Option<String>,
+    pub delay_ms: u64,
+    pub stagger_ms: u64,
+    pub sidecars: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct ProjectDiagnosticsSchedulerState {
+    active_run_id: Option<u64>,
+    active_root: Option<String>,
+    pending_root: Option<String>,
+    next_run_id: u64,
+    last_run_finished_at_ms: u64,
+    sidecar_retry_after: HashMap<String, u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishDiagnosticsParams {
+    uri: String,
+    diagnostics: Vec<PublishDiagnostic>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishDiagnostic {
+    range: PublishDiagnosticRange,
+    message: String,
+    severity: Option<u8>,
+    code: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishDiagnosticRange {
+    start: PublishDiagnosticPosition,
+    end: PublishDiagnosticPosition,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishDiagnosticPosition {
+    line: usize,
+    character: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidOpenTextDocumentParams {
+    text_document: DidOpenTextDocumentItem,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidOpenTextDocumentItem {
+    uri: String,
+    language_id: String,
+    version: i64,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidChangeTextDocumentParams {
+    text_document: VersionedTextDocumentIdentifier,
+    content_changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionedTextDocumentIdentifier {
+    uri: String,
+    version: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TextDocumentContentChangeEvent {
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidCloseTextDocumentParams {
+    text_document: TextDocumentIdentifier,
+}
+
+#[derive(Debug, Deserialize)]
+struct TextDocumentIdentifier {
+    uri: String,
+}
+
 /// LSP Manager - manages all language server processes (sidecars and external)
 pub struct LspManager<R: Runtime> {
     servers: Arc<Mutex<HashMap<String, RunningServer>>>,
+    saved_configs: Arc<Mutex<HashMap<String, SavedServerConfig>>>,
+    tracked_documents: Arc<Mutex<HashMap<String, HashMap<String, TrackedDocumentState>>>>,
+    project_diagnostics: Arc<Mutex<ProjectDiagnosticsSchedulerState>>,
     app_handle: AppHandle<R>,
 }
 
@@ -135,7 +301,533 @@ impl<R: Runtime> LspManager<R> {
     pub fn new(app_handle: AppHandle<R>) -> Self {
         Self {
             servers: Arc::new(Mutex::new(HashMap::new())),
+            saved_configs: Arc::new(Mutex::new(HashMap::new())),
+            tracked_documents: Arc::new(Mutex::new(HashMap::new())),
+            project_diagnostics: Arc::new(Mutex::new(ProjectDiagnosticsSchedulerState::default())),
             app_handle,
+        }
+    }
+
+    fn current_time_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn is_known_project_diagnostics_sidecar(sidecar: &str) -> bool {
+        matches!(
+            sidecar,
+            "css" | "html" | "typescript" | "svelte" | "eslint" | "dart"
+        )
+    }
+
+    fn should_cooldown_project_diagnostics_sidecar(
+        error_type: Option<&str>,
+        message: Option<&str>,
+    ) -> bool {
+        let error_type = error_type.unwrap_or_default();
+        let message = message.unwrap_or_default().to_ascii_lowercase();
+
+        matches!(
+            error_type,
+            "ServerNotFound" | "SpawnFailed" | "SendFailed" | "ProcessError"
+        ) || message.contains("transport not connected")
+            || message.contains("server exited")
+            || message.contains("spawn failed")
+    }
+
+    fn map_diagnostic_severity(severity: Option<u8>) -> &'static str {
+        match severity.unwrap_or(1) {
+            1 => "error",
+            2 => "warning",
+            3 => "info",
+            4 => "hint",
+            _ => "info",
+        }
+    }
+
+    fn uri_to_file_path(uri: &str) -> String {
+        let mut path = uri.strip_prefix("file://").unwrap_or(uri).to_string();
+        let decoded = urlencoding::decode(&path)
+            .map(|value| value.into_owned())
+            .unwrap_or(path);
+        path = decoded;
+
+        if cfg!(windows) && path.starts_with('/') && path.chars().nth(2) == Some(':') {
+            path = path[1..].to_string();
+        }
+
+        path = path.replace('\\', "/");
+        if path.len() >= 2 && path.as_bytes()[1] == b':' {
+            let mut chars: Vec<char> = path.chars().collect();
+            chars[0] = chars[0].to_ascii_lowercase();
+            path = chars.into_iter().collect();
+        }
+
+        path
+    }
+
+    fn file_path_to_uri(file_path: &str) -> String {
+        let mut normalized = file_path.replace('\\', "/");
+        if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+            let mut chars: Vec<char> = normalized.chars().collect();
+            chars[0] = chars[0].to_ascii_lowercase();
+            normalized = chars.into_iter().collect();
+        }
+
+        let encoded = normalized
+            .split('/')
+            .map(|segment| urlencoding::encode(segment).into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+
+        if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+            format!("file:///{}", encoded)
+        } else {
+            format!("file://{}", encoded)
+        }
+    }
+
+    fn emit_diagnostics_source_state(
+        app_handle: &AppHandle<R>,
+        server_id: &str,
+        source: &str,
+        state: &str,
+    ) {
+        let _ = app_handle.emit(
+            &format!("lsp://{}//diagnostics-source-state", server_id),
+            LspDiagnosticsSourceStateEvent {
+                server_id: server_id.to_string(),
+                source: source.to_string(),
+                state: state.to_string(),
+            },
+        );
+    }
+
+    fn emit_diagnostics_clear_file(
+        app_handle: &AppHandle<R>,
+        server_id: &str,
+        source: &str,
+        uri: &str,
+    ) {
+        let _ = app_handle.emit(
+            &format!("lsp://{}//diagnostics-clear-file", server_id),
+            LspDiagnosticsClearFileEvent {
+                server_id: server_id.to_string(),
+                source: source.to_string(),
+                file_path: Self::uri_to_file_path(uri),
+            },
+        );
+    }
+
+    fn maybe_emit_publish_diagnostics(
+        app_handle: &AppHandle<R>,
+        server_id: &str,
+        source: &str,
+        json: &Value,
+    ) {
+        let Some(method) = json.get("method").and_then(Value::as_str) else {
+            return;
+        };
+        if method != "textDocument/publishDiagnostics" {
+            return;
+        }
+
+        let Some(params_value) = json.get("params").cloned() else {
+            return;
+        };
+        let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(params_value) else {
+            return;
+        };
+
+        let file_path = Self::uri_to_file_path(&params.uri);
+        let file_name = file_path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&file_path)
+            .to_string();
+
+        let problems = params
+            .diagnostics
+            .into_iter()
+            .enumerate()
+            .map(|(_index, diagnostic)| LspDiagnosticProblem {
+                file: file_path.clone(),
+                file_name: file_name.clone(),
+                line: diagnostic.range.start.line + 1,
+                column: diagnostic.range.start.character + 1,
+                end_line: diagnostic.range.end.line + 1,
+                end_column: diagnostic.range.end.character + 1,
+                message: diagnostic.message,
+                severity: Self::map_diagnostic_severity(diagnostic.severity).to_string(),
+                code: diagnostic.code.map(|value| match value {
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                }),
+            })
+            .collect();
+
+        let _ = app_handle.emit(
+            &format!("lsp://{}//diagnostics", server_id),
+            LspDiagnosticsEvent {
+                server_id: server_id.to_string(),
+                source: source.to_string(),
+                file_path,
+                problems,
+            },
+        );
+    }
+
+    fn upsert_tracked_document(&self, server_id: &str, document: TrackedDocumentState) {
+        if let Ok(mut tracked) = self.tracked_documents.lock() {
+            tracked
+                .entry(server_id.to_string())
+                .or_default()
+                .insert(document.uri.clone(), document);
+        }
+    }
+
+    fn update_tracked_document(&self, server_id: &str, params: DidChangeTextDocumentParams) {
+        if let Ok(mut tracked) = self.tracked_documents.lock() {
+            if let Some(server_docs) = tracked.get_mut(server_id) {
+                if let Some(document) = server_docs.get_mut(&params.text_document.uri) {
+                    document.version = params.text_document.version;
+                    if let Some(text) = params
+                        .content_changes
+                        .iter()
+                        .rev()
+                        .find_map(|change| change.text.clone())
+                    {
+                        document.text = text;
+                    }
+                }
+            }
+        }
+    }
+
+    fn remove_tracked_document(&self, server_id: &str, uri: &str) {
+        if let Ok(mut tracked) = self.tracked_documents.lock() {
+            if let Some(server_docs) = tracked.get_mut(server_id) {
+                server_docs.remove(uri);
+            }
+        }
+    }
+
+    fn clear_tracked_documents(&self, server_id: &str) {
+        if let Ok(mut tracked) = self.tracked_documents.lock() {
+            tracked.remove(server_id);
+        }
+    }
+
+    fn sync_tracked_document(
+        &self,
+        server_id: &str,
+        file_path: &str,
+        language_id: &str,
+        text: &str,
+    ) -> Result<LspTrackedDocumentSyncResult, LspError> {
+        let uri = Self::file_path_to_uri(file_path);
+        let mut tracked = self.tracked_documents.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire tracked document lock: {}", e),
+        })?;
+        let server_docs = tracked.entry(server_id.to_string()).or_default();
+
+        if let Some(document) = server_docs.get_mut(&uri) {
+            if document.text == text {
+                return Ok(LspTrackedDocumentSyncResult {
+                    kind: "noop".to_string(),
+                    uri,
+                    version: document.version,
+                });
+            }
+
+            document.version += 1;
+            document.text = text.to_string();
+            if !language_id.trim().is_empty() {
+                document.language_id = language_id.to_string();
+            }
+
+            return Ok(LspTrackedDocumentSyncResult {
+                kind: "change".to_string(),
+                uri,
+                version: document.version,
+            });
+        }
+
+        server_docs.insert(
+            uri.clone(),
+            TrackedDocumentState {
+                uri: uri.clone(),
+                language_id: language_id.to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        );
+
+        Ok(LspTrackedDocumentSyncResult {
+            kind: "open".to_string(),
+            uri,
+            version: 1,
+        })
+    }
+
+    fn collect_rehydrate_messages(&self, server_id: &str) -> Vec<String> {
+        let Ok(tracked) = self.tracked_documents.lock() else {
+            return Vec::new();
+        };
+
+        tracked
+            .get(server_id)
+            .map(|server_docs| {
+                server_docs
+                    .values()
+                    .filter_map(|document| {
+                        serde_json::to_string(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/didOpen",
+                            "params": {
+                                "textDocument": {
+                                    "uri": document.uri,
+                                    "languageId": document.language_id,
+                                    "version": document.version,
+                                    "text": document.text,
+                                }
+                            }
+                        }))
+                        .ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn list_tracked_documents(
+        &self,
+        server_id: &str,
+    ) -> Result<Vec<LspTrackedDocumentInfo>, LspError> {
+        let tracked = self.tracked_documents.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire tracked document lock: {}", e),
+        })?;
+
+        let mut documents = tracked
+            .get(server_id)
+            .map(|server_docs| {
+                server_docs
+                    .values()
+                    .map(|document| LspTrackedDocumentInfo {
+                        file_path: Self::uri_to_file_path(&document.uri),
+                        uri: document.uri.clone(),
+                        language_id: document.language_id.clone(),
+                        version: document.version,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        documents.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+        Ok(documents)
+    }
+
+    pub fn begin_project_diagnostics(
+        &self,
+        root_path: &str,
+        requested_sidecars: &[String],
+    ) -> Result<LspProjectDiagnosticsPlan, LspError> {
+        const MIN_INTERVAL_MS: u64 = 2_500;
+        const STAGGER_MS: u64 = 150;
+
+        let trimmed_root = root_path.trim();
+        if trimmed_root.is_empty() {
+            return Err(LspError::InvalidConfig {
+                message: "Project diagnostics root path cannot be empty".to_string(),
+            });
+        }
+
+        let mut scheduler =
+            self.project_diagnostics
+                .lock()
+                .map_err(|e| LspError::ProcessError {
+                    message: format!("Failed to acquire project diagnostics lock: {}", e),
+                })?;
+        let now = Self::current_time_ms();
+
+        if scheduler.active_run_id.is_some() {
+            scheduler.pending_root = Some(trimmed_root.to_string());
+            return Ok(LspProjectDiagnosticsPlan {
+                action: "queued".to_string(),
+                run_id: None,
+                root_path: Some(trimmed_root.to_string()),
+                delay_ms: 0,
+                stagger_ms: STAGGER_MS,
+                sidecars: Vec::new(),
+            });
+        }
+
+        let elapsed = now.saturating_sub(scheduler.last_run_finished_at_ms);
+        if scheduler.last_run_finished_at_ms != 0 && elapsed < MIN_INTERVAL_MS {
+            scheduler.pending_root = Some(trimmed_root.to_string());
+            return Ok(LspProjectDiagnosticsPlan {
+                action: "delay".to_string(),
+                run_id: None,
+                root_path: Some(trimmed_root.to_string()),
+                delay_ms: MIN_INTERVAL_MS - elapsed,
+                stagger_ms: STAGGER_MS,
+                sidecars: Vec::new(),
+            });
+        }
+
+        scheduler.next_run_id = scheduler.next_run_id.saturating_add(1);
+        let run_id = scheduler.next_run_id;
+        scheduler.active_run_id = Some(run_id);
+        scheduler.active_root = Some(trimmed_root.to_string());
+
+        let mut seen = HashSet::new();
+        let sidecars = requested_sidecars
+            .iter()
+            .filter_map(|sidecar| {
+                let normalized = sidecar.trim();
+                if normalized.is_empty()
+                    || !Self::is_known_project_diagnostics_sidecar(normalized)
+                    || !seen.insert(normalized.to_string())
+                {
+                    return None;
+                }
+
+                let retry_after = scheduler
+                    .sidecar_retry_after
+                    .get(normalized)
+                    .copied()
+                    .unwrap_or(0);
+                if retry_after > now {
+                    return None;
+                }
+
+                Some(normalized.to_string())
+            })
+            .collect();
+
+        Ok(LspProjectDiagnosticsPlan {
+            action: "run".to_string(),
+            run_id: Some(run_id),
+            root_path: Some(trimmed_root.to_string()),
+            delay_ms: 0,
+            stagger_ms: STAGGER_MS,
+            sidecars,
+        })
+    }
+
+    pub fn complete_project_diagnostics(
+        &self,
+        run_id: u64,
+    ) -> Result<LspProjectDiagnosticsPlan, LspError> {
+        const MIN_INTERVAL_MS: u64 = 2_500;
+        const STAGGER_MS: u64 = 150;
+
+        let mut scheduler =
+            self.project_diagnostics
+                .lock()
+                .map_err(|e| LspError::ProcessError {
+                    message: format!("Failed to acquire project diagnostics lock: {}", e),
+                })?;
+
+        if scheduler.active_run_id != Some(run_id) {
+            return Ok(LspProjectDiagnosticsPlan {
+                action: "noop".to_string(),
+                run_id: None,
+                root_path: None,
+                delay_ms: 0,
+                stagger_ms: STAGGER_MS,
+                sidecars: Vec::new(),
+            });
+        }
+
+        scheduler.active_run_id = None;
+        scheduler.active_root = None;
+        scheduler.last_run_finished_at_ms = Self::current_time_ms();
+
+        if let Some(root_path) = scheduler.pending_root.take() {
+            return Ok(LspProjectDiagnosticsPlan {
+                action: "delay".to_string(),
+                run_id: None,
+                root_path: Some(root_path),
+                delay_ms: MIN_INTERVAL_MS,
+                stagger_ms: STAGGER_MS,
+                sidecars: Vec::new(),
+            });
+        }
+
+        Ok(LspProjectDiagnosticsPlan {
+            action: "noop".to_string(),
+            run_id: None,
+            root_path: None,
+            delay_ms: 0,
+            stagger_ms: STAGGER_MS,
+            sidecars: Vec::new(),
+        })
+    }
+
+    pub fn note_project_diagnostics_sidecar_failure(
+        &self,
+        sidecar: &str,
+        error_type: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<bool, LspError> {
+        const RETRY_COOLDOWN_MS: u64 = 60_000;
+
+        if !Self::is_known_project_diagnostics_sidecar(sidecar) {
+            return Ok(false);
+        }
+
+        if !Self::should_cooldown_project_diagnostics_sidecar(error_type, message) {
+            return Ok(false);
+        }
+
+        let mut scheduler =
+            self.project_diagnostics
+                .lock()
+                .map_err(|e| LspError::ProcessError {
+                    message: format!("Failed to acquire project diagnostics lock: {}", e),
+                })?;
+        scheduler.sidecar_retry_after.insert(
+            sidecar.to_string(),
+            Self::current_time_ms().saturating_add(RETRY_COOLDOWN_MS),
+        );
+        Ok(true)
+    }
+
+    pub fn reset_project_diagnostics_scheduler(&self) -> Result<(), LspError> {
+        let mut scheduler =
+            self.project_diagnostics
+                .lock()
+                .map_err(|e| LspError::ProcessError {
+                    message: format!("Failed to acquire project diagnostics lock: {}", e),
+                })?;
+        *scheduler = ProjectDiagnosticsSchedulerState::default();
+        Ok(())
+    }
+
+    fn write_sidecar_message(sidecar: &mut CommandChild, message: &str) -> Result<(), LspError> {
+        let content_length = message.len();
+        let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
+        sidecar
+            .write(full_message.as_bytes())
+            .map_err(|e| LspError::SendFailed {
+                message: format!("Failed to write to stdin: {}", e),
+            })
+    }
+
+    fn send_external_message(stdin_tx: &Sender<String>, message: String) -> Result<(), LspError> {
+        match stdin_tx.try_send(message) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(message)) => stdin_tx
+                .blocking_send(message)
+                .map_err(|e| LspError::SendFailed {
+                    message: format!("Failed to send to stdin channel: {}", e),
+                }),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(LspError::SendFailed {
+                message: "Failed to send to stdin channel: channel closed".to_string(),
+            }),
         }
     }
 
@@ -194,6 +886,7 @@ impl<R: Runtime> LspManager<R> {
         // Set up event handler for stdout/stderr
         let app_handle = self.app_handle.clone();
         let server_id_clone = server_id.clone();
+        let server_type_clone = server_type.clone();
         let status_clone = Arc::clone(&status);
         let servers_clone = Arc::clone(&self.servers);
 
@@ -203,6 +896,7 @@ impl<R: Runtime> LspManager<R> {
                 rx,
                 app_handle,
                 server_id_clone,
+                server_type_clone,
                 status_clone,
                 servers_clone,
             )
@@ -219,6 +913,10 @@ impl<R: Runtime> LspManager<R> {
                 pid,
             },
         );
+
+        if let Ok(mut saved_configs) = self.saved_configs.lock() {
+            saved_configs.insert(server_id.clone(), SavedServerConfig::Sidecar(config.clone()));
+        }
 
         Ok(LspServerInfo {
             server_id,
@@ -322,6 +1020,7 @@ impl<R: Runtime> LspManager<R> {
         // Spawn stdout reader task
         let app_handle = self.app_handle.clone();
         let server_id_clone = server_id.clone();
+        let server_type_clone = server_type.clone();
         let status_clone = Arc::clone(&status);
         let servers_clone = Arc::clone(&self.servers);
 
@@ -330,6 +1029,7 @@ impl<R: Runtime> LspManager<R> {
                 stdout,
                 app_handle.clone(),
                 server_id_clone.clone(),
+                server_type_clone,
                 status_clone,
                 servers_clone,
             )
@@ -365,6 +1065,10 @@ impl<R: Runtime> LspManager<R> {
             },
         );
 
+        if let Ok(mut saved_configs) = self.saved_configs.lock() {
+            saved_configs.insert(server_id.clone(), SavedServerConfig::External(config.clone()));
+        }
+
         Ok(LspServerInfo {
             server_id,
             server_type,
@@ -377,6 +1081,7 @@ impl<R: Runtime> LspManager<R> {
     fn mark_external_server_stopped(
         app_handle: &AppHandle<R>,
         server_id: &str,
+        source: &str,
         status: &Arc<Mutex<LspServerStatus>>,
         servers: &Arc<Mutex<HashMap<String, RunningServer>>>,
         exit_code: i32,
@@ -388,6 +1093,7 @@ impl<R: Runtime> LspManager<R> {
         if let Ok(mut servers_guard) = servers.lock() {
             servers_guard.remove(server_id);
         }
+        Self::emit_diagnostics_source_state(app_handle, server_id, source, "stale");
         if let Some(err) = error {
             let _ = app_handle.emit(&format!("lsp://{}//error", server_id), err);
         }
@@ -399,6 +1105,7 @@ impl<R: Runtime> LspManager<R> {
         stdout: tokio::process::ChildStdout,
         app_handle: AppHandle<R>,
         server_id: String,
+        server_type: String,
         status: Arc<Mutex<LspServerStatus>>,
         servers: Arc<Mutex<HashMap<String, RunningServer>>>,
     ) {
@@ -418,6 +1125,7 @@ impl<R: Runtime> LspManager<R> {
                         Self::mark_external_server_stopped(
                             &app_handle,
                             &server_id,
+                            &server_type,
                             &status,
                             &servers,
                             0,
@@ -439,6 +1147,7 @@ impl<R: Runtime> LspManager<R> {
                         Self::mark_external_server_stopped(
                             &app_handle,
                             &server_id,
+                            &server_type,
                             &status,
                             &servers,
                             -1,
@@ -456,8 +1165,14 @@ impl<R: Runtime> LspManager<R> {
                     Ok(_) => {
                         if let Ok(json_str) = String::from_utf8(buffer.clone()) {
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                                let _ =
-                                    app_handle.emit(&format!("lsp://{}//message", server_id), json);
+                                let _ = app_handle
+                                    .emit(&format!("lsp://{}//message", server_id), &json);
+                                Self::maybe_emit_publish_diagnostics(
+                                    &app_handle,
+                                    &server_id,
+                                    &server_type,
+                                    &json,
+                                );
                             }
                         }
                     }
@@ -465,6 +1180,7 @@ impl<R: Runtime> LspManager<R> {
                         Self::mark_external_server_stopped(
                             &app_handle,
                             &server_id,
+                            &server_type,
                             &status,
                             &servers,
                             -1,
@@ -482,6 +1198,7 @@ impl<R: Runtime> LspManager<R> {
         mut rx: Receiver<tauri_plugin_shell::process::CommandEvent>,
         app_handle: AppHandle<R>,
         server_id: String,
+        server_type: String,
         status: Arc<Mutex<LspServerStatus>>,
         servers: Arc<Mutex<HashMap<String, RunningServer>>>,
     ) {
@@ -533,7 +1250,13 @@ impl<R: Runtime> LspManager<R> {
                                         {
                                             let _ = app_handle.emit(
                                                 &format!("lsp://{}//message", server_id),
-                                                json,
+                                                &json,
+                                            );
+                                            Self::maybe_emit_publish_diagnostics(
+                                                &app_handle,
+                                                &server_id,
+                                                &server_type,
+                                                &json,
                                             );
                                         }
                                     }
@@ -571,6 +1294,12 @@ impl<R: Runtime> LspManager<R> {
                         servers_guard.remove(&server_id);
                     }
 
+                    Self::emit_diagnostics_source_state(
+                        &app_handle,
+                        &server_id,
+                        &server_type,
+                        "stale",
+                    );
                     // Emit exit event
                     let _ = app_handle.emit(&format!("lsp://{}//exit", server_id), payload.code);
                     break;
@@ -604,6 +1333,63 @@ impl<R: Runtime> LspManager<R> {
             }
         }
 
+        let mut emit_fresh_after_send = false;
+        let mut replay_messages = Vec::new();
+
+        if let Ok(json) = serde_json::from_str::<Value>(message) {
+            if let Some(method) = json.get("method").and_then(Value::as_str) {
+                match method {
+                    "initialized" => {
+                        emit_fresh_after_send = true;
+                        replay_messages = self.collect_rehydrate_messages(server_id);
+                    }
+                    "textDocument/didOpen" => {
+                        if let Some(params) = json.get("params").cloned() {
+                            if let Ok(params) =
+                                serde_json::from_value::<DidOpenTextDocumentParams>(params)
+                            {
+                                self.upsert_tracked_document(
+                                    server_id,
+                                    TrackedDocumentState {
+                                        uri: params.text_document.uri,
+                                        language_id: params.text_document.language_id,
+                                        version: params.text_document.version,
+                                        text: params.text_document.text,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    "textDocument/didChange" => {
+                        if let Some(params) = json.get("params").cloned() {
+                            if let Ok(params) =
+                                serde_json::from_value::<DidChangeTextDocumentParams>(params)
+                            {
+                                self.update_tracked_document(server_id, params);
+                            }
+                        }
+                    }
+                    "textDocument/didClose" => {
+                        if let Some(params) = json.get("params").cloned() {
+                            if let Ok(params) =
+                                serde_json::from_value::<DidCloseTextDocumentParams>(params)
+                            {
+                                let uri = params.text_document.uri;
+                                self.remove_tracked_document(server_id, &uri);
+                                Self::emit_diagnostics_clear_file(
+                                    &self.app_handle,
+                                    server_id,
+                                    &server.server_type,
+                                    &uri,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Get child handle and send message
         let child = server.child.as_mut().ok_or_else(|| LspError::SendFailed {
             message: "Server stdin not available".to_string(),
@@ -611,48 +1397,146 @@ impl<R: Runtime> LspManager<R> {
 
         match child {
             ServerChild::Sidecar(sidecar) => {
-                // Write LSP message with Content-Length header
-                let content_length = message.len();
-                let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
-                sidecar
-                    .write(full_message.as_bytes())
-                    .map_err(|e| LspError::SendFailed {
-                        message: format!("Failed to write to stdin: {}", e),
-                    })?;
+                Self::write_sidecar_message(sidecar, message)?;
+                for replay_message in replay_messages {
+                    Self::write_sidecar_message(sidecar, &replay_message)?;
+                }
             }
             ServerChild::External { stdin_tx, .. } => {
                 let stdin_tx = stdin_tx.clone();
+                let server_type = server.server_type.clone();
                 drop(servers);
 
-                // Send via channel (stdin writer task handles framing).
-                // Fall back to blocking send when the channel is full, but do it
-                // outside the manager lock to avoid stalling unrelated LSP ops.
-                let msg = message.to_string();
-                match stdin_tx.try_send(msg) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                        stdin_tx
-                            .blocking_send(msg)
-                            .map_err(|e| LspError::SendFailed {
-                                message: format!("Failed to send to stdin channel: {}", e),
-                            })?;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        return Err(LspError::SendFailed {
-                            message: "Failed to send to stdin channel: channel closed".to_string(),
-                        });
-                    }
+                Self::send_external_message(&stdin_tx, message.to_string())?;
+                for replay_message in replay_messages {
+                    Self::send_external_message(&stdin_tx, replay_message)?;
                 }
 
+                if emit_fresh_after_send {
+                    Self::emit_diagnostics_source_state(
+                        &self.app_handle,
+                        server_id,
+                        &server_type,
+                        "fresh",
+                    );
+                }
                 return Ok(());
             }
+        }
+
+        if emit_fresh_after_send {
+            Self::emit_diagnostics_source_state(
+                &self.app_handle,
+                server_id,
+                &server.server_type,
+                "fresh",
+            );
         }
 
         Ok(())
     }
 
+    pub fn sync_document(
+        &self,
+        server_id: &str,
+        file_path: &str,
+        language_id: &str,
+        text: &str,
+    ) -> Result<LspTrackedDocumentSyncResult, LspError> {
+        if file_path.trim().is_empty() {
+            return Err(LspError::InvalidConfig {
+                message: "Document path cannot be empty".to_string(),
+            });
+        }
+
+        if language_id.trim().is_empty() {
+            return Err(LspError::InvalidConfig {
+                message: "Document language_id cannot be empty".to_string(),
+            });
+        }
+
+        let sync = self.sync_tracked_document(server_id, file_path, language_id, text)?;
+        if sync.kind == "noop" {
+            return Ok(sync);
+        }
+
+        let message = if sync.kind == "open" {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": sync.uri,
+                        "languageId": language_id,
+                        "version": sync.version,
+                        "text": text,
+                    }
+                }
+            })
+        } else {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": sync.uri,
+                        "version": sync.version,
+                    },
+                    "contentChanges": [{ "text": text }],
+                }
+            })
+        };
+
+        let serialized = serde_json::to_string(&message).map_err(|e| LspError::SendFailed {
+            message: format!("Failed to serialize document sync message: {}", e),
+        })?;
+        self.send_message(server_id, &serialized)?;
+        Ok(sync)
+    }
+
+    pub fn close_document(&self, server_id: &str, file_path: &str) -> Result<bool, LspError> {
+        if file_path.trim().is_empty() {
+            return Err(LspError::InvalidConfig {
+                message: "Document path cannot be empty".to_string(),
+            });
+        }
+
+        let uri = Self::file_path_to_uri(file_path);
+        let removed = {
+            let mut tracked =
+                self.tracked_documents
+                    .lock()
+                    .map_err(|e| LspError::ProcessError {
+                        message: format!("Failed to acquire tracked document lock: {}", e),
+                    })?;
+            tracked
+                .get_mut(server_id)
+                .and_then(|server_docs| server_docs.remove(&uri))
+                .is_some()
+        };
+
+        if !removed {
+            return Ok(false);
+        }
+
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                }
+            }
+        });
+        let serialized = serde_json::to_string(&message).map_err(|e| LspError::SendFailed {
+            message: format!("Failed to serialize document close message: {}", e),
+        })?;
+        self.send_message(server_id, &serialized)?;
+        Ok(true)
+    }
+
     /// Stop a running server
-    pub fn stop_server(&self, server_id: &str) -> Result<(), LspError> {
+    pub fn stop_server(&self, server_id: &str, preserve_state: bool) -> Result<(), LspError> {
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
@@ -666,6 +1550,20 @@ impl<R: Runtime> LspManager<R> {
         // Update status
         if let Ok(mut status) = server.status.lock() {
             *status = LspServerStatus::Stopping;
+        }
+
+        Self::emit_diagnostics_source_state(
+            &self.app_handle,
+            server_id,
+            &server.server_type,
+            "stale",
+        );
+
+        if !preserve_state {
+            if let Ok(mut saved_configs) = self.saved_configs.lock() {
+                saved_configs.remove(server_id);
+            }
+            self.clear_tracked_documents(server_id);
         }
 
         // Kill the process based on type
@@ -689,6 +1587,29 @@ impl<R: Runtime> LspManager<R> {
         Ok(())
     }
 
+    pub fn restart_server(&self, server_id: &str) -> Result<LspServerInfo, LspError> {
+        let saved_config = self
+            .saved_configs
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire saved config lock: {}", e),
+            })?
+            .get(server_id)
+            .cloned()
+            .ok_or_else(|| LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            })?;
+
+        if self.is_server_running(server_id) {
+            let _ = self.stop_server(server_id, true);
+        }
+
+        match saved_config {
+            SavedServerConfig::Sidecar(config) => self.start_server(config),
+            SavedServerConfig::External(config) => self.start_external_server(config),
+        }
+    }
+
     /// Stop all running servers
     pub fn stop_all(&self) -> Result<(), LspError> {
         let server_ids: Vec<String> = {
@@ -699,7 +1620,7 @@ impl<R: Runtime> LspManager<R> {
         };
 
         for server_id in server_ids {
-            let _ = self.stop_server(&server_id);
+            let _ = self.stop_server(&server_id, false);
         }
 
         Ok(())

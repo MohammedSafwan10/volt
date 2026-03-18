@@ -16,6 +16,8 @@ import type {
   JsonRpcRequest,
   JsonRpcNotification,
   JsonRpcResponse,
+  LspTrackedDocumentSyncResult,
+  LspTrackedDocumentInfo,
   MessageHandler,
   ErrorHandler,
   ExitHandler,
@@ -25,12 +27,19 @@ import type {
   RestartPolicy,
 } from './types';
 import { DEFAULT_HEALTH_CONFIG, DEFAULT_RESTART_POLICY } from './types';
-import { getHealthProbe, isResponsiveProtocolError } from './health';
 import {
   createLspRecoveryController,
   type LspRecoveryController,
   type LspRecoveryState,
 } from './recovery';
+import {
+  applyBackendDiagnostics,
+  applyBackendDiagnosticsSourceState,
+  clearBackendDiagnosticsFile,
+  type BackendLspDiagnosticsClearFileEvent,
+  type BackendLspDiagnosticsEvent,
+  type BackendLspDiagnosticsSourceStateEvent,
+} from './diagnostics';
 
 /** Pending request tracking */
 interface PendingRequest {
@@ -40,7 +49,25 @@ interface PendingRequest {
   timestamp: number;
 }
 
-type StartMode = 'sidecar' | 'external';
+function formatTransportError(error: unknown): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === 'object') {
+    const candidate =
+      ('message' in error && typeof error.message === 'string' && error.message) ||
+      ('type' in error && typeof error.type === 'string' && error.type) ||
+      JSON.stringify(error);
+    return candidate;
+  }
+
+  return String(error ?? 'Unknown LSP error');
+}
 
 /**
  * LSP Transport - manages communication with a single LSP server sidecar
@@ -52,18 +79,17 @@ export class LspTransport {
   private errorHandlers: Set<ErrorHandler> = new Set();
   private exitHandlers: Set<ExitHandler> = new Set();
   private healthHandlers: Set<HealthHandler> = new Set();
-  private restartHandlers: Set<() => void | Promise<void>> = new Set();
   private pendingRequests: Map<number | string, PendingRequest> = new Map();
   private nextRequestId = 1;
   private unlisteners: UnlistenFn[] = [];
   private isConnected = false;
-  private startMode: StartMode | null = null;
-  private startConfig: Omit<LspServerConfig, 'serverId' | 'serverType'> | Omit<ExternalLspConfig, 'serverId' | 'serverType'> | null = null;
   private isRestarting = false;
-  private preserveHandlersOnStop = false;
   private restartCount = 0;
   private restartPolicy: Required<RestartPolicy> = { ...DEFAULT_RESTART_POLICY };
   private recoveryController: LspRecoveryController;
+  private exitHandled = false;
+  private lastInitializeParams: unknown = null;
+  private lastInitializedParams: unknown = null;
 
   // Health monitoring state
   private healthConfig: Required<HealthConfig>;
@@ -166,8 +192,7 @@ export class LspTransport {
     // Set up event listeners
     await this.setupEventListeners();
     this.isConnected = true;
-    this.startMode = 'sidecar';
-    this.startConfig = { ...config };
+    this.exitHandled = false;
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -192,8 +217,7 @@ export class LspTransport {
     // Set up event listeners (same as sidecar)
     await this.setupEventListeners();
     this.isConnected = true;
-    this.startMode = 'external';
-    this.startConfig = { ...config };
+    this.exitHandled = false;
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -255,6 +279,30 @@ export class LspTransport {
       }
     );
     this.unlisteners.push(stoppedUnlisten);
+
+    const diagnosticsUnlisten = await listen<BackendLspDiagnosticsEvent>(
+      `lsp://${this.serverId}//diagnostics`,
+      (event) => {
+        applyBackendDiagnostics(event.payload);
+      }
+    );
+    this.unlisteners.push(diagnosticsUnlisten);
+
+    const diagnosticsClearUnlisten = await listen<BackendLspDiagnosticsClearFileEvent>(
+      `lsp://${this.serverId}//diagnostics-clear-file`,
+      (event) => {
+        clearBackendDiagnosticsFile(event.payload);
+      }
+    );
+    this.unlisteners.push(diagnosticsClearUnlisten);
+
+    const diagnosticsStateUnlisten = await listen<BackendLspDiagnosticsSourceStateEvent>(
+      `lsp://${this.serverId}//diagnostics-source-state`,
+      (event) => {
+        applyBackendDiagnosticsSourceState(event.payload);
+      }
+    );
+    this.unlisteners.push(diagnosticsStateUnlisten);
   }
 
   /**
@@ -292,12 +340,26 @@ export class LspTransport {
    * Handle server exit
    */
   private handleServerExit(): void {
+    if (this.exitHandled) {
+      return;
+    }
+    this.exitHandled = true;
     this.isConnected = false;
+    this.stopHealthMonitoring();
+    this.updateHealthStatus({
+      healthy: false,
+      lastCheckAt: Date.now(),
+      message: 'Server exited',
+    });
 
     // Reject all pending requests
     for (const [id, pending] of this.pendingRequests) {
       pending.reject(new Error('Server exited'));
       this.pendingRequests.delete(id);
+    }
+
+    if (this.isRestarting) {
+      return;
     }
 
     // Notify exit handlers
@@ -313,10 +375,11 @@ export class LspTransport {
   /**
    * Notify error handlers
    */
-  private notifyError(error: string): void {
+  private notifyError(error: unknown): void {
+    const message = formatTransportError(error);
     for (const handler of this.errorHandlers) {
       try {
-        handler(error);
+        handler(message);
       } catch (e) {
         console.error('[LSP Transport] Error handler error:', e);
       }
@@ -439,28 +502,19 @@ export class LspTransport {
 
   /**
    * Send a health ping to the server
-   * Uses backend process-level liveness check to avoid false negatives from
-   * language-specific request errors (e.g. unsupported workspace/symbol).
+   * Uses backend process-level liveness only. Protocol probes caused too many
+   * false negatives across heterogeneous language servers and led to restart churn.
    */
   private async sendHealthPing(): Promise<void> {
-    const running = await invoke<boolean>('lsp_is_server_running', {
+    const info = await invoke<LspServerInfo>('lsp_get_server_info', {
       serverId: this.serverId,
     });
-    if (!running) {
-      throw new Error(`LSP server not running: ${this.serverId}`);
+    if (info.status !== 'Running') {
+      throw new Error(`LSP server not running: ${this.serverId} (${info.status})`);
     }
 
     if (!this.isConnected) {
       throw new Error(`LSP transport disconnected: ${this.serverId}`);
-    }
-
-    const probe = getHealthProbe();
-    try {
-      await this.sendRequestWithTimeout(probe.method, probe.params, this.healthConfig.timeoutMs);
-    } catch (error) {
-      if (!isResponsiveProtocolError(error)) {
-        throw error;
-      }
     }
   }
 
@@ -581,6 +635,10 @@ configureRestartPolicy(policy: RestartPolicy): void {
       params,
     };
 
+    if (method === 'initialize') {
+      this.lastInitializeParams = params ?? null;
+    }
+
     // Create promise for the response
     const responsePromise = new Promise<T>((resolve, reject) => {
       this.pendingRequests.set(id, {
@@ -633,6 +691,10 @@ configureRestartPolicy(policy: RestartPolicy): void {
   throw new Error('Transport not connected');
 }
 
+if (method === 'initialized') {
+  this.lastInitializedParams = params ?? null;
+}
+
 const notification: JsonRpcNotification = {
   jsonrpc: '2.0',
   method,
@@ -644,6 +706,40 @@ await invoke('lsp_send_message', {
   serverId: this.serverId,
   message,
 });
+  }
+
+  async syncDocument(filePath: string, languageId: string, text: string): Promise<LspTrackedDocumentSyncResult> {
+    if (!this.isConnected) {
+      throw new Error('Transport not connected');
+    }
+
+    return invoke<LspTrackedDocumentSyncResult>('lsp_sync_document', {
+      serverId: this.serverId,
+      filePath,
+      languageId,
+      text,
+    });
+  }
+
+  async closeDocument(filePath: string): Promise<boolean> {
+    if (!this.isConnected) {
+      throw new Error('Transport not connected');
+    }
+
+    return invoke<boolean>('lsp_close_document', {
+      serverId: this.serverId,
+      filePath,
+    });
+  }
+
+  async listTrackedDocuments(): Promise<LspTrackedDocumentInfo[]> {
+    if (!this.isConnected) {
+      return [];
+    }
+
+    return invoke<LspTrackedDocumentInfo[]>('lsp_list_tracked_documents', {
+      serverId: this.serverId,
+    });
   }
 
   /**
@@ -699,11 +795,6 @@ onExit(handler: ExitHandler): () => void {
   return() => this.healthHandlers.delete(handler);
 }
 
-  onRestart(handler: () => void | Promise<void>): () => void {
-    this.restartHandlers.add(handler);
-    return () => this.restartHandlers.delete(handler);
-  }
-
   /**
    * Stop the server and clean up
    */
@@ -720,63 +811,54 @@ this.unlisteners = [];
 // Stop the server
 if (this.isConnected) {
   try {
-    await invoke('lsp_stop_server', { serverId: this.serverId });
+    await invoke('lsp_stop_server', {
+      serverId: this.serverId,
+      preserveState: false,
+    });
   } catch (e) {
     console.error('[LSP Transport] Error stopping server:', e);
   }
 }
 
 this.isConnected = false;
-if (!this.preserveHandlersOnStop) {
 this.messageHandlers.clear();
 this.errorHandlers.clear();
 this.exitHandlers.clear();
 this.healthHandlers.clear();
-this.restartHandlers.clear();
-}
 this.pendingRequests.clear();
 this.responseTimes = [];
 this.recoveryController.reset();
   }
 
   private async restartFromSavedConfig(): Promise<void> {
-    if (this.isRestarting || !this.startMode || !this.startConfig) {
+    if (this.isRestarting) {
       return;
     }
 
     this.isRestarting = true;
-    const messageHandlers = new Set(this.messageHandlers);
-    const errorHandlers = new Set(this.errorHandlers);
-    const exitHandlers = new Set(this.exitHandlers);
-    const healthHandlers = new Set(this.healthHandlers);
-    const restartHandlers = new Set(this.restartHandlers);
 
     try {
-      this.preserveHandlersOnStop = true;
-      await this.stop();
-      this.preserveHandlersOnStop = false;
-      this.messageHandlers = messageHandlers;
-      this.errorHandlers = errorHandlers;
-      this.exitHandlers = exitHandlers;
-      this.healthHandlers = healthHandlers;
-      this.restartHandlers = restartHandlers;
+      await invoke('lsp_restart_server', {
+        serverId: this.serverId,
+      });
 
-      if (this.startMode === 'sidecar') {
-        await this.start(this.startConfig as Omit<LspServerConfig, 'serverId' | 'serverType'>);
-      } else {
-        await this.startExternal(this.startConfig as Omit<ExternalLspConfig, 'serverId' | 'serverType'>);
+      this.isConnected = true;
+      this.exitHandled = false;
+      this.startHealthMonitoring();
+
+      if (this.lastInitializeParams !== null) {
+        await this.sendRequest('initialize', this.lastInitializeParams);
+      }
+
+      if (this.lastInitializedParams !== null) {
+        await this.sendNotification('initialized', this.lastInitializedParams);
       }
 
       this.restartCount += 1;
       this.recoveryController.reset();
-
-      for (const handler of this.restartHandlers) {
-        await handler();
-      }
     } catch (error) {
-      this.notifyError(`Failed to auto-restart server: ${String(error)}`);
+      this.notifyError(`Failed to auto-restart server: ${formatTransportError(error)}`);
     } finally {
-      this.preserveHandlersOnStop = false;
       this.isRestarting = false;
     }
   }

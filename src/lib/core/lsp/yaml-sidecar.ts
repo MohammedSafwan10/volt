@@ -17,25 +17,15 @@
 
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
+import { sendDidSaveForTrackedDocument } from './sidecar/document-lifecycle';
 import {
-  rehydrateTrackedDocuments,
-  sendDidSaveForTrackedDocument,
-} from './sidecar/document-lifecycle';
-import {
-  clearSourceProblemsForFile,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
-import { detectYamlLsp, isYamlLspAvailable, type YamlLspInfo } from './yaml-sdk';
+import { detectYamlLsp, isYamlLspAvailable } from './yaml-sdk';
 
 let yamlServerTransport: LspTransport | null = null;
 let yamlServerInitialized = false;
-let yamlSessionGeneration = 0;
 const yamlRecovery = createLspRecoveryController({
   source: 'yaml',
   restart: async () => {
@@ -44,12 +34,6 @@ const yamlRecovery = createLspRecoveryController({
 });
 
 // Track open documents
-const openDocuments = new Map<string, { version: number; content: string }>();
-
-async function rehydrateOpenDocuments(): Promise<void> {
-  await rehydrateTrackedDocuments(openDocuments, notifyDocumentOpened);
-}
-
 // Debounce diagnostics
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -83,23 +67,6 @@ function pathToUri(filepath: string): string {
     return `file:///${encodedPath}`;
   }
   return `file://${encodedPath}`;
-}
-
-/**
- * Convert URI to file path
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
 }
 
 /**
@@ -153,7 +120,6 @@ export async function initializeServer(): Promise<boolean> {
       },
     });
     yamlServerTransport.configureHealth({ autoRestart: true });
-    yamlSessionGeneration = startSourceSession('yaml');
 
     if (!yamlServerTransport) {
       console.error('[YAML LSP] Failed to start server');
@@ -164,16 +130,9 @@ export async function initializeServer(): Promise<boolean> {
     yamlServerTransport.onMessage(handleServerMessage);
     yamlServerTransport.onExit(() => {
       console.log('[YAML LSP] Server exited');
-      yamlSessionGeneration = markSourceSessionStale('yaml');
       yamlRecovery.schedule('transport exit');
       yamlServerTransport = null;
       yamlServerInitialized = false;
-      openDocuments.clear();
-    });
-    yamlServerTransport.onRestart(async () => {
-      yamlSessionGeneration = startSourceSession('yaml');
-      markSourceSessionReady('yaml', yamlSessionGeneration);
-      await rehydrateOpenDocuments();
     });
 
     // Send initialize request
@@ -254,7 +213,6 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     yamlServerInitialized = true;
-    markSourceSessionReady('yaml', yamlSessionGeneration);
     yamlRecovery.reset();
     console.log('[YAML LSP] Server initialized successfully');
     return true;
@@ -283,60 +241,6 @@ function handleServerMessage(message: any): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as { uri: string; diagnostics: unknown[] });
-    }
-  }
-}
-
-/**
- * Handle diagnostics from the server
- */
-function handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): void {
-  const filepath = uriToPath(params.uri);
-  const fileName = filepath.split(/[\\/]/).pop() || filepath;
-
-  // Map LSP diagnostics to our Problem format
-  const problems: Problem[] = params.diagnostics.map((diag: unknown, index: number) => {
-    const d = diag as {
-      range: { start: { line: number; character: number }; end: { line: number; character: number } };
-      message: string;
-      severity?: number;
-      code?: string | number;
-      source?: string;
-    };
-
-    const severityMap: Record<number, ProblemSeverity> = {
-      1: 'error',
-      2: 'warning',
-      3: 'info',
-      4: 'hint',
-    };
-
-    return {
-      id: `yaml-${filepath}-${d.range.start.line}-${d.range.start.character}-${index}`,
-      file: filepath,
-      fileName,
-      line: d.range.start.line + 1,
-      column: d.range.start.character + 1,
-      endLine: d.range.end.line + 1,
-      endColumn: d.range.end.character + 1,
-      message: d.message,
-      severity: severityMap[d.severity || 1] || 'error',
-      source: d.source || 'yaml-language-server',
-      code: d.code?.toString(),
-    };
-  });
-
-  // Update problems store
-  setSourceProblemsForFile({
-    source: 'yaml',
-    generation: yamlSessionGeneration,
-    filePath: filepath,
-    problems,
-  });
 }
 
 /**
@@ -349,39 +253,9 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
   // Initialize server if needed
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!yamlServerTransport || !yamlServerInitialized) return;
 
-  const uri = pathToUri(filepath);
-  const languageId = getLanguageId();
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await yamlServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await yamlServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content,
-    },
-  });
+  await yamlServerTransport.syncDocument(filepath, getLanguageId(), content);
 }
 
 /**
@@ -390,17 +264,6 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
 export async function notifyDocumentChanged(filepath: string, content: string): Promise<void> {
   if (!isYamlFile(filepath)) return;
   if (!yamlServerTransport || !yamlServerInitialized) return;
-
-  const doc = openDocuments.get(filepath);
-  if (!doc) {
-    await notifyDocumentOpened(filepath, content);
-    return;
-  }
-
-  doc.version++;
-  doc.content = content;
-
-  const uri = pathToUri(filepath);
 
   // Clear existing debounce timer
   const existingTimer = diagnosticDebounceTimers.get(filepath);
@@ -416,13 +279,7 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
 
       if (!yamlServerTransport || !yamlServerInitialized) return;
 
-      await yamlServerTransport.sendNotification('textDocument/didChange', {
-        textDocument: {
-          uri,
-          version: doc.version,
-        },
-        contentChanges: [{ text: content }],
-      });
+      await yamlServerTransport.syncDocument(filepath, getLanguageId(), content);
     }, 200)
   );
 }
@@ -434,25 +291,13 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!isYamlFile(filepath)) return;
   if (!yamlServerTransport || !yamlServerInitialized) return;
 
-  openDocuments.delete(filepath);
-
   const timer = diagnosticDebounceTimers.get(filepath);
   if (timer) {
     clearTimeout(timer);
     diagnosticDebounceTimers.delete(filepath);
   }
 
-  const uri = pathToUri(filepath);
-  await yamlServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri },
-  });
-
-  // Clear diagnostics for this file
-  clearSourceProblemsForFile({
-    source: 'yaml',
-    generation: yamlSessionGeneration,
-    filePath: filepath,
-  });
+  await yamlServerTransport.closeDocument(filepath);
 }
 
 export async function notifyDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -460,10 +305,9 @@ export async function notifyDocumentSaved(filepath: string, content: string): Pr
   await sendDidSaveForTrackedDocument({
     filepath,
     content,
-    openDocuments,
     transport: yamlServerTransport,
     initialized: yamlServerInitialized,
-    ensureOpen: notifyDocumentOpened,
+    languageId: getLanguageId(),
     pathToUri,
   });
 }
@@ -565,8 +409,6 @@ export async function stopYamlLsp(): Promise<void> {
     void registry.stopServer('yaml');
     yamlServerTransport = null;
     yamlServerInitialized = false;
-    openDocuments.clear();
-    yamlSessionGeneration = markSourceSessionStale('yaml');
     yamlRecovery.reset();
   }
 }

@@ -1,73 +1,59 @@
 import { problemsStore, type Problem } from '$shared/stores/problems.svelte';
 
-const sourceGenerations = new Map<string, number>();
-
-function nextSourceGeneration(source: string): number {
-  const nextGeneration = (sourceGenerations.get(source) ?? 0) + 1;
-  sourceGenerations.set(source, nextGeneration);
-  return nextGeneration;
+export interface BackendLspDiagnosticProblem {
+  file: string;
+  fileName: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  message: string;
+  severity: Problem['severity'];
+  code?: string;
 }
 
-export function getSourceSessionGeneration(source: string): number {
-  return sourceGenerations.get(source) ?? 0;
-}
-
-export function startSourceSession(source: string): number {
-  return nextSourceGeneration(source);
-}
-
-export function markSourceSessionReady(source: string, generation: number): boolean {
-  if (!isCurrentSourceGeneration(source, generation)) {
-    return false;
-  }
-
-  problemsStore.markSourceFresh(source);
-  return true;
-}
-
-export function markSourceSessionStale(source: string): number {
-  const generation = nextSourceGeneration(source);
-  problemsStore.markSourceStale(source);
-  return generation;
-}
-
-export function isCurrentSourceGeneration(source: string, generation: number): boolean {
-  return getSourceSessionGeneration(source) === generation;
-}
-
-export function setSourceProblemsForFile(options: {
+export interface BackendLspDiagnosticsEvent {
+  serverId: string;
   source: string;
-  generation: number;
   filePath: string;
-  problems: Problem[];
-}): boolean {
-  const { source, generation, filePath, problems } = options;
-  if (!isCurrentSourceGeneration(source, generation)) {
-    return false;
-  }
+  problems: BackendLspDiagnosticProblem[];
+}
 
+export interface BackendLspDiagnosticsClearFileEvent {
+  serverId: string;
+  source: string;
+  filePath: string;
+}
+
+export interface BackendLspDiagnosticsSourceStateEvent {
+  serverId: string;
+  source: string;
+  state: 'fresh' | 'stale';
+}
+
+export function applyBackendDiagnostics(event: BackendLspDiagnosticsEvent): void {
   problemsStore.setProblemsForFile(
-    filePath,
-    problems.map((problem) => ({ ...problem, source })),
-    source,
+    event.filePath,
+    event.problems.map((problem, index) => ({
+      ...problem,
+      id: `${event.source}:${problem.file}:${problem.line}:${problem.column}:${index}`,
+      source: event.source,
+    })),
+    event.source,
   );
-  return true;
 }
 
-export function clearSourceProblemsForFile(options: {
-  source: string;
-  generation: number;
-  filePath: string;
-}): boolean {
-  const { source, generation, filePath } = options;
-  if (!isCurrentSourceGeneration(source, generation)) {
-    return false;
+export function clearBackendDiagnosticsFile(event: BackendLspDiagnosticsClearFileEvent): void {
+  problemsStore.clearProblemsForFile(event.filePath, event.source);
+}
+
+export function applyBackendDiagnosticsSourceState(
+  event: BackendLspDiagnosticsSourceStateEvent,
+): void {
+  if (event.state === 'fresh') {
+    problemsStore.markSourceFresh(event.source);
+    return;
   }
 
-  problemsStore.clearProblemsForFile(filePath, source);
-  return true;
-}
-
-export function resetSourceSessions(): void {
-  sourceGenerations.clear();
+  problemsStore.markSourceStale(event.source);
 }

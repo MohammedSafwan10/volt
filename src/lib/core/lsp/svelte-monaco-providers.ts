@@ -455,7 +455,6 @@ function registerEditorOpener(monaco: typeof Monaco): void {
 export function registerSvelteMonacoProviders(): void {
   const monaco = getMonaco();
   if (!monaco) {
-    console.warn('[Svelte Monaco Providers] Monaco not loaded');
     return;
   }
   

@@ -23,12 +23,8 @@
  * // Send LSP requests
  * const result = await transport.sendRequest('initialize', { ... });
  * 
- * // Listen for notifications
- * transport.onMessage((msg) => {
- *   if ('method' in msg && msg.method === 'textDocument/publishDiagnostics') {
- *     // Handle diagnostics
- *   }
- * });
+ * // Diagnostics are emitted by the Rust LSP manager and applied centrally.
+ * // Use transport notifications for editor features and server-specific events.
  * 
  * // Stop when done
  * await registry.stopAll();
@@ -42,6 +38,7 @@ export type {
   LspServerType,
   LspServerStatus,
   LspError,
+  LspTrackedDocumentSyncResult,
   JsonRpcRequest,
   JsonRpcNotification,
   JsonRpcResponse,
@@ -77,19 +74,17 @@ export {
 } from './register';
 
 export {
-  rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
+  getTrackedDocumentPathSet,
 } from './document-lifecycle';
 
 export {
-  clearSourceProblemsForFile,
-  getSourceSessionGeneration,
-  isCurrentSourceGeneration,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  resetSourceSessions,
-  setSourceProblemsForFile,
-  startSourceSession,
+  applyBackendDiagnostics,
+  applyBackendDiagnosticsSourceState,
+  clearBackendDiagnosticsFile,
+  type BackendLspDiagnosticsClearFileEvent,
+  type BackendLspDiagnosticsEvent,
+  type BackendLspDiagnosticsSourceStateEvent,
 } from './diagnostics';
 
 export {

@@ -34,6 +34,15 @@ interface DiagnosticsRunToken {
     rootPath: string;
 }
 
+interface LspProjectDiagnosticsPlan {
+    action: 'run' | 'delay' | 'queued' | 'noop';
+    runId: number | null;
+    rootPath: string | null;
+    delayMs: number;
+    staggerMs: number;
+    sidecars: SidecarKey[];
+}
+
 type SidecarKey = 'css' | 'html' | 'typescript' | 'svelte' | 'eslint' | 'dart';
 
 async function getSystemInfo(): Promise<SystemCapabilities> {
@@ -45,45 +54,29 @@ async function getSystemInfo(): Promise<SystemCapabilities> {
  * This runs independent of the LSP to catch build/compilation errors across the entire project.
  */
 export class ProjectDiagnostics {
-    private static readonly SIDECAR_RETRY_COOLDOWN_MS = 60_000;
     private isWindows = false;
-    private isRunning = false;
-    private lastRun = 0;
-    private pendingRoot: string | null = null;
     private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly MIN_INTERVAL_MS = 2500;
     private eslintBuildFiles = new Set<string>();
-    private requestedRunId = 0;
     private activeRunToken: DiagnosticsRunToken | null = null;
-    private sidecarRetryAfter = new Map<SidecarKey, number>();
 
     constructor() {
         this.checkPlatform();
     }
 
     reset(): void {
-        this.pendingRoot = null;
-        this.isRunning = false;
-        this.lastRun = 0;
         this.eslintBuildFiles.clear();
-        this.requestedRunId = 0;
         this.activeRunToken = null;
-        this.sidecarRetryAfter.clear();
         if (this.scheduledTimer) {
             clearTimeout(this.scheduledTimer);
             this.scheduledTimer = null;
         }
-    }
-
-    private beginRun(rootPath: string): DiagnosticsRunToken {
-        this.requestedRunId += 1;
-        const token = { id: this.requestedRunId, rootPath };
-        this.activeRunToken = token;
-        return token;
+        void invoke('lsp_reset_project_diagnostics_scheduler').catch((error) => {
+            console.warn('[ProjectDiagnostics] Failed to reset backend scheduler:', error);
+        });
     }
 
     private isRunCurrent(token: DiagnosticsRunToken): boolean {
-        return this.activeRunToken?.id === token.id && this.requestedRunId === token.id;
+        return this.activeRunToken?.id === token.id;
     }
 
     private async checkPlatform() {
@@ -99,37 +92,28 @@ export class ProjectDiagnostics {
      * Run diagnostics for a project
      */
     async runDiagnostics(rootPath: string): Promise<void> {
-        const now = Date.now();
-
-        // If already running, queue the latest request and exit
-        if (this.isRunning) {
-            this.pendingRoot = rootPath;
-            return;
-        }
-
-        // Throttle: if called too soon, schedule a deferred run
-        const elapsed = now - this.lastRun;
-        if (elapsed < this.MIN_INTERVAL_MS) {
-            this.pendingRoot = rootPath;
-            if (this.scheduledTimer) return;
-            const delay = this.MIN_INTERVAL_MS - elapsed;
-            this.scheduledTimer = setTimeout(() => {
-                this.scheduledTimer = null;
-                const pending = this.pendingRoot;
-                this.pendingRoot = null;
-                if (pending) {
-                    void this.runDiagnostics(pending);
-                }
-            }, delay);
-            return;
-        }
-
-        this.isRunning = true;
-
         // Ensure platform detection is finished
         await this.checkPlatform();
 
-        const runToken = this.beginRun(rootPath);
+        const requestedSidecars = await this.getRequestedSidecars(rootPath);
+        const plan = await invoke<LspProjectDiagnosticsPlan>(
+            'lsp_begin_project_diagnostics',
+            {
+                rootPath,
+                sidecars: requestedSidecars,
+            },
+        );
+
+        if (this.handleSchedulerPlan(plan, rootPath)) {
+            return;
+        }
+
+        if (plan.action !== 'run' || plan.runId === null) {
+            return;
+        }
+
+        const runToken = { id: plan.runId, rootPath };
+        this.activeRunToken = runToken;
 
         console.log('[ProjectDiagnostics] Starting project-wide analysis...');
 
@@ -140,22 +124,19 @@ export class ProjectDiagnostics {
             await Promise.allSettled([
                 // this.runTscDiagnostics(rootPath), // Handled by tsc-watcher.ts
                 this.runEslintDiagnostics(rootPath, runToken),
-                this.runLspDiagnostics(rootPath, runToken)
+                this.runLspDiagnostics(rootPath, runToken, plan),
             ]);
         } finally {
-            this.lastRun = Date.now();
-            this.isRunning = false;
             if (this.activeRunToken?.id === runToken.id) {
                 this.activeRunToken = null;
             }
             console.log('[ProjectDiagnostics] Analysis complete.');
 
-            // If another request came in while running, schedule next run
-            if (this.pendingRoot) {
-                const pending = this.pendingRoot;
-                this.pendingRoot = null;
-                void this.runDiagnostics(pending);
-            }
+            const followUp = await invoke<LspProjectDiagnosticsPlan>(
+                'lsp_complete_project_diagnostics',
+                { runId: runToken.id },
+            );
+            this.handleSchedulerPlan(followUp, rootPath);
         }
     }
 
@@ -163,7 +144,38 @@ export class ProjectDiagnostics {
      * Trigger background analysis in LSP sidecars for non-build project types
      * (HTML, CSS, standalone JS) - and now Dart/Flutter (LSP only)
      */
-    private async runLspDiagnostics(rootPath: string, token: DiagnosticsRunToken): Promise<void> {
+    private async getRequestedSidecars(rootPath: string): Promise<SidecarKey[]> {
+        const sidecars: SidecarKey[] = ['css', 'html', 'typescript', 'svelte', 'eslint'];
+        if (await this.fileExists(rootPath, 'pubspec.yaml')) {
+            sidecars.push('dart');
+        }
+        return sidecars;
+    }
+
+    private handleSchedulerPlan(
+        plan: LspProjectDiagnosticsPlan,
+        fallbackRootPath: string,
+    ): boolean {
+        if (plan.action === 'delay') {
+            const nextRoot = plan.rootPath ?? fallbackRootPath;
+            if (this.scheduledTimer) {
+                clearTimeout(this.scheduledTimer);
+            }
+            this.scheduledTimer = setTimeout(() => {
+                this.scheduledTimer = null;
+                void this.runDiagnostics(nextRoot);
+            }, plan.delayMs);
+            return true;
+        }
+
+        return plan.action !== 'run';
+    }
+
+    private async runLspDiagnostics(
+        rootPath: string,
+        token: DiagnosticsRunToken,
+        plan: LspProjectDiagnosticsPlan,
+    ): Promise<void> {
         try {
             if (!this.isRunCurrent(token)) return;
 
@@ -190,29 +202,34 @@ export class ProjectDiagnostics {
 
             console.log('[ProjectDiagnostics] Starting background LSP analysis discovery...');
 
-            const analysisPromises: Promise<any>[] = [
-                this.startSidecarAnalysis('css', () => startCssAnalysis(), token),
-                this.startSidecarAnalysis('html', () => startHtmlAnalysis(), token),
-                this.startSidecarAnalysis('typescript', () => startTsAnalysis(), token),
-                this.startSidecarAnalysis('svelte', () => startSvelteAnalysis(), token),
-                this.startSidecarAnalysis('eslint', () => startEslintAnalysis(), token),
+            const analysisSteps: Array<{ key: SidecarKey; start: () => Promise<void> }> = [
+                { key: 'css', start: () => startCssAnalysis() },
+                { key: 'html', start: () => startHtmlAnalysis() },
+                { key: 'typescript', start: () => startTsAnalysis() },
+                { key: 'svelte', start: () => startSvelteAnalysis() },
+                { key: 'eslint', start: () => startEslintAnalysis() },
             ];
 
             // Specific check for Dart projects to start LSP and run analysis
-            if (await this.fileExists(rootPath, 'pubspec.yaml')) {
+            if (plan.sidecars.includes('dart')) {
                 console.log('[ProjectDiagnostics] Detected Dart/Flutter project. Starting Dart LSP...');
-                analysisPromises.push(
-                    this.startSidecarAnalysis('dart', async () => {
+                analysisSteps.push({
+                    key: 'dart',
+                    start: async () => {
                         await startDartLsp(rootPath);
                         await startDartAnalysis();
-                    }, token)
-                );
+                    },
+                });
             }
 
             if (!this.isRunCurrent(token)) return;
 
-            // Start discovery loops
-            await Promise.all(analysisPromises);
+            for (const analysis of analysisSteps.filter(({ key }) => plan.sidecars.includes(key))) {
+                if (!this.isRunCurrent(token)) return;
+                await this.startSidecarAnalysis(analysis.key, analysis.start, token);
+                if (!this.isRunCurrent(token)) return;
+                await new Promise((resolve) => setTimeout(resolve, plan.staggerMs));
+            }
 
             console.log('[ProjectDiagnostics] Background LSP analysis discovery complete.');
         } catch (e) {
@@ -220,11 +237,7 @@ export class ProjectDiagnostics {
         }
     }
 
-    private isSidecarCoolingDown(sidecar: SidecarKey): boolean {
-        return (this.sidecarRetryAfter.get(sidecar) ?? 0) > Date.now();
-    }
-
-    private noteSidecarFailure(sidecar: SidecarKey, error: unknown): boolean {
+    private async noteSidecarFailure(sidecar: SidecarKey, error: unknown): Promise<boolean> {
         const typedError = error as { type?: string; message?: string } | undefined;
         const type = typedError?.type ?? '';
         const message = typedError?.message ?? String(error ?? '');
@@ -234,26 +247,21 @@ export class ProjectDiagnostics {
             return true;
         }
 
-        const shouldCooldown =
-            type === 'ServerNotFound' ||
-            type === 'SpawnFailed' ||
-            type === 'SendFailed' ||
-            type === 'ProcessError' ||
-            /transport not connected/i.test(message) ||
-            /server exited/i.test(message) ||
-            /spawn failed/i.test(message);
-
-        if (!shouldCooldown) {
-            return false;
-        }
-
-        const retryAt = Date.now() + ProjectDiagnostics.SIDECAR_RETRY_COOLDOWN_MS;
-        this.sidecarRetryAfter.set(sidecar, retryAt);
-        console.warn(
-            `[ProjectDiagnostics] ${sidecar} sidecar unavailable; delaying retries for ${ProjectDiagnostics.SIDECAR_RETRY_COOLDOWN_MS / 1000}s`,
-            error,
+        const cooledDown = await invoke<boolean>(
+            'lsp_note_project_diagnostics_sidecar_failure',
+            {
+                sidecar,
+                errorType: type || null,
+                message,
+            },
         );
-        return true;
+        if (cooledDown) {
+            console.warn(
+                `[ProjectDiagnostics] ${sidecar} sidecar unavailable; backend scheduler delayed retries`,
+                error,
+            );
+        }
+        return cooledDown;
     }
 
     private async startSidecarAnalysis(
@@ -261,14 +269,14 @@ export class ProjectDiagnostics {
         start: () => Promise<void>,
         token: DiagnosticsRunToken,
     ): Promise<void> {
-        if (!this.isRunCurrent(token) || this.isSidecarCoolingDown(sidecar)) {
+        if (!this.isRunCurrent(token)) {
             return;
         }
 
         try {
             await start();
         } catch (error) {
-            if (this.noteSidecarFailure(sidecar, error)) {
+            if (await this.noteSidecarFailure(sidecar, error)) {
                 return;
             }
             throw error;

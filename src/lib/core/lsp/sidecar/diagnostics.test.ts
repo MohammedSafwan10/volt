@@ -11,68 +11,78 @@ vi.mock('$shared/stores/problems.svelte', () => ({
   problemsStore: problemsStoreMock,
 }));
 
-describe('diagnostics coordinator', () => {
+describe('backend diagnostics bridge', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
   });
 
-  it('ignores stale generations when setting problems', async () => {
+  it('maps backend diagnostics into the problems store', async () => {
     const diagnostics = await import('./diagnostics');
 
-    const generation1 = diagnostics.startSourceSession('typescript');
-    const generation2 = diagnostics.startSourceSession('typescript');
-
-    expect(generation2).toBeGreaterThan(generation1);
-
-    const accepted = diagnostics.setSourceProblemsForFile({
+    diagnostics.applyBackendDiagnostics({
+      serverId: 'typescript',
       source: 'typescript',
-      generation: generation1,
       filePath: 'C:/repo/app.ts',
-      problems: [],
-    });
-
-    expect(accepted).toBe(false);
-    expect(problemsStoreMock.setProblemsForFile).not.toHaveBeenCalled();
-  });
-
-  it('accepts current generations and marks readiness', async () => {
-    const diagnostics = await import('./diagnostics');
-
-    const generation = diagnostics.startSourceSession('yaml');
-
-    const accepted = diagnostics.setSourceProblemsForFile({
-      source: 'yaml',
-      generation,
-      filePath: 'C:/repo/pubspec.yaml',
       problems: [
         {
-          id: '1',
-          file: 'C:/repo/pubspec.yaml',
-          fileName: 'pubspec.yaml',
-          line: 1,
-          column: 1,
-          endLine: 1,
-          endColumn: 2,
-          message: 'problem',
+          file: 'C:/repo/app.ts',
+          fileName: 'app.ts',
+          line: 4,
+          column: 2,
+          endLine: 4,
+          endColumn: 5,
+          message: 'Unexpected any',
           severity: 'warning',
-          source: 'yaml-language-server',
+          code: 'no-explicit-any',
         },
       ],
     });
 
-    expect(accepted).toBe(true);
     expect(problemsStoreMock.setProblemsForFile).toHaveBeenCalledWith(
-      'C:/repo/pubspec.yaml',
+      'C:/repo/app.ts',
       [
         expect.objectContaining({
-          source: 'yaml',
+          id: 'typescript:C:/repo/app.ts:4:2:0',
+          source: 'typescript',
+          message: 'Unexpected any',
         }),
       ],
+      'typescript',
+    );
+  });
+
+  it('clears backend diagnostics for a file', async () => {
+    const diagnostics = await import('./diagnostics');
+
+    diagnostics.clearBackendDiagnosticsFile({
+      serverId: 'yaml',
+      source: 'yaml',
+      filePath: 'C:/repo/pubspec.yaml',
+    });
+
+    expect(problemsStoreMock.clearProblemsForFile).toHaveBeenCalledWith(
+      'C:/repo/pubspec.yaml',
       'yaml',
     );
+  });
 
-    expect(diagnostics.markSourceSessionReady('yaml', generation)).toBe(true);
-    expect(problemsStoreMock.markSourceFresh).toHaveBeenCalledWith('yaml');
+  it('marks backend source state from lifecycle events', async () => {
+    const diagnostics = await import('./diagnostics');
+
+    diagnostics.applyBackendDiagnosticsSourceState({
+      serverId: 'css',
+      source: 'css',
+      state: 'fresh',
+    });
+
+    diagnostics.applyBackendDiagnosticsSourceState({
+      serverId: 'css',
+      source: 'css',
+      state: 'stale',
+    });
+
+    expect(problemsStoreMock.markSourceFresh).toHaveBeenCalledWith('css');
+    expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('css');
   });
 });

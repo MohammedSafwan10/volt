@@ -1,43 +1,43 @@
 import type { LspTransport } from './transport';
 
-export type TrackedDocumentMap = Map<string, { version: number; content: string }>;
-
-export async function rehydrateTrackedDocuments(
-  openDocuments: TrackedDocumentMap,
-  reopen: (filepath: string, content: string) => Promise<void>,
-): Promise<void> {
-  const docs = Array.from(openDocuments.entries());
-  openDocuments.clear();
-  for (const [filepath, doc] of docs) {
-    await reopen(filepath, doc.content);
-  }
-}
-
 export async function sendDidSaveForTrackedDocument(options: {
   filepath: string;
   content: string;
-  openDocuments: TrackedDocumentMap;
   transport: LspTransport | null;
   initialized: boolean;
-  ensureOpen: (filepath: string, content: string) => Promise<void>;
+  languageId: string;
   pathToUri: (filepath: string) => string;
 }): Promise<void> {
   const {
     filepath,
     content,
-    openDocuments,
     transport,
     initialized,
-    ensureOpen,
+    languageId,
     pathToUri,
   } = options;
 
   if (!transport || !initialized) return;
-  if (!openDocuments.has(filepath)) {
-    await ensureOpen(filepath, content);
-  }
+  await transport.syncDocument(filepath, languageId, content);
 
   await transport.sendNotification('textDocument/didSave', {
     textDocument: { uri: pathToUri(filepath) },
   });
+}
+
+export async function getTrackedDocumentPathSet(options: {
+  transport: LspTransport | null;
+  normalizePath?: (filepath: string) => string;
+}): Promise<Set<string>> {
+  const { transport, normalizePath } = options;
+  if (!transport) {
+    return new Set();
+  }
+
+  const trackedDocuments = await transport.listTrackedDocuments();
+  return new Set(
+    trackedDocuments.map((document) =>
+      normalizePath ? normalizePath(document.filePath) : document.filePath,
+    ),
+  );
 }

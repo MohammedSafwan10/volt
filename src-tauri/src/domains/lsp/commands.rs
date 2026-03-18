@@ -5,7 +5,10 @@
 //! - Send JSON-RPC messages to servers
 //! - Query server status
 
-use crate::lsp::{ExternalLspConfig, LspError, LspManager, LspServerConfig, LspServerInfo};
+use crate::lsp::{
+    ExternalLspConfig, LspError, LspManager, LspProjectDiagnosticsPlan, LspServerConfig,
+    LspServerInfo, LspTrackedDocumentInfo, LspTrackedDocumentSyncResult,
+};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Runtime, State};
@@ -103,8 +106,11 @@ pub async fn lsp_stop_server<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, LspManagerState<R>>,
     server_id: String,
+    preserve_state: Option<bool>,
 ) -> Result<(), LspError> {
-    state.with_manager(&app_handle, |manager| manager.stop_server(&server_id))
+    state.with_manager(&app_handle, |manager| {
+        manager.stop_server(&server_id, preserve_state.unwrap_or(false))
+    })
 }
 
 /// Stop all language server sidecars
@@ -116,6 +122,15 @@ pub async fn lsp_stop_all<R: Runtime>(
     state.with_manager(&app_handle, |manager| manager.stop_all())
 }
 
+#[tauri::command]
+pub async fn lsp_restart_server<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+) -> Result<LspServerInfo, LspError> {
+    state.with_manager(&app_handle, |manager| manager.restart_server(&server_id))
+}
+
 /// Send a JSON-RPC message to a language server
 #[tauri::command]
 pub async fn lsp_send_message<R: Runtime>(
@@ -124,7 +139,90 @@ pub async fn lsp_send_message<R: Runtime>(
     server_id: String,
     message: String,
 ) -> Result<(), LspError> {
-    state.with_manager(&app_handle, |manager| manager.send_message(&server_id, &message))
+    state.with_manager(&app_handle, |manager| {
+        manager.send_message(&server_id, &message)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_sync_document<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    file_path: String,
+    language_id: String,
+    text: String,
+) -> Result<LspTrackedDocumentSyncResult, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.sync_document(&server_id, &file_path, &language_id, &text)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_close_document<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    file_path: String,
+) -> Result<bool, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.close_document(&server_id, &file_path)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_list_tracked_documents<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+) -> Result<Vec<LspTrackedDocumentInfo>, LspError> {
+    state.with_manager(&app_handle, |manager| manager.list_tracked_documents(&server_id))
+}
+
+#[tauri::command]
+pub async fn lsp_begin_project_diagnostics<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    root_path: String,
+    sidecars: Vec<String>,
+) -> Result<LspProjectDiagnosticsPlan, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.begin_project_diagnostics(&root_path, &sidecars)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_complete_project_diagnostics<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    run_id: u64,
+) -> Result<LspProjectDiagnosticsPlan, LspError> {
+    state.with_manager(&app_handle, |manager| manager.complete_project_diagnostics(run_id))
+}
+
+#[tauri::command]
+pub async fn lsp_note_project_diagnostics_sidecar_failure<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    sidecar: String,
+    error_type: Option<String>,
+    message: Option<String>,
+) -> Result<bool, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.note_project_diagnostics_sidecar_failure(
+            &sidecar,
+            error_type.as_deref(),
+            message.as_deref(),
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_reset_project_diagnostics_scheduler<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+) -> Result<(), LspError> {
+    state.with_manager(&app_handle, |manager| manager.reset_project_diagnostics_scheduler())
 }
 
 /// List all running language servers
@@ -153,5 +251,7 @@ pub async fn lsp_is_server_running<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     server_id: String,
 ) -> Result<bool, LspError> {
-    state.with_manager(&app_handle, |manager| Ok(manager.is_server_running(&server_id)))
+    state.with_manager(&app_handle, |manager| {
+        Ok(manager.is_server_running(&server_id))
+    })
 }

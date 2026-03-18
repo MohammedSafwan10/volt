@@ -19,16 +19,10 @@
 
 import {
   getLspRegistry,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  clearSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
@@ -39,7 +33,6 @@ let tsServerTransport: LspTransport | null = null;
 let tsServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
-let tsSessionGeneration = 0;
 const tsRecovery = createLspRecoveryController({
   source: 'typescript',
   restart: async () => {
@@ -47,16 +40,27 @@ const tsRecovery = createLspRecoveryController({
   },
 });
 
-// Document tracking
-const openDocuments = new Map<string, { version: number; content: string }>();
+let transportHandlersAttached = false;
 
-async function rehydrateOpenDocuments(): Promise<void> {
-  if (!tsServerTransport || !tsServerInitialized) return;
-  const docs = Array.from(openDocuments.entries());
-  openDocuments.clear();
-  for (const [filepath, doc] of docs) {
-    await notifyDocumentOpened(filepath, doc.content);
-  }
+function attachTransportHandlers(transport: LspTransport): void {
+  if (transportHandlersAttached) return;
+  transportHandlersAttached = true;
+
+  transport.onMessage(handleLspMessage);
+
+  transport.onError((error) => {
+    console.error('[TS LSP] Server error:', error);
+  });
+
+  transport.onExit(() => {
+    console.log('[TS LSP] Server exited');
+    tsServerTransport = null;
+    tsServerInitialized = false;
+    initializationPromise = null;
+    initializedRootPath = null;
+    transportHandlersAttached = false;
+    tsRecovery.schedule('transport exit');
+  });
 }
 
 // Debounce timers
@@ -120,44 +124,6 @@ function pathToUri(filepath: string): string {
 }
 
 /**
- * Convert URI to file path (normalized with forward slashes)
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-
-  // Decode URI components (fixes encoded drive letters like %3A)
-  try {
-    path = decodeURIComponent(path);
-  } catch (e) {
-    console.warn('[TS LSP] Failed to decode URI component:', path);
-  }
-
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
-}
-
-/**
- * Map LSP severity to our severity
- */
-function mapSeverity(lspSeverity: number): ProblemSeverity {
-  switch (lspSeverity) {
-    case 1: return 'error';
-    case 2: return 'warning';
-    case 3: return 'info';
-    case 4: return 'hint';
-    default: return 'info';
-  }
-}
-
-/**
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
@@ -180,15 +146,6 @@ function handleLspMessage(message: JsonRpcMessage): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as PublishDiagnosticsParams);
-    } else if (message.method === 'window/logMessage') {
-      const params = message.params as { type: number; message: string };
-      console.log(`[TS LSP] ${params.message}`);
-    }
-  }
 }
 
 interface Diagnostic {
@@ -200,40 +157,6 @@ interface Diagnostic {
   severity?: number;
   code?: number | string;
   source?: string;
-}
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-/**
- * Handle diagnostics from the LSP server
- */
-function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = uriToPath(params.uri);
-  const fileName = filePath.split(/[/\\]/).pop() || filePath;
-
-  const problems: Problem[] = params.diagnostics.map((diag, index) => ({
-    id: `${filePath}:${diag.range.start.line}:${diag.range.start.character}:${index}`,
-    file: filePath,
-    fileName,
-    line: diag.range.start.line + 1, // LSP is 0-based, we use 1-based
-    column: diag.range.start.character + 1,
-    endLine: diag.range.end.line + 1,
-    endColumn: diag.range.end.character + 1,
-    message: diag.message,
-    severity: mapSeverity(diag.severity ?? 1),
-    source: diag.source || 'typescript',
-    code: diag.code?.toString()
-  }));
-
-  setSourceProblemsForFile({
-    source: 'typescript',
-    generation: tsSessionGeneration,
-    filePath,
-    problems,
-  });
 }
 
 /**
@@ -270,33 +193,8 @@ async function initializeServer(): Promise<void> {
           windowMs: 120_000,
         },
       });
-      tsServerTransport.configureHealth({ autoRestart: true });
-      tsSessionGeneration = startSourceSession('typescript');
-
-      // Set up message handler
-      tsServerTransport.onMessage(handleLspMessage);
-
-      // Set up error handler
-      tsServerTransport.onError((error) => {
-        console.error('[TS LSP] Server error:', error);
-      });
-
-      // Set up exit handler
-      tsServerTransport.onExit(() => {
-        console.log('[TS LSP] Server exited');
-        tsSessionGeneration = markSourceSessionStale('typescript');
-        tsRecovery.schedule('transport exit');
-        tsServerTransport = null;
-        tsServerInitialized = false;
-        initializationPromise = null;
-        initializedRootPath = null;
-        openDocuments.clear();
-      });
-      tsServerTransport.onRestart(async () => {
-        tsSessionGeneration = startSourceSession('typescript');
-        markSourceSessionReady('typescript', tsSessionGeneration);
-        await rehydrateOpenDocuments();
-      });
+      tsServerTransport.configureHealth({ autoRestart: false });
+      attachTransportHandlers(tsServerTransport);
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -427,14 +325,11 @@ async function initializeServer(): Promise<void> {
         }
       });
 
-      console.log('[TS LSP] Server initialized:', initResult);
-
       // Send initialized notification
       await tsServerTransport.sendNotification('initialized', {});
 
       tsServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      markSourceSessionReady('typescript', tsSessionGeneration);
       tsRecovery.reset();
 
       // Register Monaco providers to use the sidecar for completions/hover/definition
@@ -460,17 +355,22 @@ function normalizePath(filepath: string): string {
   return normalized;
 }
 
-function prioritizeProjectFiles<T extends { path: string }>(files: T[]): T[] {
-  const active = new Set(
-    Array.from(openDocuments.keys()).map((path) => normalizePath(path)),
-  );
-
+function prioritizeProjectFiles<T extends { path: string }>(files: T[], active: Set<string>): T[] {
   return [...files].sort((a, b) => {
     const aActive = active.has(normalizePath(a.path)) ? 0 : 1;
     const bActive = active.has(normalizePath(b.path)) ? 0 : 1;
     if (aActive !== bActive) return aActive - bActive;
     return normalizePath(a.path).localeCompare(normalizePath(b.path));
   });
+}
+
+async function getTrackedDocumentPaths(): Promise<Set<string>> {
+  if (!tsServerTransport || !tsServerInitialized) {
+    return new Set();
+  }
+
+  const tracked = await tsServerTransport.listTrackedDocuments();
+  return new Set(tracked.map((document) => normalizePath(document.filePath)));
 }
 
 /**
@@ -493,40 +393,8 @@ export async function notifyDocumentOpened(filepath: string, content: string): P
 
     if (!tsServerTransport || !tsServerInitialized) return;
 
-    // Re-check if already open (might have been opened while we waited for init)
-    const existing = openDocuments.get(normalizedPath);
-    const uri = pathToUri(normalizedPath);
-
-    if (existing) {
-      if (existing.content === content) return;
-
-      // If it's already open but content changed, send didChange instead
-      openDocuments.set(normalizedPath, { version: existing.version + 1, content });
-
-      await tsServerTransport.sendNotification('textDocument/didChange', {
-        textDocument: {
-          uri,
-          version: existing.version + 1
-        },
-        contentChanges: [{ text: content }]
-      });
-      return;
-    }
-
     const languageId = getLanguageId(normalizedPath);
-
-    // Track document
-    openDocuments.set(normalizedPath, { version: 1, content });
-
-    // Send didOpen notification
-    await tsServerTransport.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri,
-        languageId,
-        version: 1,
-        text: content
-      }
-    });
+    await tsServerTransport.syncDocument(normalizedPath, languageId, content);
   })();
 
   openingDocuments.set(normalizedPath, promise);
@@ -545,19 +413,6 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
   if (!tsServerTransport || !tsServerInitialized) return;
 
   const normalizedPath = normalizePath(filepath);
-  const doc = openDocuments.get(normalizedPath);
-  if (!doc) {
-    // Document wasn't opened, open it now
-    await notifyDocumentOpened(normalizedPath, content);
-    return;
-  }
-
-  // Update version
-  doc.version++;
-  doc.content = content;
-
-  const uri = pathToUri(normalizedPath);
-
   // Debounce the change notification
   const existingTimer = diagnosticDebounceTimers.get(normalizedPath);
   if (existingTimer) {
@@ -569,14 +424,7 @@ export async function notifyDocumentChanged(filepath: string, content: string): 
 
     if (!tsServerTransport || !tsServerInitialized) return;
 
-    // Send didChange notification with full content
-    await tsServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: doc.version
-      },
-      contentChanges: [{ text: content }]
-    });
+    await tsServerTransport.syncDocument(normalizedPath, getLanguageId(normalizedPath), content);
   }, DIAGNOSTIC_DEBOUNCE_MS));
 }
 
@@ -588,6 +436,7 @@ export async function notifyDocumentSaved(filepath: string, content: string): Pr
   if (!tsServerTransport || !tsServerInitialized) return;
 
   const normalizedPath = normalizePath(filepath);
+  await tsServerTransport.syncDocument(normalizedPath, getLanguageId(normalizedPath), content);
   const uri = pathToUri(normalizedPath);
 
   await tsServerTransport.sendNotification('textDocument/didSave', {
@@ -604,20 +453,7 @@ export async function notifyDocumentClosed(filepath: string): Promise<void> {
   if (!tsServerTransport || !tsServerInitialized) return;
 
   const normalizedPath = normalizePath(filepath);
-  openDocuments.delete(normalizedPath);
-
-  const uri = pathToUri(normalizedPath);
-
-  await tsServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri }
-  });
-
-  // Clear TypeScript problems for this file
-  clearSourceProblemsForFile({
-    source: 'typescript',
-    generation: tsSessionGeneration,
-    filePath: normalizedPath,
-  });
+  await tsServerTransport.closeDocument(normalizedPath);
 }
 
 /**
@@ -627,9 +463,13 @@ export async function startProjectWideAnalysis(): Promise<void> {
   if (!projectStore.rootPath) return;
 
   const runId = ++projectAnalysisRunId;
+  const trackedDocumentPaths = await getTrackedDocumentPaths();
 
   const allFiles = getAllFiles();
-  const tsJsFiles = prioritizeProjectFiles(allFiles.filter(f => isTsJsFile(f.path)));
+  const tsJsFiles = prioritizeProjectFiles(
+    allFiles.filter((f) => isTsJsFile(f.path)),
+    trackedDocumentPaths,
+  );
 
   if (tsJsFiles.length === 0) {
     console.log('[TS LSP] No JS/TS files found for background analysis.');
@@ -649,7 +489,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     const normalizedPath = normalizePath(file.path);
 
     // Only open if not already open (prevent double-counting)
-    if (openDocuments.has(normalizedPath)) continue;
+    if (trackedDocumentPaths.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
     if (runId !== projectAnalysisRunId) {
@@ -659,6 +499,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     if (content) {
       // This will automatically initialize server if needed
       await notifyDocumentOpened(normalizedPath, content);
+      trackedDocumentPaths.add(normalizedPath);
       processedSinceYield += 1;
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
@@ -716,6 +557,8 @@ interface CompletionItem {
   insertTextFormat?: number;
   textEdit?: TextEdit;
   additionalTextEdits?: TextEdit[];
+  sortText?: string;
+  filterText?: string;
 }
 
 interface CompletionList {
@@ -1105,8 +948,6 @@ export async function stopTsLsp(): Promise<void> {
   tsServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
-  openDocuments.clear();
-  tsSessionGeneration = markSourceSessionStale('typescript');
   tsRecovery.reset();
 
   // Clear all diagnostic timers

@@ -14,16 +14,10 @@
 
 import {
   getLspRegistry,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  clearSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { registerTailwindMonacoProviders, disposeTailwindMonacoProviders } from './tailwind-monaco-providers';
 
@@ -31,7 +25,6 @@ import { registerTailwindMonacoProviders, disposeTailwindMonacoProviders } from 
 let tailwindServerTransport: LspTransport | null = null;
 let tailwindServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-let tailwindSessionGeneration = 0;
 const tailwindRecovery = createLspRecoveryController({
   source: 'tailwindcss',
   restart: async () => {
@@ -39,16 +32,26 @@ const tailwindRecovery = createLspRecoveryController({
   },
 });
 
-// Document tracking
-const openDocuments = new Map<string, { version: number; content: string }>();
+let transportHandlersAttached = false;
 
-async function rehydrateOpenDocuments(): Promise<void> {
-  if (!tailwindServerTransport || !tailwindServerInitialized) return;
-  const docs = Array.from(openDocuments.entries());
-  openDocuments.clear();
-  for (const [filepath, doc] of docs) {
-    await notifyTailwindDocumentOpened(filepath, doc.content);
-  }
+function attachTransportHandlers(transport: LspTransport): void {
+  if (transportHandlersAttached) return;
+  transportHandlersAttached = true;
+
+  transport.onMessage(handleLspMessage);
+
+  transport.onError((error) => {
+    console.error('[Tailwind LSP] Server error:', error);
+  });
+
+  transport.onExit(() => {
+    console.log('[Tailwind LSP] Server exited');
+    tailwindServerTransport = null;
+    tailwindServerInitialized = false;
+    initializationPromise = null;
+    transportHandlersAttached = false;
+    tailwindRecovery.schedule('transport exit');
+  });
 }
 
 // Debounce timers
@@ -127,45 +130,39 @@ function pathToUri(filepath: string): string {
 }
 
 /**
- * Convert URI to file path (normalized with forward slashes)
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
-}
-
-/**
- * Map LSP severity to our severity
- */
-function mapSeverity(lspSeverity: number): ProblemSeverity {
-  switch (lspSeverity) {
-    case 1: return 'error';
-    case 2: return 'warning';
-    case 3: return 'info';
-    case 4: return 'hint';
-    default: return 'info';
-  }
-}
-
-/**
  * Handle incoming LSP messages
  */
+function buildTailwindWorkspaceConfiguration(): Record<string, unknown> {
+  return {
+    tailwindCSS: {
+      includeLanguages: {
+        javascript: 'javascript',
+        javascriptreact: 'javascriptreact',
+        typescript: 'typescript',
+        typescriptreact: 'typescriptreact',
+        svelte: 'html',
+        vue: 'html',
+      },
+    },
+  };
+}
+
 function handleLspMessage(message: JsonRpcMessage): void {
   // Handle server requests that require a response
   if ('id' in message && 'method' in message && message.id !== null) {
     const id = message.id;
     if (message.method === 'workspace/configuration') {
       const items = (message.params as any)?.items || [];
-      const result = items.map(() => ({}));
+      const config = buildTailwindWorkspaceConfiguration();
+      const result = items.map((item: { section?: string }) => {
+        if (!item?.section) {
+          return config;
+        }
+        if (item.section === 'tailwindCSS') {
+          return config.tailwindCSS;
+        }
+        return {};
+      });
       tailwindServerTransport?.sendResponse(id, result);
     } else {
       tailwindServerTransport?.sendResponse(id, null);
@@ -173,15 +170,6 @@ function handleLspMessage(message: JsonRpcMessage): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as PublishDiagnosticsParams);
-    } else if (message.method === 'window/logMessage') {
-      const params = message.params as { type: number; message: string };
-      console.log(`[Tailwind LSP] ${params.message}`);
-    }
-  }
 }
 
 interface Diagnostic {
@@ -194,42 +182,6 @@ interface Diagnostic {
   code?: number | string;
   source?: string;
 }
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-/**
- * Handle diagnostics from the LSP server
- */
-function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = uriToPath(params.uri);
-  const fileName = filePath.split(/[/\\]/).pop() || filePath;
-
-  const problems: Problem[] = params.diagnostics.map((diag, index) => ({
-    id: `tailwind:${filePath}:${diag.range.start.line}:${diag.range.start.character}:${index}`,
-    file: filePath,
-    fileName,
-    line: diag.range.start.line + 1, // LSP is 0-based, we use 1-based
-    column: diag.range.start.character + 1,
-    endLine: diag.range.end.line + 1,
-    endColumn: diag.range.end.character + 1,
-    message: diag.message,
-    severity: mapSeverity(diag.severity ?? 2), // Default to warning for Tailwind
-    source: diag.source || 'tailwindcss',
-    code: diag.code?.toString()
-  }));
-
-  // Merge with existing problems (don't overwrite TS problems)
-  setSourceProblemsForFile({
-    source: 'tailwindcss',
-    generation: tailwindSessionGeneration,
-    filePath,
-    problems,
-  });
-}
-
 
 /**
  * Initialize the Tailwind CSS language server
@@ -259,32 +211,8 @@ async function initializeServer(): Promise<void> {
           windowMs: 120_000,
         },
       });
-      tailwindServerTransport.configureHealth({ autoRestart: true });
-      tailwindSessionGeneration = startSourceSession('tailwindcss');
-
-      // Set up message handler
-      tailwindServerTransport.onMessage(handleLspMessage);
-
-      // Set up error handler
-      tailwindServerTransport.onError((error) => {
-        console.error('[Tailwind LSP] Server error:', error);
-      });
-
-      // Set up exit handler
-      tailwindServerTransport.onExit(() => {
-        console.log('[Tailwind LSP] Server exited');
-        tailwindSessionGeneration = markSourceSessionStale('tailwindcss');
-        tailwindRecovery.schedule('transport exit');
-        tailwindServerTransport = null;
-        tailwindServerInitialized = false;
-        initializationPromise = null;
-        openDocuments.clear();
-      });
-      tailwindServerTransport.onRestart(async () => {
-        tailwindSessionGeneration = startSourceSession('tailwindcss');
-        markSourceSessionReady('tailwindcss', tailwindSessionGeneration);
-        await rehydrateOpenDocuments();
-      });
+      tailwindServerTransport.configureHealth({ autoRestart: false });
+      attachTransportHandlers(tailwindServerTransport);
 
       // Send initialize request
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -361,27 +289,15 @@ async function initializeServer(): Promise<void> {
             name: projectStore.projectName
           }
         ],
-        initializationOptions: {
-          // Tailwind-specific settings
-          userLanguages: {
-            // Map file extensions to language IDs for Tailwind
-            'javascript': 'javascript',
-            'javascriptreact': 'javascriptreact',
-            'typescript': 'typescript',
-            'typescriptreact': 'typescriptreact',
-            'svelte': 'html',
-            'vue': 'html'
-          }
-        }
       });
-
-      console.log('[Tailwind LSP] Server initialized:', initResult);
 
       // Send initialized notification
       await tailwindServerTransport.sendNotification('initialized', {});
+      await tailwindServerTransport.sendNotification('workspace/didChangeConfiguration', {
+        settings: buildTailwindWorkspaceConfiguration(),
+      });
 
       tailwindServerInitialized = true;
-      markSourceSessionReady('tailwindcss', tailwindSessionGeneration);
       tailwindRecovery.reset();
 
       // Register Monaco providers
@@ -408,39 +324,10 @@ export async function notifyTailwindDocumentOpened(filepath: string, content: st
   // Initialize server if needed
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
-  const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await tailwindServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await tailwindServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content
-    }
-  });
+  await tailwindServerTransport.syncDocument(filepath, languageId, content);
 }
 
 /**
@@ -449,19 +336,6 @@ export async function notifyTailwindDocumentOpened(filepath: string, content: st
 export async function notifyTailwindDocumentChanged(filepath: string, content: string): Promise<void> {
   if (!isTailwindFile(filepath)) return;
   if (!tailwindServerTransport || !tailwindServerInitialized) return;
-
-  const doc = openDocuments.get(filepath);
-  if (!doc) {
-    // Document wasn't opened, open it now
-    await notifyTailwindDocumentOpened(filepath, content);
-    return;
-  }
-
-  // Update version
-  doc.version++;
-  doc.content = content;
-
-  const uri = pathToUri(filepath);
 
   // Debounce the change notification
   const existingTimer = diagnosticDebounceTimers.get(filepath);
@@ -474,14 +348,7 @@ export async function notifyTailwindDocumentChanged(filepath: string, content: s
 
     if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
-    // Send didChange notification with full content
-    await tailwindServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: doc.version
-      },
-      contentChanges: [{ text: content }]
-    });
+    await tailwindServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
   }, DIAGNOSTIC_DEBOUNCE_MS));
 }
 
@@ -492,6 +359,7 @@ export async function notifyTailwindDocumentSaved(filepath: string, content: str
   if (!isTailwindFile(filepath)) return;
   if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
+  await tailwindServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
   const uri = pathToUri(filepath);
 
   await tailwindServerTransport.sendNotification('textDocument/didSave', {
@@ -507,20 +375,7 @@ export async function notifyTailwindDocumentClosed(filepath: string): Promise<vo
   if (!isTailwindFile(filepath)) return;
   if (!tailwindServerTransport || !tailwindServerInitialized) return;
 
-  openDocuments.delete(filepath);
-
-  const uri = pathToUri(filepath);
-
-  await tailwindServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri }
-  });
-
-  // Clear Tailwind problems for this file
-  clearSourceProblemsForFile({
-    source: 'tailwindcss',
-    generation: tailwindSessionGeneration,
-    filePath: filepath,
-  });
+  await tailwindServerTransport.closeDocument(filepath);
 }
 
 
@@ -736,8 +591,6 @@ export async function stopTailwindLsp(): Promise<void> {
 
   tailwindServerInitialized = false;
   initializationPromise = null;
-  openDocuments.clear();
-  tailwindSessionGeneration = markSourceSessionStale('tailwindcss');
   tailwindRecovery.reset();
 
   // Clear all diagnostic timers

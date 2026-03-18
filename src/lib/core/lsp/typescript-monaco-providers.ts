@@ -21,7 +21,6 @@ import {
   type CompletionItem as LspCompletionItem,
   type HoverResult,
   type Location,
-  type SignatureHelp
 } from './typescript-sidecar';
 
 // Track registered providers for cleanup
@@ -87,6 +86,24 @@ function mapCompletionKind(monaco: typeof Monaco, lspKind?: number): Monaco.lang
 /**
  * Convert LSP completion item to Monaco completion item
  */
+function convertTextEditToMonacoRange(edit: NonNullable<LspCompletionItem['textEdit']>): Monaco.IRange {
+  return {
+    startLineNumber: edit.range.start.line + 1,
+    startColumn: edit.range.start.character + 1,
+    endLineNumber: edit.range.end.line + 1,
+    endColumn: edit.range.end.character + 1,
+  };
+}
+
+function convertAdditionalTextEdit(
+  edit: NonNullable<LspCompletionItem['additionalTextEdits']>[number],
+): Monaco.editor.ISingleEditOperation {
+  return {
+    range: convertTextEditToMonacoRange(edit),
+    text: edit.newText,
+  };
+}
+
 function convertCompletionItem(
   monaco: typeof Monaco,
   item: LspCompletionItem,
@@ -103,16 +120,27 @@ function convertCompletionItem(
     }
   }
 
+  let insertText = item.insertText || item.label;
+  let itemRange = range;
+
+  if (item.textEdit) {
+    insertText = item.textEdit.newText;
+    itemRange = convertTextEditToMonacoRange(item.textEdit);
+  }
+
   return {
     label: item.label,
     kind: mapCompletionKind(monaco, item.kind),
     detail: item.detail,
     documentation,
-    insertText: item.insertText || item.label,
-    insertTextRules: item.insertTextFormat === 2 
-      ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet 
+    insertText,
+    insertTextRules: item.insertTextFormat === 2
+      ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
       : undefined,
-    range
+    range: itemRange,
+    sortText: item.sortText,
+    filterText: item.filterText,
+    additionalTextEdits: item.additionalTextEdits?.map(convertAdditionalTextEdit),
   };
 }
 
@@ -329,7 +357,7 @@ function createReferencesProvider(monaco: typeof Monaco): Monaco.languages.Refer
 /**
  * Create signature help provider for TypeScript sidecar
  */
-function createSignatureHelpProvider(monaco: typeof Monaco): Monaco.languages.SignatureHelpProvider {
+function createSignatureHelpProvider(_monaco: typeof Monaco): Monaco.languages.SignatureHelpProvider {
   return {
     signatureHelpTriggerCharacters: ['(', ','],
     signatureHelpRetriggerCharacters: [','],
@@ -451,7 +479,6 @@ function registerEditorOpener(monaco: typeof Monaco): void {
   
   registeredDisposables.push(openerDisposable);
   editorOpenerRegistered = true;
-  console.log('[TS Monaco Providers] Registered editor opener for go-to-definition');
 }
 
 /**
@@ -461,7 +488,6 @@ function registerEditorOpener(monaco: typeof Monaco): void {
 export function registerTsMonacoProviders(): void {
   const monaco = getMonaco();
   if (!monaco) {
-    console.warn('[TS Monaco Providers] Monaco not loaded');
     return;
   }
   
@@ -506,7 +532,6 @@ export function registerTsMonacoProviders(): void {
     registeredDisposables.push(signatureDisposable);
   }
   
-  console.log('[TS Monaco Providers] Registered providers for:', TS_LANGUAGES);
 }
 
 /**
@@ -518,5 +543,4 @@ export function disposeTsMonacoProviders(): void {
   }
   registeredDisposables.length = 0;
   editorOpenerRegistered = false;
-  console.log('[TS Monaco Providers] Disposed all providers');
 }

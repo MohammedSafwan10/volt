@@ -15,38 +15,23 @@
 
 import {
   getLspRegistry,
-  rehydrateTrackedDocuments,
   sendDidSaveForTrackedDocument,
-  markSourceSessionReady,
-  markSourceSessionStale,
-  setSourceProblemsForFile,
-  clearSourceProblemsForFile,
-  startSourceSession,
   createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
-import { type Problem, type ProblemSeverity } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 
 // Server instance tracking
 let jsonServerTransport: LspTransport | null = null;
 let jsonServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-let jsonSessionGeneration = 0;
 const jsonRecovery = createLspRecoveryController({
   source: 'json',
   restart: async () => {
     await recoverJsonLspAfterExit();
   },
 });
-
-// Document tracking
-const openDocuments = new Map<string, { version: number; content: string }>();
-
-async function rehydrateOpenDocuments(): Promise<void> {
-  await rehydrateTrackedDocuments(openDocuments, notifyJsonDocumentOpened);
-}
 
 /**
  * Check if a file is a JSON file
@@ -88,52 +73,6 @@ function pathToUri(filepath: string): string {
 }
 
 /**
- * Convert URI to file path
- */
-function uriToPath(uri: string): string {
-  let path = uri.replace('file://', '');
-  // Handle Windows paths (file:///C:/...)
-  if (path.match(/^\/[a-zA-Z]:/)) {
-    path = path.slice(1);
-  }
-  // Normalize drive letter to lowercase for consistency
-  if (path.match(/^[a-zA-Z]:/)) {
-    path = path[0].toLowerCase() + path.slice(1);
-  }
-  // Normalize to forward slashes for consistency with editorStore
-  return path.replace(/\\/g, '/');
-}
-
-/**
- * Map LSP severity to our severity
- */
-function mapSeverity(lspSeverity: number): ProblemSeverity {
-  switch (lspSeverity) {
-    case 1: return 'error';
-    case 2: return 'warning';
-    case 3: return 'info';
-    case 4: return 'hint';
-    default: return 'info';
-  }
-}
-
-interface Diagnostic {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
-  message: string;
-  severity?: number;
-  code?: number | string;
-  source?: string;
-}
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-/**
  * Handle incoming LSP messages
  */
 function handleLspMessage(message: JsonRpcMessage): void {
@@ -150,41 +89,6 @@ function handleLspMessage(message: JsonRpcMessage): void {
     return;
   }
 
-  // Handle notifications
-  if ('method' in message && !('id' in message)) {
-    if (message.method === 'textDocument/publishDiagnostics') {
-      handleDiagnostics(message.params as PublishDiagnosticsParams);
-    }
-  }
-}
-
-/**
- * Handle diagnostics from the LSP server
- */
-function handleDiagnostics(params: PublishDiagnosticsParams): void {
-  const filePath = uriToPath(params.uri);
-  const fileName = filePath.split(/[/\\]/).pop() || filePath;
-
-  const problems: Problem[] = params.diagnostics.map((diag, index) => ({
-    id: `json:${filePath}:${diag.range.start.line}:${diag.range.start.character}:${index}`,
-    file: filePath,
-    fileName,
-    line: diag.range.start.line + 1,
-    column: diag.range.start.character + 1,
-    endLine: diag.range.end.line + 1,
-    endColumn: diag.range.end.character + 1,
-    message: diag.message,
-    severity: mapSeverity(diag.severity ?? 1),
-    source: diag.source || 'json',
-    code: diag.code?.toString()
-  }));
-
-  setSourceProblemsForFile({
-    source: 'json',
-    generation: jsonSessionGeneration,
-    filePath,
-    problems,
-  });
 }
 
 /**
@@ -211,7 +115,6 @@ async function initializeServer(): Promise<void> {
         },
       });
       jsonServerTransport.configureHealth({ autoRestart: true });
-      jsonSessionGeneration = startSourceSession('json');
 
       jsonServerTransport.onMessage(handleLspMessage);
       jsonServerTransport.onError((error) => {
@@ -219,17 +122,10 @@ async function initializeServer(): Promise<void> {
       });
       jsonServerTransport.onExit(() => {
         console.log('[JSON LSP] Server exited');
-        jsonSessionGeneration = markSourceSessionStale('json');
         jsonRecovery.schedule('transport exit');
         jsonServerTransport = null;
         jsonServerInitialized = false;
         initializationPromise = null;
-        openDocuments.clear();
-      });
-      jsonServerTransport.onRestart(async () => {
-        jsonSessionGeneration = startSourceSession('json');
-        markSourceSessionReady('json', jsonSessionGeneration);
-        await rehydrateOpenDocuments();
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -284,7 +180,6 @@ async function initializeServer(): Promise<void> {
 
       await jsonServerTransport.sendNotification('initialized', {});
       jsonServerInitialized = true;
-      markSourceSessionReady('json', jsonSessionGeneration);
       jsonRecovery.reset();
       console.log('[JSON LSP] Server initialized');
     } catch (error) {
@@ -308,39 +203,10 @@ export async function notifyJsonDocumentOpened(filepath: string, content: string
   // Initialize server if needed
   await initializeServer();
 
-  // Don't reopen if already open and content is the same
-  const existing = openDocuments.get(filepath);
-  if (existing && existing.content === content) return;
-
   if (!jsonServerTransport || !jsonServerInitialized) return;
 
-  const uri = pathToUri(filepath);
   const languageId = getLanguageId(filepath);
-
-  // Track document
-  openDocuments.set(filepath, { version: existing ? existing.version + 1 : 1, content });
-
-  if (existing) {
-    // If it's already open but content changed, send didChange instead
-    await jsonServerTransport.sendNotification('textDocument/didChange', {
-      textDocument: {
-        uri,
-        version: existing.version + 1
-      },
-      contentChanges: [{ text: content }]
-    });
-    return;
-  }
-
-  // Send didOpen notification
-  await jsonServerTransport.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId,
-      version: 1,
-      text: content
-    }
-  });
+  await jsonServerTransport.syncDocument(filepath, languageId, content);
 }
 
 /**
@@ -350,19 +216,7 @@ export async function notifyJsonDocumentChanged(filepath: string, content: strin
   if (!isJsonFile(filepath)) return;
   if (!jsonServerTransport || !jsonServerInitialized) return;
 
-  const existing = openDocuments.get(filepath);
-  if (!existing) {
-    await notifyJsonDocumentOpened(filepath, content);
-    return;
-  }
-
-  existing.version++;
-  existing.content = content;
-
-  await jsonServerTransport.sendNotification('textDocument/didChange', {
-    textDocument: { uri: pathToUri(filepath), version: existing.version },
-    contentChanges: [{ text: content }]
-  });
+  await jsonServerTransport.syncDocument(filepath, getLanguageId(filepath), content);
 }
 
 /**
@@ -370,17 +224,7 @@ export async function notifyJsonDocumentChanged(filepath: string, content: strin
  */
 export async function notifyJsonDocumentClosed(filepath: string): Promise<void> {
   if (!jsonServerTransport || !jsonServerInitialized) return;
-  if (!openDocuments.has(filepath)) return;
-
-  openDocuments.delete(filepath);
-  await jsonServerTransport.sendNotification('textDocument/didClose', {
-    textDocument: { uri: pathToUri(filepath) }
-  });
-  clearSourceProblemsForFile({
-    source: 'json',
-    generation: jsonSessionGeneration,
-    filePath: filepath,
-  });
+  await jsonServerTransport.closeDocument(filepath);
 }
 
 export async function notifyJsonDocumentSaved(filepath: string, content: string): Promise<void> {
@@ -388,10 +232,9 @@ export async function notifyJsonDocumentSaved(filepath: string, content: string)
   await sendDidSaveForTrackedDocument({
     filepath,
     content,
-    openDocuments,
     transport: jsonServerTransport,
     initialized: jsonServerInitialized,
-    ensureOpen: notifyJsonDocumentOpened,
+    languageId: getLanguageId(filepath),
     pathToUri,
   });
 }
@@ -469,7 +312,5 @@ export async function stopJsonLsp(): Promise<void> {
   jsonServerTransport = null;
   jsonServerInitialized = false;
   initializationPromise = null;
-  openDocuments.clear();
-  jsonSessionGeneration = markSourceSessionStale('json');
   jsonRecovery.reset();
 }
