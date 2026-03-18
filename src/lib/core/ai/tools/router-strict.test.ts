@@ -48,16 +48,14 @@ describe('router strict validation', () => {
   });
 
   it('rejects retired legacy tools deterministically', () => {
-    const result = validateToolCall('str_replace', { path: 'src/app.ts' }, 'agent');
+    const result = validateToolCall('get_file_tree', { path: 'src' }, 'agent');
     expect(result.valid).toBe(false);
     expect(result.error ?? '').toContain('removed from strict profile');
   });
 
   it('maps retired tool execution to TOOL_DEPRECATED', async () => {
-    const result = await executeToolCall('str_replace', {
-      path: 'src/app.ts',
-      oldStr: 'a',
-      newStr: 'b',
+    const result = await executeToolCall('get_file_tree', {
+      path: 'src',
     });
     expect(result.success).toBe(false);
     expect(result.code).toBe('TOOL_DEPRECATED');
@@ -80,5 +78,21 @@ describe('router strict validation', () => {
       'ask',
     );
     expect(result.valid).toBe(true);
+  });
+
+  it('allows write_file with only path for empty file creation', () => {
+    const result = validateToolCall(
+      'write_file',
+      { path: 'src/mmm' },
+      'agent',
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('keeps retired get_file_tree guidance out of tool execution paths', async () => {
+    const result = await executeToolCall('get_file_tree', { path: '.' });
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TOOL_DEPRECATED');
+    expect(result.error).toContain('removed from strict profile');
   });
 });

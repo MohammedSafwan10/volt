@@ -4,9 +4,8 @@
   import { aiSettingsStore, PROVIDERS } from "$features/assistant/stores/ai.svelte";
   import { IMAGE_LIMITS, assistantStore } from "$features/assistant/stores/assistant.svelte";
   import { toastStore } from "$shared/stores/toast.svelte";
-  import { readTextFile } from "@tauri-apps/plugin-fs";
   import { chatHistoryStore } from "$features/assistant/stores/chat-history.svelte";
-  import { getFileInfo } from "$core/services/file-system";
+  import { getFileInfo, readFileQuiet } from "$core/services/file-system";
   import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
   import ContextUsage from "./ContextUsage.svelte";
   import { fade } from "svelte/transition";
@@ -355,7 +354,10 @@
         // Read file content and attach it
         const filePath = item.id; // item.id is the full path
         try {
-          const content = await readTextFile(filePath);
+          const content = await readFileQuiet(filePath);
+          if (content === null) {
+            throw new Error("File not found");
+          }
           const result = assistantStore.attachFile(
             filePath,
             content,
@@ -501,7 +503,10 @@
           return;
         }
 
-        const content = await readTextFile(path);
+        const content = await readFileQuiet(path);
+        if (content === null) {
+          throw new Error("File not found");
+        }
         const label = parsed.name || path.split(/[\\/]/).pop() || path;
         const result = assistantStore.attachFile(path, content, label);
         if (!result.success) {
@@ -529,7 +534,10 @@
           return;
         }
 
-        const content = await readTextFile(plainPath);
+        const content = await readFileQuiet(plainPath);
+        if (content === null) {
+          throw new Error("File not found");
+        }
         const label = info?.name || plainPath.split(/[\\/]/).pop() || plainPath;
         const result = assistantStore.attachFile(plainPath, content, label);
         if (!result.success) {
@@ -566,8 +574,11 @@
       try {
         const droppedPath = getDroppedFilePath(file);
         const content = droppedPath
-          ? await readTextFile(droppedPath)
+          ? await readFileQuiet(droppedPath)
           : await file.text();
+        if (droppedPath && content === null) {
+          throw new Error("File not found");
+        }
         const attachPath = droppedPath || file.name;
         const result = assistantStore.attachFile(
           attachPath,

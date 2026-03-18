@@ -320,7 +320,7 @@ export const openRouterProvider: AIProvider = {
   } as ProviderCapabilities,
 
   async sendChat(request: ChatRequest, apiKey: string, signal?: AbortSignal): Promise<ChatResponse> {
-    const url = `${OPENROUTER_API_BASE}/chat/completions`;
+    void signal;
 
     // Get model-specific max output, fallback to 8192
     const modelConfig = getModelConfig(request.model);
@@ -338,21 +338,12 @@ export const openRouterProvider: AIProvider = {
       openRouterRequest.tool_choice = 'auto';
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://volt.dev',
-        'X-Title': 'Volt IDE'
-      },
-      body: JSON.stringify(openRouterRequest),
-      signal
+    const data = await invoke<OpenRouterResponse>('openrouter_proxy', {
+      body: openRouterRequest,
+      apiKey: apiKey.trim(),
     });
 
-    const data = await response.json() as OpenRouterResponse;
-
-    if (!response.ok || data.error) {
+    if (data.error) {
       throw new Error(mapOpenRouterError(data.error));
     }
 

@@ -7,11 +7,6 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { validateGeminiKey } from '$core/ai/providers/gemini';
-import { validateOpenRouterKey } from '$core/ai/providers/openrouter';
-import { validateAnthropicKey } from '$core/ai/providers/anthropic';
-import { validateOpenAIKey } from '$core/ai/providers/openai';
-import { validateMistralKey } from '$core/ai/providers/mistral';
 import { getModelConfig, upsertModelConfig } from '$core/ai/models';
 
 // Supported AI providers
@@ -215,25 +210,45 @@ class AISettingsStore {
   validationError = $state<string | null>(null);
 
   private initialized = false;
+  private initializePromise: Promise<void> | null = null;
 
   constructor() {
     this.loadPreferences();
+    if (typeof window !== 'undefined') {
+      void this.initialize();
+    }
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializePromise) return this.initializePromise;
+
+    this.initializePromise = (async () => {
+      try {
+        for (const provider of Object.keys(PROVIDERS) as AIProvider[]) {
+          const hasKey = await invoke<boolean>('ai_has_api_key', { provider });
+          this.hasApiKey = { ...this.hasApiKey, [provider]: hasKey };
+        }
+        this.initialized = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        const safeMsg = msg.replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
+        console.error('Failed to initialize AI secure storage:', safeMsg);
+      }
+
+      try {
+        await this.syncOpenRouterModelMetadata();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        const safeMsg = msg.replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
+        console.warn('Failed to sync OpenRouter model metadata:', safeMsg);
+      }
+    })();
 
     try {
-      for (const provider of Object.keys(PROVIDERS) as AIProvider[]) {
-        const hasKey = await invoke<boolean>('ai_has_api_key', { provider });
-        this.hasApiKey = { ...this.hasApiKey, [provider]: hasKey };
-      }
-      await this.syncOpenRouterModelMetadata();
-      this.initialized = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      const safeMsg = msg.replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
-      console.error('Failed to initialize AI secure storage:', safeMsg);
+      await this.initializePromise;
+    } finally {
+      this.initializePromise = null;
     }
   }
 
@@ -279,11 +294,6 @@ class AISettingsStore {
     this.hasApiKey = { ...this.hasApiKey, [provider]: !!trimmedKey };
   }
 
-  async getApiKey(provider: AIProvider): Promise<string | null> {
-    const key = await invoke<string | null>('ai_get_api_key', { provider });
-    return key?.trim() ?? null;
-  }
-
   async removeApiKey(provider: AIProvider): Promise<void> {
     await invoke('ai_remove_api_key', { provider });
     this.hasApiKey = { ...this.hasApiKey, [provider]: false };
@@ -294,27 +304,15 @@ class AISettingsStore {
     this.validationError = null;
 
     try {
-      const key = await this.getApiKey(provider);
-      if (!key) {
+      if (!this.hasApiKey[provider]) {
         this.validationError = 'No API key configured';
         return { success: false, error: 'No API key configured' };
       }
 
-      let result: ValidationResult;
-
-      if (provider === 'gemini') {
-        result = await validateGeminiKey(key);
-      } else if (provider === 'openrouter') {
-        result = await validateOpenRouterKey(key);
-      } else if (provider === 'anthropic') {
-        result = await validateAnthropicKey(key);
-      } else if (provider === 'openai') {
-        result = await validateOpenAIKey(key);
-      } else if (provider === 'mistral') {
-        result = await validateMistralKey(key);
-      } else {
-        result = { success: false, error: 'Unknown provider' };
-      }
+      const ok = await invoke<boolean>('ai_validate_api_key', { provider });
+      const result: ValidationResult = ok
+        ? { success: true }
+        : { success: false, error: 'Validation failed' };
 
       if (!result.success) {
         this.validationError = result.error ?? 'Validation failed';

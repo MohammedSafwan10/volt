@@ -30,6 +30,14 @@ function resolveToolCwd(rawCwd: unknown): string | undefined {
   return projectStore.rootPath ?? undefined;
 }
 
+function requireToolCwd(rawCwd: unknown): string {
+  const cwd = resolveToolCwd(rawCwd);
+  if (cwd) {
+    return cwd;
+  }
+  throw new Error('No active project root available for terminal command cwd');
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -65,7 +73,7 @@ function getBlockedCommandReason(command: string): string | null {
   // Protect Volt metadata/project control directory from AI shell mutations.
   const mutatingShellVerb =
     /\b(move-item|rename-item|remove-item|del|erase|rmdir|rd|rm|mv|ren)\b/i;
-  const touchesVoltDir = /(^|[\s"'`\\\/])\.volt([\\\/\s"'`]|$)/i.test(command);
+  const touchesVoltDir = /(^|[\s"'`\\/])\.volt([\\/\s"'`]|$)/i.test(command);
   if (touchesVoltDir && mutatingShellVerb.test(command)) {
     return 'Blocked unsafe command: modifying `.volt` is not allowed because it can break plans/chat state.';
   }
@@ -386,7 +394,7 @@ async function reconcileTrackedProcesses(): Promise<void> {
  */
 export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command).trim();
-  const cwd = resolveToolCwd(args.cwd);
+  const cwd = requireToolCwd(args.cwd);
   const timeout = typeof args.timeout === 'number' ? args.timeout : 90_000;
   const waitForExit = args.waitForExit === true;
   const allowDetach = args.detached !== false;
@@ -453,7 +461,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
       if (slowListPatterns.some((pattern) => pattern.test(command))) {
         return {
           success: true,
-          output: 'Skipping slow recursive listing. Use get_file_tree for a fast, structured tree output instead.',
+          output: 'Skipping slow recursive listing. Use list_dir, find_files, or workspace_search for faster structured exploration instead.',
           meta: { terminalId: session.id, skipped: true }
         };
       }
@@ -634,7 +642,7 @@ export async function handleRunCommand(args: Record<string, unknown>): Promise<T
  */
 export async function handleStartProcess(args: Record<string, unknown>): Promise<ToolResult> {
   const command = String(args.command);
-  const cwd = resolveToolCwd(args.cwd);
+  const cwd = requireToolCwd(args.cwd);
   const blockedReason = getBlockedCommandReason(command);
   if (blockedReason) {
     return {
@@ -671,6 +679,13 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     const session = await getProcessTerminal(processId, cwd);
     const terminalId = session.id;
 
+    const currentCwd = session.cwd || session.info.cwd;
+    if (currentCwd !== cwd) {
+      const safeCwd = cwd.replace(/'/g, "''");
+      await session.write(`Set-Location -LiteralPath '${safeCwd}'\r`);
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+
     // Track it
     processes.set(processId, {
       processId,
@@ -684,7 +699,7 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     });
 
     // Handle process exit
-    session.onExit((code) => {
+    session.onExit((_code) => {
       const p = processStore.get(processId);
       if (p) {
         p.status = 'stopped';
@@ -701,15 +716,14 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     }
 
     // Wait for initial output (more responsive than fixed 2s)
-    let output = '';
     try {
       // Use the captured offset to only look for output produced AFTER the write
-      output = await session.waitForOutput((out) => {
+      await session.waitForOutput((out) => {
         return out.trim().length > 0;
       }, 4000, startOffset);
     } catch {
       // If no new output, fall back to recent output from that offset onwards
-      output = session.getRecentOutput().slice(startOffset);
+      session.getRecentOutput().slice(startOffset);
     }
 
     const cleaned = session.getCleanOutputSince(startOffset);

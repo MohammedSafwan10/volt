@@ -48,9 +48,14 @@ function evictIfNeeded(): void {
   }
 }
 
-function uriForPath(monaco: typeof Monaco, path: string): Monaco.Uri {
+export function normalizeModelPath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+export function uriForPath(monaco: typeof Monaco, path: string): Monaco.Uri {
+  const normalizedPath = normalizeModelPath(path);
   // Use an in-memory URI so we don't have to deal with file:// + Windows path encoding.
-  return monaco.Uri.parse(`inmemory://model/${encodeURIComponent(path)}`);
+  return monaco.Uri.parse(`inmemory://model/${encodeURIComponent(normalizedPath)}`);
 }
 
 export interface ModelSpec {
@@ -61,19 +66,20 @@ export interface ModelSpec {
 
 export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.ITextModel> {
   const monaco = await loadMonaco();
+  const normalizedPath = normalizeModelPath(spec.path);
 
-  const existing = models.get(spec.path);
+  const existing = models.get(normalizedPath);
   if (existing) {
     monaco.editor.setModelLanguage(existing, spec.language);
-    touchModel(spec.path);
+    touchModel(normalizedPath);
     return existing;
   }
 
-  const uri = uriForPath(monaco, spec.path);
+  const uri = uriForPath(monaco, normalizedPath);
   const already = monaco.editor.getModel(uri);
   if (already) {
-    models.set(spec.path, already);
-    touchModel(spec.path);
+    models.set(normalizedPath, already);
+    touchModel(normalizedPath);
     monaco.editor.setModelLanguage(already, spec.language);
     return already;
   }
@@ -82,17 +88,18 @@ export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.I
   evictIfNeeded();
 
   const model = monaco.editor.createModel(spec.content, spec.language, uri);
-  models.set(spec.path, model);
-  touchModel(spec.path);
+  models.set(normalizedPath, model);
+  touchModel(normalizedPath);
   return model;
 }
 
 export function getModel(path: string): Monaco.editor.ITextModel | null {
-  return models.get(path) ?? null;
+  return models.get(normalizeModelPath(path)) ?? null;
 }
 
 export function getModelValue(path: string): string | null {
-  const model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath);
   if (!model || model.isDisposed()) {
     if (model?.isDisposed()) models.delete(path);
     return null;
@@ -105,21 +112,15 @@ export function getModelValue(path: string): string | null {
  * Preserves undo history by using pushEditOperations
  */
 export function setModelValue(path: string, value: string): boolean {
-  // Try to find model with various path formats
-  let model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
 
-  if (!model) {
-    // Try normalized path (forward slashes)
-    const normalized = path.replace(/\\/g, '/');
-    model = models.get(normalized);
-  }
+  // Try to find model with various path formats
+  let model = models.get(normalizedPath);
 
   if (!model) {
     // Try to find by suffix match
     for (const [modelPath, m] of models.entries()) {
-      const normalizedModelPath = modelPath.replace(/\\/g, '/');
-      const normalizedPath = path.replace(/\\/g, '/');
-      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+      if (modelPath.endsWith(normalizedPath) || normalizedPath.endsWith(modelPath)) {
         model = m;
         break;
       }
@@ -130,24 +131,26 @@ export function setModelValue(path: string, value: string): boolean {
     // Model doesn't exist - create it if we have Monaco available
     const monaco = getMonaco();
     if (!monaco) return false;
-    
-    const uri = monaco.Uri.file(path);
+
+    const uri = uriForPath(monaco, normalizedPath);
     model = monaco.editor.createModel(value, undefined, uri);
-    models.set(path, model);
-    console.log('[monaco-models] Created new model for:', path);
+    models.set(normalizedPath, model);
+    touchModel(normalizedPath);
+    console.log('[monaco-models] Created new model for:', normalizedPath);
     return true;
   }
 
   // Handle disposed models - recreate them
   if (model.isDisposed()) {
-    models.delete(path);
+    models.delete(normalizedPath);
     const monaco = getMonaco();
     if (!monaco) return false;
-    
-    const uri = monaco.Uri.file(path);
+
+    const uri = uriForPath(monaco, normalizedPath);
     model = monaco.editor.createModel(value, undefined, uri);
-    models.set(path, model);
-    console.log('[monaco-models] Recreated disposed model for:', path);
+    models.set(normalizedPath, model);
+    touchModel(normalizedPath);
+    console.log('[monaco-models] Recreated disposed model for:', normalizedPath);
     return true;
   }
 
@@ -163,13 +166,14 @@ export function setModelValue(path: string, value: string): boolean {
 }
 
 export function disposeModel(path: string): void {
-  const model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath);
   if (!model) return;
   model.dispose();
-  models.delete(path);
+  models.delete(normalizedPath);
 
   // Remove from LRU tracking
-  const idx = accessOrder.indexOf(path);
+  const idx = accessOrder.indexOf(normalizedPath);
   if (idx !== -1) {
     accessOrder.splice(idx, 1);
   }
@@ -226,9 +230,10 @@ export async function runEditorAction(actionId: string): Promise<boolean> {
  * Get the line count of a model
  */
 export function getModelLineCount(path: string): number {
-  const model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath);
   if (!model || model.isDisposed()) {
-    if (model?.isDisposed()) models.delete(path);
+    if (model?.isDisposed()) models.delete(normalizedPath);
     return 0;
   }
   return model.getLineCount();
@@ -238,9 +243,10 @@ export function getModelLineCount(path: string): number {
  * Reveal a specific line in the active editor
  */
 export function revealLine(path: string, line: number): void {
-  const model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath);
   if (!model || model.isDisposed() || !activeEditor) {
-    if (model?.isDisposed()) models.delete(path);
+    if (model?.isDisposed()) models.delete(normalizedPath);
     return;
   }
 
@@ -263,9 +269,10 @@ export function setSelection(path: string, range: {
   endLine: number;
   endColumn: number;
 }): void {
-  const model = models.get(path);
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath);
   if (!model || model.isDisposed() || !activeEditor) {
-    if (model?.isDisposed()) models.delete(path);
+    if (model?.isDisposed()) models.delete(normalizedPath);
     return;
   }
 
@@ -290,22 +297,14 @@ export function setSelection(path: string, range: {
 
 export function setReviewHighlight(path: string, startLine: number, endLine: number): boolean {
   // Try to find model with various path formats
-  let model = models.get(path);
-  let actualPath = path;
-
-  if (!model) {
-    // Try normalized path (forward slashes)
-    const normalized = path.replace(/\\/g, '/');
-    model = models.get(normalized);
-    if (model) actualPath = normalized;
-  }
+  const normalizedPath = normalizeModelPath(path);
+  let model = models.get(normalizedPath);
+  let actualPath = normalizedPath;
 
   if (!model) {
     // Try to find by suffix match
     for (const [modelPath, m] of models.entries()) {
-      const normalizedModelPath = modelPath.replace(/\\/g, '/');
-      const normalizedPath = path.replace(/\\/g, '/');
-      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+      if (modelPath.endsWith(normalizedPath) || normalizedPath.endsWith(modelPath)) {
         model = m;
         actualPath = modelPath;
         break;
@@ -315,9 +314,9 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
 
   if (!model || model.isDisposed()) {
     if (model?.isDisposed()) models.delete(actualPath);
-    // Debug: log available models when highlight fails
-    const availableModels = Array.from(models.keys());
-    console.warn('[setReviewHighlight] Model not found or disposed for path:', path, 'Available models:', availableModels);
+    if (models.size > 0) {
+      console.debug('[setReviewHighlight] Model not ready for path:', path);
+    }
     return false;
   }
 
@@ -346,20 +345,13 @@ export function setReviewHighlight(path: string, startLine: number, endLine: num
 
 export function clearReviewHighlight(path: string): void {
   // Try to find model with various path formats
-  let model = models.get(path);
-  let actualPath = path;
-
-  if (!model) {
-    const normalized = path.replace(/\\/g, '/');
-    model = models.get(normalized);
-    if (model) actualPath = normalized;
-  }
+  const normalizedPath = normalizeModelPath(path);
+  let model = models.get(normalizedPath);
+  let actualPath = normalizedPath;
 
   if (!model) {
     for (const [modelPath, m] of models.entries()) {
-      const normalizedModelPath = modelPath.replace(/\\/g, '/');
-      const normalizedPath = path.replace(/\\/g, '/');
-      if (normalizedModelPath.endsWith(normalizedPath) || normalizedPath.endsWith(normalizedModelPath)) {
+      if (modelPath.endsWith(normalizedPath) || normalizedPath.endsWith(modelPath)) {
         model = m;
         actualPath = modelPath;
         break;

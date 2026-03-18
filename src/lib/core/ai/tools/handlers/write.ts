@@ -143,7 +143,7 @@ async function writeFileWithSync(
       }
       return {
         success: false,
-        error: "Content changed on disk; re-read file and retry.",
+        error: "Content changed on disk; refresh file state if needed and retry.",
       };
     }
     return { success: false, error: result.error };
@@ -676,7 +676,7 @@ export async function handleStrReplace(
 The file has ${lineCount} lines. First few lines:
 ${firstLines}
 
-IMPORTANT: The file content may have changed from previous edits. Call read_file("${relativePath}") to get the current content before retrying.`,
+IMPORTANT: The file content may have changed from previous edits. Regenerate with tighter anchors, or refresh file state if needed before retrying.`,
     };
   }
 
@@ -849,7 +849,7 @@ export async function handleMultiReplace(
       const preview = edits[i].oldStr.slice(0, 80).replace(/\n/g, "\\n");
       return {
         success: false,
-        error: `Edit ${i}: no match for "${preview}..."\n\nCall read_file("${relativePath}") to see current content before retrying.`,
+        error: `Edit ${i}: no match for "${preview}..."\n\nRegenerate the edit with tighter anchors, or refresh file state if needed before retrying.`,
       };
     }
     matches.push({
@@ -1125,7 +1125,20 @@ export async function handleCreateDir(args: Record<string, unknown>): Promise<To
   }
 
   await projectStore.refreshTree();
-  return { success: true, output: `Created directory: ${relativePath}` };
+  return {
+    success: true,
+    output: `Created directory: ${relativePath}`,
+    meta: {
+      fileEdit: {
+        relativePath,
+        absolutePath: path,
+        beforeContent: null,
+        afterContent: null,
+        isNewFile: true,
+        isDirectory: true,
+      },
+    },
+  };
 }
 
 /**

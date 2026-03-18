@@ -47,7 +47,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   },
   {
     name: 'read_file',
-    description: 'Read file contents. Use offset/limit for large files. Always read a file before editing it.',
+    description: 'Read file contents. Use offset/limit for large files. Prefer focused reads when exact evidence is needed.',
     parameters: {
       type: 'object',
       properties: {
@@ -118,15 +118,15 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
   // ── WRITE ─────────────────────────────────────
   {
     name: 'write_file',
-    description: 'Create a new file or overwrite an existing file entirely. For editing existing files, prefer str_replace or apply_patch.',
+    description: 'Create a new file or overwrite an existing file entirely. Omit text to create an empty file. For editing existing files, prefer str_replace or apply_patch.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path relative to workspace root' },
-        text: { type: 'string', description: 'Complete file contents' },
+        text: { type: 'string', description: 'Complete file contents. Optional for empty-file creation.' },
         force: { type: 'boolean', description: 'Force overwrite even if content appears identical' }
       },
-      required: ['path', 'text']
+      required: ['path']
     },
     category: 'file_write',
     requiresApproval: false,

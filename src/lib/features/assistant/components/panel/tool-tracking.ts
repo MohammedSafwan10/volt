@@ -10,7 +10,7 @@ interface ToolTrackingDeps {
     result: ToolResult,
   ) => string | null;
   getFileInfo: (path: string) => Promise<void>;
-  onToolOutcome: (toolName: string, args: Record<string, unknown>, result: ToolResult) => void;
+  onToolOutcome?: (toolName: string, args: Record<string, unknown>, result: ToolResult) => void;
 }
 
 export function createToolTrackingState(deps: ToolTrackingDeps) {
@@ -71,7 +71,7 @@ export function createToolTrackingState(deps: ToolTrackingDeps) {
     args: Record<string, unknown>,
     result: ToolResult,
   ): void => {
-    deps.onToolOutcome(toolName, args, result);
+    deps.onToolOutcome?.(toolName, args, result);
     trackTouchedFile(toolName, args, result);
 
     if (result.success) {

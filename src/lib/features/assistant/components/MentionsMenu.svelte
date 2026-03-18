@@ -61,6 +61,9 @@
 
     let selectedIndex = $state(0);
     let menuRef: HTMLDivElement | undefined = $state();
+    let fileItems = $state<MentionItem[]>([]);
+    let directoryItems = $state<MentionItem[]>([]);
+    let fileSearchRequestId = 0;
 
     // Parse query to extract category prefix
     const parsedQuery = $derived.by(() => {
@@ -76,50 +79,63 @@
         return { category: null, search: q };
     });
 
-    // Get files from project index using searchFiles
-    const fileItems = $derived.by((): MentionItem[] => {
-        // Track indexUpdateTick to re-run when index changes
-        $indexUpdateTick;
+    $effect(() => {
+        void $indexUpdateTick;
 
+        const category = parsedQuery.category;
         const search = parsedQuery.search;
-        // Use project file index for real-time search
-        const results = searchFiles(search, [], 15);
-        return results.map((f) => ({
-            id: f.path,
-            label: f.name,
-            sublabel: f.relativePath.replace(f.name, "").replace(/[/\\]$/, ""),
-            icon: getFileIcon(f.path),
-            category: "file",
-            data: f,
-        }));
-    });
+        const requestId = ++fileSearchRequestId;
 
-    // Get directories from project tree
-    const directoryItems = $derived.by((): MentionItem[] => {
-        $indexUpdateTick;
-        const search = parsedQuery.search.toLowerCase();
+        if (!projectStore.rootPath || !category) {
+            fileItems = [];
+            directoryItems = [];
+            return;
+        }
 
-        // Search the global file index for directories
-        const results = searchFiles(search, [], 50).filter((f) => f.isDir);
+        void (async () => {
+            if (category === "file") {
+                const results = await searchFiles(search, [], 15, "files");
+                if (requestId !== fileSearchRequestId) return;
+                fileItems = results.map((f) => ({
+                    id: f.path,
+                    label: f.name,
+                    sublabel: f.relativePath.replace(f.name, "").replace(/[/\\]$/, ""),
+                    icon: getFileIcon(f.path),
+                    category: "file",
+                    data: f,
+                }));
+                directoryItems = [];
+                return;
+            }
 
-        // Prioritize root-level directories
-        results.sort((a, b) => {
-            const aDepth = a.relativePath.split("/").length;
-            const bDepth = b.relativePath.split("/").length;
-            return aDepth - bDepth;
-        });
+            if (category === "directory") {
+                const results = await searchFiles(search, [], 50, "directories");
+                if (requestId !== fileSearchRequestId) return;
 
-        return results.slice(0, 15).map((d) => ({
-            id: d.path,
-            label: d.name,
-            sublabel:
-                d.relativePath === d.name
-                    ? "Project Root"
-                    : d.relativePath.replace(d.name, "").replace(/[/\\]$/, ""),
-            icon: "folder" as UIIconName,
-            category: "directory",
-            data: d,
-        }));
+                results.sort((a, b) => {
+                    const aDepth = a.relativePath.split("/").length;
+                    const bDepth = b.relativePath.split("/").length;
+                    return aDepth - bDepth;
+                });
+
+                directoryItems = results.slice(0, 15).map((d) => ({
+                    id: d.path,
+                    label: d.name,
+                    sublabel:
+                        d.relativePath === d.name
+                            ? "Project Root"
+                            : d.relativePath.replace(d.name, "").replace(/[/\\]$/, ""),
+                    icon: "folder" as UIIconName,
+                    category: "directory",
+                    data: d,
+                }));
+                fileItems = [];
+                return;
+            }
+
+            fileItems = [];
+            directoryItems = [];
+        })();
     });
 
     const terminalItems = $derived.by((): MentionItem[] => {

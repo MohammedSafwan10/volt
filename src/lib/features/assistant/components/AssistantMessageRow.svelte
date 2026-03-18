@@ -402,13 +402,14 @@
     const beforeContent = fileEdit?.beforeContent as string | undefined;
     const absolutePath = fileEdit?.absolutePath as string | undefined;
     const isNewFile = fileEdit?.isNewFile === true;
+    const isDirectory = fileEdit?.isDirectory === true;
 
     // For new files, we want to delete on revert
     if (isNewFile && absolutePath) {
       try {
         await invoke("delete_path", { path: absolutePath });
         revertedIds = new Set([...revertedIds, toolCall.id]);
-        showToast({ message: "File deleted (reverted)", type: "success" });
+        showToast({ message: isDirectory ? "Folder deleted (reverted)" : "File deleted (reverted)", type: "success" });
 
         // Close tab if open
         editorStore.closeFile(absolutePath, true);
@@ -416,7 +417,7 @@
       } catch (e) {
         console.error("[Revert] Delete failed:", e);
         showToast({
-          message: "Failed to delete file on revert",
+          message: isDirectory ? "Failed to delete folder on revert" : "Failed to delete file on revert",
           type: "error",
         });
         return;
@@ -457,8 +458,24 @@
     const afterContent = fileEdit?.afterContent as string | undefined;
     const revertedContent = fileEdit?.revertedContent as string | undefined;
     const absolutePath = fileEdit?.absolutePath as string | undefined;
+    const isNewFile = fileEdit?.isNewFile === true;
+    const isDirectory = fileEdit?.isDirectory === true;
 
     const contentToRestore = revertedContent ?? afterContent;
+
+    if (isNewFile && isDirectory && absolutePath) {
+      try {
+        await invoke("create_dir", { path: absolutePath });
+        revertedIds.delete(toolCall.id);
+        revertedIds = new Set(revertedIds);
+        showToast({ message: "Folder restored", type: "success" });
+        return;
+      } catch (e) {
+        console.error("[Revert] Restore folder failed:", e);
+        showToast({ message: "Failed to restore folder", type: "error" });
+        return;
+      }
+    }
 
     if (typeof contentToRestore !== "string" || !absolutePath) {
       showToast({
@@ -493,6 +510,38 @@
       )
       .map((part) => part.toolCall),
   );
+  function getFileEditMeta(toolCall: ToolCall): Record<string, unknown> | null {
+    const meta = toolCall.meta as Record<string, unknown> | undefined;
+    return (meta?.fileEdit as Record<string, unknown> | undefined) ?? null;
+  }
+  function isDirectoryEditGroup(group: {
+    primary: ToolCall;
+    calls: ToolCall[];
+  }): boolean {
+    return group.calls.some((call) => getFileEditMeta(call)?.isDirectory === true);
+  }
+  function canShowGroupDiff(group: {
+    primary: ToolCall;
+    calls: ToolCall[];
+  }): boolean {
+    return group.calls.some((call) => {
+      const fileEdit = getFileEditMeta(call);
+      if (!fileEdit || fileEdit.isDirectory === true) return false;
+      return (
+        typeof fileEdit.beforeContent === "string" ||
+        fileEdit.isNewFile === true
+      );
+    });
+  }
+  function getGroupReviewLabel(group: {
+    primary: ToolCall;
+    calls: ToolCall[];
+  }): string {
+    if (isDirectoryEditGroup(group)) return "Folder";
+    const lastCall = group.calls[group.calls.length - 1] ?? group.primary;
+    const fileEdit = getFileEditMeta(lastCall);
+    return fileEdit?.isNewFile === true ? "Created file" : "Edited file";
+  }
   const turnFileGroups = $derived.by(() => {
     const groups = new Map<
       string,
@@ -520,14 +569,25 @@
     if (turnFileGroups.length === 0) return null;
     let added = 0;
     let removed = 0;
+    let folderCount = 0;
     for (const group of turnFileGroups) {
       if (group.stats) {
         added += group.stats.added;
         removed += group.stats.removed;
       }
+      if (isDirectoryEditGroup(group)) folderCount++;
     }
+    const fileCount = turnFileGroups.length - folderCount;
+    const label =
+      folderCount > 0 && fileCount === 0
+        ? `Created ${folderCount} folder${folderCount === 1 ? "" : "s"}`
+        : folderCount === 0
+          ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}`
+          : `Changed ${turnFileGroups.length} item${turnFileGroups.length === 1 ? "" : "s"}`;
     return {
+      label,
       fileCount: turnFileGroups.length,
+      folderCount,
       added,
       removed,
     };
@@ -754,9 +814,7 @@
     {#if !showStreaming}
       {#if turnEditSummary}
         <div class="turn-summary">
-          <span class="turn-summary-label"
-            >Edited {turnEditSummary.fileCount} file{turnEditSummary.fileCount === 1 ? "" : "s"}</span
-          >
+          <span class="turn-summary-label">{turnEditSummary.label}</span>
           <span class="turn-summary-ledger">
             {#if turnEditSummary.added > 0}
               <span class="added">+{turnEditSummary.added}</span>
@@ -782,6 +840,7 @@
                   <span class="turn-review-path">{group.primary.arguments.path as string}</span>
                 </div>
                 <div class="turn-review-meta">
+                  <span class="turn-review-kind">{getGroupReviewLabel(group)}</span>
                   {#if group.stats}
                     <span class="turn-review-ledger">
                       {#if group.stats.added > 0}
@@ -792,17 +851,19 @@
                       {/if}
                     </span>
                   {/if}
-                  <button
-                    class="turn-review-diff"
-                    type="button"
-                    onclick={() =>
-                      handleFullDiff(
-                        group.primary,
-                        group.calls.length > 1 ? group.calls : undefined,
-                      )}
-                  >
-                    Diff
-                  </button>
+                  {#if canShowGroupDiff(group)}
+                    <button
+                      class="turn-review-diff"
+                      type="button"
+                      onclick={() =>
+                        handleFullDiff(
+                          group.primary,
+                          group.calls.length > 1 ? group.calls : undefined,
+                        )}
+                    >
+                      Diff
+                    </button>
+                  {/if}
                 </div>
               </div>
             {/each}
@@ -1083,6 +1144,12 @@
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
+  }
+
+  .turn-review-kind {
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
   }
 
   .turn-review-ledger {

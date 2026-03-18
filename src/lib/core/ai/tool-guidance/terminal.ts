@@ -2,6 +2,7 @@ export const TERMINAL_GUIDANCE = `Use terminal tools for execution, not explorat
 
 Rules:
 - \`run_command\` for short, bounded commands.
+- \`start_process\` for long-running servers or watchers; use \`get_process_output\` to inspect them afterward.
 - Prefer \`workspace_search\`, \`list_dir\`, and \`read_file\` before \`run_command\` when investigating code.
 - Prefer one command at a time and inspect output before next action.
 - Use terminal mainly for validators, builds, installs, or commands that file tools cannot express.

@@ -9,6 +9,7 @@
         addedLines?: number;
         removedLines?: number;
         isNewFile?: boolean;
+        isDirectory?: boolean;
         isDeletion?: boolean;
         isRename?: boolean;
     }
@@ -63,7 +64,13 @@
                     {#each files as file}
                         <div class="file-item">
                             <div class="file-icon">
-                                {#if file.isNewFile}
+                                {#if file.isNewFile && file.isDirectory}
+                                    <UIIcon
+                                        name="folder"
+                                        size={14}
+                                        class="text-green"
+                                    />
+                                {:else if file.isNewFile}
                                     <UIIcon
                                         name="file-plus"
                                         size={14}
@@ -96,7 +103,9 @@
                                         >-{file.removedLines}</span
                                     >
                                 {/if}
-                                {#if file.isNewFile}
+                                {#if file.isNewFile && file.isDirectory}
+                                    <span class="tag new">NEW FOLDER</span>
+                                {:else if file.isNewFile}
                                     <span class="tag new">NEW</span>
                                 {:else if file.isDeletion}
                                     <span class="tag deleted">DELETED</span>

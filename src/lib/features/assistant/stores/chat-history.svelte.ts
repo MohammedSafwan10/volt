@@ -130,7 +130,8 @@ class ChatHistoryStore {
      * Create a new conversation
      */
     async createConversation(id: string, mode: string): Promise<ConversationSummary> {
-        const convo = await invoke<ConversationSummary>('chat_create_conversation', { id, mode });
+        await invoke<ConversationSummary>('chat_create_conversation', { id, mode });
+        const convo = await this.getConversationSummary(id);
         this.upsertConversationSummary(convo);
         this.activeConversationId = id;
         return convo;
@@ -143,42 +144,42 @@ class ChatHistoryStore {
         return await invoke<Conversation>('chat_get_conversation', { conversationId: id });
     }
 
+    async getConversationSummary(id: string): Promise<ConversationSummary> {
+        const convo = await this.getConversation(id);
+        return {
+            id: convo.id,
+            title: this.sanitizeVisibleHistoryText(convo.title),
+            createdAt: convo.createdAt,
+            updatedAt: convo.updatedAt,
+            messageCount: convo.messages.length,
+            firstUserMessage: convo.messages.find((message) => message.role === 'user')?.content
+                ? this.sanitizeVisibleHistoryText(convo.messages.find((message) => message.role === 'user')!.content)
+                : null,
+            isPinned: convo.isPinned,
+            mode: convo.mode,
+        };
+    }
+
     /**
      * Save a message to a conversation
      */
     async saveMessage(conversationId: string, message: ChatMessage): Promise<void> {
         await invoke('chat_save_message', { conversationId, message });
 
+        const summary = await this.getConversationSummary(conversationId);
         const visibleContent = this.sanitizeVisibleHistoryText(message.content);
-
-        const existing = this.conversations.find(c => c.id === conversationId);
         const nextTitle =
-            existing?.title && existing.title !== 'New Chat'
-                ? existing.title
+            summary.title && summary.title !== 'New Chat'
+                ? summary.title
                 : (message.role === 'user'
                     ? (visibleContent.length > 50 ? `${visibleContent.slice(0, 50)}...` : visibleContent)
-                    : existing?.title || 'New Chat');
+                    : summary.title || 'New Chat');
 
-        const updatedSummary: ConversationSummary = existing
-            ? {
-                ...existing,
-                title: nextTitle,
-                updatedAt: Date.now(),
-                messageCount: Math.max(existing.messageCount, 0) + 1,
-                firstUserMessage: existing.firstUserMessage ?? (message.role === 'user' ? visibleContent : null),
-            }
-            : {
-                id: conversationId,
-                title: nextTitle,
-                createdAt: message.timestamp,
-                updatedAt: Date.now(),
-                messageCount: 1,
-                firstUserMessage: message.role === 'user' ? visibleContent : null,
-                isPinned: false,
-                mode: 'agent',
-            };
-
-        this.upsertConversationSummary(updatedSummary);
+        this.upsertConversationSummary({
+            ...summary,
+            title: nextTitle,
+            firstUserMessage: summary.firstUserMessage ?? (message.role === 'user' ? visibleContent : null),
+        });
     }
 
     /**

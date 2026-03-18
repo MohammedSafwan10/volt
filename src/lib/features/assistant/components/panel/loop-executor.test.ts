@@ -46,7 +46,7 @@ describe('loop-executor retry policy', () => {
       ],
       1,
       {
-        executeToolCall: async () => ({ success: false, error: 'Content changed on disk; re-read file and retry.' }),
+        executeToolCall: async () => ({ success: false, error: 'Content changed on disk; refresh file state if needed and retry.' }),
         signal: new AbortController().signal,
         toolRunScope: 'scope',
         getToolIdempotencyKey: () => 'id',

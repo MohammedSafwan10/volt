@@ -161,6 +161,7 @@
     read_file: "Read file",
     // File operations
     apply_patch: "Applied patch",
+    create_dir: "Created folder",
     delete_file: "Deleted file",
     rename_path: "Renamed",
     // Terminal - cleaner names
@@ -201,6 +202,7 @@
     read_file: "file",
     // File operations
     apply_patch: "pencil",
+    create_dir: "folder",
     delete_file: "trash",
     rename_path: "pencil",
     // Terminal
@@ -258,6 +260,7 @@
     read_file: "file",
     // Write/Edit
     apply_patch: "edit",
+    create_dir: "edit",
     delete_file: "edit",
     rename_path: "edit",
     // Terminal

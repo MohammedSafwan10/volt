@@ -33,7 +33,10 @@ fn validate_model_name(model: &str) -> Result<(), String> {
     if model.len() > 128 {
         return Err("Model name too long".to_string());
     }
-    if !model.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':' || c == '/') {
+    if !model
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':' || c == '/')
+    {
         return Err(format!("Invalid model name: {}", model));
     }
     // Reject path traversal attempts
@@ -85,22 +88,6 @@ pub fn ai_set_api_key(provider: String, api_key: String) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn ai_get_api_key(provider: String) -> Result<Option<String>, String> {
-    let entry = keyring_entry(&provider)?;
-
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(err) => {
-            if matches!(err, keyring::Error::NoEntry) {
-                Ok(None)
-            } else {
-                Err(format!("Failed to read API key: {err}"))
-            }
-        }
-    }
-}
-
-#[tauri::command(rename_all = "camelCase")]
 pub fn ai_has_api_key(provider: String) -> Result<bool, String> {
     let entry = keyring_entry(&provider)?;
 
@@ -129,6 +116,92 @@ pub fn ai_remove_api_key(provider: String) -> Result<(), String> {
                 Err(format!("Failed to remove API key: {err}"))
             }
         }
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn ai_validate_api_key(provider: String) -> Result<bool, String> {
+    let provider = provider.trim().to_ascii_lowercase();
+
+    if !ai_has_api_key(provider.clone())? {
+        return Err(format!("No API key configured for {provider}"));
+    }
+
+    match provider.as_str() {
+        "gemini" => {
+            validate_model_name("gemini-2.5-flash")?;
+            let client = shared_http_client();
+            let api_key = resolve_api_key("", "gemini")?;
+            let response = client
+                .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
+                .header("x-goog-api-key", &api_key)
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({
+                    "contents": [{ "parts": [{ "text": "Hi" }] }],
+                    "generationConfig": { "maxOutputTokens": 5 }
+                }))
+                .send()
+                .await
+                .map_err(|err| format!("Failed to reach Gemini: {err}"))?;
+
+            if response.status().is_success() {
+                Ok(true)
+            } else {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                Err(format!("Gemini validation failed (Status {status}): {text}"))
+            }
+        }
+        "openrouter" => {
+            let _ = openrouter_proxy(
+                serde_json::json!({
+                    "model": "qwen/qwen3-coder:free",
+                    "max_tokens": 1,
+                    "messages": [{ "role": "user", "content": "Hi" }]
+                }),
+                String::new(),
+            )
+            .await?;
+            Ok(true)
+        }
+        "anthropic" => {
+            let _ = anthropic_proxy(
+                serde_json::json!({
+                    "model": "claude-opus-4-6",
+                    "max_tokens": 1,
+                    "messages": [{ "role": "user", "content": "Hi" }]
+                }),
+                String::new(),
+                "2023-06-01".to_string(),
+            )
+            .await?;
+            Ok(true)
+        }
+        "openai" => {
+            let _ = openai_proxy(
+                serde_json::json!({
+                    "model": "gpt-5.4",
+                    "max_completion_tokens": 1,
+                    "messages": [{ "role": "user", "content": "Hi" }]
+                }),
+                String::new(),
+            )
+            .await?;
+            Ok(true)
+        }
+        "mistral" => {
+            let _ = mistral_proxy(
+                serde_json::json!({
+                    "model": "devstral-medium-latest",
+                    "max_tokens": 1,
+                    "messages": [{ "role": "user", "content": "Hi" }]
+                }),
+                String::new(),
+            )
+            .await?;
+            Ok(true)
+        }
+        _ => Err("Unsupported AI provider".to_string()),
     }
 }
 

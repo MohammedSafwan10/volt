@@ -55,7 +55,6 @@
     getVerificationProfiles,
     shouldRunAfterFileEdits,
   } from "./panel/verification-profiles";
-  import { createToolLoopState } from "./panel/tool-loop-state";
   import { selectAutoVerificationAction } from "./panel/auto-verification";
   import { createStreamGuards } from "./panel/stream-guards";
   import { createStreamingTextBuffer } from "./panel/streaming-text-buffer";
@@ -92,8 +91,8 @@
   import ChatInputBar from "./ChatInputBar.svelte";
   import RevertConfirmationModal from "./RevertConfirmationModal.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { readTextFile } from "@tauri-apps/plugin-fs";
   import { invoke } from "@tauri-apps/api/core";
+  import { readBinaryFileBase64, readFileQuiet } from "$core/services/file-system";
   import { getEditorSelection } from "$core/services/monaco-models";
   import { chatHistoryStore } from "$features/assistant/stores/chat-history.svelte";
   import { uiStore } from "$shared/stores/ui.svelte";
@@ -104,7 +103,6 @@
   import { buildRuntimeContextBlock } from "$core/ai/context/runtime-context";
   import { ToolRepetitionDetector } from "./panel/tool-repetition";
   import { createToolTrackingState } from "./panel/tool-tracking";
-  import { seedToolLoopReadEvidence } from "./panel/read-evidence";
   import { createAgentRuntime } from "$features/assistant/runtime/agent-runtime";
   import './AssistantPanel.css';
 
@@ -417,13 +415,16 @@
     const PROGRESS_WINDOW_MS = 90 * 1000;
     const STREAM_STALL_TIMEOUT_MS = (() => {
       // Free/community models on OpenRouter can have long first-token latency.
-      // Keep a longer stall budget to avoid false aborts.
+      // Thinking models can also pause for extended reasoning gaps between chunks.
       const isOpenRouter = aiSettingsStore.selectedProvider === "openrouter";
       const model = modelId.toLowerCase();
+      const isThinkingModel = model.includes("|thinking");
       const isFreeTierLike =
         model.includes(":free") ||
         model.includes("/free") ||
         model.includes("flash");
+      if (isThinkingModel && isOpenRouter && isFreeTierLike) return 180 * 1000;
+      if (isThinkingModel) return 180 * 1000;
       if (isOpenRouter && isFreeTierLike) return 120 * 1000;
       if (isOpenRouter) return 90 * 1000;
       return 60 * 1000;
@@ -439,20 +440,12 @@
     const MAX_RECOVERY_RETRIES = 4;
     const failureSignatureCounts = new Map<string, number>();
     let repeatedFailureHint: string | null = null;
-    const toolLoopState = createToolLoopState();
-    seedToolLoopReadEvidence(
-      toolLoopState,
-      assistantStore.getConversationMessages(conversationId),
-    );
     const trackingState = createToolTrackingState({
       isFileMutatingTool,
       normalizeQueueKey,
       resolvePath,
       classifyRecoveryIssue,
       getFileInfo: (path: string) => invoke("get_file_info", { path }),
-      onToolOutcome: (toolName, args, result) => {
-        toolLoopState.recordToolOutcome(toolName, args, result);
-      },
     });
     const touchedFilePaths = trackingState.touchedFilePaths;
     const structuralMutationPaths = trackingState.structuralMutationPaths;
@@ -2094,17 +2087,10 @@
       const paths = Array.isArray(selected) ? selected : [selected];
 
       for (const path of paths) {
-        // Read file using Tauri fs
-        const { readFile } = await import("@tauri-apps/plugin-fs");
-        const bytes = await readFile(path);
-
-        // Convert to base64
-        const base64Data = btoa(
-          bytes.reduce(
-            (data: string, byte: number) => data + String.fromCharCode(byte),
-            "",
-          ),
-        );
+        const base64Data = await readBinaryFileBase64(path);
+        if (!base64Data) {
+          throw new Error(`Failed to read ${path}`);
+        }
 
         // Determine mime type from extension
         const ext = path.split(".").pop()?.toLowerCase();
@@ -2273,7 +2259,7 @@
 
     // Prefer current on-disk plan so Agent executes the latest edited version.
     try {
-      const diskContent = await readTextFile(resolvedPlanPath);
+      const diskContent = await readFileQuiet(resolvedPlanPath);
       if (diskContent && diskContent.trim().length > 0) {
         latestPlanContent = diskContent;
       }

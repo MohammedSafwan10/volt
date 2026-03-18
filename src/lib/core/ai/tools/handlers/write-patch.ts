@@ -178,7 +178,7 @@ export function applyCodexPatch(content: string, hunks: ParsedPatchHunk[]): stri
 
     const at = findSubsequence(inputLines, oldSegment, cursor);
     if (at < 0) {
-      throw new Error('Patch apply failed: context mismatch. Re-read file and regenerate patch.');
+      throw new Error('Patch apply failed: context mismatch. Try a smaller patch or refresh file state if needed.');
     }
 
     while (cursor < at) {

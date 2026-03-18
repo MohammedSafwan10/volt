@@ -10,7 +10,7 @@
   import { assistantStore } from "$features/assistant/stores/assistant.svelte";
   import { openFileDialog, openFolderDialog } from "$core/services/file-system";
   import { formatCurrentDocument } from "$core/services/prettier";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { exit } from "@tauri-apps/plugin-process";
   import { UIIcon } from "$shared/components/ui";
 
   interface Props {
@@ -94,14 +94,26 @@
 
   async function handleCloseFolder() {
     uiStore.closeMenus();
-    await projectStore.closeProject();
-    uiStore.setActiveSidebarPanel("explorer");
+    try {
+      await projectStore.closeProject();
+    } catch (error) {
+      console.error('[MenuBar] Failed to close folder:', error);
+    }
+    if (uiStore.activeSidebarPanel !== "explorer" || !uiStore.sidebarOpen) {
+      uiStore.setActiveSidebarPanel("explorer");
+    }
   }
 
   async function handleExit() {
     uiStore.closeMenus();
-    const appWindow = getCurrentWindow();
-    await appWindow.close();
+    await exit(0);
+  }
+
+  function handleCloseEditor() {
+    uiStore.closeMenus();
+    if (editorStore.activeFilePath) {
+      editorStore.closeFile(editorStore.activeFilePath);
+    }
   }
 
   function handleToggleAutoSave() {
@@ -209,7 +221,7 @@
         {
           label: "Close Editor",
           shortcut: "Ctrl+W",
-          action: comingSoon("Close Editor"),
+          action: handleCloseEditor,
         },
         { label: "Close Folder", action: handleCloseFolder },
         { separator: true, label: "" },

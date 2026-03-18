@@ -68,8 +68,10 @@
   const isDeleteTool = $derived.by(
     () => toolCall.name === "delete_file" || toolCall.name === "delete_path",
   );
+  const isCreateDirTool = $derived.by(() => toolCall.name === "create_dir");
 
   function getFileIcon(ext: string): any {
+    if (isCreateDirTool) return "folder";
     switch (ext) {
       case "svelte":
         return "svelte";
@@ -110,6 +112,7 @@
   const statusIcon = $derived.by(() => {
     if (isAllFailed) return "error";
     if (isDeleteTool) return "trash";
+    if (isCreateDirTool) return "folder";
     return "pencil";
   });
   function isNoopEdit(tc: ToolCall): boolean {
@@ -141,7 +144,7 @@
     if (isNoopEdit(tc)) return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-    return typeof fileEdit?.beforeContent === "string";
+    return typeof fileEdit?.beforeContent === "string" || fileEdit?.isNewFile === true;
   }
 
   function canViewDiffEdit(tc: ToolCall): boolean {
@@ -149,6 +152,7 @@
     if (isNoopEdit(tc)) return false;
     const meta = tc.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
+    if (fileEdit?.isDirectory === true) return false;
     // We can view diff if we have beforeContent OR if it's a new file (beforeContent might be empty)
     return (
       typeof fileEdit?.beforeContent === "string" ||
@@ -194,10 +198,15 @@
     if (queuedCount > 0 && writingCount === 0 && runningCount === 0)
       return "Queued";
     if (currentLiveStatus) return currentLiveStatus;
-    if (writingCount > 0 || isAllRunning) return isDeleteTool ? "Deleting..." : "Editing...";
+    if (writingCount > 0 || isAllRunning) {
+      if (isDeleteTool) return "Deleting...";
+      if (isCreateDirTool) return "Creating...";
+      return "Editing...";
+    }
     if (isAllFailed) return "Failed";
 
     if (isDeleteTool) return "Deleted";
+    if (isCreateDirTool) return "Created folder";
 
     const meta = toolCall.meta as Record<string, unknown> | undefined;
     const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
@@ -473,6 +482,14 @@
                     : (tc.meta as any)?.editPhase === "writing"
                       ? "Deleting"
                       : "Deleted"
+              : tc.name === "create_dir"
+                ? tc.status === "failed"
+                  ? "Failed"
+                  : (tc.meta as any)?.editPhase === "queued"
+                    ? "Queued"
+                    : (tc.meta as any)?.editPhase === "writing"
+                      ? "Creating"
+                      : "Created"
               : (tc.meta as any)?.editPhase === "queued"
                 ? "Queued"
                 : (tc.meta as any)?.editPhase === "writing"

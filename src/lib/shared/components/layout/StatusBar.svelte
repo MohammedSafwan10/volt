@@ -26,7 +26,7 @@
     return gitStore.currentBranch;
   });
   const workspaceStatus = $derived.by(() => {
-    if (!projectStore.rootPath || projectStore.backgroundReady) return null;
+    if (!projectStore.rootPath || projectStore.backgroundReady || projectStore.coreReady) return null;
     switch (projectStore.startupPhase) {
       case 'paint':
         return 'Opening workspace';

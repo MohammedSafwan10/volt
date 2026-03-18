@@ -656,9 +656,6 @@ function mapErrorCode(error?: string): string {
   if (message.includes('no handler') || message.includes('unknown tool')) return 'TOOL_NOT_FOUND';
   if (message.includes('removed from strict profile')) return 'TOOL_DEPRECATED';
   if (message.includes('missing')) return 'MISSING_PARAM';
-  if (message.includes('read-before-edit guard') || message.includes('read before edit')) {
-    return 'READ_REQUIRED_BEFORE_EDIT';
-  }
   if (message.includes('outside workspace')) return 'PATH_OUTSIDE_WORKSPACE';
   if (message.includes('not found')) return 'NOT_FOUND';
   if (message.includes('permission') || message.includes('denied')) return 'PERMISSION_DENIED';

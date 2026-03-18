@@ -10,6 +10,7 @@
 
 import type { AIMode } from './ai.svelte';
 import { doesToolRequireApproval, getToolByName, setBrowserToolsEnabled as setDefsBrowserEnabled } from '$core/ai/tools/definitions';
+import { serializeMessageMetadata } from '../components/panel/conversation-persistence';
 import type { ContentType } from '$core/services/token-counter';
 import { readFile } from '$core/services/file-system';
 import { invoke } from '@tauri-apps/api/core';
@@ -838,13 +839,17 @@ class AssistantStore {
   private getMessageForPersistence(messageId: string): {
     conversationId: string;
     message: AssistantMessage;
+    mode: AIMode;
   } | null {
     const conversationId = this.findConversationIdByMessageId(messageId);
     if (!conversationId) return null;
     const messages = this.getConversationMessages(conversationId);
     const message = messages.find((entry) => entry.id === messageId);
     if (!message) return null;
-    return { conversationId, message };
+    const mode = (this.currentConversation?.id === conversationId
+      ? this.currentConversation.mode
+      : this.conversationRuntimeState[conversationId]?.currentMode) as AIMode | undefined;
+    return { conversationId, message, mode: mode || 'agent' };
   }
 
   private removeConversationTab(conversationId: string): void {
@@ -1576,87 +1581,17 @@ class AssistantStore {
 
     const persisted = this.getMessageForPersistence(messageId);
     if (!persisted) return;
-    const { message: msg, conversationId: convId } = persisted;
+    const { message: msg, conversationId: convId, mode } = persisted;
 
     try {
-      try {
-        await chatHistoryStore.createConversation(convId, this.currentMode);
-      } catch (createErr) {
-        console.debug('[AssistantStore] Conversation may already exist:', createErr);
-      }
-
-      // Sanitize tool calls to ensure clean JSON serialization
-      // Remove undefined values, functions, and circular refs
-      const sanitizeToolCalls = (calls?: ToolCall[]): ToolCall[] | undefined => {
-        if (!calls || calls.length === 0) return undefined;
-        return calls.map(tc => ({
-          id: tc.id,
-          name: tc.name,
-          arguments: tc.arguments ?? {},
-          status: tc.status,
-          output: tc.output,
-          error: tc.error,
-          meta: tc.meta ? { ...tc.meta } : undefined,
-          data: tc.data ? { ...tc.data } : undefined,
-          startTime: tc.startTime,
-          endTime: tc.endTime,
-          requiresApproval: tc.requiresApproval,
-          thoughtSignature: tc.thoughtSignature,
-          streamingProgress: tc.streamingProgress ? { ...tc.streamingProgress } : undefined,
-          reviewStatus: tc.reviewStatus,
-        }));
-      };
-
-      // Sanitize contentParts - ensure tool call data within parts is also clean
-      const sanitizeContentParts = (parts?: ContentPart[]): ContentPart[] | undefined => {
-        if (!parts || parts.length === 0) return undefined;
-        return parts.map(part => {
-          if (part.type === 'tool') {
-            const tc = part.toolCall;
-            return {
-              type: 'tool' as const,
-              toolCall: {
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments ?? {},
-                status: tc.status,
-                output: tc.output,
-                error: tc.error,
-                meta: tc.meta ? { ...tc.meta } : undefined,
-                data: tc.data ? { ...tc.data } : undefined,
-                startTime: tc.startTime,
-                endTime: tc.endTime,
-                requiresApproval: tc.requiresApproval,
-                thoughtSignature: tc.thoughtSignature,
-                streamingProgress: tc.streamingProgress ? { ...tc.streamingProgress } : undefined,
-                reviewStatus: tc.reviewStatus,
-              }
-            };
-          }
-          return part;
-        });
-      };
-
-      const metadata = JSON.stringify({
-        attachments: msg.attachments,
-        toolCalls: sanitizeToolCalls(msg.toolCalls),
-        inlineToolCalls: sanitizeToolCalls(msg.inlineToolCalls),
-        contentParts: sanitizeContentParts(msg.contentParts),
-        thinking: msg.thinking,
-        smartContextBlock: msg.smartContextBlock,
-        contextMentions: msg.contextMentions,
-        isSummary: msg.isSummary || undefined, // Bug fix: was missing!
-        endTime: msg.endTime,
-        streamState: msg.streamState,
-        streamIssue: msg.streamIssue,
-      });
+      await chatHistoryStore.createConversation(convId, mode);
 
       await chatHistoryStore.saveMessage(convId, {
         id: msg.id,
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp,
-        metadata
+        metadata: serializeMessageMetadata(msg)
       });
     } catch (err) {
       console.error('[AssistantStore] Failed to persist message to history:', err);
@@ -2643,6 +2578,7 @@ class AssistantStore {
     path: string;
     name: string;
     isNewFile: boolean;
+    isDirectory: boolean;
     isDeletion: boolean;
     isRename: boolean;
     addedLines: number;
@@ -2651,7 +2587,7 @@ class AssistantStore {
     const index = this.messages.findIndex(m => m.id === messageId);
     if (index === -1) return [];
 
-    const filesToRevert = new Map<string, { before: string | null; isNew: boolean }>();
+    const filesToRevert = new Map<string, { before: string | null; isNew: boolean; isDirectory: boolean }>();
     const renames = new Map<string, string>(); // newPath -> oldPath
 
     // 1. Traverse backward to find the state to revert to
@@ -2667,16 +2603,20 @@ class AssistantStore {
         if (!tc || tc.status !== 'completed' || !tc.meta) continue;
 
         if (tc.meta.fileEdit) {
-          const { absolutePath, beforeContent, isNewFile } = tc.meta.fileEdit as any;
+          const { absolutePath, beforeContent, isNewFile, isDirectory } = tc.meta.fileEdit as any;
           if (!filesToRevert.has(absolutePath)) {
-            filesToRevert.set(absolutePath, { before: isNewFile ? null : beforeContent, isNew: isNewFile === true });
+            filesToRevert.set(absolutePath, {
+              before: isNewFile ? null : beforeContent,
+              isNew: isNewFile === true,
+              isDirectory: isDirectory === true,
+            });
           }
         }
 
         if (tc.meta.fileDeleted) {
           const { absolutePath, beforeContent, isDirectory } = tc.meta.fileDeleted as any;
           if (!isDirectory && beforeContent !== null && !filesToRevert.has(absolutePath)) {
-            filesToRevert.set(absolutePath, { before: beforeContent, isNew: false });
+            filesToRevert.set(absolutePath, { before: beforeContent, isNew: false, isDirectory: false });
           }
         }
 
@@ -2690,17 +2630,19 @@ class AssistantStore {
     // 2. Format results and calculate rough diffs
     const results = [];
 
-    for (const [path, { before, isNew }] of filesToRevert.entries()) {
+    for (const [path, { before, isNew, isDirectory }] of filesToRevert.entries()) {
       const name = path.split(/[/\\]/).pop() || path;
       let addedLines = 0;
       let removedLines = 0;
 
       if (isNew) {
-        // Find current line count to show as removal
-        try {
-          const currentContent = await readFile(path);
-          removedLines = currentContent ? currentContent.split('\n').length : 0;
-        } catch { }
+        if (!isDirectory) {
+          // Find current line count to show as removal
+          try {
+            const currentContent = await readFile(path);
+            removedLines = currentContent ? currentContent.split('\n').length : 0;
+          } catch { }
+        }
       } else if (before !== null) {
         try {
           const currentContent = await readFile(path);
@@ -2725,8 +2667,9 @@ class AssistantStore {
 
       results.push({
         path,
-        name,
+        name: isDirectory && isNew ? `${name}/` : name,
         isNewFile: isNew,
+        isDirectory,
         isDeletion: before === null && !isNew, // This case is actually handled by isNew mostly
         isRename: false,
         addedLines,
@@ -2739,6 +2682,7 @@ class AssistantStore {
         path: newPath,
         name: `${oldPath.split(/[/\\]/).pop()} (Renamed back from ${newPath.split(/[/\\]/).pop()})`,
         isNewFile: false,
+        isDirectory: false,
         isDeletion: false,
         isRename: true,
         addedLines: 0,
@@ -2759,7 +2703,7 @@ class AssistantStore {
 
     // 1. Identify all messages to be removed
     // We want to revert all changes made by AI *after* this user message
-    const filesToRevert = new Map<string, string | null>(); // path -> content (null means delete)
+    const filesToRevert = new Map<string, { content: string | null; isDirectory: boolean }>(); // null means delete
     const filesToRenameBack = [] as Array<{ newPath: string; oldPath: string }>;
     const messagesToTruncate = this.messages.slice(index);
 
@@ -2778,17 +2722,20 @@ class AssistantStore {
 
         // Handle file write/edit
         if (tc.meta.fileEdit) {
-          const { absolutePath, beforeContent, isNewFile } = tc.meta.fileEdit as any;
+          const { absolutePath, beforeContent, isNewFile, isDirectory } = tc.meta.fileEdit as any;
           // Chronologically first "beforeContent" (encountered last in backward loop) wins.
           // If isNewFile is true, we want to delete the file on revert.
-          filesToRevert.set(absolutePath, isNewFile === true ? null : beforeContent);
+          filesToRevert.set(absolutePath, {
+            content: isNewFile === true ? null : beforeContent,
+            isDirectory: isDirectory === true,
+          });
         }
 
         // Handle file deletion
         if (tc.meta.fileDeleted) {
           const { absolutePath, beforeContent, isDirectory } = tc.meta.fileDeleted as any;
           if (!isDirectory && beforeContent !== null) {
-            filesToRevert.set(absolutePath, beforeContent);
+            filesToRevert.set(absolutePath, { content: beforeContent, isDirectory: false });
           }
         }
 
@@ -2802,7 +2749,7 @@ class AssistantStore {
 
     const normalizePath = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
     const deletionTargets = [...filesToRevert.entries()]
-      .filter(([, content]) => content === null)
+      .filter(([, entry]) => entry.content === null)
       .map(([path]) => path);
     const sortedDeletionTargets = [...new Set(deletionTargets)].sort(
       (a, b) => normalizePath(a).length - normalizePath(b).length
@@ -2847,13 +2794,13 @@ class AssistantStore {
       }
 
       // Restore contents
-      for (const [path, content] of filesToRevert) {
+      for (const [path, entry] of filesToRevert) {
         try {
-          if (content === null) {
+          if (entry.content === null) {
             await invoke('delete_path', { path });
           } else {
             // Use fileService for consistent writes
-            const result = await fileService.write(path, content, { source: 'ai', force: true });
+            const result = await fileService.write(path, entry.content, { source: 'ai', force: true });
             if (!result.success) {
               console.error(`[Revert] Failed for ${path}:`, result.error);
             }
@@ -2869,11 +2816,11 @@ class AssistantStore {
       }
 
       // 2. Sync content restorations and deletions
-      for (const [path, content] of filesToRevert) {
-        if (content === null) {
-          // It was a new file produced by the AI, so we just deleted it. Close tab if open.
+      for (const [path, entry] of filesToRevert) {
+        if (entry.content === null) {
+          // It was a new file/folder produced by the AI, so we just deleted it. Close tab if open.
           editorStore.closeFile(path, true);
-        } else {
+        } else if (!entry.isDirectory) {
           // It was an edit, reload the restored content.
           await editorStore.reloadFile(path);
         }

@@ -142,7 +142,7 @@ fn init_db(path: &PathBuf) -> Result<Connection, String> {
     // Prevents "database is locked" errors when multiple commands access the DB
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
-         PRAGMA busy_timeout = 5000;"
+         PRAGMA busy_timeout = 5000;",
     )
     .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
 
@@ -356,7 +356,11 @@ pub async fn chat_save_message<R: Runtime>(
             for (idx, _) in message.content.char_indices() {
                 count += 1;
                 if count == 50 {
-                    end = idx + message.content[idx..].chars().next().map_or(0, |c| c.len_utf8());
+                    end = idx
+                        + message.content[idx..]
+                            .chars()
+                            .next()
+                            .map_or(0, |c| c.len_utf8());
                     break;
                 }
             }
@@ -374,7 +378,13 @@ pub async fn chat_save_message<R: Runtime>(
                  first_user_message = ?3,
                  title = ?4
              WHERE id = ?5",
-            params![message_count_delta, now, message.content, title, conversation_id],
+            params![
+                message_count_delta,
+                now,
+                message.content,
+                title,
+                conversation_id
+            ],
         )
         .map_err(|e| format!("Failed to update conversation: {}", e))?;
     } else {

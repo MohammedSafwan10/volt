@@ -74,11 +74,13 @@ export async function sendChat(
   mode: AIMode = 'ask',
   signal?: AbortSignal
 ): Promise<ChatResponse> {
+  await aiSettingsStore.initialize();
   const provider = getCurrentProvider();
   const model = aiSettingsStore.modelPerMode[mode];
-  const apiKey = await aiSettingsStore.getApiKey(aiSettingsStore.selectedProvider);
+  const providerId = aiSettingsStore.selectedProvider;
+  const requiresConfiguredKey = providerId !== 'openai';
 
-  if (!apiKey) {
+  if (requiresConfiguredKey && !aiSettingsStore.hasApiKey[providerId]) {
     throw new Error('No API key configured. Please add your API key in Settings → AI.');
   }
 
@@ -89,7 +91,7 @@ export async function sendChat(
       aiSettingsStore.selectedProvider === 'openai'
         ? aiSettingsStore.reasoningEffortPerMode[mode]
         : request.reasoningEffort,
-  }, apiKey, signal);
+  }, '', signal);
 }
 
 /**
@@ -102,11 +104,13 @@ export async function* streamChat(
   mode: AIMode = 'ask',
   signal?: AbortSignal
 ): AsyncGenerator<StreamChunk> {
+  await aiSettingsStore.initialize();
   const provider = getCurrentProvider();
   const model = aiSettingsStore.modelPerMode[mode];
-  const apiKey = await aiSettingsStore.getApiKey(aiSettingsStore.selectedProvider);
+  const providerId = aiSettingsStore.selectedProvider;
+  const requiresConfiguredKey = providerId !== 'openai';
 
-  if (!apiKey) {
+  if (requiresConfiguredKey && !aiSettingsStore.hasApiKey[providerId]) {
     yield { type: 'error', error: 'No API key configured. Please add your API key in Settings → AI.' };
     return;
   }
@@ -131,7 +135,7 @@ export async function* streamChat(
             aiSettingsStore.selectedProvider === 'openai'
               ? aiSettingsStore.reasoningEffortPerMode[mode]
               : request.reasoningEffort,
-        }, apiKey, signal)[Symbol.asyncIterator]();
+        }, '', signal)[Symbol.asyncIterator]();
 
       while (true) {
         const next = await nextWithIdleTimeout(
@@ -269,6 +273,9 @@ function isRetryableError(error: string): boolean {
     /503/i, // Service unavailable
     /502/i, // Bad gateway
     /504/i, // Gateway timeout
+    /empty_stream/i,
+    /upstream stream closed/i,
+    /before first payload/i,
     /rate limit/i,
     /too many requests/i,
     /429/i,

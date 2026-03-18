@@ -33,6 +33,17 @@ class TerminalStore {
 		return cwd ?? projectStore.rootPath ?? undefined;
 	}
 
+	private async resolveRequiredCwd(cwd?: string): Promise<string> {
+		const desired = this.resolveDesiredCwd(cwd);
+		if (desired) return desired;
+
+		await projectStore.initialized;
+		const afterInit = this.resolveDesiredCwd(cwd);
+		if (afterInit) return afterInit;
+
+		throw new Error('No active project root available for terminal cwd');
+	}
+
 	constructor() {
 		void this.syncWithBackendRetry(5, 250);
 		// Start terminal problem matcher (background service)
@@ -124,14 +135,8 @@ class TerminalStore {
 			// just after reload and missed rehydration.
 			await this.ensureSynced();
 
-			// Wait for project restoration to finish if it's currently loading
-			// and no explicit cwd was provided.
-			if (!cwd) {
-				await projectStore.initialized;
-			}
-
-			const workingDir = this.resolveDesiredCwd(cwd);
-			console.log('[TerminalStore] Creating terminal in:', workingDir || '(default)');
+			const workingDir = await this.resolveRequiredCwd(cwd);
+			console.log('[TerminalStore] Creating terminal in:', workingDir);
 
 			const session = await createTerminalSession(workingDir);
 			if (!session) {
@@ -176,7 +181,7 @@ class TerminalStore {
 		}
 
 		// Check for existing AI terminal first
-		const desiredCwd = this.resolveDesiredCwd(cwd);
+		const desiredCwd = await this.resolveRequiredCwd(cwd);
 		const desiredCwdNormalized = this.normalizeCwd(desiredCwd);
 		const existingId = this.aiTerminalId;
 		if (existingId) {

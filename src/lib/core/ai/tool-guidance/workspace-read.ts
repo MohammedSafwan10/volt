@@ -1,9 +1,9 @@
 export const WORKSPACE_READ_GUIDANCE = `Use read tools to establish facts before edits.
 
 Rules:
-- Use \`read_file\` for exact source evidence before patching.
+- Use \`read_file\` when exact source evidence is needed.
 - Prefer focused slices: \`read_file({ path, offset, limit })\`.
-- Never edit a file before at least one successful read of that file.
+- Do not re-read automatically if the current context is already sufficient to edit safely.
 - After a search result, read the smallest useful slice instead of loading the whole file.
 
 Failure playbook:
