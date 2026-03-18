@@ -291,7 +291,8 @@ pub struct GitDiff {
 // Avoids spawning `git --version` on every single command
 fn check_git_installed() -> Result<(), GitError> {
     static CACHE: OnceLock<Mutex<(bool, Instant)>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new((false, Instant::now() - Duration::from_secs(120))));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new((false, Instant::now() - Duration::from_secs(120))));
 
     if let Ok(guard) = cache.lock() {
         if guard.0 && guard.1.elapsed() < Duration::from_secs(60) {

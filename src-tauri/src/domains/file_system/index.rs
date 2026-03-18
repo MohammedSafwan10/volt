@@ -5,7 +5,7 @@
 
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -136,14 +136,15 @@ const CACHE_VALIDITY_SECS: u64 = 300;
 /// Disk cache validity duration (1 day)
 const DISK_CACHE_VALIDITY_SECS: u64 = 60 * 60 * 24;
 
-/// Maximum files to cache in memory
-const MAX_CACHE_FILES: usize = 100_000;
+/// Maximum files to cache in memory. The renderer no longer owns the full index,
+/// so the backend can keep a substantially larger cache without UI jank.
+const MAX_CACHE_FILES: usize = 1_000_000;
 
 /// Maximum files to persist to disk
 const MAX_DISK_CACHE_FILES: usize = 1_000_000;
 
 /// Disk cache format version
-const DISK_CACHE_VERSION: u32 = 2;
+const DISK_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +189,249 @@ fn strip_windows_long_path_prefix(path: String) -> String {
     }
 }
 
+fn normalize_relative_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn should_ignore_relative_path(relative_path: &str) -> bool {
+    let normalized = normalize_relative_path(relative_path).to_lowercase();
+    normalized.split('/').any(|part| {
+        matches!(
+            part,
+            "node_modules" | ".git" | ".next" | "dist" | "target" | "build" | "out"
+        )
+    })
+}
+
+fn get_parent_dir(relative_path: &str) -> String {
+    PathBuf::from(relative_path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+fn camel_boundaries(name: &str) -> Vec<usize> {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+
+    let mut boundaries = vec![0];
+    for i in 1..chars.len() {
+        let ch = chars[i];
+        let prev = chars[i - 1];
+        let next = chars.get(i + 1).copied().unwrap_or('\0');
+
+        if (ch.is_ascii_uppercase() && prev.is_ascii_lowercase())
+            || (ch.is_ascii_uppercase() && prev.is_ascii_uppercase() && next.is_ascii_lowercase())
+        {
+            boundaries.push(i);
+        }
+    }
+    boundaries
+}
+
+fn matches_camel_case(query: &str, name: &str) -> bool {
+    let query_chars: Vec<char> = query.chars().collect();
+    let name_chars: Vec<char> = name.chars().collect();
+    if query_chars.is_empty() || query_chars.len() > name_chars.len() {
+        return false;
+    }
+
+    let boundaries = camel_boundaries(name);
+    if boundaries.len() < query_chars.len() {
+        return false;
+    }
+
+    let mut matched = 0usize;
+    for boundary in boundaries {
+        if matched >= query_chars.len() {
+            break;
+        }
+        if name_chars.get(boundary) == Some(&query_chars[matched]) {
+            matched += 1;
+        }
+    }
+
+    matched == query_chars.len()
+}
+
+fn matches_path_segments(query: &str, segments: &[String]) -> i32 {
+    let parts: Vec<&str> = query
+        .split(|c: char| c == '/' || c == '\\' || c.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return 0;
+    }
+
+    let mut score = 0i32;
+    let mut segment_idx = 0usize;
+
+    for part in parts {
+        let mut found = false;
+        for idx in segment_idx..segments.len() {
+            let segment = &segments[idx];
+            if segment.starts_with(part) {
+                score += 50 + ((part.len() as f32 / segment.len().max(1) as f32) * 30.0) as i32;
+                segment_idx = idx + 1;
+                found = true;
+                break;
+            }
+            if segment.contains(part) {
+                score += 20 + ((part.len() as f32 / segment.len().max(1) as f32) * 10.0) as i32;
+                segment_idx = idx + 1;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return 0;
+        }
+    }
+
+    score
+}
+
+fn fuzzy_score(query: &str, file: &IndexedFile) -> i32 {
+    let name_lower = file.name.to_lowercase();
+    let path_lower = file.relative_path.to_lowercase();
+
+    if name_lower == query {
+        return 1000;
+    }
+
+    if name_lower.starts_with(query) {
+        let length_bonus = (100i32 - ((name_lower.len() as i32 - query.len() as i32) * 2)).max(0);
+        return 800 + length_bonus;
+    }
+
+    if query.len() >= 2 && matches_camel_case(query, &name_lower) {
+        let length_bonus = (80i32 - (name_lower.len() as i32 - query.len() as i32)).max(0);
+        return 700 + length_bonus;
+    }
+
+    if let Some(idx) = name_lower.find(query) {
+        let position_bonus = (50i32 - (idx as i32 * 5)).max(0);
+        let length_bonus = ((query.len() as f32 / name_lower.len().max(1) as f32) * 50.0) as i32;
+        return 500 + position_bonus + length_bonus;
+    }
+
+    let path_segments_lower: Vec<String> = path_lower
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect();
+    let segment_score = matches_path_segments(query, &path_segments_lower);
+    if segment_score > 0 {
+        return 300 + segment_score;
+    }
+
+    if path_lower.contains(query) {
+        let length_bonus = ((query.len() as f32 / path_lower.len().max(1) as f32) * 100.0) as i32;
+        return 200 + length_bonus;
+    }
+
+    let name_chars: Vec<char> = name_lower.chars().collect();
+    let query_chars: Vec<char> = query.chars().collect();
+    let boundaries = camel_boundaries(&file.name);
+    let mut query_idx = 0usize;
+    let mut score = 0i32;
+    let mut consecutive_bonus = 0i32;
+    let mut last_match_idx: Option<usize> = None;
+
+    for (idx, ch) in name_chars.iter().enumerate() {
+        if query_idx >= query_chars.len() {
+            break;
+        }
+        if *ch == query_chars[query_idx] {
+            score += 10 + consecutive_bonus;
+            consecutive_bonus += 5;
+
+            let prev = idx.checked_sub(1).and_then(|i| name_chars.get(i)).copied();
+            if idx == 0 || boundaries.contains(&idx) || prev == Some('_') || prev == Some('-') {
+                score += 15;
+            }
+
+            if let Some(last_idx) = last_match_idx {
+                if idx.saturating_sub(last_idx) > 3 {
+                    score -= ((idx - last_idx - 3) as i32) * 2;
+                }
+            }
+
+            last_match_idx = Some(idx);
+            query_idx += 1;
+        } else {
+            consecutive_bonus = 0;
+        }
+    }
+
+    if query_idx < query_chars.len() {
+        return -1;
+    }
+
+    score.min(199)
+}
+
+fn clear_root_disk_cache(app: &AppHandle, root_path: &str) {
+    if let Ok((meta_path, list_path)) = get_disk_cache_paths(app, root_path) {
+        let _ = std::fs::remove_file(meta_path);
+        let _ = std::fs::remove_file(list_path);
+    }
+}
+
+fn upsert_cached_file(cached: &mut CachedIndex, absolute_path: &str, relative_path: &str, is_dir: bool) {
+    if should_ignore_relative_path(relative_path) {
+        cached.files.retain(|file| file.path != absolute_path);
+        cached.timestamp = current_timestamp();
+        return;
+    }
+
+    let name = PathBuf::from(relative_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let updated = IndexedFile {
+        name,
+        path: absolute_path.to_string(),
+        relative_path: relative_path.to_string(),
+        parent_dir: get_parent_dir(relative_path),
+        is_dir,
+    };
+
+    if let Some(existing) = cached.files.iter_mut().find(|file| file.path == absolute_path) {
+        *existing = updated;
+    } else {
+        cached.files.push(updated);
+    }
+    cached.timestamp = current_timestamp();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchKind {
+    All,
+    Files,
+    Directories,
+}
+
+impl SearchKind {
+    fn from_option(value: Option<&str>) -> Self {
+        match value.unwrap_or("all").to_ascii_lowercase().as_str() {
+            "file" | "files" => Self::Files,
+            "directory" | "directories" | "dirs" => Self::Directories,
+            _ => Self::All,
+        }
+    }
+
+    fn matches(self, file: &IndexedFile) -> bool {
+        match self {
+            Self::All => true,
+            Self::Files => !file.is_dir,
+            Self::Directories => file.is_dir,
+        }
+    }
+}
+
 fn get_disk_cache_paths(
     app: &AppHandle,
     root_path: &str,
@@ -206,6 +450,7 @@ fn load_disk_cache_stream(
     request_id: u64,
     cancelled: &AtomicBool,
     current_id: &AtomicU64,
+    cache: &Arc<Mutex<HashMap<String, CachedIndex>>>,
 ) -> Result<Option<usize>, IndexError> {
     use std::fs;
     use std::io::{BufRead, BufReader};
@@ -243,6 +488,7 @@ fn load_disk_cache_stream(
 
     const BATCH_SIZE: usize = 500;
     let mut batch: Vec<IndexedFile> = Vec::with_capacity(BATCH_SIZE);
+    let mut cached_files: Vec<IndexedFile> = Vec::new();
     let mut total_count = 0usize;
 
     for line in BufReader::new(file).lines() {
@@ -268,38 +514,35 @@ fn load_disk_cache_stream(
             continue;
         }
 
+        let (is_dir, relative_path) = if let Some((kind, raw_path)) = relative_path.split_once('\t')
+        {
+            (kind == "D", normalize_relative_path(raw_path))
+        } else {
+            (false, normalize_relative_path(&relative_path))
+        };
+
         let name = PathBuf::from(&relative_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-
-        let parent_dir = if let Some(parent) = PathBuf::from(&relative_path).parent() {
-            parent.to_string_lossy().to_string()
-        } else {
-            String::new()
-        };
+        let parent_dir = get_parent_dir(&relative_path);
 
         let full_path = join_root_relative(&root, &relative_path);
         let path_str = strip_windows_long_path_prefix(full_path.to_string_lossy().to_string());
 
-        if relative_path.contains("node_modules")
-            || relative_path.contains(".git/")
-            || relative_path.contains(".next/")
-            || relative_path.contains("dist/")
-            || relative_path.contains("target/")
-            || relative_path.contains("build/")
-            || relative_path.contains("out/")
-        {
+        if should_ignore_relative_path(&relative_path) {
             continue;
         }
 
-        batch.push(IndexedFile {
+        let indexed = IndexedFile {
             name,
             path: path_str,
-            relative_path: relative_path.replace('\\', "/"),
-            parent_dir: parent_dir.replace('\\', "/"),
-            is_dir: false, // Legacy cache only had files
-        });
+            relative_path,
+            parent_dir,
+            is_dir,
+        };
+        batch.push(indexed.clone());
+        cached_files.push(indexed);
         total_count += 1;
 
         if batch.len() >= BATCH_SIZE {
@@ -336,6 +579,18 @@ fn load_disk_cache_stream(
             duration_ms: 0,
         },
     );
+
+    if !cached_files.is_empty() {
+        let mut cache_guard = cache.lock().unwrap();
+        cache_guard.insert(
+            root_path.to_string(),
+            CachedIndex {
+                timestamp: current_timestamp(),
+                root_path: root_path.to_string(),
+                files: cached_files,
+            },
+        );
+    }
 
     Ok(Some(total_count))
 }
@@ -435,6 +690,7 @@ pub async fn index_workspace_stream(
             request_id,
             &state.cancelled,
             &state.current_request_id,
+            &state.cache,
         ) {
             return Ok(());
         }
@@ -455,6 +711,18 @@ pub async fn index_workspace_stream(
         let mut memory_files: Vec<IndexedFile> = Vec::new();
         let mut batch: Vec<IndexedFile> = Vec::new();
         let mut total_count = 0usize;
+
+        {
+            let mut cache_guard = cache.lock().unwrap();
+            cache_guard.insert(
+                root_path_clone.clone(),
+                CachedIndex {
+                    timestamp: current_timestamp(),
+                    root_path: root_path_clone.clone(),
+                    files: Vec::new(),
+                },
+            );
+        }
 
         // Prepare disk cache writer (best-effort). Write incrementally to avoid huge memory usage.
         let (meta_path, list_path, list_tmp_path, mut disk_writer): (
@@ -569,14 +837,13 @@ pub async fn index_workspace_stream(
                 .unwrap_or_else(|_| path_str.clone());
 
             // Normalize path separators for display
-            let relative_path = relative_path.replace('\\', "/");
+            let relative_path = normalize_relative_path(&relative_path);
+            if relative_path.is_empty() || should_ignore_relative_path(&relative_path) {
+                continue;
+            }
 
             // Get parent directory
-            let parent_dir = if let Some(parent) = PathBuf::from(&relative_path).parent() {
-                parent.to_string_lossy().to_string()
-            } else {
-                String::new()
-            };
+            let parent_dir = get_parent_dir(&relative_path);
 
             let indexed_file = IndexedFile {
                 name,
@@ -597,7 +864,8 @@ pub async fn index_workspace_stream(
             // Best-effort disk cache (bounded)
             if total_count < MAX_DISK_CACHE_FILES {
                 if let Some(w) = disk_writer.as_mut() {
-                    let _ = writeln!(w, "{}", indexed_file.relative_path);
+                    let kind = if indexed_file.is_dir { "D" } else { "F" };
+                    let _ = writeln!(w, "{kind}\t{}", indexed_file.relative_path);
                 }
             }
 
@@ -618,6 +886,16 @@ pub async fn index_workspace_stream(
                     .is_err()
                 {
                     return;
+                }
+
+                if total_count <= MAX_CACHE_FILES {
+                    let mut cache_guard = cache.lock().unwrap();
+                    if let Some(cached) = cache_guard.get_mut(&root_path_clone) {
+                        cached
+                            .files
+                            .extend(memory_files.iter().skip(cached.files.len()).cloned());
+                        cached.timestamp = current_timestamp();
+                    }
                 }
                 last_emit = Instant::now();
             }
@@ -651,6 +929,9 @@ pub async fn index_workspace_stream(
                     files: memory_files,
                 },
             );
+        } else {
+            let mut cache_guard = cache.lock().unwrap();
+            cache_guard.remove(&root_path_clone);
         }
 
         // Finalize disk cache (best-effort) only if not cancelled.
@@ -721,10 +1002,7 @@ pub async fn clear_index_cache(
         cache_guard.remove(&path);
 
         // Best-effort remove disk cache for this root
-        if let Ok((meta_path, list_path)) = get_disk_cache_paths(&app, &path) {
-            let _ = std::fs::remove_file(meta_path);
-            let _ = std::fs::remove_file(list_path);
-        }
+        clear_root_disk_cache(&app, &path);
     } else {
         cache_guard.clear();
 
@@ -733,6 +1011,154 @@ pub async fn clear_index_cache(
             let _ = std::fs::remove_dir_all(dir);
         }
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn search_indexed_files(
+    state: tauri::State<'_, FileIndexState>,
+    root_path: String,
+    query: String,
+    recent_paths: Vec<String>,
+    limit: Option<usize>,
+    kind: Option<String>,
+) -> Result<Vec<IndexedFile>, IndexError> {
+    let search_kind = SearchKind::from_option(kind.as_deref());
+    let capped_limit = limit.unwrap_or(50).clamp(1, 200);
+    let recent_set: HashSet<String> = recent_paths.iter().cloned().collect();
+
+    let cache_guard = state.cache.lock().unwrap();
+    let Some(cached) = cache_guard.get(&root_path) else {
+        return Ok(Vec::new());
+    };
+
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        let mut results: Vec<IndexedFile> = Vec::new();
+        let mut seen = HashSet::new();
+
+        for recent_path in &recent_paths {
+            if let Some(file) = cached.files.iter().find(|file| file.path == *recent_path) {
+                if search_kind.matches(file) && !should_ignore_relative_path(&file.relative_path) {
+                    seen.insert(file.path.clone());
+                    results.push(file.clone());
+                }
+            }
+        }
+
+        for file in &cached.files {
+            if results.len() >= capped_limit {
+                break;
+            }
+            if seen.contains(&file.path)
+                || !search_kind.matches(file)
+                || should_ignore_relative_path(&file.relative_path)
+            {
+                continue;
+            }
+            if search_kind == SearchKind::All && file.is_dir {
+                continue;
+            }
+            results.push(file.clone());
+        }
+
+        return Ok(results);
+    }
+
+    let query_lower = trimmed_query.to_lowercase();
+    let mut ranked: Vec<(IndexedFile, i32)> = cached
+        .files
+        .iter()
+        .filter(|file| {
+            search_kind.matches(file) && !should_ignore_relative_path(&file.relative_path)
+        })
+        .filter_map(|file| {
+            let mut score = fuzzy_score(&query_lower, file);
+            if score <= 0 {
+                return None;
+            }
+            if recent_set.contains(&file.path) {
+                score += 100;
+            }
+            Some((file.clone(), score))
+        })
+        .collect();
+
+    ranked.sort_by(|(left_file, left_score), (right_file, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_file.is_dir.cmp(&right_file.is_dir))
+            .then_with(|| {
+                left_file
+                    .relative_path
+                    .len()
+                    .cmp(&right_file.relative_path.len())
+            })
+            .then_with(|| left_file.relative_path.cmp(&right_file.relative_path))
+    });
+
+    Ok(ranked
+        .into_iter()
+        .take(capped_limit)
+        .map(|(file, _)| file)
+        .collect())
+}
+
+#[tauri::command]
+pub async fn upsert_indexed_file(
+    state: tauri::State<'_, FileIndexState>,
+    app: AppHandle,
+    root_path: String,
+    absolute_path: String,
+    relative_path: String,
+    is_dir: bool,
+) -> Result<(), IndexError> {
+    let normalized_relative = normalize_relative_path(&relative_path);
+    let mut cache_guard = state.cache.lock().unwrap();
+    let Some(cached) = cache_guard.get_mut(&root_path) else {
+        return Ok(());
+    };
+    upsert_cached_file(cached, &absolute_path, &normalized_relative, is_dir);
+    drop(cache_guard);
+    clear_root_disk_cache(&app, &root_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_indexed_file(
+    state: tauri::State<'_, FileIndexState>,
+    app: AppHandle,
+    root_path: String,
+    absolute_path: String,
+) -> Result<(), IndexError> {
+    let mut cache_guard = state.cache.lock().unwrap();
+    if let Some(cached) = cache_guard.get_mut(&root_path) {
+        cached.files.retain(|file| file.path != absolute_path);
+        cached.timestamp = current_timestamp();
+    }
+    drop(cache_guard);
+    clear_root_disk_cache(&app, &root_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_indexed_file(
+    state: tauri::State<'_, FileIndexState>,
+    app: AppHandle,
+    root_path: String,
+    old_absolute_path: String,
+    new_absolute_path: String,
+    new_relative_path: String,
+    is_dir: bool,
+) -> Result<(), IndexError> {
+    let normalized_relative = normalize_relative_path(&new_relative_path);
+    let mut cache_guard = state.cache.lock().unwrap();
+    if let Some(cached) = cache_guard.get_mut(&root_path) {
+        cached.files.retain(|file| file.path != old_absolute_path);
+        upsert_cached_file(cached, &new_absolute_path, &normalized_relative, is_dir);
+    }
+    drop(cache_guard);
+    clear_root_disk_cache(&app, &root_path);
     Ok(())
 }
 

@@ -11,6 +11,10 @@ use tauri_plugin_opener::OpenerExt;
 static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+fn is_allowed_env_var(name: &str) -> bool {
+    matches!(name, "JAVA_HOME" | "FLUTTER_ROOT" | "DART_SDK")
+}
+
 fn normalize_executable_name(command: &str) -> String {
     let trimmed = command.trim().trim_matches('"').trim_matches('\'');
     Path::new(trimmed)
@@ -190,6 +194,9 @@ pub async fn run_command(
 /// Get an environment variable
 #[tauri::command]
 pub fn get_env_var(name: String) -> Option<String> {
+    if !is_allowed_env_var(name.trim()) {
+        return None;
+    }
     std::env::var(name).ok()
 }
 
@@ -237,7 +244,9 @@ pub fn open_path_scoped(
             .canonicalize()
             .map_err(|e| format!("Cannot resolve home directory: {}", e))?;
         if !canonical_target.starts_with(&canonical_home) {
-            return Err("Without a project context, paths must be within your home directory".to_string());
+            return Err(
+                "Without a project context, paths must be within your home directory".to_string(),
+            );
         }
     }
 

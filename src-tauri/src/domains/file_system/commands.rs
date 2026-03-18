@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -261,6 +262,22 @@ pub async fn read_file(path: String) -> Result<String, FileError> {
             io::Error::new(ErrorKind::InvalidData, "File is not valid UTF-8 text"),
             &path_clone,
         ))
+    })
+    .await
+}
+
+/// Read file contents as a base64-encoded binary payload.
+#[tauri::command]
+pub async fn read_binary_file_base64(path: String) -> Result<String, FileError> {
+    if path.is_empty() {
+        return Err(FileError::InvalidPath { path });
+    }
+
+    let path_clone = path.clone();
+    spawn_blocking(move || {
+        let path_buf = normalize_path(&path_clone);
+        let bytes = fs::read(&path_buf).map_err(|e| io_error_with_path(e, &path_clone))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     })
     .await
 }

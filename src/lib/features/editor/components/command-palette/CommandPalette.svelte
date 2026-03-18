@@ -28,7 +28,7 @@
     getIndexStatus,
     type IndexedFile,
   } from "$core/services/file-index";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { exit } from "@tauri-apps/plugin-process";
   import {
     type Command,
     type CommandWithMeta,
@@ -217,8 +217,7 @@
       category: "File",
       shortcut: "Alt+F4",
       action: async () => {
-        const appWindow = getCurrentWindow();
-        await appWindow.close();
+        await exit(0);
       },
     },
     {
@@ -436,7 +435,10 @@
       // For empty query or very short queries, search immediately (no debounce)
       // This makes the initial state feel snappy
       if (query.length <= 1) {
-        fileResults = searchFiles(query, recent);
+        void (async () => {
+          const results = await searchFiles(query, recent);
+          fileResults = results;
+        })();
         return;
       }
 

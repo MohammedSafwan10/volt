@@ -1,8 +1,8 @@
 mod cdp;
 mod chat_history;
 mod commands;
-mod lsp;
 mod domains;
+mod lsp;
 
 use tauri::Manager;
 
@@ -22,10 +22,9 @@ use chat_history::{
     chat_truncate_conversation, chat_update_mode, chat_update_title, ChatHistoryState,
 };
 use commands::ai::{
-    ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key, anthropic_proxy,
-    anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy,
-    mistral_proxy_stream, openai_proxy, openai_proxy_stream, openrouter_proxy,
-    openrouter_proxy_stream,
+    ai_has_api_key, ai_remove_api_key, ai_set_api_key, ai_validate_api_key, anthropic_proxy,
+    anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy, mistral_proxy_stream,
+    openai_proxy, openai_proxy_stream, openrouter_proxy, openrouter_proxy_stream,
 };
 use commands::browser::{
     browser_add_bookmark, browser_back, browser_clear_history, browser_close,
@@ -43,24 +42,27 @@ use commands::browser::{
 };
 use commands::file_index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
+    remove_indexed_file, rename_indexed_file, search_indexed_files, upsert_indexed_file,
     FileIndexState,
 };
 use commands::file_ops::{
-    create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed, read_file,
-    rename_path, write_file,
+    create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed,
+    read_binary_file_base64, read_file, rename_path, write_file,
 };
 use commands::file_watch::{
     is_watching, start_file_watch, stop_all_file_watches, stop_file_watch, FileWatchState,
 };
-use commands::fs_scope::fs_allow_directory;
 use commands::git::{
     get_git_branch, git_cancel, git_commit, git_diff_file, git_discard_file,
     git_has_uncommitted_changes, git_list_branches, git_stage_all, git_stage_file, git_status,
     git_switch_branch, git_unstage_all, git_unstage_file, is_git_repo, GitProcessManager,
 };
 use commands::lsp::{
-    lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
-    lsp_start_external_server, lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
+    lsp_begin_project_diagnostics, lsp_close_document, lsp_complete_project_diagnostics,
+    lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_list_tracked_documents,
+    lsp_note_project_diagnostics_sidecar_failure, lsp_reset_project_diagnostics_scheduler,
+    lsp_restart_server, lsp_send_message, lsp_start_external_server, lsp_start_server,
+    lsp_stop_all, lsp_stop_server, lsp_sync_document, LspManagerState,
 };
 use commands::mcp::{
     call_mcp_tool, ensure_mcp_config, get_mcp_config_path, get_mcp_servers, get_mcp_tools,
@@ -90,7 +92,6 @@ pub fn run() {
     tauri::Builder::<tauri::Wry>::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .manage(LspManagerState::<tauri::Wry>::default())
@@ -106,9 +107,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
-            ai_get_api_key,
             ai_has_api_key,
             ai_remove_api_key,
+            ai_validate_api_key,
             anthropic_proxy,
             anthropic_proxy_stream,
             openai_proxy,
@@ -133,6 +134,7 @@ pub fn run() {
             chat_clear_all,
             // File operations
             read_file,
+            read_binary_file_base64,
             write_file,
             list_dir,
             list_dir_detailed,
@@ -149,14 +151,20 @@ pub fn run() {
             terminal_kill_all,
             terminal_list,
             terminal_get_scrollback,
-            // FS scope helpers
-            fs_allow_directory,
             // LSP
             lsp_start_server,
             lsp_start_external_server,
             lsp_stop_server,
             lsp_stop_all,
+            lsp_restart_server,
             lsp_send_message,
+            lsp_sync_document,
+            lsp_close_document,
+            lsp_list_tracked_documents,
+            lsp_begin_project_diagnostics,
+            lsp_complete_project_diagnostics,
+            lsp_note_project_diagnostics_sidecar_failure,
+            lsp_reset_project_diagnostics_scheduler,
             lsp_list_servers,
             lsp_get_server_info,
             lsp_is_server_running,
@@ -285,6 +293,10 @@ pub fn run() {
             cancel_index_workspace,
             clear_index_cache,
             get_index_status,
+            search_indexed_files,
+            upsert_indexed_file,
+            remove_indexed_file,
+            rename_indexed_file,
             // Semantic indexing
             semantic_index_upsert_files,
             semantic_index_remove_paths,
@@ -331,4 +343,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

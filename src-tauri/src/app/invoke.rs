@@ -1,7 +1,7 @@
-use crate::__cmd__ai_get_api_key;
 use crate::__cmd__ai_has_api_key;
 use crate::__cmd__ai_remove_api_key;
 use crate::__cmd__ai_set_api_key;
+use crate::__cmd__ai_validate_api_key;
 use crate::__cmd__anthropic_proxy;
 use crate::__cmd__anthropic_proxy_stream;
 use crate::__cmd__browser_add_bookmark;
@@ -96,11 +96,14 @@ use crate::__cmd__chat_truncate_conversation;
 use crate::__cmd__chat_update_mode;
 use crate::__cmd__chat_update_title;
 use crate::__cmd__clear_index_cache;
+use crate::__cmd__search_indexed_files;
+use crate::__cmd__upsert_indexed_file;
+use crate::__cmd__remove_indexed_file;
+use crate::__cmd__rename_indexed_file;
 use crate::__cmd__create_dir;
 use crate::__cmd__create_file;
 use crate::__cmd__delete_path;
 use crate::__cmd__ensure_mcp_config;
-use crate::__cmd__fs_allow_directory;
 use crate::__cmd__gemini_proxy;
 use crate::__cmd__gemini_proxy_stream;
 use crate::__cmd__get_env_var;
@@ -131,12 +134,20 @@ use crate::__cmd__list_dir_detailed;
 use crate::__cmd__list_watch_commands;
 use crate::__cmd__lsp_get_server_info;
 use crate::__cmd__lsp_is_server_running;
+use crate::__cmd__lsp_list_tracked_documents;
 use crate::__cmd__lsp_list_servers;
+use crate::__cmd__lsp_close_document;
+use crate::__cmd__lsp_begin_project_diagnostics;
+use crate::__cmd__lsp_complete_project_diagnostics;
+use crate::__cmd__lsp_restart_server;
+use crate::__cmd__lsp_note_project_diagnostics_sidecar_failure;
+use crate::__cmd__lsp_reset_project_diagnostics_scheduler;
 use crate::__cmd__lsp_send_message;
 use crate::__cmd__lsp_start_external_server;
 use crate::__cmd__lsp_start_server;
 use crate::__cmd__lsp_stop_all;
 use crate::__cmd__lsp_stop_server;
+use crate::__cmd__lsp_sync_document;
 use crate::__cmd__mistral_proxy;
 use crate::__cmd__mistral_proxy_stream;
 use crate::__cmd__open_path_scoped;
@@ -145,6 +156,7 @@ use crate::__cmd__openai_proxy_stream;
 use crate::__cmd__openrouter_proxy;
 use crate::__cmd__openrouter_proxy_stream;
 use crate::__cmd__read_file;
+use crate::__cmd__read_binary_file_base64;
 use crate::__cmd__read_mcp_config;
 use crate::__cmd__rename_path;
 use crate::__cmd__replace_in_file;
@@ -192,7 +204,7 @@ use crate::domains::chat::store::{
     chat_truncate_conversation, chat_update_mode, chat_update_title, ChatHistoryState,
 };
 use crate::domains::ai::commands::{
-    ai_get_api_key, ai_has_api_key, ai_remove_api_key, ai_set_api_key, anthropic_proxy,
+    ai_has_api_key, ai_remove_api_key, ai_set_api_key, ai_validate_api_key, anthropic_proxy,
     anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy,
     mistral_proxy_stream, openai_proxy, openai_proxy_stream, openrouter_proxy,
     openrouter_proxy_stream,
@@ -213,24 +225,27 @@ use crate::domains::browser::commands::{
 };
 use crate::domains::file_system::index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
+    remove_indexed_file, rename_indexed_file, search_indexed_files, upsert_indexed_file,
     FileIndexState,
 };
 use crate::domains::file_system::commands::{
-    create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed, read_file,
-    rename_path, write_file,
+    create_dir, create_file, delete_path, get_file_info, list_dir, list_dir_detailed,
+    read_binary_file_base64, read_file, rename_path, write_file,
 };
 use crate::domains::file_system::watch::{
     is_watching, start_file_watch, stop_all_file_watches, stop_file_watch, FileWatchState,
 };
-use crate::domains::file_system::scope::fs_allow_directory;
 use crate::domains::git::commands::{
     get_git_branch, git_cancel, git_commit, git_diff_file, git_discard_file,
     git_has_uncommitted_changes, git_list_branches, git_stage_all, git_stage_file, git_status,
     git_switch_branch, git_unstage_all, git_unstage_file, is_git_repo, GitProcessManager,
 };
 use crate::domains::lsp::commands::{
-    lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_send_message,
-    lsp_start_external_server, lsp_start_server, lsp_stop_all, lsp_stop_server, LspManagerState,
+    lsp_begin_project_diagnostics, lsp_close_document, lsp_complete_project_diagnostics,
+    lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_list_tracked_documents,
+    lsp_note_project_diagnostics_sidecar_failure, lsp_reset_project_diagnostics_scheduler,
+    lsp_restart_server, lsp_send_message, lsp_start_external_server, lsp_start_server,
+    lsp_stop_all, lsp_stop_server, lsp_sync_document, LspManagerState,
 };
 use crate::domains::mcp::commands::{
     call_mcp_tool, ensure_mcp_config, get_mcp_config_path, get_mcp_servers, get_mcp_tools,
@@ -259,9 +274,9 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
     tauri::generate_handler![
 // AI credentials (OS secure storage)
             ai_set_api_key,
-            ai_get_api_key,
             ai_has_api_key,
             ai_remove_api_key,
+            ai_validate_api_key,
             anthropic_proxy,
             anthropic_proxy_stream,
             openai_proxy,
@@ -286,6 +301,7 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             chat_clear_all,
             // File operations
             read_file,
+            read_binary_file_base64,
             write_file,
             list_dir,
             list_dir_detailed,
@@ -302,14 +318,20 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             terminal_kill_all,
             terminal_list,
             terminal_get_scrollback,
-            // FS scope helpers
-            fs_allow_directory,
             // LSP
             lsp_start_server,
             lsp_start_external_server,
             lsp_stop_server,
             lsp_stop_all,
+            lsp_restart_server,
             lsp_send_message,
+            lsp_sync_document,
+            lsp_close_document,
+            lsp_list_tracked_documents,
+            lsp_begin_project_diagnostics,
+            lsp_complete_project_diagnostics,
+            lsp_note_project_diagnostics_sidecar_failure,
+            lsp_reset_project_diagnostics_scheduler,
             lsp_list_servers,
             lsp_get_server_info,
             lsp_is_server_running,
@@ -438,6 +460,10 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             cancel_index_workspace,
             clear_index_cache,
             get_index_status,
+            search_indexed_files,
+            upsert_indexed_file,
+            remove_indexed_file,
+            rename_indexed_file,
             // Semantic indexing
             semantic_index_upsert_files,
             semantic_index_remove_paths,

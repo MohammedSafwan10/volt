@@ -62,9 +62,6 @@ import {
 } from '$core/ai/retrieval/semantic-index';
 import { WorkspaceLifecycleManager } from '$core/workspace/workspace-lifecycle';
 
-// Tauri FS plugin for file watching
-import { watch, type UnwatchFn, type WatchEvent } from '@tauri-apps/plugin-fs';
-
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 
 /** Lock files to watch for package manager detection */
@@ -191,9 +188,6 @@ class ProjectStore {
   indexedFileCount = $state(0);
   initialIndexDurationMs = $state(0);
 
-  // File watcher unlisten function
-  private unwatch: UnwatchFn | null = null;
-  private unwatchLockFiles: UnwatchFn | null = null;
   private diagTimer: any = null;
   private treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fileServiceUnsubscribe: (() => void) | null = null;
@@ -202,11 +196,6 @@ class ProjectStore {
   private startupGeneration = 0;
   private startupSerialChain: Promise<void> = Promise.resolve();
   private startupRootHasHeavyDirs = false;
-
-  // Fallback polling when fs watch is unavailable (e.g. scope restrictions)
-  private lockFilePollTimer: ReturnType<typeof setInterval> | null = null;
-  private lockFileLastModified = new Map<string, number | null>();
-  private lockFilePollInFlight = false;
 
   // File change handler cleanup
   private unsubscribeFileChange: (() => void) | null = null;
@@ -229,58 +218,87 @@ class ProjectStore {
     this.workspaceLifecycle.register({
       id: 'project-store-core',
       teardown: async (context) => {
+        const teardownErrors: Array<{ step: string; error: unknown }> = [];
+        const runTeardownStep = async (step: string, task: () => Promise<void>): Promise<void> => {
+          try {
+            await task();
+          } catch (error) {
+            console.error(`[ProjectStore] Teardown step failed: ${step}`, error);
+            teardownErrors.push({ step, error });
+          }
+        };
+
         this.startupGeneration += 1;
         this.startupSerialChain = Promise.resolve();
         this.clearActivationTasks();
-        await this.stopFileWatching();
-        await this.stopWatchingLockFiles();
-        await tscWatcher.stop();
-        resetWatchedFileDispatch();
-        await this.stopLspServers();
-        await mcpStore.cleanup();
-        gitStore.reset();
-        await clearIndex(false);
-        clearContextV2Cache();
-        clearSemanticQueue();
-        projectDiagnostics.reset();
-        if (this.treeRefreshTimer) {
-          clearTimeout(this.treeRefreshTimer);
-          this.treeRefreshTimer = null;
-        }
-        if (this.diagTimer) {
-          clearTimeout(this.diagTimer);
-          this.diagTimer = null;
-        }
-        for (const timer of this.pendingFolderRefreshes.values()) {
-          clearTimeout(timer);
-        }
-        this.pendingFolderRefreshes.clear();
-        problemsStore.clearAll();
-        terminalProblemMatcher.clear();
-        editorStore.closeAllFiles(true);
-        const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
-        await terminalStore.killAll();
-        if (!context.preserveVisualState) {
-          this.rootPath = null;
-          if (context.removePersistence && typeof window !== 'undefined') {
-            localStorage.removeItem(CURRENT_PROJECT_KEY);
+
+        try {
+          await runTeardownStep('stop file watching', async () => {
+            await this.stopFileWatching();
+          });
+          await runTeardownStep('stop tsc watcher', async () => {
+            await tscWatcher.stop();
+          });
+          resetWatchedFileDispatch();
+          await runTeardownStep('stop lsp servers', async () => {
+            await this.stopLspServers();
+          });
+          await runTeardownStep('cleanup mcp', async () => {
+            await mcpStore.cleanup();
+          });
+          gitStore.reset();
+          await runTeardownStep('clear file index', async () => {
+            await clearIndex(false);
+          });
+          clearContextV2Cache();
+          clearSemanticQueue();
+          projectDiagnostics.reset();
+          if (this.treeRefreshTimer) {
+            clearTimeout(this.treeRefreshTimer);
+            this.treeRefreshTimer = null;
           }
-          this.projectName = '';
-          if (context.clearFileTree) {
-            this.tree = [];
+          if (this.diagTimer) {
+            clearTimeout(this.diagTimer);
+            this.diagTimer = null;
           }
+          for (const timer of this.pendingFolderRefreshes.values()) {
+            clearTimeout(timer);
+          }
+          this.pendingFolderRefreshes.clear();
+          problemsStore.clearAll();
+          terminalProblemMatcher.clear();
+          editorStore.closeAllFiles(true);
+          const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
+          await runTeardownStep('kill terminals', async () => {
+            await terminalStore.killAll();
+          });
+        } finally {
+          if (!context.preserveVisualState) {
+            this.rootPath = null;
+            if (context.removePersistence && typeof window !== 'undefined') {
+              localStorage.removeItem(CURRENT_PROJECT_KEY);
+            }
+            this.projectName = '';
+            if (context.clearFileTree) {
+              this.tree = [];
+            }
+          }
+          this.selectedPaths.clear();
+          this.expandedPaths = new Set();
+          this.packageManager = 'npm';
+          this.startupPhase = 'idle';
+          this.uiReady = false;
+          this.coreReady = false;
+          this.backgroundReady = false;
+          this.largeRepoMode = false;
+          this.indexedFileCount = 0;
+          this.initialIndexDurationMs = 0;
+          this.startupRootHasHeavyDirs = false;
         }
-        this.selectedPaths.clear();
-        this.expandedPaths = new Set();
-        this.packageManager = 'npm';
-        this.startupPhase = 'idle';
-        this.uiReady = false;
-        this.coreReady = false;
-        this.backgroundReady = false;
-        this.largeRepoMode = false;
-        this.indexedFileCount = 0;
-        this.initialIndexDurationMs = 0;
-        this.startupRootHasHeavyDirs = false;
+
+        if (teardownErrors.length > 0) {
+          console.warn('[ProjectStore] Workspace teardown completed with errors', teardownErrors);
+        }
       },
       activate: async ({ rootPath }) => {
         const generation = ++this.startupGeneration;
@@ -292,9 +310,6 @@ class ProjectStore {
         this.clearActivationTasks();
         this.startupSerialChain = Promise.resolve();
 
-        this.scheduleActivationTask(rootPath, generation, 0, async () => {
-          await this.startWatchingLockFiles(rootPath);
-        });
         this.scheduleActivationTask(rootPath, generation, 80, async () => {
           await this.startFileWatching(rootPath);
         });
@@ -313,8 +328,8 @@ class ProjectStore {
           this.largeRepoMode = this.classifyLargeRepo(status.count, indexDurationMs);
           this.coreReady = true;
 
-          const diagnosticsDelay = this.largeRepoMode ? 3000 : 700;
-          const tscDelay = this.largeRepoMode ? 4500 : 1400;
+          const diagnosticsDelay = this.largeRepoMode ? 4000 : 1800;
+          const tscDelay = this.largeRepoMode ? 5500 : 2600;
           const semanticDelay = this.largeRepoMode ? 12000 : 2600;
           const mcpDelay = this.largeRepoMode ? 7000 : 2200;
           const finalizeDelay = this.largeRepoMode ? 7800 : 3400;
@@ -527,7 +542,7 @@ class ProjectStore {
 
     // Register handler for file changes
     this.unsubscribeFileChange = onFileChange((batch: FileChangeBatchEvent) => {
-      this.handleFileChanges(batch);
+      void this.handleFileChanges(batch);
     });
 
     // Start the file watcher
@@ -549,9 +564,9 @@ class ProjectStore {
    * Handle file changes from the file watcher
    * Updates both the file index and the file tree
    */
-  private handleFileChanges(batch: FileChangeBatchEvent): void {
+  private async handleFileChanges(batch: FileChangeBatchEvent): Promise<void> {
     // Update the file index incrementally
-    const handledIncrementally = handleFileChangeBatch(batch.changes);
+    const handledIncrementally = await handleFileChangeBatch(batch.changes);
 
     // If too many changes, trigger a full rescan
     if (!handledIncrementally && this.rootPath) {
@@ -620,6 +635,16 @@ class ProjectStore {
     const lspEvents = normalizeWatchedFileChanges(batch.changes);
     if (lspEvents.length > 0) {
       dispatchWatchedFileChanges(lspEvents);
+    }
+
+    if (batch.changes.some((change) =>
+      change.paths.some((relativePath) => {
+        const basename = relativePath.replace(/\\/g, '/').split('/').pop() || '';
+        return LOCK_FILES.includes(basename);
+      }),
+    )) {
+      await this.refreshPackageManager();
+      this.scheduleTreeRefresh();
     }
 
     // Debounce project-wide diagnostics only for relevant source/config changes.
@@ -711,145 +736,6 @@ class ProjectStore {
     }
 
     return DIAGNOSTIC_RELEVANT_EXTENSIONS.has(basename.slice(dotIndex));
-  }
-
-  /**
-   * Start watching lock files for package manager changes
-   * This enables VS Code-like behavior where running npm/yarn/pnpm install
-   * automatically updates the detected package manager
-   */
-  private async startWatchingLockFiles(projectPath: string): Promise<void> {
-    // Stop any existing watcher
-    await this.stopWatchingLockFiles();
-
-    try {
-      const sep = projectPath.includes('\\') ? '\\' : '/';
-      const lockFilePaths = LOCK_FILES.map(f => `${projectPath}${sep}${f}`);
-
-      // Allow the project directory in the FS scope so the fs plugin can watch it.
-      // The app already has direct filesystem access via custom commands; this is
-      // just to unblock plugin-fs `watch`.
-      await invoke('fs_allow_directory', { path: projectPath, recursive: true });
-
-      // Watch the project root for lock file changes
-      // Using debounce of 1000ms to avoid rapid re-detection during install
-      this.unwatchLockFiles = await watch(
-        projectPath,
-        (event: WatchEvent) => {
-          this.handleLockFileChange(event, projectPath);
-        },
-        {
-          recursive: false, // Only watch root level
-          delayMs: 1000 // Debounce for 1 second
-        }
-      );
-
-      console.log('[ProjectStore] Started watching lock files:', lockFilePaths);
-    } catch (error) {
-      console.error('[ProjectStore] Failed to start lock file watcher:', error);
-      // Fallback: poll lock files periodically so package manager detection still updates.
-      await this.startPollingLockFiles(projectPath);
-    }
-  }
-
-  /**
-   * Handle lock file changes
-   */
-  private handleLockFileChange(event: WatchEvent, projectPath: string): void {
-    // Check if any of the changed paths are lock files
-    const changedLockFiles = event.paths.filter((p: string) => {
-      const fileName = p.split(/[/\\]/).pop() || '';
-      return LOCK_FILES.includes(fileName);
-    });
-
-    if (changedLockFiles.length > 0) {
-      console.log('[ProjectStore] Lock file changed:', changedLockFiles, 'Event:', event.type);
-
-      // Re-detect package manager
-      void this.refreshPackageManager();
-      // Also refresh tree so externally-created deps/files (e.g. npm install)
-      // show up without manual refresh.
-      this.scheduleTreeRefresh();
-    }
-  }
-
-  /**
-   * Stop watching lock files
-   */
-  private async stopWatchingLockFiles(): Promise<void> {
-    if (this.unwatchLockFiles) {
-      try {
-        this.unwatchLockFiles();
-        this.unwatchLockFiles = null;
-        console.log('[ProjectStore] Stopped watching lock files');
-      } catch (error) {
-        console.error('[ProjectStore] Error stopping lock file watcher:', error);
-      }
-    }
-
-    // Always stop polling fallback too
-    this.stopPollingLockFiles();
-  }
-
-  private getLockFilePaths(projectPath: string): string[] {
-    const sep = projectPath.includes('\\') ? '\\' : '/';
-    return LOCK_FILES.map((f) => `${projectPath}${sep}${f}`);
-  }
-
-  private async startPollingLockFiles(projectPath: string): Promise<void> {
-    this.stopPollingLockFiles();
-
-    const lockFilePaths = this.getLockFilePaths(projectPath);
-    this.lockFileLastModified.clear();
-
-    // Prime state
-    for (const p of lockFilePaths) {
-      const info = await getFileInfoQuiet(p);
-      this.lockFileLastModified.set(p, info?.modified ?? null);
-    }
-
-    this.lockFilePollTimer = setInterval(() => {
-      if (!this.rootPath || this.lockFilePollInFlight) return;
-      this.lockFilePollInFlight = true;
-
-      void (async () => {
-        try {
-          let changed = false;
-
-          for (const p of lockFilePaths) {
-            const info = await getFileInfoQuiet(p);
-            const next = info?.modified ?? null;
-            const prev = this.lockFileLastModified.get(p) ?? null;
-            if (next !== prev) {
-              this.lockFileLastModified.set(p, next);
-              changed = true;
-            }
-          }
-
-          if (changed) {
-            console.log('[ProjectStore] Lock files changed (polling fallback)');
-            await this.refreshPackageManager();
-            this.scheduleTreeRefresh();
-          }
-        } catch (e) {
-          console.error('[ProjectStore] Lock file polling error:', e);
-        } finally {
-          this.lockFilePollInFlight = false;
-        }
-      })();
-    }, 2000);
-
-    console.log('[ProjectStore] Started polling lock files (fallback)');
-  }
-
-  private stopPollingLockFiles(): void {
-    if (this.lockFilePollTimer) {
-      clearInterval(this.lockFilePollTimer);
-      this.lockFilePollTimer = null;
-      this.lockFilePollInFlight = false;
-      this.lockFileLastModified.clear();
-      console.log('[ProjectStore] Stopped polling lock files');
-    }
   }
 
   /**

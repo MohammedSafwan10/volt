@@ -9,7 +9,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { exists } from '@tauri-apps/plugin-fs';
+import { getFileInfoQuiet } from '$core/services/file-system';
 import { problemsStore, type Problem } from '$shared/stores/problems.svelte';
 import { registerCleanup } from '$core/services/hmr-cleanup';
 import { hasProblemsFromSource } from '$core/services/diagnostics-source-utils';
@@ -67,8 +67,8 @@ class TscWatcher {
 
     // Check if tsconfig.json exists
     const tsconfigPath = `${rootPath}/tsconfig.json`.replace(/\\/g, '/');
-    const hasTsconfig = await exists(tsconfigPath);
-    if (!hasTsconfig) {
+    const tsconfigInfo = await getFileInfoQuiet(tsconfigPath);
+    if (!tsconfigInfo?.isFile) {
       console.log('[TscWatcher] No tsconfig.json found, skipping');
       return;
     }

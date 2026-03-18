@@ -6,7 +6,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { homeDir, join } from '@tauri-apps/api/path';
-import { readTextFile, watch } from '@tauri-apps/plugin-fs';
+import { getFileInfoQuiet, readFileQuiet } from '$core/services/file-system';
 import { showToast } from '$shared/stores/toast.svelte';
 import { logOutput } from '$features/terminal/stores/output.svelte';
 import { registerCleanup } from '$core/services/hmr-cleanup';
@@ -71,6 +71,9 @@ class McpStore {
   // File watchers
   private userConfigWatcher: (() => void) | null = null;
   private workspaceConfigWatcher: (() => void) | null = null;
+  private workspaceConfigPollTimer: ReturnType<typeof setInterval> | null = null;
+  private workspaceConfigLastModified: number | null | undefined = undefined;
+  private workspaceConfigPollInFlight = false;
   private eventUnlisteners: UnlistenFn[] = [];
   private listenersInitialized = false;
 
@@ -219,25 +222,17 @@ class McpStore {
 
     // Load new workspace config
     try {
-      const content = await readTextFile(this.workspaceConfigPath);
-      this.workspaceConfig = JSON.parse(content);
+      const content = await readFileQuiet(this.workspaceConfigPath);
+      if (!content) {
+        this.workspaceConfig = null;
+      } else {
+        this.workspaceConfig = JSON.parse(content);
+      }
     } catch {
       this.workspaceConfig = null;
     }
 
-    // Watch new workspace config
-    try {
-      this.workspaceConfigWatcher = await watch(
-        this.workspaceConfigPath,
-        async () => {
-          console.log('[MCP] Workspace config changed, reloading...');
-          await this.reload();
-        },
-        { recursive: false }
-      );
-    } catch {
-      // File might not exist yet
-    }
+    this.startWorkspaceConfigPolling();
 
     // Reload only when merged config actually changed.
     // This avoids stop/start thrash when opening a project that has no workspace MCP config.
@@ -281,6 +276,12 @@ class McpStore {
       this.workspaceConfigWatcher();
       this.workspaceConfigWatcher = null;
     }
+    if (this.workspaceConfigPollTimer) {
+      clearInterval(this.workspaceConfigPollTimer);
+      this.workspaceConfigPollTimer = null;
+    }
+    this.workspaceConfigLastModified = undefined;
+    this.workspaceConfigPollInFlight = false;
 
     this.servers.clear();
     this.tools = [];
@@ -573,9 +574,13 @@ class McpStore {
     // Load workspace config (this one is in workspace so FS plugin works)
     if (this.workspaceConfigPath) {
       try {
-        const content = await readTextFile(this.workspaceConfigPath);
-        this.workspaceConfig = JSON.parse(content);
-        logOutput('MCP', `Loaded workspace config with ${Object.keys(this.workspaceConfig?.mcpServers || {}).length} servers`);
+        const content = await readFileQuiet(this.workspaceConfigPath);
+        if (content) {
+          this.workspaceConfig = JSON.parse(content);
+          logOutput('MCP', `Loaded workspace config with ${Object.keys(this.workspaceConfig?.mcpServers || {}).length} servers`);
+        } else {
+          this.workspaceConfig = null;
+        }
       } catch {
         this.workspaceConfig = null;
       }
@@ -587,21 +592,57 @@ class McpStore {
     // User must click Reload button after editing the config file
     // Only workspace config can be auto-watched
 
-    // Watch workspace config (if in workspace, it can be watched)
-    if (this.workspaceConfigPath) {
-      try {
-        this.workspaceConfigWatcher = await watch(
-          this.workspaceConfigPath,
-          async () => {
-            logOutput('MCP', 'Workspace config changed, reloading...');
-            await this.reload();
-          },
-          { recursive: false }
-        );
-      } catch {
-        // File might not exist yet
-      }
+    this.startWorkspaceConfigPolling();
+  }
+
+  private startWorkspaceConfigPolling(): void {
+    if (this.workspaceConfigPollTimer) {
+      clearInterval(this.workspaceConfigPollTimer);
+      this.workspaceConfigPollTimer = null;
     }
+    this.workspaceConfigLastModified = undefined;
+
+    if (!this.workspaceConfigPath) {
+      this.workspaceConfigWatcher = null;
+      return;
+    }
+
+    const poll = async (): Promise<void> => {
+      if (!this.workspaceConfigPath || this.workspaceConfigPollInFlight) {
+        return;
+      }
+      this.workspaceConfigPollInFlight = true;
+
+      try {
+        const info = await getFileInfoQuiet(this.workspaceConfigPath);
+        const nextModified = info?.modified ?? null;
+        if (this.workspaceConfigLastModified === undefined) {
+          this.workspaceConfigLastModified = nextModified;
+          return;
+        }
+
+        if (nextModified !== this.workspaceConfigLastModified) {
+          this.workspaceConfigLastModified = nextModified;
+          logOutput('MCP', 'Workspace config changed, reloading...');
+          await this.reload();
+        }
+      } finally {
+        this.workspaceConfigPollInFlight = false;
+      }
+    };
+
+    void poll();
+    this.workspaceConfigPollTimer = setInterval(() => {
+      void poll();
+    }, 1500);
+    this.workspaceConfigWatcher = () => {
+      if (this.workspaceConfigPollTimer) {
+        clearInterval(this.workspaceConfigPollTimer);
+        this.workspaceConfigPollTimer = null;
+      }
+      this.workspaceConfigLastModified = undefined;
+      this.workspaceConfigPollInFlight = false;
+    };
   }
 
   private async startEnabledServers(): Promise<void> {

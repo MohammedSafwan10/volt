@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -107,6 +108,147 @@ fn log_mcp(server_id: &str, message: &str) {
     eprintln!("[MCP:{}] {}", server_id, message);
 }
 
+fn normalize_mcp_command(command: &str) -> String {
+    Path::new(command.trim().trim_matches('"').trim_matches('\''))
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command.trim())
+        .to_ascii_lowercase()
+}
+
+fn is_allowed_mcp_command(command: &str) -> bool {
+    matches!(
+        normalize_mcp_command(command).as_str(),
+        "npx"
+            | "npx.cmd"
+            | "node"
+            | "node.exe"
+            | "uvx"
+            | "uvx.cmd"
+            | "uv"
+            | "uv.exe"
+            | "python"
+            | "python.exe"
+            | "python3"
+            | "python3.exe"
+            | "deno"
+            | "deno.exe"
+            | "bun"
+            | "bun.exe"
+            | "bunx"
+            | "bunx.cmd"
+    )
+}
+
+fn validate_mcp_server_id(server_id: &str) -> Result<(), String> {
+    let trimmed = server_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return Err("Invalid MCP server id length".to_string());
+    }
+
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!("Invalid MCP server id: {}", server_id));
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_args(args: &[String]) -> Result<(), String> {
+    for arg in args {
+        if arg.len() > 4096 {
+            return Err("MCP argument too long".to_string());
+        }
+        if arg.chars().any(|c| c == '\0' || c == '\r' || c == '\n') {
+            return Err("MCP arguments cannot contain control characters".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_env(env: &HashMap<String, String>) -> Result<(), String> {
+    const BLOCKED_ENV_KEYS: &[&str] = &[
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "NODE_OPTIONS",
+        "PYTHONPATH",
+        "RUSTC_WRAPPER",
+        "COMSPEC",
+    ];
+
+    for (key, value) in env {
+        let trimmed = key.trim();
+        if trimmed.is_empty()
+            || trimmed.len() > 64
+            || !trimmed
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(format!("Invalid MCP env key: {}", key));
+        }
+        if BLOCKED_ENV_KEYS.contains(&trimmed) {
+            return Err(format!("Blocked MCP env key: {}", key));
+        }
+        if value.len() > 8192 || value.chars().any(|c| c == '\0') {
+            return Err(format!("Invalid MCP env value for key: {}", key));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_auto_approve_entries(entries: &[String]) -> Result<(), String> {
+    for entry in entries {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed.len() > 128 {
+            return Err("Invalid MCP auto-approve entry length".to_string());
+        }
+
+        if trimmed != "*"
+            && !trimmed
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
+            return Err(format!("Invalid MCP auto-approve entry: {}", entry));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_config_content(content: &str) -> Result<(), String> {
+    let parsed: Value =
+        serde_json::from_str(content).map_err(|e| format!("Invalid MCP config JSON: {}", e))?;
+
+    let Some(servers_value) = parsed.get("mcpServers") else {
+        return Ok(());
+    };
+
+    let servers = servers_value
+        .as_object()
+        .ok_or_else(|| "mcpServers must be a JSON object".to_string())?;
+
+    for (server_id, server_value) in servers {
+        validate_mcp_server_id(server_id)?;
+        let config: McpServerConfig = serde_json::from_value(server_value.clone())
+            .map_err(|e| format!("Invalid config for MCP server '{}': {}", server_id, e))?;
+        if !is_allowed_mcp_command(&config.command) {
+            return Err(format!(
+                "Blocked MCP command '{}' for server '{}'",
+                config.command, server_id
+            ));
+        }
+        validate_mcp_args(&config.args)?;
+        validate_mcp_env(&config.env)?;
+        validate_auto_approve_entries(&config.auto_approve)?;
+    }
+
+    Ok(())
+}
+
 fn emit_state(app: &AppHandle, id: &str, state: &McpServerState) {
     let _ = app.emit(
         "mcp://server-state",
@@ -187,6 +329,16 @@ pub async fn start_mcp_server(
     config: McpServerConfig,
 ) -> Result<McpServerState, String> {
     let mcp = app.state::<McpState>();
+    validate_mcp_server_id(&server_id)?;
+    if !is_allowed_mcp_command(&config.command) {
+        return Err(format!(
+            "Blocked MCP command '{}': only trusted launcher binaries are allowed",
+            config.command
+        ));
+    }
+    validate_mcp_args(&config.args)?;
+    validate_mcp_env(&config.env)?;
+    validate_auto_approve_entries(&config.auto_approve)?;
     log_mcp(
         &server_id,
         &format!("starting '{}' {:?}", config.command, config.args),
@@ -314,7 +466,10 @@ pub async fn start_mcp_server(
                             };
                             let _ = sender.send(result);
                         } else {
-                            log_mcp(&sid, &format!("stdout response for unknown id {}: {}", id, line));
+                            log_mcp(
+                                &sid,
+                                &format!("stdout response for unknown id {}: {}", id, line),
+                            );
                         }
                     } else {
                         // Server notification or malformed response without id.
@@ -544,6 +699,7 @@ pub fn ensure_mcp_config(default_content: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn write_mcp_config(content: String) -> Result<(), String> {
+    validate_mcp_config_content(&content)?;
     let home = dirs::home_dir().ok_or("No home dir")?;
     let dir = home.join(".volt/settings");
     let path = dir.join("mcp.json");

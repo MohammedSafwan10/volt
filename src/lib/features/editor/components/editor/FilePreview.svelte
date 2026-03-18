@@ -1,6 +1,7 @@
 <script lang="ts">
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { Markdown, UIIcon } from "$shared/components/ui";
+import { readBinaryFileBase64 } from "$core/services/file-system";
 import { projectStore } from "$shared/stores/project.svelte";
 import { showToast } from "$shared/stores/toast.svelte";
 
@@ -137,8 +138,11 @@ import { showToast } from "$shared/stores/toast.svelte";
     ) {
       attemptedBlobFallback = true;
       try {
-        const { readFile } = await import("@tauri-apps/plugin-fs");
-        const bytes = await readFile(filepath);
+        const base64 = await readBinaryFileBase64(filepath);
+        if (!base64) {
+          throw new Error("File not found");
+        }
+        const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
         const blob = new Blob([bytes], { type: mediaMime || undefined });
         fileUrl = URL.createObjectURL(blob);
         loadError = null;

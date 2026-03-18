@@ -261,6 +261,20 @@ export async function readFileQuiet(path: string): Promise<string | null> {
   }
 }
 
+export async function readBinaryFileBase64(path: string): Promise<string | null> {
+  try {
+    return await invoke<string>('read_binary_file_base64', { path });
+  } catch (error) {
+    if (isFileError(error) && error.type === 'NotFound') {
+      return null;
+    }
+
+    console.error(`[FileSystem] Read binary file (base64) error for ${path}:`, error);
+    logOutput('File System', `Read binary file error: ${path}`);
+    return null;
+  }
+}
+
 /**
  * Get detailed file information, but treat NotFound as a normal "null" result
  * and do not show toast notifications.
