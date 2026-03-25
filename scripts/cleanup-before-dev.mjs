@@ -14,11 +14,13 @@ import { join } from 'path';
 const execAsync = promisify(exec);
 
 const SIDECAR_PATH = join(process.cwd(), 'src-tauri', 'binaries', 'node-x86_64-pc-windows-msvc.exe');
+const PROJECT_ROOT = process.cwd();
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 500;
 const CARGO_TARGET_DIR = join(process.cwd(), '.cargo-target');
 const BUILD_DIR = join(CARGO_TARGET_DIR, 'debug', 'build');
 const CARGO_DEBUG_DIR = join(CARGO_TARGET_DIR, 'debug');
+const KNOWN_DEV_PORTS = [1420, 1421];
 
 async function killByPattern(pattern) {
   try {
@@ -32,6 +34,10 @@ async function killByPattern(pattern) {
   }
 }
 
+function escapeForSingleQuotedPowerShell(value) {
+  return String(value).replace(/'/g, "''");
+}
+
 async function killByName(name) {
   try {
     await execAsync(
@@ -40,6 +46,34 @@ async function killByName(name) {
     );
   } catch {
     // Process not running
+  }
+}
+
+async function killNodeProcessesForProject(marker) {
+  try {
+    const escapedMarker = escapeForSingleQuotedPowerShell(marker);
+    const ps = `
+      $marker = '${escapedMarker}'
+      $killed = 0
+      Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+          ($_.CommandLine -like "*$marker*") -or ($_.ExecutablePath -like "*$marker*")
+        } |
+        ForEach-Object {
+          try {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            $killed++
+          } catch {}
+        }
+      $killed
+    `.trim().replace(/\r?\n\s*/g, ' ');
+    const { stdout } = await execAsync(`powershell -NoProfile -Command "${ps}"`, { windowsHide: true });
+    const count = Number(String(stdout).trim()) || 0;
+    if (count > 0) {
+      console.log(`[cleanup] Killed ${count} project node process(es) matching: ${marker}`);
+    }
+  } catch {
+    // Ignore lookup errors
   }
 }
 
@@ -193,7 +227,10 @@ async function main() {
   await killByPattern('volt.exe');
   await killByExactExePath(join(CARGO_DEBUG_DIR, 'node.exe'));
   await killByExactExePath(join(CARGO_DEBUG_DIR, 'volt.exe'));
-  await killByPort(1420);
+  await killNodeProcessesForProject(PROJECT_ROOT);
+  for (const port of KNOWN_DEV_PORTS) {
+    await killByPort(port);
+  }
 
   // Also kill any orphaned esbuild/vite processes from previous dev sessions
   // These can hold file handles open
