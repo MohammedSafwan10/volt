@@ -3,7 +3,7 @@
  * Manages open files, active file, and file content
  */
 
-import { readFile } from '$core/services/file-system';
+import { fileService } from '$core/services/file-service';
 import {
   clearReviewHighlight,
   disposeAllModels,
@@ -212,6 +212,12 @@ export class EditorStore {
   /** Current editor options (indentation) */
   editorOptions = $state<EditorOptions>({ tabSize: 2, insertSpaces: true });
 
+  constructor() {
+    fileService.subscribeAll((event) => {
+      this.handleFileServiceChange(event);
+    });
+  }
+
   /** Get the currently active file */
   get activeFile(): OpenFile | null {
     if (!this.activeFilePath) return null;
@@ -231,14 +237,12 @@ export class EditorStore {
   /** Check if a file is dirty (has unsaved changes) */
   isDirty(path: string): boolean {
     const normalizedPath = normalizePath(path);
-    const file = this.openFiles.find(f => f.path === normalizedPath);
-    if (!file) return false;
-    return file.content !== file.originalContent;
+    return fileService.isDirty(normalizedPath);
   }
 
   /** Check if any file is dirty */
   get hasUnsavedChanges(): boolean {
-    return this.openFiles.some(f => f.content !== f.originalContent);
+    return this.openFiles.some(f => fileService.isDirty(f.path));
   }
 
   /**
@@ -263,7 +267,7 @@ export class EditorStore {
 
     // Read file content for text-like files only.
     // Binary files are opened in preview mode and should not fail file open.
-    const content = isBinaryLike ? '' : await readFile(path);
+    const content = isBinaryLike ? '' : (await fileService.read(normalizedPath))?.content ?? null;
     if (!isBinaryLike && content === null) {
       // Error already shown via toast in readFile
       return false;
@@ -295,7 +299,6 @@ export class EditorStore {
 
     this.openFiles = [...this.openFiles.filter(f => f.path !== normalizedPath), newFile];
     this.activeFilePath = normalizedPath;
-
     // Reset cursor position for new file
     this.cursorPosition = { line: 1, column: 1, selected: 0 };
 
@@ -515,6 +518,7 @@ export class EditorStore {
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
       file.content = content;
+      fileService.updateContent(normalizedPath, content, 'editor');
       activityStore.recordActivity(normalizedPath, 'edit');
     }
   }
@@ -526,8 +530,11 @@ export class EditorStore {
     const normalizedPath = normalizePath(path);
     const file = this.openFiles.find(f => f.path === normalizedPath);
     if (file) {
-      file.originalContent = file.content;
-      notifyEditorDidSave(normalizedPath, file.content, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
+      const nativeDoc = fileService.getDocument(normalizedPath);
+      const savedContent = nativeDoc?.content ?? file.content;
+      file.content = savedContent;
+      file.originalContent = savedContent;
+      notifyEditorDidSave(normalizedPath, savedContent, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
     }
   }
 
@@ -546,9 +553,8 @@ export class EditorStore {
       return true;
     }
 
-    // Use original path for file system access
     try {
-      const content = await readFile(path);
+      const content = (await fileService.reload(normalizedPath))?.content ?? null;
       if (content === null) return false;
 
       // Create updated file object and replace in array to trigger Svelte reactivity
@@ -617,16 +623,27 @@ export class EditorStore {
     const normOld = normalizePath(oldPath);
     const normNew = normalizePath(newPath);
 
-    const file = this.openFiles.find(f => f.path === normOld);
-    if (!file) return;
+    const fileIndex = this.openFiles.findIndex(f => f.path === normOld);
+    if (fileIndex === -1) return;
 
     const wasActive = this.activeFilePath === normOld;
-
-    this.closeFile(normOld, true);
-
-    const reopened = await this.openFile(newPath);
-
-    if (reopened && wasActive) {
+    const existing = this.openFiles[fileIndex];
+    const renamedFile: OpenFile = {
+      ...existing,
+      path: normNew,
+      name: normNew.split('/').pop() || normNew,
+      language: detectLanguage(normNew.split('/').pop() || normNew)
+    };
+    this.openFiles = [
+      ...this.openFiles.slice(0, fileIndex),
+      renamedFile,
+      ...this.openFiles.slice(fileIndex + 1)
+    ];
+    const refreshed = await fileService.read(normNew, true);
+    if (refreshed) {
+      this.applyDocumentToOpenFile(normNew, refreshed, false);
+    }
+    if (wasActive) {
       this.activeFilePath = normNew;
     }
 
@@ -708,6 +725,55 @@ export class EditorStore {
     }
 
     return true;
+  }
+
+  private handleFileServiceChange(event: {
+    path: string;
+    content: string;
+    source: 'disk' | 'editor' | 'ai' | 'lsp' | 'external';
+  }): void {
+    const normalizedPath = normalizePath(event.path);
+    const nativeDoc = fileService.getDocument(normalizedPath);
+    if (!nativeDoc) return;
+    const file = this.openFiles.find((entry) => entry.path === normalizedPath);
+    if (!file) return;
+
+    const preserveDirtyBuffer =
+      (event.source === 'disk' || event.source === 'external') &&
+      file.content !== file.originalContent;
+
+    this.applyDocumentToOpenFile(normalizedPath, nativeDoc, preserveDirtyBuffer);
+  }
+
+  private applyDocumentToOpenFile(
+    normalizedPath: string,
+    document: { content: string; isDirty: boolean; language?: string },
+    preserveDirtyBuffer: boolean
+  ): void {
+    const fileIndex = this.openFiles.findIndex((entry) => entry.path === normalizedPath);
+    if (fileIndex === -1) return;
+
+    const existing = this.openFiles[fileIndex];
+    const updatedFile: OpenFile = {
+      ...existing,
+      content: preserveDirtyBuffer ? existing.content : document.content,
+      originalContent:
+        preserveDirtyBuffer && document.isDirty
+          ? existing.originalContent
+          : document.content,
+      language: document.language ?? existing.language
+    };
+
+    this.openFiles = [
+      ...this.openFiles.slice(0, fileIndex),
+      updatedFile,
+      ...this.openFiles.slice(fileIndex + 1)
+    ];
+
+    if (!preserveDirtyBuffer) {
+      setModelValue(normalizedPath, document.content);
+      clearReviewHighlight(normalizedPath);
+    }
   }
 }
 

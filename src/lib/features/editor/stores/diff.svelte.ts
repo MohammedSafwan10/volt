@@ -2,7 +2,7 @@
  * Diff View Store - Manages Monaco DiffEditor state
  * Provides proper VS Code-style inline diff with red/green highlighting
  */
-import { writeFile } from '$core/services/file-system';
+import { fileService } from '$core/services/file-service';
 import { editorStore } from './editor.svelte';
 
 export interface DiffState {
@@ -121,9 +121,11 @@ class DiffStore {
     // Sync the modified content to the editor if file is open
     if (filePath && modifiedContent) {
       try {
-        // Write modified content back to disk
-        await writeFile(filePath, modifiedContent);
-        await editorStore.updateFileContent(filePath, modifiedContent);
+        const result = await fileService.write(filePath, modifiedContent, { source: 'editor', force: true });
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to accept diff changes');
+        }
+        await editorStore.reloadFile(filePath);
       } catch (err) {
         console.error('[diffStore] Failed to sync accepted changes:', err);
       }
@@ -142,11 +144,11 @@ class DiffStore {
     // Revert to original content if file is open
     if (filePath && originalContent) {
       try {
-        // Write original content back to disk
-        await writeFile(filePath, originalContent);
-        
-        // Sync to editor
-        await editorStore.updateFileContent(filePath, originalContent);
+        const result = await fileService.write(filePath, originalContent, { source: 'editor', force: true });
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to reject diff changes');
+        }
+        await editorStore.reloadFile(filePath);
       } catch (err) {
         console.error('[diffStore] Failed to revert changes:', err);
       }

@@ -16,6 +16,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   isTsLspConnected,
   notifyDocumentChanged as notifyTsDocumentChanged,
@@ -68,6 +69,28 @@ export interface FileDocument {
   language?: string;
 }
 
+interface NativeDocumentState {
+  path: string;
+  content: string;
+  version: number;
+  diskVersion: number;
+  isDirty: boolean;
+  lastModified: number;
+  language?: string;
+}
+
+interface NativeDocumentWriteResult {
+  success: boolean;
+  newVersion?: number;
+  error?: string;
+  conflictContent?: string;
+}
+
+interface NativeDocumentApplyResult {
+  state: NativeDocumentState;
+  previousContent?: string;
+}
+
 export interface FileChangeEvent {
   path: string;
   content: string;
@@ -106,126 +129,53 @@ class UnifiedFileService {
   // Global subscribers (notified of ALL file changes)
   private globalSubscribers = new Set<FileChangeCallback>();
   
-  // Pending writes (for batching/debouncing)
-  private pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
-  
-  // Write debounce delay (ms)
-  private readonly WRITE_DEBOUNCE = 100;
+  private initialized = false;
+  private nativeEventCleanup: (() => void) | null = null;
 
   // ============================================================================
   // Core Read/Write Operations
   // ============================================================================
 
   /**
-   * Read a file - returns cached version if available, otherwise reads from disk
-   * This is the ONLY way components should read file content
+   * Read a file from the Rust document manager.
+   * This is the ONLY way components should read file content.
    */
   async read(path: string, forceRefresh = false): Promise<FileDocument | null> {
     const normalizedPath = this.normalizePath(path);
-    
-    // Return cached if available and not forcing refresh
-    if (!forceRefresh && this.documents.has(normalizedPath)) {
-      return this.documents.get(normalizedPath)!;
-    }
-    
-    // Read from disk
-    try {
-      const content = await invoke<string>('read_file', { path: normalizedPath });
-      const now = Date.now();
-      
-      const doc: FileDocument = {
-        path: normalizedPath,
-        content,
-        version: this.documents.get(normalizedPath)?.version ?? 1,
-        diskVersion: this.documents.get(normalizedPath)?.diskVersion ?? 1,
-        isDirty: false,
-        lastModified: now,
-        language: this.detectLanguage(normalizedPath)
-      };
-      
-      // If content changed from what we had, increment version
-      const existing = this.documents.get(normalizedPath);
-      if (existing && existing.content !== content) {
-        doc.version = existing.version + 1;
-        doc.diskVersion = doc.version;
-      }
-      
-      this.documents.set(normalizedPath, doc);
-      return doc;
-    } catch {
-      return null;
-    }
+    await this.ensureNativeEvents();
+    const state = await invoke<NativeDocumentState | null>('document_read', {
+      path: normalizedPath,
+      forceRefresh
+    }).catch(() => null);
+    if (!state) return null;
+    const doc = this.mapNativeState(state);
+    this.documents.set(normalizedPath, doc);
+    return doc;
   }
 
   /**
-   * Write a file with version tracking and conflict detection
-   * This is the ONLY way components should write file content
+   * Write a file with native version tracking and conflict detection.
+   * This is the ONLY way components should write file content.
    */
   async write(path: string, content: string, options: WriteOptions = {}): Promise<WriteResult> {
     const normalizedPath = this.normalizePath(path);
-    const existing = this.documents.get(normalizedPath);
-    
-    // Version conflict check (optimistic locking)
-    if (options.expectedVersion !== undefined && existing) {
-      if (existing.version !== options.expectedVersion && !options.force) {
-        return {
-          success: false,
-          error: `Version conflict: expected ${options.expectedVersion}, current ${existing.version}`,
-          conflictContent: existing.content
-        };
-      }
-    }
-    
-    // Check if content actually changed
-    if (existing && existing.content === content && !options.force) {
-      return { success: true, newVersion: existing.version };
-    }
-    
-    // Write to disk
-    try {
-      await invoke('write_file', { path: normalizedPath, content });
-      
-      // Verify write
-      const verification = await invoke<string>('read_file', { path: normalizedPath });
-      if (verification !== content) {
-        // Retry once
-        await invoke('write_file', { path: normalizedPath, content });
-        const retry = await invoke<string>('read_file', { path: normalizedPath });
-        if (retry !== content) {
-          return { success: false, error: 'Write verification failed after retry' };
-        }
-      }
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-    
-    // Update document state
-    const previousContent = existing?.content;
-    const newVersion = (existing?.version ?? 0) + 1;
-    const now = Date.now();
-    
-    const doc: FileDocument = {
+    await this.ensureNativeEvents();
+    const result = await invoke<NativeDocumentWriteResult>('document_write', {
       path: normalizedPath,
       content,
-      version: newVersion,
-      diskVersion: newVersion,
-      isDirty: false,
-      lastModified: now,
-      language: existing?.language ?? this.detectLanguage(normalizedPath)
-    };
-    
-    this.documents.set(normalizedPath, doc);
-    
-    // Notify ALL subscribers
-    this.notifyChange({
-      path: normalizedPath,
-      content,
-      version: newVersion,
+      expectedVersion: options.expectedVersion,
       source: options.source ?? 'editor',
-      previousContent
-    });
-    
-    return { success: true, newVersion };
+      force: options.force ?? false
+    }).catch((err) => ({
+      success: false,
+      error: String(err)
+    } as NativeDocumentWriteResult));
+    return {
+      success: result.success,
+      newVersion: result.newVersion,
+      error: result.error,
+      conflictContent: result.conflictContent
+    };
   }
 
   /**
@@ -234,33 +184,40 @@ class UnifiedFileService {
    */
   updateContent(path: string, content: string, source: FileChangeEvent['source'] = 'editor'): number {
     const normalizedPath = this.normalizePath(path);
-    const existing = this.documents.get(normalizedPath);
-    
-    const newVersion = (existing?.version ?? 0) + 1;
-    const previousContent = existing?.content;
-    
-    const doc: FileDocument = {
+    const existing = this.documents.get(normalizedPath) ?? null;
+    const fallbackVersion = existing?.version ?? 0;
+    const optimisticVersion = fallbackVersion + 1;
+    const optimisticPreviousContent = existing?.content;
+    const optimisticDoc: FileDocument = {
       path: normalizedPath,
       content,
-      version: newVersion,
-      diskVersion: existing?.diskVersion ?? 0,
+      version: optimisticVersion,
+      diskVersion: existing?.diskVersion ?? fallbackVersion,
       isDirty: true,
       lastModified: Date.now(),
       language: existing?.language ?? this.detectLanguage(normalizedPath)
     };
-    
-    this.documents.set(normalizedPath, doc);
-    
-    // Notify subscribers
+
+    this.documents.set(normalizedPath, optimisticDoc);
     this.notifyChange({
       path: normalizedPath,
       content,
-      version: newVersion,
+      version: optimisticVersion,
       source,
-      previousContent
+      previousContent: optimisticPreviousContent
     });
-    
-    return newVersion;
+
+    void this.ensureNativeEvents().then(async () => {
+      const result = await invoke<NativeDocumentApplyResult>('document_apply_edit', {
+        path: normalizedPath,
+        content,
+        source
+      }).catch(() => null);
+      if (result?.state) {
+        this.documents.set(normalizedPath, this.mapNativeState(result.state));
+      }
+    });
+    return optimisticVersion;
   }
 
   /**
@@ -268,20 +225,19 @@ class UnifiedFileService {
    */
   async save(path: string): Promise<WriteResult> {
     const normalizedPath = this.normalizePath(path);
-    const doc = this.documents.get(normalizedPath);
-    
-    if (!doc) {
-      return { success: false, error: 'Document not found' };
-    }
-    
-    if (!doc.isDirty) {
-      return { success: true, newVersion: doc.version };
-    }
-    
-    return this.write(normalizedPath, doc.content, { 
-      source: 'editor',
-      force: true  // We're saving our own dirty content
-    });
+    await this.ensureNativeEvents();
+    const result = await invoke<NativeDocumentWriteResult>('document_save', {
+      path: normalizedPath
+    }).catch((err) => ({
+      success: false,
+      error: String(err)
+    } as NativeDocumentWriteResult));
+    return {
+      success: result.success,
+      newVersion: result.newVersion,
+      error: result.error,
+      conflictContent: result.conflictContent
+    };
   }
 
   // ============================================================================
@@ -388,20 +344,113 @@ class UnifiedFileService {
     const normalizedPath = this.normalizePath(path);
     this.documents.delete(normalizedPath);
     this.subscribers.delete(normalizedPath);
-    
-    // Cancel any pending writes
-    const pending = this.pendingWrites.get(normalizedPath);
-    if (pending) {
-      clearTimeout(pending);
-      this.pendingWrites.delete(normalizedPath);
-    }
+    void invoke('document_close', { path: normalizedPath }).catch(() => {});
+  }
+
+  async getNativeDocument(path: string): Promise<FileDocument | null> {
+    const normalizedPath = this.normalizePath(path);
+    await this.ensureNativeEvents();
+    const state = await invoke<NativeDocumentState | null>('document_get', {
+      path: normalizedPath
+    }).catch(() => null);
+    if (!state) return null;
+    const doc = this.mapNativeState(state);
+    this.documents.set(normalizedPath, doc);
+    return doc;
+  }
+
+  async syncFromNative(path: string, forceRefresh = false): Promise<FileDocument | null> {
+    return this.read(path, forceRefresh);
+  }
+
+  async saveAndGetDocument(path: string): Promise<{ result: WriteResult; document: FileDocument | null }> {
+    const normalizedPath = this.normalizePath(path);
+    const result = await this.save(normalizedPath);
+    const document = result.success
+      ? (await this.getNativeDocument(normalizedPath)) ?? this.documents.get(normalizedPath) ?? null
+      : this.documents.get(normalizedPath) ?? null;
+    return { result, document };
+  }
+
+  setCachedDocument(path: string, document: FileDocument): void {
+    this.documents.set(this.normalizePath(path), document);
   }
 
   /**
    * Reload document from disk (discard unsaved changes)
    */
   async reload(path: string): Promise<FileDocument | null> {
-    return this.read(path, true);
+    const normalizedPath = this.normalizePath(path);
+    await this.ensureNativeEvents();
+    const state = await invoke<NativeDocumentState | null>('document_reload', {
+      path: normalizedPath
+    }).catch(() => null);
+    if (!state) return null;
+    const doc = this.mapNativeState(state);
+    this.documents.set(normalizedPath, doc);
+    return doc;
+  }
+
+  private mapNativeState(state: NativeDocumentState): FileDocument {
+    return {
+      path: state.path,
+      content: state.content,
+      version: state.version,
+      diskVersion: state.diskVersion,
+      isDirty: state.isDirty,
+      lastModified: state.lastModified,
+      language: state.language ?? this.detectLanguage(state.path)
+    };
+  }
+
+  private async ensureNativeEvents(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+    const unlistenFns: UnlistenFn[] = [];
+    try {
+      const unlistenChanged = await listen<FileChangeEvent & { diskVersion?: number; isDirty?: boolean }>(
+        'document://changed',
+        (event) => {
+          const payload = event.payload;
+          const existing = this.documents.get(this.normalizePath(payload.path));
+          const doc: FileDocument = {
+            path: this.normalizePath(payload.path),
+            content: payload.content,
+            version: payload.version,
+            diskVersion: payload.diskVersion ?? existing?.diskVersion ?? payload.version,
+            isDirty: payload.isDirty ?? false,
+            lastModified: Date.now(),
+            language: existing?.language ?? this.detectLanguage(payload.path)
+          };
+          this.documents.set(doc.path, doc);
+          this.notifyChange({
+            path: doc.path,
+            content: doc.content,
+            version: doc.version,
+            source: payload.source,
+            previousContent: payload.previousContent
+          });
+        }
+      );
+      unlistenFns.push(unlistenChanged);
+      const unlistenClosed = await listen<{ path: string }>('document://closed', (event) => {
+        const path = this.normalizePath(event.payload.path);
+        this.documents.delete(path);
+        this.subscribers.delete(path);
+      });
+      unlistenFns.push(unlistenClosed);
+      this.nativeEventCleanup = () => {
+        for (const unlisten of unlistenFns) {
+          unlisten();
+        }
+      };
+    } catch (error) {
+      this.initialized = false;
+      for (const unlisten of unlistenFns) {
+        unlisten();
+      }
+      throw error;
+    }
   }
 
   // ============================================================================
