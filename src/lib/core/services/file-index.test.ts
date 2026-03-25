@@ -21,6 +21,10 @@ vi.mock('$core/services/hmr-cleanup', () => ({
   registerCleanup: registerCleanupMock,
 }));
 
+vi.mock('$shared/stores/project.svelte', () => ({}));
+vi.mock('$core/lsp/sidecar/register', () => ({}));
+vi.mock('$core/lsp/sidecar/watched-files', () => ({}));
+
 describe('file-index cleanup', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -30,26 +34,54 @@ describe('file-index cleanup', () => {
   });
 
   it('registers HMR cleanup on first indexing start', async () => {
+    let doneListener: ((event: { payload: { requestId: number; totalCount: number; cancelled: boolean; durationMs: number } }) => void) | undefined;
+
+    listenMock.mockImplementation(async (eventName: string, callback: typeof doneListener) => {
+      if (eventName === 'file-index://done') {
+        doneListener = callback;
+      }
+      return () => {};
+    });
+
+    invokeMock.mockImplementation(async (command: string, payload?: { requestId?: number }) => {
+      if (command === 'index_workspace_stream' && payload?.requestId) {
+        doneListener?.({
+          payload: {
+            requestId: payload.requestId,
+            totalCount: 0,
+            cancelled: false,
+            durationMs: 0,
+          },
+        });
+      }
+      return undefined;
+    });
+
     const module = await import('./file-index');
+    await module.indexProject('c:/repo');
 
-    invokeMock.mockImplementation(async () => undefined);
-    void module.indexProject('c:/repo');
-    await Promise.resolve();
-
-    expect(registerCleanupMock).toHaveBeenCalledTimes(1);
+    expect(registerCleanupMock).toHaveBeenCalledWith(
+      'file-index',
+      expect.any(Function),
+    );
   });
 
   it('cancels active indexing during registered cleanup', async () => {
     const module = await import('./file-index');
 
-    invokeMock.mockImplementation(async () => undefined);
+    invokeMock.mockImplementation(async (command: string, payload?: { requestId?: number }) => {
+      if (command === 'index_workspace_stream' && payload?.requestId) {
+        return new Promise<void>(() => {});
+      }
+      return undefined;
+    });
 
     const indexingPromise = module.indexProject('c:/repo');
     await Promise.resolve();
 
-    const [, cleanup] = registerCleanupMock.mock.calls[0];
+    const [, cleanup] = registerCleanupMock.mock.calls.at(-1)!;
     await cleanup();
-    await indexingPromise;
+    indexingPromise.catch(() => undefined);
 
     expect(invokeMock).toHaveBeenCalledWith('cancel_index_workspace', {
       requestId: expect.any(Number),

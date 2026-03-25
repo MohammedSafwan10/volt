@@ -139,12 +139,14 @@ describe('save/reload hardening', () => {
     editorStore.activeFilePath = 'c:/repo/src/main.ts';
     fileServiceMock.isDirty.mockImplementation(((path?: string) => path === 'c:/repo/src/main.ts') as never);
 
-    await triggerImmediateAutoSave();
-    await Promise.resolve();
-
-    expect(writeFileMock).toHaveBeenCalledWith('c:/repo/src/main.ts', 'changed', {
-      expectedVersion: 7,
+    triggerImmediateAutoSave();
+    await vi.waitFor(() => {
+      expect(writeFileMock).toHaveBeenCalledWith('c:/repo/src/main.ts', 'changed', {
+        expectedVersion: 7,
+      });
     });
+
+    expect(writeFileMock).toHaveBeenCalledTimes(1);
   });
 
   it('skips reloads when the file has unsaved changes', async () => {
