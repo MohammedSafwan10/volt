@@ -159,37 +159,18 @@
     find_files: "Found files",
     list_dir: "Listed directory",
     read_file: "Read file",
+    get_spec_state: "Checked spec state",
+    stage_spec_requirements: "Staged requirements",
     // File operations
     apply_patch: "Applied patch",
     create_dir: "Created folder",
     delete_file: "Deleted file",
     rename_path: "Renamed",
+    write_spec_phase: "Updated spec file",
     // Terminal - cleaner names
     run_command: "Run command",
     // Diagnostics
     get_diagnostics: "Got diagnostics",
-    // Browser
-    browser_navigate: "Navigated browser",
-    browser_click: "Clicked element",
-    browser_type: "Typed text",
-    browser_wait_for: "Waited for element",
-    browser_scroll: "Scrolled page",
-    browser_screenshot: "Captured screenshot",
-    browser_get_console_logs: "Got console logs",
-    browser_get_errors: "Got browser errors",
-    browser_get_network_requests: "Got network requests",
-    browser_get_network_request_details: "Got request details",
-    browser_get_performance: "Got performance metrics",
-    browser_get_selected_element: "Got selected element",
-    browser_get_summary: "Got browser summary",
-    browser_get_application_storage: "Got application storage",
-    browser_get_security_report: "Got security report",
-    browser_propose_action: "Proposed actions",
-    browser_preview_action: "Previewed action",
-    browser_execute_action: "Executed action",
-    browser_get_element: "Got element",
-    browser_get_elements: "Got elements",
-    browser_evaluate: "Evaluated script",
   };
 
   // Tool icons - using valid UIIconName values
@@ -200,37 +181,18 @@
     find_files: "search",
     list_dir: "folder",
     read_file: "file",
+    get_spec_state: "file-search",
+    stage_spec_requirements: "file-plus",
     // File operations
     apply_patch: "pencil",
     create_dir: "folder",
     delete_file: "trash",
     rename_path: "pencil",
+    write_spec_phase: "file",
     // Terminal
     run_command: "terminal",
     // Diagnostics
     get_diagnostics: "warning",
-    // Browser
-    browser_navigate: "globe",
-    browser_click: "target",
-    browser_type: "pencil",
-    browser_wait_for: "clock",
-    browser_scroll: "arrow-right",
-    browser_screenshot: "screenshot",
-    browser_get_console_logs: "console",
-    browser_get_errors: "error",
-    browser_get_network_requests: "link",
-    browser_get_network_request_details: "link",
-    browser_get_performance: "bolt",
-    browser_get_selected_element: "target",
-    browser_get_summary: "globe",
-    browser_get_application_storage: "files",
-    browser_get_security_report: "warning",
-    browser_propose_action: "sparkle",
-    browser_preview_action: "info",
-    browser_execute_action: "play",
-    browser_get_element: "target",
-    browser_get_elements: "target",
-    browser_evaluate: "code",
   };
 
   const statusIcons: Record<ToolCallStatus, UIIconName> = {
@@ -248,7 +210,6 @@
     | "edit"
     | "terminal"
     | "diagnostic"
-    | "browser"
     | "other";
 
   const toolCategories: Record<string, ToolCategory> = {
@@ -258,37 +219,18 @@
     find_files: "search",
     list_dir: "search",
     read_file: "file",
+    get_spec_state: "file",
+    stage_spec_requirements: "edit",
     // Write/Edit
     apply_patch: "edit",
     create_dir: "edit",
     delete_file: "edit",
     rename_path: "edit",
+    write_spec_phase: "edit",
     // Terminal
     run_command: "terminal",
     // Diagnostics
     get_diagnostics: "diagnostic",
-    // Browser
-    browser_navigate: "browser",
-    browser_click: "browser",
-    browser_type: "browser",
-    browser_wait_for: "browser",
-    browser_scroll: "browser",
-    browser_screenshot: "browser",
-    browser_get_console_logs: "browser",
-    browser_get_errors: "browser",
-    browser_get_network_requests: "browser",
-    browser_get_network_request_details: "browser",
-    browser_get_performance: "browser",
-    browser_get_selected_element: "browser",
-    browser_get_summary: "browser",
-    browser_get_application_storage: "browser",
-    browser_get_security_report: "browser",
-    browser_propose_action: "browser",
-    browser_preview_action: "browser",
-    browser_execute_action: "browser",
-    browser_get_element: "browser",
-    browser_get_elements: "browser",
-    browser_evaluate: "browser",
   };
 
   function canonicalToolName(name: string): string {
@@ -369,6 +311,12 @@
           : "";
         return query ? `"${query}"${pattern}` : "";
       }
+      case "get_spec_state":
+        return "active spec";
+      case "stage_spec_requirements":
+        return args.title ? String(args.title) : "";
+      case "write_spec_phase":
+        return args.phase ? String(args.phase) : "";
       case "find_files": {
         const query = args.query ? String(args.query) : "";
         return query ? `"${query}"` : "";
@@ -391,76 +339,20 @@
         if (!paths || paths.length === 0) return "all files";
         return `${paths.length} files`;
       }
-      case "browser_navigate": {
-        const url = args.url ? String(args.url) : "";
-        if (!url) return "";
-        try {
-          return new URL(url).hostname;
-        } catch {
-          return url.slice(0, 36);
-        }
-      }
-      case "browser_click":
-      case "browser_wait_for":
-      case "browser_get_element":
-      case "browser_get_elements":
-        return args.selector ? String(args.selector).slice(0, 40) : "";
-      case "browser_type": {
-        const selector = args.selector ? String(args.selector).slice(0, 24) : "focused";
-        const text = args.text ? String(args.text) : "";
-        return `${selector} · ${text.length} chars`;
-      }
-      case "browser_scroll":
-        return args.selector
-          ? String(args.selector).slice(0, 30)
-          : `${Number(args.x || 0)}, ${Number(args.y || 0)} px`;
-      case "browser_screenshot":
-        return args.selector
-          ? `element: ${String(args.selector).slice(0, 24)}`
-          : args.full_page
-            ? "full page"
-            : "viewport";
-      case "browser_get_console_logs":
-        return args.level ? `level: ${String(args.level)}` : "latest logs";
-      case "browser_get_errors":
-        return "javascript errors";
-      case "browser_get_network_requests":
-        return args.failed_only ? "failed requests" : "recent requests";
-      case "browser_get_network_request_details":
-        return args.request_id ? `id: ${String(args.request_id).slice(0, 16)}` : "request details";
-      case "browser_get_performance":
-        return "page metrics";
-      case "browser_get_selected_element":
-        return "devtools selection";
-      case "browser_get_summary":
-        return "runtime snapshot";
-      case "browser_get_application_storage":
-        return "storage/cookies/indexeddb";
-      case "browser_get_security_report":
-        return "security diagnostics";
-      case "browser_propose_action":
-        return args.intent ? String(args.intent).slice(0, 40) : "guided actions";
-      case "browser_preview_action":
-        return args.action_id ? String(args.action_id).slice(0, 24) : "action preview";
-      case "browser_execute_action":
-        return args.action_id ? String(args.action_id).slice(0, 24) : "action execute";
-      case "browser_evaluate":
-        return args.expression
-          ? String(args.expression).replace(/\s+/g, " ").slice(0, 36)
-          : "";
       default:
         return "";
     }
   }
 
   // Get meta info if available
-  function getMeta(): { why?: string; risk?: string; undo?: string } | null {
+  function getMeta(): { why?: string; risk?: string; undo?: string; autoApproved?: boolean } | null {
     const meta = toolCall.arguments.meta as Record<string, unknown> | undefined;
     if (!meta) return null;
     return {
       why: meta.why ? String(meta.why) : undefined,
       risk: meta.risk ? String(meta.risk) : undefined,
       undo: meta.undo ? String(meta.undo) : undefined,
+      autoApproved: meta.autoApproved === true,
     };
   }
 
@@ -491,13 +383,15 @@
   const searchEngineBadge = $derived.by(() => {
     if (!searchTelemetry) return null;
     if (searchTelemetry.engine === "rg" && !searchTelemetry.fallbackUsed) {
-      return searchTelemetry.rgSource === "bundled" ? "rg-bundled" : "rg";
+      if (searchTelemetry.rgSource === "bundled") return "rg-bundled";
+      if (searchTelemetry.rgSource === "system") return "rg-system";
+      return "rg";
     }
     if (searchTelemetry.engine === "rg" && searchTelemetry.fallbackUsed) {
       return "retried";
     }
     if (searchTelemetry.engine === "legacy") {
-      return "legacy";
+      return searchTelemetry.fallbackUsed ? "legacy-fallback" : "legacy";
     }
     return "search";
   });
@@ -533,7 +427,6 @@
   const isTerminalTool = $derived(
     isTerminalToolName(toolCall.name),
   );
-  const isBrowserTool = $derived(toolCall.name.startsWith("browser_"));
   const shouldShowApproval = $derived(
     showApprovalInline &&
     isPending &&
@@ -661,23 +554,7 @@
   });
 
   function getDisplayOutput(rawOutput: string): string {
-    if (!isBrowserTool) return rawOutput;
-
-    if (toolCall.name === "browser_screenshot") {
-      try {
-        const parsed = JSON.parse(rawOutput) as Record<string, unknown>;
-        if ("image_base64" in parsed) {
-          parsed.image_base64 = "[omitted]";
-        }
-        return JSON.stringify(parsed, null, 2);
-      } catch {
-        return rawOutput.replace(/"image_base64"\s*:\s*"[^"]+"/g, '"image_base64":"[omitted]"');
-      }
-    }
-
-    return rawOutput.length > 4000
-      ? `${rawOutput.slice(0, 4000)}\n... [truncated ${rawOutput.length - 4000} chars]`
-      : rawOutput;
+    return rawOutput;
   }
 </script>
 
@@ -771,9 +648,6 @@
         <span class="tool-name" class:loading-text={isRunning}
           >{getToolDisplayName()}</span
         >
-        {#if isBrowserTool}
-          <span class="tool-kind-badge">Browser</span>
-        {/if}
       </div>
 
       <div class="header-right-meta">
@@ -916,7 +790,7 @@
       <UIIcon name="clock" size={12} />
       <span
         >{isApprovedPending
-          ? "Approved - waiting to run"
+          ? (meta?.autoApproved ? "Auto-approved - waiting to run" : "Approved - waiting to run")
           : "Queued - waiting for previous command"}</span
       >
     </div>
@@ -1305,12 +1179,6 @@
     color: var(--color-text-secondary);
     border-color: var(--color-border);
   }
-  .tool-icon.category-browser {
-    color: #7dd3fc;
-    border-color: color-mix(in srgb, #7dd3fc 35%, var(--color-border));
-    background: color-mix(in srgb, #0ea5e9 10%, var(--color-bg-input));
-  }
-
   .tool-icon.running-shimmer {
     border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
     background: color-mix(in srgb, var(--color-accent) 12%, var(--color-bg-input));

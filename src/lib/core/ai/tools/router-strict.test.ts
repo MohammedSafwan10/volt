@@ -4,7 +4,7 @@ vi.mock('$shared/stores/project.svelte', () => ({
   projectStore: { rootPath: null },
 }));
 vi.mock('$features/assistant/stores/assistant.svelte', () => ({
-  assistantStore: { browserToolsEnabled: false },
+  assistantStore: {},
 }));
 vi.mock('$features/assistant/stores/tool-observability.svelte', () => ({
   toolObservabilityStore: { record: () => undefined },
@@ -59,6 +59,12 @@ describe('router strict validation', () => {
     });
     expect(result.success).toBe(false);
     expect(result.code).toBe('TOOL_DEPRECATED');
+  });
+
+  it('rejects retired browser tooling deterministically', () => {
+    const result = validateToolCall('browser_navigate', { url: 'https://example.com' }, 'agent');
+    expect(result.valid).toBe(false);
+    expect(result.error ?? '').toContain('removed from strict profile');
   });
 
   it('rejects old read_file line-range args', () => {

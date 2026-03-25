@@ -9,7 +9,7 @@
  */
 
 import type { AIMode } from './ai.svelte';
-import { doesToolRequireApproval, getToolByName, setBrowserToolsEnabled as setDefsBrowserEnabled } from '$core/ai/tools/definitions';
+import { doesToolRequireApproval, getToolByName } from '$core/ai/tools/definitions';
 import { serializeMessageMetadata } from '../components/panel/conversation-persistence';
 import type { ContentType } from '$core/services/token-counter';
 import { readFile } from '$core/services/file-system';
@@ -59,41 +59,25 @@ import {
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
+export interface SyntheticPromptMeta {
+  kind: 'spec-phase' | 'spec-task' | 'spec-verify' | 'spec-review-fix';
+  title: string;
+  subtitle?: string;
+}
+
 // Tool call status
-export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-
-export type ToolCallReviewStatus = 'pending' | 'accepted' | 'rejected';
-
-// Streaming progress for file write operations
-export interface StreamingProgress {
-  charsWritten: number;
-  totalChars: number;
-  linesWritten: number;
-  totalLines: number;
-  percent: number;
-}
-
-// Tool call representation
-export interface ToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  status: ToolCallStatus;
-  output?: string;
-  error?: string;
-  meta?: Record<string, unknown>;
-  /** Additional data (e.g., image_base64 for screenshots) */
-  data?: Record<string, unknown>;
-  startTime?: number;
-  endTime?: number;
-  requiresApproval?: boolean;
-  // Gemini 3 thought signature - must be preserved for multi-turn function calling
-  thoughtSignature?: string;
-  // Streaming progress for file write tools
-  streamingProgress?: StreamingProgress;
-  // Windsurf-style edit review (optional)
-  reviewStatus?: ToolCallReviewStatus;
-}
+export type {
+  StreamingProgress,
+  ToolCall,
+  ToolCallReviewStatus,
+  ToolCallStatus,
+} from '$features/assistant/types/tool-call';
+import type {
+  StreamingProgress,
+  ToolCall,
+  ToolCallReviewStatus,
+  ToolCallStatus,
+} from '$features/assistant/types/tool-call';
 
 // Content part types for interleaved rendering
 export type ContentPart =
@@ -123,9 +107,16 @@ export interface AssistantMessage {
   smartContextBlock?: string;
   // User-selected mentions from @ menu (shown as chips)
   contextMentions?: AttachedContext[];
+  // Compact UI metadata for app-generated prompts that should not render like raw user prose.
+  syntheticPrompt?: SyntheticPromptMeta;
   // Streaming lifecycle truthfulness for partial/failed streams
   streamState?: 'active' | 'completed' | 'interrupted' | 'cancelled' | 'failed';
   streamIssue?: string;
+}
+
+interface AddUserMessageOptions {
+  syntheticPrompt?: SyntheticPromptMeta;
+  suppressAutoTitle?: boolean;
 }
 
 // Conversation container
@@ -178,6 +169,67 @@ interface ConversationSummaryLike {
   title?: string;
   isPinned?: boolean;
   mode?: string;
+}
+
+function normalizeConversationTitle(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
+function truncateConversationTitle(raw: string, maxLength = 42): string {
+  const normalized = normalizeConversationTitle(raw);
+  if (normalized.length <= maxLength) return normalized;
+  const sliced = normalized.slice(0, maxLength - 1);
+  const boundary = sliced.lastIndexOf(' ');
+  const compact = boundary >= 14 ? sliced.slice(0, boundary) : sliced;
+  return `${compact.trimEnd()}…`;
+}
+
+function deriveConversationTitleFromUserText(raw: string): string {
+  const normalized = normalizeConversationTitle(raw);
+  if (!normalized) return 'New Chat';
+  return truncateConversationTitle(normalized, 46);
+}
+
+function inferSyntheticPromptMeta(content: string): SyntheticPromptMeta | undefined {
+  const normalized = normalizeConversationTitle(content);
+  if (!normalized) return undefined;
+
+  let match = normalized.match(/^Execute spec task (TASK-[A-Za-z0-9.-]+):\s*(.+)$/i);
+  if (match) {
+    return { kind: 'spec-task', title: `${match[1]} · Build`, subtitle: match[2] };
+  }
+
+  match = normalized.match(/^Retry spec task (TASK-[A-Za-z0-9.-]+):\s*(.+)$/i);
+  if (match) {
+    return { kind: 'spec-task', title: `${match[1]} · Retry`, subtitle: match[2] };
+  }
+
+  match = normalized.match(/^Verify spec task (TASK-[A-Za-z0-9.-]+):\s*(.+)$/i);
+  if (match) {
+    return { kind: 'spec-verify', title: `${match[1]} · Verify`, subtitle: match[2] };
+  }
+
+  match = normalized.match(/^Apply the verifier findings for spec task (TASK-[A-Za-z0-9.-]+):\s*(.+)$/i);
+  if (match) {
+    return { kind: 'spec-review-fix', title: `${match[1]} · Fix Review`, subtitle: match[2] };
+  }
+
+  match = normalized.match(/^Generate design for spec \"(.+)\"$/i);
+  if (match) {
+    return { kind: 'spec-phase', title: 'Spec · Design', subtitle: match[1] };
+  }
+
+  match = normalized.match(/^Generate tasks for spec \"(.+)\"$/i);
+  if (match) {
+    return { kind: 'spec-phase', title: 'Spec · Tasks', subtitle: match[1] };
+  }
+
+  match = normalized.match(/^Draft(?:ed)? requirements(?: for)? \"(.+)\"$/i);
+  if (match) {
+    return { kind: 'spec-phase', title: 'Spec · Requirements Draft', subtitle: match[1] };
+  }
+
+  return undefined;
 }
 
 function isAssistantDebugEnabled(): boolean {
@@ -239,7 +291,7 @@ export interface ImageAttachment extends BaseAttachment {
   dimensions?: { width: number; height: number };
 }
 
-// Browser element attachment (hidden context, shown as chip)
+// DOM element attachment (legacy/retired, shown as chip only when present in history)
 export interface ElementAttachment extends BaseAttachment {
   type: 'element';
   tagName: string;
@@ -267,9 +319,9 @@ const IN_MEMORY_KEEP_RECENT = 220;
 // Panel width storage key
 const PANEL_WIDTH_KEY = 'volt.assistant.panelWidth';
 const PANEL_OPEN_KEY = 'volt.assistant.panelOpen';
-const BROWSER_TOOLS_ENABLED_KEY = 'volt.assistant.browserToolsEnabled';
 const CURRENT_CONV_ID_KEY = 'volt.assistant.currentConversationId';
 const OPEN_TAB_IDS_KEY = 'volt.assistant.openTabIds';
+const AUTO_APPROVE_ALL_KEY = 'volt.assistant.autoApproveAllTools';
 const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
@@ -287,6 +339,7 @@ class AssistantStore {
   currentConversation = $state<Conversation | null>(null);
   messages = $state<AssistantMessage[]>([]);
   openConversationIds = $state<string[]>([]);
+  autoApproveAllTools = $state(false);
 
   // Input state
   inputValue = $state("");
@@ -306,16 +359,15 @@ class AssistantStore {
   agentLoopMeta = $state<Record<string, unknown>>({});
   chatScrollRevision = $state(0);
 
-  browserToolsEnabled = $state(false);
   private runStates = $state<Record<string, { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>>({});
   private conversationRuntimeState = $state<Record<string, ConversationRuntimeState>>({});
 
   constructor() {
     this.loadPanelWidth();
     this.loadPanelOpen();
-    this.loadBrowserToolsEnabled();
     this.loadOpenConversationIds();
     this.loadCurrentConversationId();
+    this.loadAutoApproveAllTools();
   }
 
   private enforceInMemoryBudget(): void {
@@ -446,11 +498,16 @@ class AssistantStore {
           if (meta.thinking) base.thinking = meta.thinking;
           if (meta.smartContextBlock) base.smartContextBlock = meta.smartContextBlock;
           if (meta.contextMentions) base.contextMentions = meta.contextMentions;
+          if (meta.syntheticPrompt) base.syntheticPrompt = meta.syntheticPrompt;
           if (meta.streamState) base.streamState = meta.streamState;
           if (meta.streamIssue) base.streamIssue = meta.streamIssue;
         } catch (e) {
           console.warn('[AssistantStore] Failed to parse message metadata:', e);
         }
+      }
+
+      if (base.role === 'user' && !base.syntheticPrompt) {
+        base.syntheticPrompt = inferSyntheticPromptMeta(base.content);
       }
 
       // If contentParts was restored from metadata, use it directly (already has correct order)
@@ -770,6 +827,41 @@ class AssistantStore {
     return nextMessages;
   }
 
+  private patchMessageArray(
+    messages: AssistantMessage[],
+    messageId: string,
+    patcher: (message: AssistantMessage) => AssistantMessage,
+  ): AssistantMessage[] {
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index === -1) return messages;
+    const current = messages[index];
+    const next = patcher(current);
+    if (next === current) return messages;
+    const cloned = messages.slice();
+    cloned[index] = next;
+    return cloned;
+  }
+
+  private patchConversationMessage(
+    conversationId: string,
+    messageId: string,
+    patcher: (message: AssistantMessage) => AssistantMessage,
+  ): AssistantMessage[] {
+    return this.updateConversationMessages(conversationId, (messages) =>
+      this.patchMessageArray(messages, messageId, patcher),
+    );
+  }
+
+  private patchActiveMessages(
+    messageId: string,
+    patcher: (message: AssistantMessage) => AssistantMessage,
+  ): void {
+    const nextMessages = this.patchMessageArray(this.messages, messageId, patcher);
+    if (nextMessages === this.messages) return;
+    this.messages = nextMessages;
+    this.bumpChatScrollRevision();
+  }
+
   private commitActiveViewToRuntime(conversationId: string): void {
     this.conversationRuntimeState = {
       ...this.conversationRuntimeState,
@@ -858,9 +950,15 @@ class AssistantStore {
     this.runStates = rest;
   }
 
+  hasOpenConversationTab(conversationId: string | null | undefined): boolean {
+    if (!conversationId) return false;
+    return this.openConversationIds.includes(conversationId);
+  }
+
   getOpenConversationTabs(): Array<{
     id: string;
     title: string;
+    fullTitle: string;
     isActive: boolean;
     isRunning: boolean;
     hasError: boolean;
@@ -871,11 +969,13 @@ class AssistantStore {
       const liveConversation = isActive ? this.currentConversation : null;
       const historyConversation = chatHistoryStore.conversations.find((conv) => conv.id === id);
       const runState = this.runStates[id];
+      const fullTitle = liveConversation?.title?.trim() || historyConversation?.title?.trim() || 'New Chat';
       return {
         id,
-        title: liveConversation?.title?.trim() || historyConversation?.title?.trim() || 'New Chat',
+        title: truncateConversationTitle(fullTitle, 28),
+        fullTitle,
         isActive,
-        isRunning: Boolean(runState?.isStreaming) || runState?.agentLoopState === 'running' || runState?.agentLoopState === 'waiting_tool' || runState?.agentLoopState === 'waiting_approval' || runState?.agentLoopState === 'completing',
+        isRunning: this.isConversationBusy(id),
         hasError: runState?.agentLoopState === 'failed',
         updatedAt: runState?.updatedAt ?? historyConversation?.updatedAt ?? liveConversation?.updatedAt ?? liveConversation?.createdAt ?? 0,
       };
@@ -901,6 +1001,66 @@ class AssistantStore {
         updatedAt: patch.updatedAt ?? Date.now(),
       },
     };
+  }
+
+  setConversationTitle(title: string, conversationId?: string): void {
+    const targetId = conversationId ?? this.currentConversation?.id;
+    if (!targetId) return;
+
+    const nextTitle = normalizeConversationTitle(title) || 'New Chat';
+    if (this.currentConversation?.id === targetId) {
+      this.currentConversation = {
+        ...this.currentConversation,
+        title: nextTitle,
+        updatedAt: Date.now(),
+      };
+    }
+  }
+
+  private hasConversationWorkInFlight(conversationId: string): boolean {
+    const runtime = this.conversationRuntimeState[conversationId];
+    const messages = this.getConversationMessages(conversationId);
+    const hasStreamingMessage = messages.some(
+      (message) => message.isStreaming || message.streamState === 'active',
+    );
+    const hasPendingTools = messages.some((message) =>
+      (message.inlineToolCalls ?? []).some(
+        (toolCall) => toolCall.status === 'running' || toolCall.status === 'pending',
+      ),
+    );
+
+    return Boolean(runtime?.isStreaming) || Boolean(runtime?.abortController) || hasStreamingMessage || hasPendingTools;
+  }
+
+  isConversationBusy(conversationId: string | null | undefined): boolean {
+    if (!conversationId) return this.isStreaming;
+    const runState = this.runStates[conversationId];
+    const loopLooksActive =
+      Boolean(runState?.isStreaming) ||
+      runState?.agentLoopState === 'running' ||
+      runState?.agentLoopState === 'waiting_tool' ||
+      runState?.agentLoopState === 'waiting_approval' ||
+      runState?.agentLoopState === 'completing';
+    if (!loopLooksActive) return false;
+    return this.hasConversationWorkInFlight(conversationId);
+  }
+
+  healStaleConversationRunState(conversationId: string | null | undefined): boolean {
+    if (!conversationId) return false;
+    const runState = this.runStates[conversationId];
+    if (!runState) return false;
+    const loopLooksActive =
+      Boolean(runState.isStreaming) ||
+      runState.agentLoopState === 'running' ||
+      runState.agentLoopState === 'waiting_tool' ||
+      runState.agentLoopState === 'waiting_approval' ||
+      runState.agentLoopState === 'completing';
+    if (!loopLooksActive || this.hasConversationWorkInFlight(conversationId)) {
+      return false;
+    }
+
+    this.completeStreamingForConversation(conversationId, 'completed');
+    return true;
   }
 
   closeConversationTab(conversationId: string): void {
@@ -1058,7 +1218,16 @@ class AssistantStore {
    * Check if a tool requires user approval before execution
    */
   toolRequiresApproval(toolName: string): boolean {
-    return doesToolRequireApproval(toolName);
+    return !this.autoApproveAllTools && doesToolRequireApproval(toolName);
+  }
+
+  setAutoApproveAllTools(enabled: boolean): void {
+    this.autoApproveAllTools = enabled;
+    this.saveAutoApproveAllTools();
+  }
+
+  toggleAutoApproveAllTools(): void {
+    this.setAutoApproveAllTools(!this.autoApproveAllTools);
   }
 
   // Panel controls
@@ -1081,16 +1250,6 @@ class AssistantStore {
     const clamped = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width));
     this.panelWidth = clamped;
     this.savePanelWidth();
-  }
-
-  setBrowserToolsEnabled(enabled: boolean): void {
-    this.browserToolsEnabled = enabled;
-    setDefsBrowserEnabled(enabled);
-    this.saveBrowserToolsEnabled();
-  }
-
-  toggleBrowserToolsEnabled(): void {
-    this.setBrowserToolsEnabled(!this.browserToolsEnabled);
   }
 
   // Mode controls
@@ -1175,14 +1334,25 @@ class AssistantStore {
   }
 
   cycleMode(): void {
-    const modes: AIMode[] = ['ask', 'plan', 'agent'];
+    const modes: AIMode[] = ['ask', 'plan', 'spec', 'agent'];
     const currentIndex = modes.indexOf(this.currentMode);
     const nextIndex = (currentIndex + 1) % modes.length;
     this.currentMode = modes[nextIndex];
   }
 
+  getConversationRunState(
+    conversationId: string,
+  ): { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null } | null {
+    return this.runStates[conversationId] ?? null;
+  }
+
   // Message management
-  addUserMessage(content: string, context?: AttachedContext[], smartContextBlock?: string): string {
+  addUserMessage(
+    content: string,
+    context?: AttachedContext[],
+    smartContextBlock?: string,
+    options: AddUserMessageOptions = {},
+  ): string {
     // Sanitize user input to remove excessive repetition
     const sanitizedContent = sanitizeUserInput(content);
     const { visibleContent, hiddenReminderBlock } = stripSystemReminderTags(sanitizedContent);
@@ -1194,7 +1364,8 @@ class AssistantStore {
       content: visibleContent,
       timestamp: Date.now(),
       attachments: [...this.pendingAttachments], // Include pending attachments
-      smartContextBlock
+      smartContextBlock,
+      syntheticPrompt: options.syntheticPrompt,
     };
 
     // Include context in message if provided
@@ -1222,9 +1393,11 @@ class AssistantStore {
       this.updateConversationMessages(conversationId, (messages) => [...messages, message]);
       if (this.currentConversation) {
         const nextTitle =
-          this.currentConversation.title && this.currentConversation.title !== 'New Chat'
+          options.suppressAutoTitle
+            ? this.currentConversation.title || 'New Chat'
+            : this.currentConversation.title && this.currentConversation.title !== 'New Chat'
             ? this.currentConversation.title
-            : visibleContent.slice(0, 50) || 'New Chat';
+            : deriveConversationTitleFromUserText(visibleContent);
         this.currentConversation = {
           ...this.currentConversation,
           title: nextTitle,
@@ -1250,6 +1423,26 @@ class AssistantStore {
     this.persistMessageToHistory(id, true);
 
     return id;
+  }
+
+  updateUserMessageSmartContext(
+    messageId: string,
+    smartContextBlock: string,
+  ): void {
+    const conversationId = this.currentConversation?.id;
+    const patchMessage = (msg: AssistantMessage): AssistantMessage => ({
+      ...msg,
+      smartContextBlock,
+      timestamp: msg.timestamp,
+    });
+
+    if (conversationId) {
+      this.patchConversationMessage(conversationId, messageId, patchMessage);
+    } else {
+      this.patchActiveMessages(messageId, patchMessage);
+    }
+
+    void this.persistMessageToHistory(messageId, true);
   }
 
   /**
@@ -1353,7 +1546,6 @@ class AssistantStore {
   updateAssistantMessage(id: string, content: string, isStreaming = false): void {
     const conversationId = this.currentConversation?.id;
     const updateMessage = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id !== id) return msg;
       const endTime = !isStreaming && msg.isStreaming ? Date.now() : msg.endTime;
       const contentParts = this.normalizeContentParts(msg.contentParts, content);
       const streamState =
@@ -1366,10 +1558,9 @@ class AssistantStore {
     };
 
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(updateMessage));
+      this.patchConversationMessage(conversationId, id, updateMessage);
     } else {
-      this.messages = this.messages.map(updateMessage);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(id, updateMessage);
     }
 
     // Also update in currentConversation
@@ -1390,10 +1581,21 @@ class AssistantStore {
     const safeThinking = thinking.length > MAX_THINKING_CHARS
       ? thinking.slice(-MAX_THINKING_CHARS)
       : thinking;
-    this.messages = this.messages.map(msg =>
-      msg.id === id ? { ...msg, thinking: safeThinking, isThinking } : msg
-    );
-    this.bumpChatScrollRevision();
+    const conversationId =
+      this.findConversationIdByMessageId(id) ??
+      this.currentConversation?.id ??
+      null;
+    const updateMessage = (msg: AssistantMessage): AssistantMessage => ({
+      ...msg,
+      thinking: safeThinking,
+      isThinking,
+    });
+
+    if (conversationId) {
+      this.patchConversationMessage(conversationId, id, updateMessage);
+    } else {
+      this.patchActiveMessages(id, updateMessage);
+    }
 
     // Persist to database immediately
     this.persistMessageToHistory(id);
@@ -1439,7 +1641,6 @@ class AssistantStore {
   addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
     const conversationId = this.currentConversation?.id;
     const addToolCall = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id !== messageId) return msg;
       const ensuredToolCall: ToolCall = {
         ...toolCall,
         meta: {
@@ -1471,10 +1672,9 @@ class AssistantStore {
     };
 
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(addToolCall));
+      this.patchConversationMessage(conversationId, messageId, addToolCall);
     } else {
-      this.messages = this.messages.map(addToolCall);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(messageId, addToolCall);
     }
 
     // Persist to database immediately
@@ -1487,8 +1687,6 @@ class AssistantStore {
   updateToolCallInMessage(messageId: string, toolCallId: string, updates: Partial<ToolCall>): void {
     const conversationId = this.findConversationIdByMessageId(messageId);
     const patchToolCall = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id !== messageId) return msg;
-
       const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
         tc.id === toolCallId ? {
           ...tc,
@@ -1533,10 +1731,9 @@ class AssistantStore {
     };
 
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(patchToolCall));
+      this.patchConversationMessage(conversationId, messageId, patchToolCall);
     } else {
-      this.messages = this.messages.map(patchToolCall);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(messageId, patchToolCall);
     }
 
     if (conversationId) {
@@ -1601,44 +1798,39 @@ class AssistantStore {
   appendTextToMessage(messageId: string, text: string, isStreaming: boolean): void {
     const conversationId = this.currentConversation?.id;
     const appendText = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id === messageId) {
-        const parts = msg.contentParts ?? [];
-        const lastPart = parts[parts.length - 1];
+      const parts = msg.contentParts ?? [];
+      const lastPart = parts[parts.length - 1];
 
-        let newParts: ContentPart[];
-        if (lastPart && lastPart.type === 'text') {
-          newParts = [
-            ...parts.slice(0, -1),
-            { type: 'text' as const, text: lastPart.text + text }
-          ];
-        } else {
-          newParts = [...parts, { type: 'text' as const, text }];
-        }
-
-        // Also update the legacy content field
-        const fullContent = newParts
-          .filter(p => p.type === 'text')
-          .map(p => (p as { type: 'text'; text: string }).text)
-          .join('');
-
-        return {
-          ...msg,
-          contentParts: newParts,
-          content: fullContent,
-          isStreaming,
-          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
-        };
+      let newParts: ContentPart[];
+      if (lastPart && lastPart.type === 'text') {
+        newParts = [
+          ...parts.slice(0, -1),
+          { type: 'text' as const, text: lastPart.text + text }
+        ];
+      } else {
+        newParts = [...parts, { type: 'text' as const, text }];
       }
-      return msg;
+
+      const fullContent = newParts
+        .filter(p => p.type === 'text')
+        .map(p => (p as { type: 'text'; text: string }).text)
+        .join('');
+
+      return {
+        ...msg,
+        contentParts: newParts,
+        content: fullContent,
+        isStreaming,
+        streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+      };
     };
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(appendText));
+      this.patchConversationMessage(conversationId, messageId, appendText);
       if (this.currentConversation?.id === conversationId) {
         this.enforceInMemoryBudget();
       }
     } else {
-      this.messages = this.messages.map(appendText);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(messageId, appendText);
       this.enforceInMemoryBudget();
     }
     if (conversationId) {
@@ -1664,52 +1856,45 @@ class AssistantStore {
   appendThinkingToMessage(messageId: string, thinking: string): void {
     const conversationId = this.currentConversation?.id;
     const appendThinking = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id === messageId) {
-        const parts = msg.contentParts ?? [];
-        const lastPart = parts[parts.length - 1];
+      const parts = msg.contentParts ?? [];
+      const lastPart = parts[parts.length - 1];
 
-        let newParts: ContentPart[];
-        if (lastPart && lastPart.type === 'thinking' && lastPart.isActive) {
-          // Append to existing active thinking part
-          newParts = [
-            ...parts.slice(0, -1),
-            {
-              type: 'thinking' as const,
-              thinking: lastPart.thinking + thinking,
-              startTime: lastPart.startTime,
-              isActive: true
-            }
-          ];
-        } else {
-          // Create new thinking part
-          newParts = [...parts, {
+      let newParts: ContentPart[];
+      if (lastPart && lastPart.type === 'thinking' && lastPart.isActive) {
+        newParts = [
+          ...parts.slice(0, -1),
+          {
             type: 'thinking' as const,
-            thinking,
-            startTime: Date.now(),
+            thinking: lastPart.thinking + thinking,
+            startTime: lastPart.startTime,
             isActive: true
-          }];
-        }
-
-        // Also update the legacy thinking field (for compatibility)
-        const fullThinking = newParts
-          .filter(p => p.type === 'thinking')
-          .map(p => (p as { type: 'thinking'; thinking: string }).thinking)
-          .join('\n\n');
-
-        return {
-          ...msg,
-          contentParts: newParts,
-          thinking: fullThinking,
-          isThinking: true
-        };
+          }
+        ];
+      } else {
+        newParts = [...parts, {
+          type: 'thinking' as const,
+          thinking,
+          startTime: Date.now(),
+          isActive: true
+        }];
       }
-      return msg;
+
+      const fullThinking = newParts
+        .filter(p => p.type === 'thinking')
+        .map(p => (p as { type: 'thinking'; thinking: string }).thinking)
+        .join('\n\n');
+
+      return {
+        ...msg,
+        contentParts: newParts,
+        thinking: fullThinking,
+        isThinking: true
+      };
     };
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(appendThinking));
+      this.patchConversationMessage(conversationId, messageId, appendThinking);
     } else {
-      this.messages = this.messages.map(appendThinking);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(messageId, appendThinking);
     }
 
     // Persist to database immediately
@@ -1723,49 +1908,42 @@ class AssistantStore {
   endThinkingPart(messageId: string): void {
     const conversationId = this.currentConversation?.id;
     const endThinking = (msg: AssistantMessage): AssistantMessage => {
-      if (msg.id === messageId) {
-        const parts = msg.contentParts ?? [];
+      const parts = msg.contentParts ?? [];
 
-        const newParts = parts.map(part => {
-          if (part.type === 'thinking' && part.isActive) {
-            // Extract title from first line or first sentence of thinking
-            const thinking = part.thinking;
-            let title = '';
+      const newParts = parts.map(part => {
+        if (part.type === 'thinking' && part.isActive) {
+          const thinking = part.thinking;
+          let title = '';
 
-            // Try to extract a meaningful title from the thinking content
-            const lines = thinking.split('\n').filter(l => l.trim());
-            if (lines.length > 0) {
-              // Take first line, limit to 60 chars
-              title = lines[0]
-                .replace(/^\s*[-*•]+\s*/, '')
-                .replace(/^\s*#+\s*/, '')
-                .replace(/\*\*(.*?)\*\*/g, '$1')
-                .replace(/\*(.*?)\*/g, '$1')
-                .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
-                .trim()
-                .slice(0, 60);
-              if (lines[0].length > 60) title += '...';
-            }
-
-            return {
-              ...part,
-              endTime: Date.now(),
-              title: title || 'Reasoning',
-              isActive: false
-            };
+          const lines = thinking.split('\n').filter(l => l.trim());
+          if (lines.length > 0) {
+            title = lines[0]
+              .replace(/^\s*[-*•]+\s*/, '')
+              .replace(/^\s*#+\s*/, '')
+              .replace(/\*\*(.*?)\*\*/g, '$1')
+              .replace(/\*(.*?)\*/g, '$1')
+              .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+              .trim()
+              .slice(0, 60);
+            if (lines[0].length > 60) title += '...';
           }
-          return part;
-        });
 
-        return { ...msg, contentParts: newParts, isThinking: false };
-      }
-      return msg;
+          return {
+            ...part,
+            endTime: Date.now(),
+            title: title || 'Reasoning',
+            isActive: false
+          };
+        }
+        return part;
+      });
+
+      return { ...msg, contentParts: newParts, isThinking: false };
     };
     if (conversationId) {
-      this.updateConversationMessages(conversationId, (messages) => messages.map(endThinking));
+      this.patchConversationMessage(conversationId, messageId, endThinking);
     } else {
-      this.messages = this.messages.map(endThinking);
-      this.bumpChatScrollRevision();
+      this.patchActiveMessages(messageId, endThinking);
     }
 
     // Persist to database immediately
@@ -1783,50 +1961,50 @@ class AssistantStore {
    * Set the full text content for a message (replaces all text parts)
    */
   setMessageContent(messageId: string, content: string, isStreaming: boolean): void {
-    this.messages = this.messages.map(msg => {
-      if (msg.id === messageId) {
-        // Preserve tool/text interleaving. We treat the message's full legacy `content`
-        // as the concatenation of all text parts in `contentParts`.
-        // If `contentParts` exists, keep tool parts in place and update only the last text part.
-        const parts = msg.contentParts ?? [];
-        const lastTextIndex = [...parts].reverse().findIndex(p => p.type === 'text');
+    const conversationId =
+      this.findConversationIdByMessageId(messageId) ??
+      this.currentConversation?.id ??
+      null;
 
-        if (parts.length === 0) {
-          return {
-            ...msg,
-            contentParts: content ? [{ type: 'text' as const, text: content }] : [],
-            content,
-            isStreaming,
-            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
-          };
-        }
+    const updateMessage = (msg: AssistantMessage): AssistantMessage => {
+      const parts = msg.contentParts ?? [];
+      const lastTextIndex = [...parts].reverse().findIndex(p => p.type === 'text');
 
-        if (lastTextIndex === -1) {
-          // No existing text parts, append one at the end
-          return {
-            ...msg,
-            contentParts: content ? [...parts, { type: 'text' as const, text: content }] : parts,
-            content,
-            isStreaming,
-            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
-          };
-        }
-
-        const idx = parts.length - 1 - lastTextIndex;
-        const newParts = parts.map((p, i) => (i === idx && p.type === 'text') ? { type: 'text' as const, text: content } : p);
+      if (parts.length === 0) {
         return {
           ...msg,
-          contentParts: newParts,
+          contentParts: content ? [{ type: 'text' as const, text: content }] : [],
           content,
           isStreaming,
           streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
         };
       }
-      return msg;
-    });
-    this.bumpChatScrollRevision();
-    if (this.currentConversation) {
-      this.currentConversation.messages = this.messages;
+
+      if (lastTextIndex === -1) {
+        return {
+          ...msg,
+          contentParts: content ? [...parts, { type: 'text' as const, text: content }] : parts,
+          content,
+          isStreaming,
+          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+        };
+      }
+
+      const idx = parts.length - 1 - lastTextIndex;
+      const newParts = parts.map((p, i) => (i === idx && p.type === 'text') ? { type: 'text' as const, text: content } : p);
+      return {
+        ...msg,
+        contentParts: newParts,
+        content,
+        isStreaming,
+        streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+      };
+    };
+
+    if (conversationId) {
+      this.patchConversationMessage(conversationId, messageId, updateMessage);
+    } else {
+      this.patchActiveMessages(messageId, updateMessage);
     }
   }
 
@@ -1835,35 +2013,34 @@ class AssistantStore {
     streamState: 'interrupted' | 'cancelled' | 'failed' | 'completed',
     streamIssue?: string,
   ): void {
-    const applyPatch = (msg: AssistantMessage): AssistantMessage =>
-      msg.id === messageId
-        ? {
-            ...msg,
-            isStreaming: false,
-            endTime: msg.endTime ?? Date.now(),
-            streamState,
-            streamIssue: streamIssue ?? msg.streamIssue,
-          }
-        : msg;
+    const conversationId =
+      this.findConversationIdByMessageId(messageId) ??
+      this.currentConversation?.id ??
+      null;
 
-    this.messages = this.messages.map(applyPatch);
-    this.bumpChatScrollRevision();
-    if (this.currentConversation) {
-      this.currentConversation = {
-        ...this.currentConversation,
-        messages: this.currentConversation.messages.map(applyPatch),
-      };
-      this.markConversationRunState(this.currentConversation.id, {
+    const applyPatch = (msg: AssistantMessage): AssistantMessage => ({
+      ...msg,
+      isStreaming: false,
+      endTime: msg.endTime ?? Date.now(),
+      streamState,
+      streamIssue: streamIssue ?? msg.streamIssue,
+    });
+
+    if (conversationId) {
+      this.patchConversationMessage(conversationId, messageId, applyPatch);
+      this.markConversationRunState(conversationId, {
         isStreaming: false,
         agentLoopState: streamState === 'failed' ? 'failed' : streamState === 'cancelled' ? 'cancelled' : 'completed',
-        lastError: streamState === 'failed' ? (streamIssue ?? this.runStates[this.currentConversation.id]?.lastError ?? null) : null,
+        lastError: streamState === 'failed' ? (streamIssue ?? this.runStates[conversationId]?.lastError ?? null) : null,
       });
       debugAssistantSession('mark_stream_state', {
-        conversationId: this.currentConversation.id,
+        conversationId,
         messageId,
         streamState,
         streamIssue,
       });
+    } else {
+      this.patchActiveMessages(messageId, applyPatch);
     }
     this.persistMessageToHistory(messageId, true);
   }
@@ -2050,7 +2227,7 @@ class AssistantStore {
   }
 
   /**
-   * Add a browser element attachment (shown as chip, context hidden)
+   * Add a DOM element attachment from legacy/retired flows (shown as chip, context hidden)
    */
   attachElement(element: {
     tagName: string;
@@ -2272,6 +2449,33 @@ class AssistantStore {
     this.stopStreamingForConversation(conversationId);
   }
 
+  completeStreamingForConversation(
+    conversationId: string,
+    outcome: 'completed' | 'failed',
+    lastError?: string,
+  ): void {
+    const runtime = this.conversationRuntimeState[conversationId];
+    if (!runtime) return;
+
+    this.applyConversationStatePatch(conversationId, {
+      isStreaming: false,
+      abortController: null,
+      agentLoopState: outcome === 'failed' ? 'failed' : 'completed',
+    });
+
+    this.markConversationRunState(conversationId, {
+      isStreaming: false,
+      agentLoopState: outcome === 'failed' ? 'failed' : 'completed',
+      lastError: outcome === 'failed' ? (lastError ?? null) : null,
+    });
+
+    if (this.currentConversation?.id === conversationId) {
+      this.isStreaming = false;
+      this.abortController = null;
+      this.agentLoopState = outcome === 'failed' ? 'failed' : 'completed';
+    }
+  }
+
   setAgentLoopState(state: AgentLoopState, meta: Record<string, unknown> = {}): void {
     const previous = this.agentLoopState;
     const previousTerminal =
@@ -2438,27 +2642,6 @@ class AssistantStore {
     }
   }
 
-  private loadBrowserToolsEnabled(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = localStorage.getItem(BROWSER_TOOLS_ENABLED_KEY);
-      if (stored !== null) {
-        this.browserToolsEnabled = stored === 'true';
-      }
-    } catch {
-      // Ignore storage errors
-    }
-  }
-
-  private saveBrowserToolsEnabled(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(BROWSER_TOOLS_ENABLED_KEY, String(this.browserToolsEnabled));
-    } catch {
-      // Ignore storage errors
-    }
-  }
-
   private loadCurrentConversationId(): void {
     if (typeof window === 'undefined') return;
     try {
@@ -2495,6 +2678,24 @@ class AssistantStore {
         localStorage.setItem(CURRENT_CONV_ID_KEY, this.currentConversation.id);
       }
       this.saveOpenConversationIds();
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private loadAutoApproveAllTools(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      this.autoApproveAllTools = localStorage.getItem(AUTO_APPROVE_ALL_KEY) === 'true';
+    } catch {
+      this.autoApproveAllTools = false;
+    }
+  }
+
+  private saveAutoApproveAllTools(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(AUTO_APPROVE_ALL_KEY, this.autoApproveAllTools ? 'true' : 'false');
     } catch {
       // Ignore storage errors
     }
@@ -2708,7 +2909,7 @@ class AssistantStore {
     const messagesToTruncate = this.messages.slice(index);
 
     // Iterate from latest to messageId (backward for correct undo order)
-    for (let i = this.messages.length - 1; i >= index; i--) {
+    for (let i = this.messages.length - 1; i > index; i--) {
       const msg = this.messages[i];
       // Check all possible tool call locations
       const toolCalls = [
