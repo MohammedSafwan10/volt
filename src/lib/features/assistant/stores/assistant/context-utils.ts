@@ -75,13 +75,6 @@ export function getAttachmentPreviews(attachments: LooseAttachment[]): Attachmen
       };
     }
 
-    if (attachment.type === 'element' && attachment.rect) {
-      return {
-        ...base,
-        size: `${Math.round(attachment.rect.width)}x${Math.round(attachment.rect.height)}`,
-      };
-    }
-
     return base;
   });
 }

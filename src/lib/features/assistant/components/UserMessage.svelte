@@ -4,7 +4,6 @@
   import type {
     AssistantMessage,
     ImageAttachment,
-    ElementAttachment,
     FileAttachment,
     FolderAttachment,
     SelectionAttachment,
@@ -36,12 +35,6 @@
     ) as ImageAttachment[],
   );
 
-  const elements = $derived(
-    (message.attachments ?? []).filter(
-      (a) => a.type === "element",
-    ) as ElementAttachment[],
-  );
-
   const files = $derived(
     (message.attachments ?? []).filter(
       (a) => a.type === "file",
@@ -67,6 +60,22 @@
       .trim(),
   );
   const isLong = $derived(visibleContent.length > 500);
+  const syntheticPrompt = $derived(message.syntheticPrompt ?? null);
+  const compactSyntheticSummary = $derived.by(() => {
+    if (!syntheticPrompt) return "";
+    if (syntheticPrompt.subtitle) return syntheticPrompt.subtitle;
+    const firstLine = visibleContent.split(/\r?\n/).find((line) => line.trim().length > 0);
+    return firstLine?.trim() ?? "";
+  });
+
+  function getSyntheticKindLabel(
+    kind: "spec-phase" | "spec-task" | "spec-verify" | "spec-review-fix",
+  ): string {
+    if (kind === "spec-task") return "Task Run";
+    if (kind === "spec-verify") return "Verify";
+    if (kind === "spec-review-fix") return "Review Fix";
+    return "Spec Step";
+  }
 
   onDestroy(() => {
     if (copyTimeout) {
@@ -128,18 +137,8 @@
       </div>
     {/if}
 
-    {#if elements.length > 0 || files.length > 0 || folders.length > 0 || selections.length > 0 || (message.contextMentions && message.contextMentions.length > 0)}
+    {#if files.length > 0 || folders.length > 0 || selections.length > 0 || (message.contextMentions && message.contextMentions.length > 0)}
       <div class="message-elements">
-        {#each elements as el (el.id)}
-          <div class="element-chip">
-            <UIIcon name="target" size={12} />
-            <span class="element-label">{el.label}</span>
-            <span class="element-size"
-              >{Math.round(el.rect.width)}×{Math.round(el.rect.height)}</span
-            >
-          </div>
-        {/each}
-
         {#each files as f (f.id)}
           <div class="element-chip">
             <UIIcon name="file" size={12} />
@@ -172,7 +171,25 @@
       </div>
     {/if}
 
-    {#if visibleContent.trim()}
+    {#if syntheticPrompt}
+      <div class="synthetic-prompt-card">
+        <div class="synthetic-prompt-header">
+          <span class="synthetic-prompt-kind">{getSyntheticKindLabel(syntheticPrompt.kind)}</span>
+          <span class="synthetic-prompt-title">{syntheticPrompt.title}</span>
+        </div>
+        {#if compactSyntheticSummary}
+          <div class="synthetic-prompt-summary">{compactSyntheticSummary}</div>
+        {/if}
+        {#if visibleContent.trim()}
+          <button class="expand-msg-btn" onclick={onToggleExpand} type="button">
+            {expanded ? "Hide prompt" : "View prompt"}
+          </button>
+          {#if expanded}
+            <div class="bubble-text synthetic-prompt-body">{visibleContent}</div>
+          {/if}
+        {/if}
+      </div>
+    {:else if visibleContent.trim()}
       <div class="bubble-text">
         {#if isLong && !expanded}
           {visibleContent.slice(0, 500)}...
@@ -200,7 +217,7 @@
         >
           <UIIcon name={copyStatus === "copied" ? "check" : "copy"} size={14} />
         </button>
-        {#if onRevert}
+        {#if onRevert && !syntheticPrompt}
           <button
             class="revert-btn"
             onclick={() => onRevert(message.id)}
@@ -251,6 +268,52 @@
     white-space: pre-wrap;
     word-break: break-word;
     letter-spacing: -0.01em;
+  }
+
+  .synthetic-prompt-card {
+    display: grid;
+    gap: 6px;
+  }
+
+  .synthetic-prompt-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .synthetic-prompt-kind {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+    background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .synthetic-prompt-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .synthetic-prompt-summary {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .synthetic-prompt-body {
+    margin-top: 2px;
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   }
 
   .message-meta {
@@ -416,8 +479,4 @@
     font-weight: 500;
   }
 
-  .element-size {
-    opacity: 0.7;
-    font-size: 10px;
-  }
 </style>

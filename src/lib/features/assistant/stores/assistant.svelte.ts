@@ -291,18 +291,8 @@ export interface ImageAttachment extends BaseAttachment {
   dimensions?: { width: number; height: number };
 }
 
-// DOM element attachment (legacy/retired, shown as chip only when present in history)
-export interface ElementAttachment extends BaseAttachment {
-  type: 'element';
-  tagName: string;
-  selector: string;
-  html: string;
-  css: Record<string, string>;
-  rect: { x: number; y: number; width: number; height: number };
-}
-
 // Union type for all attachments
-export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment | ElementAttachment;
+export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment;
 
 // Legacy attached context (for backward compatibility)
 export interface AttachedContext {
@@ -2220,42 +2210,6 @@ class AssistantStore {
       dimensions,
       label: filename,
       checksum: generateChecksum(base64Data.slice(0, 1000)) // Only hash first 1000 chars for perf
-    };
-
-    this.setPendingAttachments([...this.pendingAttachments, attachment]);
-    return { success: true };
-  }
-
-  /**
-   * Add a DOM element attachment from legacy/retired flows (shown as chip, context hidden)
-   */
-  attachElement(element: {
-    tagName: string;
-    id?: string;
-    classes: string[];
-    html: string;
-    css: Record<string, string>;
-    rect: { x: number; y: number; width: number; height: number };
-    selector: string;
-  }): { success: boolean; error?: string } {
-    // Remove any existing element attachment (only one at a time)
-    this.setPendingAttachments(this.pendingAttachments.filter(a => a.type !== 'element'));
-
-    const label = element.id
-      ? `<${element.tagName}#${element.id}>`
-      : element.classes.length > 0
-        ? `<${element.tagName}.${element.classes[0]}>`
-        : `<${element.tagName}>`;
-
-    const attachment: ElementAttachment = {
-      id: crypto.randomUUID(),
-      type: 'element',
-      tagName: element.tagName,
-      selector: element.selector,
-      html: element.html.slice(0, 3000), // Limit HTML size
-      css: element.css,
-      rect: element.rect,
-      label,
     };
 
     this.setPendingAttachments([...this.pendingAttachments, attachment]);

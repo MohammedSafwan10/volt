@@ -5,7 +5,6 @@ import type {
 } from '$core/ai';
 import type {
   AssistantMessage,
-  ElementAttachment,
   ImageAttachment,
 } from '$features/assistant/stores/assistant.svelte';
 
@@ -95,10 +94,6 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
     const imageAttachments = attachments.filter(
       (a) => a.type === 'image',
     ) as ImageAttachment[];
-    const elementAttachments = attachments.filter(
-      (a) => a.type === 'element',
-    ) as ElementAttachment[];
-
     const parts: ContentPart[] = [];
 
     if (msg.smartContextBlock) {
@@ -106,22 +101,6 @@ export function toProviderMessages(messages: AssistantMessage[]): ChatMessage[] 
         type: 'text',
         text: `<system_context>\n${msg.smartContextBlock}\n</system_context>`,
       });
-    }
-
-    for (const el of elementAttachments) {
-      const elementContext = `<selected_element>
-Element: <${el.tagName}${el.selector ? ` selector="${el.selector}"` : ''}>
-HTML:
-\`\`\`html
-${el.html}
-\`\`\`
-CSS Properties:
-${Object.entries(el.css)
-  .map(([k, v]) => `- ${k}: ${v}`)
-  .join('\n')}
-Dimensions: ${Math.round(el.rect.width)}x${Math.round(el.rect.height)} at (${Math.round(el.rect.x)}, ${Math.round(el.rect.y)})
-</selected_element>`;
-      parts.push({ type: 'text', text: elementContext });
     }
 
     if (msg.content && msg.content.trim()) {

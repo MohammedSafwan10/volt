@@ -12,7 +12,7 @@
     assistantStore,
     type ToolCall,
     type ImageAttachment,
-    type ElementAttachment,
+    type SyntheticPromptMeta,
     IMAGE_LIMITS,
   } from "$features/assistant/stores/assistant.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
@@ -44,7 +44,6 @@
     getAdaptiveFileEditConcurrency,
     getFailureSignature,
     getToolIdempotencyKey,
-    isVerificationTool,
     mapWithConcurrency,
     normalizeQueueKey,
     stableStringify,
@@ -52,10 +51,8 @@
   import { autoSummarizeIfNeeded } from "./panel/auto-summarize";
   import {
     classifyPlanningPhase,
-    getVerificationProfiles,
     shouldRunAfterFileEdits,
   } from "./panel/verification-profiles";
-  import { selectAutoVerificationAction } from "./panel/auto-verification";
   import { createStreamGuards } from "./panel/stream-guards";
   import { createStreamingTextBuffer } from "./panel/streaming-text-buffer";
   import {
@@ -104,6 +101,7 @@
   import { ToolRepetitionDetector } from "./panel/tool-repetition";
   import { createToolTrackingState } from "./panel/tool-tracking";
   import { createAgentRuntime } from "$features/assistant/runtime/agent-runtime";
+  import { specStore } from "$features/specs/stores/specs.svelte";
   import './AssistantPanel.css';
 
   // Revert confirmation state
@@ -116,6 +114,16 @@
     mimeType: "image/png" | "image/jpeg" | "image/webp";
   } | null>(null);
   let inputRef: HTMLTextAreaElement | undefined = $state();
+  let tabContextMenu = $state<{
+    x: number;
+    y: number;
+    conversationId: string;
+    title: string;
+  } | null>(null);
+  let renameTabDialog = $state<{
+    conversationId: string;
+    title: string;
+  } | null>(null);
 
   let hasContextWarned = $state(false);
   let isAutoSummarizing = $state(false);
@@ -141,22 +149,7 @@
 
   const isAssistantBusy = $derived.by(() => {
     const currentConversationId = assistantStore.currentConversation?.id ?? null;
-    if (!currentConversationId) {
-      return assistantStore.isStreaming;
-    }
-
-    const currentRunState = assistantStore.getOpenConversationTabs().find(
-      (tab) => tab.id === currentConversationId,
-    );
-
-    if (currentRunState?.isRunning) return true;
-    if (assistantStore.isStreaming) return true;
-    return (
-      assistantStore.agentLoopState === "running" ||
-      assistantStore.agentLoopState === "waiting_tool" ||
-      assistantStore.agentLoopState === "waiting_approval" ||
-      assistantStore.agentLoopState === "completing"
-    );
+    return assistantStore.isConversationBusy(currentConversationId);
   });
 
   function hasToolResultMessage(toolCallId: string): boolean {
@@ -183,9 +176,39 @@
     const onAssistantSend = () => {
       void handleSend();
     };
+    const onAssistantSendPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        prompt?: string;
+        syntheticPrompt?: SyntheticPromptMeta;
+        suppressAutoTitle?: boolean;
+      }>).detail;
+      const prompt = detail?.prompt;
+      if (typeof prompt === "string") {
+        assistantStore.setInputValue(prompt);
+        if (inputRef) inputRef.value = prompt;
+      }
+      void handleSend({
+        syntheticPrompt: detail?.syntheticPrompt,
+        suppressAutoTitle: detail?.suppressAutoTitle,
+      });
+    };
     window.addEventListener("volt:assistant-send", onAssistantSend);
-    return () =>
+    window.addEventListener("volt:assistant-send-prompt", onAssistantSendPrompt);
+    return () => {
       window.removeEventListener("volt:assistant-send", onAssistantSend);
+      window.removeEventListener("volt:assistant-send-prompt", onAssistantSendPrompt);
+    };
+  });
+
+  $effect(() => {
+    if (!tabContextMenu && !renameTabDialog) return;
+    const closeMenus = () => {
+      tabContextMenu = null;
+    };
+    window.addEventListener("click", closeMenus);
+    return () => {
+      window.removeEventListener("click", closeMenus);
+    };
   });
 
   function recordToolResult(toolCall: ToolCall, result: ToolResult): void {
@@ -202,7 +225,42 @@
     });
   }
 
-  async function handleSend(): Promise<void> {
+  function normalizeWorkspacePath(path: string | null | undefined): string | null {
+    if (!path) return null;
+    const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+  }
+
+  function normalizeToolArgumentsForWorkspace(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (!isTerminalToolName(toolName)) return args;
+    const projectRoot =
+      typeof projectStore.rootPath === "string" && projectStore.rootPath.trim()
+        ? projectStore.rootPath.trim()
+        : null;
+    if (!projectRoot) return args;
+    const explicitCwd =
+      typeof args.cwd === "string" && args.cwd.trim() ? args.cwd.trim() : null;
+    const normalizedProjectRoot = normalizeWorkspacePath(projectRoot);
+    const normalizedExplicit = normalizeWorkspacePath(explicitCwd);
+    const cwdWithinProject =
+      normalizedExplicit &&
+      normalizedProjectRoot &&
+      (normalizedExplicit === normalizedProjectRoot ||
+        normalizedExplicit.startsWith(`${normalizedProjectRoot}/`));
+    if (cwdWithinProject) return args;
+    return {
+      ...args,
+      cwd: projectRoot,
+    };
+  }
+
+  async function handleSend(options: {
+    syntheticPrompt?: SyntheticPromptMeta;
+    suppressAutoTitle?: boolean;
+  } = {}): Promise<void> {
     const conversationId = assistantStore.currentConversation?.id;
     if (!conversationId) return;
     debugPanelSession('handle_send_start', { conversationId });
@@ -218,12 +276,13 @@
 
     // Cancel any existing stream (cancel-by-default policy)
     if (isAssistantBusy) {
-      assistantStore.stopStreaming();
+      const healed = assistantStore.healStaleConversationRunState(conversationId);
+      if (!healed) {
+        assistantStore.stopStreaming();
+      }
     }
 
-    // Add user message with attached context (deferred until smart context is ready)
     const context = [...assistantStore.attachedContext];
-    // assistantStore.addUserMessage(content, context); // REMOVED: Redundant, called later with smart context
 
     // Clear input and context - also clear the textarea directly
     assistantStore.setInputValue("");
@@ -231,6 +290,12 @@
     assistantStore.clearContext();
 
     const controller = assistantStore.startStreaming();
+    const userMessageId = assistantStore.addUserMessage(
+      content,
+      context,
+      undefined,
+      options,
+    );
 
     // Use centralized system prompt from prompts module
     // Get the selected model for the current mode from AI settings
@@ -326,13 +391,12 @@
       });
     }
 
-    // Add user message with content AND smart context as reference
-    assistantStore.addUserMessage(content, context, contextBlock);
+    // Patch the already-rendered user message with the final hidden context block
+    assistantStore.updateUserMessageSmartContext(userMessageId, contextBlock);
 
     // Get tools for current mode (includes MCP tools in agent mode)
     const tools = filterToolsForChat(
       getAllToolsForMode(assistantStore.currentMode),
-      assistantStore.browserToolsEnabled,
       content,
     );
 
@@ -672,8 +736,8 @@
       const toolIdCounts = new Map<string, number>();
       const streamedToolIds = new Map<string, string>();
       let hadPlanModeViolationThisIteration = false;
-      let warnedBrowserToolsDisabled = false;
       let toolCallSeenThisIteration = false;
+      let contentAfterToolCallSeen = false;
       let stalledAbortReason: string | null = null;
 
       try {
@@ -807,6 +871,9 @@
             assistantStore.endThinkingPart(msgId);
 
             iterationContent += novelChunk;
+            if (toolCallSeenThisIteration) {
+              contentAfterToolCallSeen = true;
+            }
             lastProgressAt = Date.now();
             textBuffer.append(novelChunk);
           }
@@ -821,8 +888,11 @@
 
           if (chunk.type === "tool_call" && chunk.toolCall) {
             lastProgressAt = Date.now();
-            const toolCallArgs = chunk.toolCall.arguments;
             const toolCallName = normalizeToolName(chunk.toolCall.name);
+            const toolCallArgs = normalizeToolArgumentsForWorkspace(
+              toolCallName,
+              chunk.toolCall.arguments,
+            );
             const rawToolCallId =
               (chunk.toolCall.id && chunk.toolCall.id.trim()) ||
               `tool_${crypto.randomUUID().slice(0, 8)}`;
@@ -926,12 +996,19 @@
               !isPlanModeViolation
               ? "pending"
               : "failed";
+            const isAutoApproved =
+              validation.valid &&
+              !isPlanModeViolation &&
+              validation.requiresApproval &&
+              assistantStore.autoApproveAllTools;
             const toolCall: ToolCall = {
               id: toolCallId,
               name: toolCallName,
               arguments: toolCallArgs,
               status,
               requiresApproval: validation.requiresApproval,
+              reviewStatus: isAutoApproved ? "accepted" : validation.requiresApproval ? "pending" : undefined,
+              meta: isAutoApproved ? { autoApproved: true } : undefined,
               thoughtSignature: toolCallThoughtSignature,
               error: effectiveValidationError,
               endTime:
@@ -969,19 +1046,6 @@
               });
               if (isPlanModeViolation) {
                 hadPlanModeViolationThisIteration = true;
-              }
-              if (
-                !validation.valid &&
-                toolCallName.startsWith("browser_") &&
-                !assistantStore.browserToolsEnabled &&
-                !warnedBrowserToolsDisabled
-              ) {
-                warnedBrowserToolsDisabled = true;
-                showToast({
-                  message:
-                    "Browser tools are off. Click the globe toggle in chat to enable.",
-                  type: "info",
-                });
               }
               // Feed an error tool result back to the model so the conversation stays consistent.
               immediateResults.push({
@@ -1161,15 +1225,6 @@
           );
         }
 
-        if (
-          isAgentMode &&
-          toolCallSeenThisIteration &&
-          iterationContent.trim()
-        ) {
-          // Drop pre-tool narration for cleaner, trustworthy execution flow.
-          iterationContent = "";
-        }
-
         // Reset repetition guard per iteration boundary so we don't over-trigger
         // on unrelated chunks in later iterations.
         streamGuards.resetIteration();
@@ -1270,6 +1325,20 @@
             mapWithConcurrency,
           },
         );
+        const malformedPatchFailure = fileEditResults.find((entry) => {
+          const errorText = String(entry.result.error ?? entry.result.output ?? '').toLowerCase();
+          return !entry.result.success && errorText.includes('malformed patch');
+        });
+        if (malformedPatchFailure) {
+          assistantStore.addToolMessage({
+            id: `patch_contract_${Date.now()}`,
+            name: "_system_patch_contract",
+            arguments: {},
+            status: "completed",
+            output:
+              'A file edit failed because the patch format was invalid. Rebuild the next patch using Codex grammar: "*** Begin Patch", one "*** Update File" or "*** Add File" header, an "@@" line before the first patch body lines, and only " ", "-", "+" line prefixes.',
+          });
+        }
 
         // Run diagnostics/LSP tools after file edits so they see latest state.
         const deferredResults = await executeQueuedNonFileTools(
@@ -1291,130 +1360,11 @@
           },
         );
 
-        const verificationProfiles = getVerificationProfiles(projectStore.tree);
-        const explicitVerificationCalled = allToolCalls.some((entry) =>
-          isVerificationTool(
-            entry.name,
-            entry.arguments as Record<string, unknown>,
-            verificationProfiles,
-          ),
-        );
-        const fileEditsSucceeded = fileEditResults.some((entry) => entry.result.success);
-        const autoVerificationAction = selectAutoVerificationAction({
-          fileEditsSucceeded,
-          explicitVerificationCalled,
-          profiles: verificationProfiles,
-          cwd: projectStore.rootPath,
-        });
-        const autoVerificationResults: Array<{
-          id: string;
-          name: string;
-          result: ToolResult;
-        }> = [];
-
-        if (autoVerificationAction) {
-          if (autoVerificationAction.toolName === 'get_diagnostics') {
-            pendingVerificationState.add('diagnostics');
-          } else if (
-            autoVerificationAction.toolName === 'run_command' &&
-            typeof autoVerificationAction.args.command === 'string'
-          ) {
-            pendingVerificationState.add(`command:${autoVerificationAction.args.command.trim()}`);
-          }
-          const autoToolId = `auto_verify_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          const autoToolCall: ToolCall = {
-            id: autoToolId,
-            name: autoVerificationAction.toolName,
-            arguments: autoVerificationAction.args,
-            status: "pending",
-          };
-          assistantStore.addToolCallToMessage(msgId, autoToolCall);
-          allToolCalls.push({
-            id: autoToolId,
-            name: autoVerificationAction.toolName,
-            arguments: autoVerificationAction.args,
-          });
-          assistantStore.updateToolCallInMessage(msgId, autoToolId, {
-            status: "running",
-            startTime: Date.now(),
-            meta: { autoVerification: true, reason: autoVerificationAction.reason },
-          });
-          try {
-            const result = await executeToolCall(
-              autoVerificationAction.toolName,
-              autoVerificationAction.args,
-              {
-                signal: controller.signal,
-                idempotencyKey: getToolIdempotencyKey(
-                  toolRunScope,
-                  autoToolId,
-                  autoVerificationAction.toolName,
-                  autoVerificationAction.args,
-                ),
-              },
-            );
-            assistantStore.updateToolCallInMessage(msgId, autoToolId, {
-              status: result.success ? "completed" : "failed",
-              output: result.output,
-              error: result.error,
-              meta: {
-                ...(result.meta || {}),
-                autoVerification: true,
-                reason: autoVerificationAction.reason,
-              },
-              data: result.data,
-              endTime: Date.now(),
-            });
-            trackToolOutcome(
-              autoVerificationAction.toolName,
-              autoVerificationAction.args,
-              result,
-            );
-            const signature = getFailureSignature(
-              autoVerificationAction.toolName,
-              autoVerificationAction.args,
-              result,
-            );
-            if (signature) {
-              const count = (failureSignatureCounts.get(signature) ?? 0) + 1;
-              failureSignatureCounts.set(signature, count);
-            }
-            autoVerificationResults.push({
-              id: autoToolId,
-              name: autoVerificationAction.toolName,
-              result,
-            });
-          } catch (err) {
-            const error = err instanceof Error ? err.message : String(err);
-            const result: ToolResult = {
-              success: false,
-              error: `Automatic verification failed: ${error}`,
-              warnings: ["auto_verification_failed"],
-              meta: {
-                code: "AUTO_VERIFICATION_FAILED",
-                autoVerification: true,
-              },
-            };
-            assistantStore.updateToolCallInMessage(msgId, autoToolId, {
-              status: "failed",
-              error: result.error,
-              meta: result.meta,
-              endTime: Date.now(),
-            });
-            autoVerificationResults.push({
-              id: autoToolId,
-              name: autoVerificationAction.toolName,
-              result,
-            });
-          }
-        }
-
         // Combine all results
         const allEagerResults = [
           ...eagerResults,
           ...fileEditResults,
           ...deferredResults,
-          ...autoVerificationResults,
         ];
 
         if (
@@ -1623,6 +1573,10 @@
           normalizedToolResults,
           isFileMutatingTool,
         });
+        const nextFullContent = mergeIterationIntoFullContent(
+          fullContent,
+          iterationContent,
+        );
 
         if (completionCandidate) {
           if (
@@ -1661,10 +1615,12 @@
         );
 
         if (toolsNeedingApproval.length > 0) {
-          assistantStore.setAgentLoopState("waiting_approval", {
-            iteration,
-            pendingApprovals: toolsNeedingApproval.length,
-          });
+          if (!assistantStore.autoApproveAllTools) {
+            assistantStore.setAgentLoopState("waiting_approval", {
+              iteration,
+              pendingApprovals: toolsNeedingApproval.length,
+            });
+          }
 
           const approvalsProcessed = await processToolsNeedingApproval(
             msgId,
@@ -1749,7 +1705,18 @@
         const completionDecision = agentRuntime.evaluateCompletionAcceptance({
           completionResult,
           allToolCalls,
-          fullContent,
+          fullContent: nextFullContent,
+          allowNaturalCompletion:
+            !toolCallSeenThisIteration || contentAfterToolCallSeen,
+        });
+        loopLog("info", "completion_decision_evaluated", {
+          hasCompletionTool: Boolean(completionDecision.completionToolId),
+          shouldComplete: completionDecision.shouldComplete,
+          reason: completionDecision.reason ?? null,
+          toolCallSeenThisIteration,
+          contentAfterToolCallSeen,
+          nextFullContentLength: nextFullContent.length,
+          iterationContentLength: iterationContent.length,
         });
         if (completionDecision.shouldComplete && completionDecision.completionToolId) {
           assistantStore.setAgentLoopState("completing", {
@@ -1780,9 +1747,38 @@
           );
           return;
         }
+        if (completionDecision.shouldComplete && completionDecision.reason === "natural_completion") {
+          fullContent = nextFullContent;
+          assistantStore.updateAssistantMessage(msgId, fullContent, false);
+          assistantStore.markAssistantMessageStreamState(msgId, "completed");
+          assistantStore.setAgentLoopState("completed", {
+            iteration,
+            reason: "natural_completion",
+          });
+          finalizeOutcome("completed", "natural_completion", {
+            iteration,
+          });
+          loopLog("info", "loop_completed", {
+            reason: "natural_completion",
+          });
+          logOutput(
+            "Volt",
+            `Agent: Completion accepted via natural completion at iteration ${iteration}.`,
+          );
+          return;
+        }
+
+        if (toolCallSeenThisIteration && !contentAfterToolCallSeen && nextFullContent.trim()) {
+          loopLog("info", "natural_completion_blocked_pretool_only_text", {
+            reason: "pre_tool_text_only",
+            nextFullContentLength: nextFullContent.length,
+            iterationContentLength: iterationContent.length,
+          });
+        }
 
         // Mark that we just processed tool results - if model doesn't respond next iteration,
         // we'll prompt it to continue
+        fullContent = nextFullContent;
         justProcessedToolResults = true;
       } catch (err) {
         if (controller.signal.aborted) {
@@ -2197,18 +2193,10 @@
       return;
     }
 
-    const approvedArguments =
-      isTerminalToolName(toolCall.name) &&
-      !(
-        typeof toolCall.arguments.cwd === "string" &&
-        toolCall.arguments.cwd.trim()
-      ) &&
-      projectStore.rootPath
-        ? {
-            ...toolCall.arguments,
-            cwd: projectStore.rootPath,
-          }
-        : toolCall.arguments;
+    const approvedArguments = normalizeToolArgumentsForWorkspace(
+      toolCall.name,
+      toolCall.arguments,
+    );
 
     assistantStore.updateToolCallInMessage(messageId, toolCall.id, {
       arguments: approvedArguments,
@@ -2290,16 +2278,11 @@
       `   - add/update an "Execution Progress" section with what was done and verification results.\n` +
       `4. If blocked, stop and report blocker + next action needed.`;
 
-    // Set the input and trigger send
     assistantStore.setInputValue(implementationPrompt);
     if (inputRef) {
       inputRef.value = implementationPrompt;
     }
-
-    // Trigger send after a brief delay to ensure UI updates
-    setTimeout(() => {
-      void handleSend();
-    }, 100);
+    void handleSend();
   }
 
   // Get attachment previews for display
@@ -2346,6 +2329,38 @@
     assistantStore.closeConversationTab(conversationId);
     chatHistoryStore.activeConversationId = assistantStore.currentConversation?.id ?? null;
   }
+
+  function handleTabContextMenu(tab: { id: string; fullTitle: string }, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    tabContextMenu = {
+      x: event.clientX,
+      y: event.clientY,
+      conversationId: tab.id,
+      title: tab.fullTitle,
+    };
+  }
+
+  function openRenameTabDialog(): void {
+    if (!tabContextMenu) return;
+    renameTabDialog = {
+      conversationId: tabContextMenu.conversationId,
+      title: tabContextMenu.title,
+    };
+    tabContextMenu = null;
+  }
+
+  async function submitRenameTab(): Promise<void> {
+    if (!renameTabDialog) return;
+    const nextTitle = renameTabDialog.title.trim();
+    if (!nextTitle) {
+      renameTabDialog = null;
+      return;
+    }
+    await chatHistoryStore.updateTitle(renameTabDialog.conversationId, nextTitle);
+    assistantStore.setConversationTitle(nextTitle, renameTabDialog.conversationId);
+    renameTabDialog = null;
+  }
 </script>
 
 <aside class="assistant-panel" aria-label="AI Assistant">
@@ -2362,17 +2377,17 @@
             class:active={tab.isActive}
             class:running={tab.isRunning}
             class:error={tab.hasError}
+            oncontextmenu={(event) => handleTabContextMenu(tab, event)}
           >
             <button
               class="conversation-tab-main"
               type="button"
-              title={tab.title}
-              aria-label={tab.title}
+              title={tab.fullTitle}
+              aria-label={tab.fullTitle}
               onclick={() => handleSelectTab(tab.id)}
             >
             <span class="conversation-tab-status" aria-hidden="true"></span>
             <span class="conversation-tab-title">{tab.title || currentChatTitle}</span>
-            <span class="conversation-tab-meta">{tab.isRunning ? 'Running' : 'Idle'}</span>
             </button>
             <button
               class="conversation-tab-close"
@@ -2432,12 +2447,15 @@
     <MessageList
       messages={assistantStore.messages}
       currentMode={assistantStore.currentMode}
+      currentConversationId={assistantStore.currentConversation?.id ?? null}
       isStreaming={assistantStore.isStreaming}
       scrollRevision={assistantStore.chatScrollRevision}
       onQuickPrompt={handleQuickPrompt}
       onToolApprove={handleToolApproveInMessage}
       onToolDeny={handleToolDenyInMessage}
       onStartImplementation={handleStartImplementation}
+      onConfirmSpecDraft={() => specStore.confirmPendingDraft()}
+      onDiscardSpecDraft={() => specStore.discardPendingDraft()}
       onRevert={handleRevertRequested}
     />
   </div>
@@ -2481,9 +2499,7 @@
                     ? "code"
                     : preview.type === "folder"
                       ? "folder"
-                      : preview.type === "element"
-                        ? "target"
-                        : "image"}
+                      : "image"}
                 size={14}
               />
             {/if}
@@ -2554,6 +2570,39 @@
     />
   </div>
 </aside>
+
+{#if tabContextMenu}
+  <div
+    class="assistant-tab-menu"
+    style="left: {tabContextMenu.x}px; top: {tabContextMenu.y}px;"
+  >
+    <button type="button" onclick={openRenameTabDialog}>
+      <UIIcon name="pencil" size={14} />
+      <span>Rename</span>
+    </button>
+  </div>
+{/if}
+
+{#if renameTabDialog}
+  <div class="assistant-tab-dialog-backdrop">
+    <div class="assistant-tab-dialog">
+      <h3>Rename Chat</h3>
+      <input
+        type="text"
+        bind:value={renameTabDialog.title}
+        onkeydown={(event) => event.key === "Enter" && submitRenameTab()}
+      />
+      <div class="assistant-tab-dialog-actions">
+        <button class="cancel" type="button" onclick={() => (renameTabDialog = null)}>
+          Cancel
+        </button>
+        <button class="confirm" type="button" onclick={submitRenameTab}>
+          Rename
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Chat History Sidebar -->
 <ChatHistorySidebar />
