@@ -2955,7 +2955,12 @@ class AssistantStore {
             await invoke('delete_path', { path });
           } else {
             // Use fileService for consistent writes
-            const result = await fileService.write(path, entry.content, { source: 'ai', force: true });
+            const expectedVersion = fileService.getVersion(path) ?? undefined;
+            const result = await fileService.write(path, entry.content, {
+              source: 'ai',
+              expectedVersion,
+              force: expectedVersion === undefined
+            });
             if (!result.success) {
               console.error(`[Revert] Failed for ${path}:`, result.error);
             }

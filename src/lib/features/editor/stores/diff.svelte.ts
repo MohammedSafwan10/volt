@@ -121,7 +121,12 @@ class DiffStore {
     // Sync the modified content to the editor if file is open
     if (filePath && modifiedContent) {
       try {
-        const result = await fileService.write(filePath, modifiedContent, { source: 'editor', force: true });
+        const expectedVersion = fileService.getVersion(filePath) ?? undefined;
+        const result = await fileService.write(filePath, modifiedContent, {
+          source: 'editor',
+          expectedVersion,
+          force: expectedVersion === undefined
+        });
         if (!result.success) {
           throw new Error(result.error || 'Failed to accept diff changes');
         }
@@ -144,7 +149,12 @@ class DiffStore {
     // Revert to original content if file is open
     if (filePath && originalContent) {
       try {
-        const result = await fileService.write(filePath, originalContent, { source: 'editor', force: true });
+        const expectedVersion = fileService.getVersion(filePath) ?? undefined;
+        const result = await fileService.write(filePath, originalContent, {
+          source: 'editor',
+          expectedVersion,
+          force: expectedVersion === undefined
+        });
         if (!result.success) {
           throw new Error(result.error || 'Failed to reject diff changes');
         }

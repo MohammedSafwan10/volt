@@ -165,7 +165,8 @@ class UnifiedFileService {
       content,
       expectedVersion: options.expectedVersion,
       source: options.source ?? 'editor',
-      force: options.force ?? false
+      force: options.force ?? false,
+      createIfMissing: options.createIfMissing ?? false
     }).catch((err) => ({
       success: false,
       error: String(err)

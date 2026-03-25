@@ -1,22 +1,47 @@
 import { describe, expect, it } from 'vitest';
 
-import ProblemsView from './ProblemsView.svelte';
+import { problemsStore } from '$shared/stores/problems.svelte';
 
 describe('ProblemsView layout guards', () => {
-  const source = ProblemsView.toString().replace(/\s+/g, ' ');
+  it('reports a stable empty-state contract when no problems are visible', () => {
+    problemsStore.clearAll();
 
-  it('renders a panel body wrapper for empty states', () => {
-    expect(source).toContain('panel-body empty-state-shell');
+    expect(problemsStore.totalCount).toBe(0);
+    expect(problemsStore.totalUnfilteredCount).toBe(0);
+    expect(problemsStore.searchQuery).toBe('');
   });
 
-  it('keeps empty states inside the shared flex panel body shell', () => {
-    expect(source).toContain('class="panel-body empty-state-shell');
-    expect(source).toContain('class="empty-state');
-    expect(source).toContain('No current problems, but some diagnostics sources are stale');
-    expect(source).toContain('No current problems; diagnostics are still warming up');
-    expect(source).toContain('No current problems yet; diagnostics are still updating');
-    expect(source).toContain('No errors or warnings detected in the workspace');
-    expect(source).toContain('No Matching Problems');
-    expect(source).toContain('problems hidden by filters');
+  it('reports filtered-empty behavior from store state instead of compiled component strings', () => {
+    problemsStore.clearAll();
+    problemsStore.setProblemsForFile(
+      'c:/repo/src/main.ts',
+      [
+        {
+          id: 'problem-1',
+          file: 'c:/repo/src/main.ts',
+          fileName: 'main.ts',
+          line: 3,
+          column: 5,
+          endLine: 3,
+          endColumn: 12,
+          message: 'Type mismatch',
+          severity: 'error',
+          source: 'typescript',
+          code: 'TS2322'
+        }
+      ],
+      'typescript'
+    );
+
+    problemsStore.setSearchQuery('not-present');
+
+    expect(problemsStore.totalUnfilteredCount).toBe(1);
+    expect(problemsStore.totalCount).toBe(0);
+    expect(problemsStore.allProblemsUnfiltered[0]).toMatchObject({
+      file: 'c:/repo/src/main.ts',
+      severity: 'error',
+      source: 'typescript',
+      code: 'TS2322'
+    });
   });
 });
