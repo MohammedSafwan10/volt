@@ -253,8 +253,12 @@ async function main() {
     if (i < MAX_RETRIES - 1) {
       console.log(`[cleanup] Sidecar still locked, retrying (${i + 1}/${MAX_RETRIES})...`);
 
-      // More aggressive kill on retry
-      await killByPattern('node');
+      // Retry only with Volt-scoped cleanup paths rather than system-wide Node kills.
+      await killByExactExePath(join(CARGO_DEBUG_DIR, 'node.exe'));
+      await killNodeProcessesForProject(PROJECT_ROOT);
+      for (const port of KNOWN_DEV_PORTS) {
+        await killByPort(port);
+      }
       await new Promise(r => setTimeout(r, RETRY_DELAY));
     } else {
       console.log('[cleanup] Warning: Sidecar may still be locked');
