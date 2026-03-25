@@ -35,6 +35,8 @@ describe('file-index cleanup', () => {
 
   it('registers HMR cleanup on first indexing start', async () => {
     let doneListener: ((event: { payload: { requestId: number; totalCount: number; cancelled: boolean; durationMs: number } }) => void) | undefined;
+    let streamRequestId: number | undefined;
+    let indexProjectPromise: Promise<void> | undefined;
 
     listenMock.mockImplementation(async (eventName: string, callback: typeof doneListener) => {
       if (eventName === 'file-index://done') {
@@ -45,20 +47,35 @@ describe('file-index cleanup', () => {
 
     invokeMock.mockImplementation(async (command: string, payload?: { requestId?: number }) => {
       if (command === 'index_workspace_stream' && payload?.requestId) {
-        doneListener?.({
-          payload: {
-            requestId: payload.requestId,
-            totalCount: 0,
-            cancelled: false,
-            durationMs: 0,
-          },
-        });
+        streamRequestId = payload.requestId;
       }
       return undefined;
     });
 
     const module = await import('./file-index');
-    await module.indexProject('c:/repo');
+
+    await Promise.resolve();
+    indexProjectPromise = module.indexProject('c:/repo');
+
+    await vi.waitFor(() => {
+      expect(doneListener).toBeTypeOf('function');
+      expect(streamRequestId).toBeTypeOf('number');
+      expect(registerCleanupMock).toHaveBeenCalledWith(
+        'file-index',
+        expect.any(Function),
+      );
+    });
+
+    doneListener?.({
+      payload: {
+        requestId: streamRequestId!,
+        totalCount: 0,
+        cancelled: false,
+        durationMs: 0,
+      },
+    });
+
+    await indexProjectPromise;
 
     expect(registerCleanupMock).toHaveBeenCalledWith(
       'file-index',
