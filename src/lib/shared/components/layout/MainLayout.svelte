@@ -562,7 +562,10 @@
       e.preventDefault();
       uiStore.closeMenus();
       if (editorStore.activeFilePath) {
-        editorStore.closeFile(editorStore.activeFilePath);
+        const path = editorStore.activeFilePath;
+        void triggerImmediateAutoSave(path).then(() => {
+          editorStore.closeFile(path);
+        });
       }
     }
 

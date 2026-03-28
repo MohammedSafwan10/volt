@@ -179,12 +179,73 @@ class UnifiedFileService {
       success: false,
       error: String(err)
     } as NativeDocumentWriteResult));
+    if (result.success) {
+      this.updateCachedPersistedDocument(normalizedPath, content, result.newVersion);
+    }
     return {
       success: result.success,
       newVersion: result.newVersion,
       error: result.error,
       conflictContent: result.conflictContent
     };
+  }
+
+  /**
+   * Create a directory through the native workspace backend.
+   */
+  async createDir(path: string): Promise<{ success: boolean; error?: string }> {
+    const normalizedPath = this.normalizePath(path);
+    try {
+      await invoke('create_dir', { path: normalizedPath });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: this.toErrorMessage(error) };
+    }
+  }
+
+  /**
+   * Delete a file or directory and clear any cached document state.
+   */
+  async deletePath(path: string): Promise<{ success: boolean; error?: string }> {
+    const normalizedPath = this.normalizePath(path);
+    try {
+      await invoke('delete_path', { path: normalizedPath });
+      this.documents.delete(normalizedPath);
+      this.subscribers.delete(normalizedPath);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: this.toErrorMessage(error) };
+    }
+  }
+
+  /**
+   * Rename a file or directory and keep cached document state in sync.
+   */
+  async renamePath(oldPath: string, newPath: string): Promise<{ success: boolean; error?: string }> {
+    const normalizedOldPath = this.normalizePath(oldPath);
+    const normalizedNewPath = this.normalizePath(newPath);
+    try {
+      await invoke('rename_path', {
+        oldPath: normalizedOldPath,
+        newPath: normalizedNewPath,
+      });
+      const existing = this.documents.get(normalizedOldPath);
+      if (existing) {
+        this.documents.delete(normalizedOldPath);
+        this.documents.set(normalizedNewPath, {
+          ...existing,
+          path: normalizedNewPath,
+        });
+      }
+      const subscribers = this.subscribers.get(normalizedOldPath);
+      if (subscribers) {
+        this.subscribers.delete(normalizedOldPath);
+        this.subscribers.set(normalizedNewPath, subscribers);
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: this.toErrorMessage(error) };
+    }
   }
 
   /**
@@ -241,6 +302,12 @@ class UnifiedFileService {
       success: false,
       error: String(err)
     } as NativeDocumentWriteResult));
+    if (result.success) {
+      const existing = this.documents.get(normalizedPath);
+      if (existing) {
+        this.updateCachedPersistedDocument(normalizedPath, existing.content, result.newVersion);
+      }
+    }
     return {
       success: result.success,
       newVersion: result.newVersion,
@@ -410,6 +477,31 @@ class UnifiedFileService {
       lastModified: state.lastModified,
       language: state.language ?? this.detectLanguage(state.path)
     };
+  }
+
+  private updateCachedPersistedDocument(
+    normalizedPath: string,
+    content: string,
+    newVersion?: number,
+  ): void {
+    const existing = this.documents.get(normalizedPath);
+    const version =
+      newVersion ??
+      existing?.version ??
+      1;
+    this.documents.set(normalizedPath, {
+      path: normalizedPath,
+      content,
+      version,
+      diskVersion: version,
+      isDirty: false,
+      lastModified: Date.now(),
+      language: existing?.language ?? this.detectLanguage(normalizedPath),
+    });
+  }
+
+  private toErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   private async ensureNativeEvents(): Promise<void> {

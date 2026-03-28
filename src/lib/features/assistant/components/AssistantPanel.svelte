@@ -114,15 +114,13 @@
   }
 
   function buildWorkspaceRuntimeSummary(): {
-    rootEntryCount: number | null;
+    rootEntryCount?: number;
     rootEntries: string[];
-    isProbablyEmpty: boolean | null;
+    isProbablyEmpty?: boolean;
   } {
     if (!projectStore.rootPath) {
       return {
-        rootEntryCount: null,
         rootEntries: [],
-        isProbablyEmpty: null,
       };
     }
 

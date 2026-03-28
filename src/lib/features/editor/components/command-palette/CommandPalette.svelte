@@ -1,6 +1,7 @@
 <script lang="ts">
   import { uiStore } from "$shared/stores/ui.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
+  import { triggerImmediateAutoSave } from "$features/editor/services/auto-save";
   import { projectStore } from "$shared/stores/project.svelte";
   import { settingsStore } from "$shared/stores/settings.svelte";
   import { themeStore } from "$shared/stores/theme.svelte";
@@ -161,9 +162,11 @@
       label: "Close Editor",
       category: "File",
       shortcut: "Ctrl+W",
-      action: () => {
-        if (editorStore.activeFilePath)
+      action: async () => {
+        if (editorStore.activeFilePath) {
+          await triggerImmediateAutoSave(editorStore.activeFilePath);
           editorStore.closeFile(editorStore.activeFilePath);
+        }
       },
       enabled: () => editorStore.activeFilePath !== null,
     },

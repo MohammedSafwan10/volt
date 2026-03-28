@@ -10,6 +10,7 @@
   import { problemsStore } from "$shared/stores/problems.svelte";
   import type { ToolCall } from "$features/assistant/stores/assistant.svelte";
   import { getFileEditDiffStats } from "./file-edit-stats";
+  import { getFilePillPresentation } from "./file-edit-card-presentation";
 
   interface Props {
     toolCall: ToolCall;
@@ -56,59 +57,19 @@
   );
   const totalCount = $derived(allToolCalls.length);
 
-  const filename = $derived.by(() => {
-    const path = toolCall.arguments.path as string | undefined;
-    if (!path) return "file";
-    // Standardize path separators and get last part
-    const parts = path.split(/[/\\]/);
-    return parts[parts.length - 1] || path;
-  });
-
-  const fileExt = $derived(filename.split(".").pop()?.toLowerCase() || "");
+  const filePill = $derived.by(() =>
+    getFilePillPresentation({
+      toolName: toolCall.name,
+      path: toolCall.arguments.path as string | undefined,
+      isRunning: isAllRunning,
+    }),
+  );
+  const filename = $derived(filePill.filename);
   const isDeleteTool = $derived.by(
     () => toolCall.name === "delete_file" || toolCall.name === "delete_path",
   );
   const isCreateDirTool = $derived.by(() => toolCall.name === "create_dir");
-
-  function getFileIcon(ext: string): any {
-    if (isCreateDirTool) return "folder";
-    switch (ext) {
-      case "svelte":
-        return "svelte";
-      case "ts":
-      case "tsx":
-        return "typescript";
-      case "js":
-      case "jsx":
-        return "javascript";
-      case "rs":
-        return "rust";
-      case "py":
-        return "python";
-      case "json":
-        return "json";
-      case "dart":
-        return "dart";
-      case "xml":
-        // Special case for AndroidManifest.xml
-        if (filename.toLowerCase().includes("androidmanifest"))
-          return "android";
-        return "xml";
-      case "yaml":
-      case "yml":
-        return "yaml";
-      case "md":
-        return "markdown";
-      case "css":
-        return "css";
-      case "html":
-        return "html";
-      default:
-        return "file";
-    }
-  }
-
-  const fileIcon = $derived(getFileIcon(fileExt));
+  const fileIcon = $derived(filePill.icon);
   const statusIcon = $derived.by(() => {
     if (isAllFailed) return "error";
     if (isDeleteTool) return "trash";
@@ -390,27 +351,13 @@
         }}
         title={toolCall.arguments.path as string}
       >
-        {#if isAllRunning}
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            class="shimmer-icon"
-          >
-            <path
-              d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
-            />
-            <path
-              d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
-            />
-          </svg>
-        {:else}
-          <UIIcon name={fileIcon} size={13} />
+        <span class="file-pill-icon" class:shimmer-icon={filePill.animateIcon}>
+          <UIIcon
+            name={fileIcon}
+            size={13}
+          />
+        </span>
+        {#if filePill.showFilename}
           <span class="filename">{filename}</span>
         {/if}
       </div>
@@ -687,6 +634,13 @@
     overflow: hidden;
     cursor: pointer;
     transition: all 0.2s ease;
+  }
+
+  .file-pill-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
   }
 
   .file-pill:hover {

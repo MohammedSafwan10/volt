@@ -23,7 +23,7 @@
   }
 
   async function handleClose(path: string) {
-    await triggerImmediateAutoSave();
+    await triggerImmediateAutoSave(path);
     editorStore.closeFile(path);
   }
 
@@ -52,27 +52,29 @@
   }
 
   // Context menu actions
-  function closeTab() {
+  async function closeTab() {
     if (contextFile) {
+      await triggerImmediateAutoSave(contextFile.path);
       editorStore.closeFile(contextFile.path);
     }
     closeContextMenu();
   }
 
-  function closeOthers() {
+  async function closeOthers() {
     if (contextFile) {
       const pathToKeep = contextFile.path;
       const pathsToClose = editorStore.openFiles
         .filter(f => f.path !== pathToKeep)
         .map(f => f.path);
       for (const path of pathsToClose) {
+        await triggerImmediateAutoSave(path);
         editorStore.closeFile(path);
       }
     }
     closeContextMenu();
   }
 
-  function closeToTheRight() {
+  async function closeToTheRight() {
     if (contextFile) {
       const idx = editorStore.openFiles.findIndex(f => f.path === contextFile!.path);
       if (idx >= 0) {
@@ -80,6 +82,7 @@
           .slice(idx + 1)
           .map(f => f.path);
         for (const path of pathsToClose) {
+          await triggerImmediateAutoSave(path);
           editorStore.closeFile(path);
         }
       }

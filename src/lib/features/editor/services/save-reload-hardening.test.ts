@@ -174,6 +174,41 @@ describe('save/reload hardening', () => {
     expect(writeFileMock).toHaveBeenCalledTimes(1);
   });
 
+  it('can auto-save a specific dirty tab before close even when it is not active', async () => {
+    const { editorStore } = await import('../stores/editor.svelte');
+    const { triggerImmediateAutoSave } = await import('./auto-save');
+
+    editorStore.openFiles = [
+      {
+        path: 'c:/repo/src/active.ts',
+        name: 'active.ts',
+        content: 'active',
+        originalContent: 'active',
+        language: 'typescript',
+        lineEnding: 'LF',
+        encoding: 'utf-8',
+      },
+      {
+        path: 'c:/repo/src/generated.txt',
+        name: 'generated.txt',
+        content: 'generated',
+        originalContent: 'before',
+        language: 'plaintext',
+        lineEnding: 'LF',
+        encoding: 'utf-8',
+      },
+    ];
+    editorStore.activeFilePath = 'c:/repo/src/active.ts';
+    fileServiceMock.isDirty.mockImplementation(((path?: string) => path === 'c:/repo/src/generated.txt') as never);
+
+    await triggerImmediateAutoSave('c:/repo/src/generated.txt');
+
+    expect(writeFileMock).toHaveBeenCalledWith('c:/repo/src/generated.txt', 'generated', {
+      expectedVersion: 7,
+    });
+    expect(writeFileMock).toHaveBeenCalledTimes(1);
+  });
+
   it('skips reloads when the file has unsaved changes', async () => {
     const { editorStore } = await import('../stores/editor.svelte');
     editorStore.openFiles = [

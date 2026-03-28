@@ -5,6 +5,7 @@
   import { projectStore } from "$shared/stores/project.svelte";
   import { settingsStore } from "$shared/stores/settings.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
+  import { triggerImmediateAutoSave } from "$features/editor/services/auto-save";
   import { terminalStore } from "$features/terminal/stores/terminal.svelte";
   import { themeStore } from "$shared/stores/theme.svelte";
   import { assistantStore } from "$features/assistant/stores/assistant.svelte";
@@ -109,9 +110,10 @@
     await exit(0);
   }
 
-  function handleCloseEditor() {
+  async function handleCloseEditor() {
     uiStore.closeMenus();
     if (editorStore.activeFilePath) {
+      await triggerImmediateAutoSave(editorStore.activeFilePath);
       editorStore.closeFile(editorStore.activeFilePath);
     }
   }

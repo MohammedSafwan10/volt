@@ -70,6 +70,11 @@ async function saveActiveFile(): Promise<void> {
   await saveFile(activePath);
 }
 
+async function saveSpecificFile(path: string): Promise<void> {
+  if (!settingsStore.autoSaveEnabled) return;
+  await saveFile(path);
+}
+
 /**
  * Save all dirty files
  */
@@ -116,14 +121,13 @@ export function cancelAutoSave(): void {
 /**
  * Trigger immediate auto-save (for tab switch, window blur)
  */
-export function triggerImmediateAutoSave(): Promise<void> {
+export function triggerImmediateAutoSave(path?: string): Promise<void> {
   if (!settingsStore.autoSaveEnabled) return Promise.resolve();
   
   // Cancel pending timer
   cancelAutoSave();
   
-  // Save immediately
-  return saveActiveFile();
+  return path ? saveSpecificFile(path) : saveActiveFile();
 }
 
 /**
