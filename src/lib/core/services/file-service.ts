@@ -113,6 +113,14 @@ export interface WriteResult {
   conflictContent?: string;  // Current content if version conflict
 }
 
+export interface WorkspaceMutationFileBackend {
+  read(path: string, forceRefresh?: boolean): Promise<FileDocument | null>;
+  write(path: string, content: string, options?: WriteOptions): Promise<WriteResult>;
+  deletePath?(path: string): Promise<{ success: boolean; error?: string }>;
+  createDir?(path: string): Promise<{ success: boolean; error?: string }>;
+  renamePath?(oldPath: string, newPath: string): Promise<{ success: boolean; error?: string }>;
+}
+
 type FileChangeCallback = (event: FileChangeEvent) => void;
 
 // ============================================================================
@@ -542,6 +550,7 @@ class UnifiedFileService {
 
 // Singleton instance
 export const fileService = new UnifiedFileService();
+export const workspaceMutationFileBackend: WorkspaceMutationFileBackend = fileService;
 
 /**
  * Initialize file service with LSP integration

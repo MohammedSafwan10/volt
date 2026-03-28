@@ -26,6 +26,7 @@ export async function handleGetDiagnostics(
     liveStatus: 'Collecting diagnostics...',
     meta: {
       diagnosticsFreshness: problemsStore.diagnosticsFreshness,
+      diagnosticsBasis: problemsStore.diagnosticsBasis,
     },
   });
 
@@ -50,31 +51,28 @@ export async function handleGetDiagnostics(
           : 'Collecting diagnostics...',
     meta: {
       diagnosticsFreshness: freshness,
+      diagnosticsBasis: problemsStore.diagnosticsBasis,
     },
   });
 
   // If specific paths requested, filter to those
-  let relevantProblems = allProblems;
-  let checkedFiles: string[] = [];
+  const normalizedPaths = pathsToCheck.map((path) => normalizePath(path, workspaceRoot));
+  const checkedFiles =
+    pathsToCheck.length > 0
+      ? pathsToCheck
+      : problemsStore.filesWithProblems.map((filePath) =>
+          filePath.replace(workspaceRoot, '').replace(/^[/\\]/, ''),
+        );
 
-  if (pathsToCheck.length > 0) {
-    // Normalize paths for comparison
-    const normalizedPaths = pathsToCheck.map(p => normalizePath(p, workspaceRoot));
-
-    relevantProblems = allProblems.filter(problem => {
-      const problemPath = normalizePath(problem.file, workspaceRoot);
-      return normalizedPaths.some((pathToCheck) =>
-        matchesRequestedDiagnosticPath(problemPath, pathToCheck),
-      );
-    });
-
-    checkedFiles = pathsToCheck;
-  } else {
-    // Get all files with problems
-    checkedFiles = problemsStore.filesWithProblems.map(f =>
-      f.replace(workspaceRoot, '').replace(/^[/\\]/, '')
-    );
-  }
+  const relevantProblems =
+    normalizedPaths.length > 0
+      ? allProblems.filter((problem) => {
+          const problemPath = normalizePath(problem.file, workspaceRoot);
+          return normalizedPaths.some((pathToCheck) =>
+            matchesRequestedDiagnosticPath(problemPath, pathToCheck),
+          );
+        })
+      : allProblems;
 
   // Format output
   const lines: string[] = [];
@@ -123,6 +121,7 @@ export async function handleGetDiagnostics(
         fileCount: 0,
         checkedFiles,
         freshness,
+        diagnosticsBasis: problemsStore.diagnosticsBasis,
         problems: [],
       },
     };
@@ -180,6 +179,7 @@ export async function handleGetDiagnostics(
       fileCount: byFile.size,
       checkedFiles,
       freshness,
+      diagnosticsBasis: problemsStore.diagnosticsBasis,
       problems: relevantProblems.slice(0, 50).map(p => ({
         ...p,
         relativePath: p.file.replace(workspaceRoot, '').replace(/^[/\\]/, '')

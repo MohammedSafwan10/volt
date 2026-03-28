@@ -21,12 +21,10 @@ import { stopJsonLsp } from '$core/lsp/json-sidecar';
 import { stopYamlLsp } from '$core/lsp/yaml-sidecar';
 import { stopXmlLsp } from '$core/lsp/xml-sidecar';
 import {
-  cancelIndexing,
   clearIndex,
   getIndexStatus,
   handleFileChangeBatch,
   indexProject,
-  getIndexedRoot,
 } from '$core/services/file-index';
 import { startDartLsp, stopDartLsp } from '$core/lsp/dart-sidecar';
 import {
@@ -47,6 +45,7 @@ import {
 import type { FileChangeBatchEvent } from '$core/services/file-watch';
 import { projectDiagnostics } from '$core/services/project-diagnostics';
 import { tscWatcher } from '$core/services/tsc-watcher';
+import { SvelteSet } from 'svelte/reactivity';
 import { problemsStore } from './problems.svelte';
 import type { FileEntry } from '$core/types/files';
 import { invoke } from '@tauri-apps/api/core';
@@ -70,6 +69,12 @@ import {
 } from './project-bridge';
 import { searchStore } from '$features/search/stores/search.svelte';
 import { showToast } from '$shared/stores/toast.svelte';
+import {
+  projectTreeMutationState,
+} from '$core/services/staged-document-projections';
+import type { TreeMutationProjection } from '$core/services/staged-document-projections';
+import type { StagedResourceRecord } from '$core/services/staged-document-service';
+import { workspaceMutationCoordinator } from '$core/services/workspace-mutation-coordinator';
 
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 
@@ -89,6 +94,8 @@ export type ProjectStartupPhase =
   | 'core-bg'
   | 'heavy-bg'
   | 'background-ready';
+
+export type StagedTreeOverlay = Record<string, TreeMutationProjection>;
 
 const LARGE_REPO_FILE_THRESHOLD = 12_000;
 const LARGE_REPO_INDEX_MS_THRESHOLD = 1_500;
@@ -188,13 +195,14 @@ class ProjectStore {
   packageManager = $state<PackageManager>('npm');
   startupPhase = $state<ProjectStartupPhase>('idle');
   uiReady = $state(false);
+  stagedTreeOverlay = $state<StagedTreeOverlay>({});
   coreReady = $state(false);
   backgroundReady = $state(false);
   largeRepoMode = $state(false);
   indexedFileCount = $state(0);
   initialIndexDurationMs = $state(0);
 
-  private diagTimer: any = null;
+  private diagTimer: ReturnType<typeof setTimeout> | null = null;
   private treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fileServiceUnsubscribe: (() => void) | null = null;
   private pendingFolderRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
@@ -202,6 +210,7 @@ class ProjectStore {
   private startupGeneration = 0;
   private startupSerialChain: Promise<void> = Promise.resolve();
   private startupRootHasHeavyDirs = false;
+  private stagedOverlayUnsubscribe: (() => void) | null = null;
 
   // File change handler cleanup
   private unsubscribeFileChange: (() => void) | null = null;
@@ -215,6 +224,7 @@ class ProjectStore {
 
   constructor() {
     setTerminalProblemMatcherProjectRootResolver(() => this.rootPath);
+    this.bindStagedTreeOverlay();
     this.registerWorkspaceLifecycleHooks();
     // Init must be called manually by the app root to avoid HMR loops
   }
@@ -300,6 +310,7 @@ class ProjectStore {
           this.indexedFileCount = 0;
           this.initialIndexDurationMs = 0;
           this.startupRootHasHeavyDirs = false;
+          this.clearStagedTreeOverlay();
         }
 
         if (teardownErrors.length > 0) {
@@ -385,6 +396,32 @@ class ProjectStore {
         });
       },
     });
+  }
+
+  private bindStagedTreeOverlay(): void {
+    this.stagedOverlayUnsubscribe?.();
+    this.stagedOverlayUnsubscribe = workspaceMutationCoordinator.stagedDocuments.subscribe(
+      (overlay: StagedTreeOverlay) => {
+        this.stagedTreeOverlay = overlay;
+      },
+      {
+        selector: (records: readonly StagedResourceRecord[]) => projectTreeMutationState(records),
+        equality: (left: StagedTreeOverlay, right: StagedTreeOverlay) =>
+          JSON.stringify(left) === JSON.stringify(right),
+      },
+    );
+  }
+
+  setStagedTreeOverlay(next: StagedTreeOverlay): void {
+    this.stagedTreeOverlay = { ...next };
+  }
+
+  getTreeMutationProjection(path: string): TreeMutationProjection | null {
+    return this.stagedTreeOverlay[this.normalizePath(path)] ?? this.stagedTreeOverlay[path] ?? null;
+  }
+
+  private clearStagedTreeOverlay(): void {
+    this.stagedTreeOverlay = {};
   }
 
   private clearActivationTasks(): void {
@@ -700,7 +737,7 @@ class ProjectStore {
             this.handleFileCreated(absPath, relPath);
             if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
-          case 'modify':
+          case 'modify': {
             // If the file is open in the editor, reload it to show new content
             // This handles AI edits appearing in real-time
             const normalizedPath = absPath.replace(/\\/g, '/');
@@ -710,6 +747,7 @@ class ProjectStore {
             }
             if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
+          }
         }
       }
     }
@@ -1072,7 +1110,7 @@ class ProjectStore {
 
     this.tree = removeFromArray(this.tree);
 
-    const nextSelected = new Set<string>();
+    const nextSelected = new SvelteSet<string>();
     let selectionChanged = false;
     for (const selectedPath of this.selectedPaths) {
       if (this.normalizePath(selectedPath) === normalizedPath) {
@@ -1085,7 +1123,7 @@ class ProjectStore {
       this.selectedPaths = nextSelected;
     }
     let changed = false;
-    const next = new Set<string>();
+    const next = new SvelteSet<string>();
     for (const p of this.expandedPaths) {
       if (p === normalizedPath || p.startsWith(normalizedPath + "/")) {
         changed = true;
@@ -1123,7 +1161,7 @@ class ProjectStore {
     const normalizedOld = this.normalizePath(oldPath);
     const normalizedNew = this.normalizePath(newPath);
     let updated = false;
-    const next = new Set<string>();
+    const next = new SvelteSet<string>();
     for (const p of this.expandedPaths) {
       if (p === normalizedOld) {
         next.add(normalizedNew);

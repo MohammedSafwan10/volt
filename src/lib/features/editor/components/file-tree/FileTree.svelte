@@ -99,6 +99,11 @@
   }
 
   type FlatNode = { node: TreeNode; depth: number };
+  type TreeMutationIndicator = {
+    state: string;
+    title: string;
+    className: string;
+  };
 
   const ROW_HEIGHT = 24;
   const OVERSCAN = 10;
@@ -344,6 +349,17 @@
   });
   const visibleNodes = $derived.by(() => flatNodes.slice(startIndex, endIndex));
 
+  function getTreeMutationIndicator(node: TreeNode): TreeMutationIndicator | null {
+    const projection = projectStore.getTreeMutationProjection(node.path);
+    if (!projection) return null;
+
+    return {
+      state: projection.state,
+      title: `Staged state: ${projection.state}`,
+      className: `staged-indicator staged-${projection.state}`,
+    };
+  }
+
   function handleScroll(): void {
     if (!scrollEl) return;
     scrollTop = scrollEl.scrollTop;
@@ -381,10 +397,6 @@
 
   function handleCollapseAll(): void {
     projectStore.collapseAllFolders();
-  }
-
-  async function handleExpandAll(): Promise<void> {
-    await projectStore.expandAllFolders(2);
   }
 
   async function handleExpandFolder(node: TreeNode): Promise<void> {
@@ -1158,6 +1170,7 @@
             <FileTreeItem
               node={item.node}
               depth={item.depth}
+              stagedIndicator={getTreeMutationIndicator(item.node)}
               onSelect={handleItemSelect}
               onContextMenu={handleNodeContextMenu}
               isEditing={Boolean(

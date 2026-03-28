@@ -13,6 +13,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { projectStore } from "$shared/stores/project.svelte";
 import { editorStore } from "$features/editor/stores/editor.svelte";
 import { fileService, type FileDocument } from "$core/services/file-service";
+import { createStagedDocumentService } from "$core/services/staged-document-service";
+import {
+  createWorkspaceMutationCoordinator,
+  type ContentMutationProjectionContext,
+} from "$core/services/workspace-mutation-coordinator";
 import { revealLine, setModelValue, setReviewHighlight } from "$core/services/monaco-models";
 import { notifyDocumentChanged as notifyTsDocumentChanged } from "$core/lsp/typescript-sidecar";
 import { notifyEslintDocumentChanged } from "$core/lsp/eslint-sidecar";
@@ -99,57 +104,42 @@ async function readFileDocumentFresh(path: string): Promise<FileDocument> {
   return doc;
 }
 
-/**
- * Write file using unified file service with verification
- * Returns result with version tracking
- */
-async function writeFileWithSync(
-  path: string,
-  content: string,
-  expectedVersion?: number,
-  baseContent?: string,
-): Promise<{ success: boolean; error?: string; newVersion?: number }> {
-  const result = await fileService.write(path, content, {
-    expectedVersion,
-    source: "ai",
-    force: expectedVersion === undefined, // Force only when no optimistic version is available
+async function runContentMutationIntent(input: {
+  path: string;
+  relativePath: string;
+  content: string;
+  createIfMissing: boolean;
+  normalizedPath: string;
+  firstChangedLine?: number;
+  lastChangedLine?: number;
+  runtime?: ToolRuntimeContext;
+}) {
+  const result = await workspaceMutationCoordinator.run({
+    type: "write",
+    path: input.path,
+    content: input.content,
+    createIfMissing: input.createIfMissing,
+    relativePath: input.relativePath,
+    sync: {
+      normalizedPath: input.normalizedPath,
+      firstChangedLine: input.firstChangedLine,
+      lastChangedLine: input.lastChangedLine,
+    },
   });
 
   if (!result.success) {
-    if ((result.error ?? "").toLowerCase().includes("version conflict")) {
-      try {
-        const latestDoc = await readFileDocumentFresh(path);
-        if (latestDoc.content === content) {
-          return {
-            success: true,
-            newVersion: latestDoc.version,
-          };
-        }
-
-        if (baseContent !== undefined && latestDoc.content === baseContent) {
-          const retry = await fileService.write(path, content, {
-            expectedVersion: latestDoc.version,
-            source: "ai",
-          });
-          if (retry.success) {
-            return {
-              success: true,
-              newVersion: retry.newVersion,
-            };
-          }
-        }
-      } catch {
-        // Fall through to the standard conflict message.
-      }
-      return {
-        success: false,
-        error: "Content changed on disk; refresh file state if needed and retry.",
-      };
-    }
-    return { success: false, error: result.error };
+    return {
+      success: false as const,
+      error: result.error ?? "write failed",
+    };
   }
 
-  return { success: true, newVersion: result.newVersion };
+  const afterContent = result.record?.stagedContent ?? result.record?.committedContent ?? input.content;
+  return {
+    success: true as const,
+    record: result.record,
+    afterContent,
+  };
 }
 
 function emitRuntimeUpdate(
@@ -180,6 +170,52 @@ interface EditorSyncOptions {
   firstChangedLine?: number;
   lastChangedLine?: number;
 }
+
+export async function syncContentMutationProjection(
+  path: string,
+  content: string,
+  context: ContentMutationProjectionContext,
+  runtime?: ToolRuntimeContext,
+): Promise<void> {
+  await syncEditorWithDisk(
+    path,
+    context.normalizedPath,
+    content,
+    {
+      relativePath: context.relativePath,
+      firstChangedLine: context.firstChangedLine,
+      lastChangedLine: context.lastChangedLine,
+    },
+    runtime,
+  );
+}
+
+async function closeEditorPaths(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    editorStore.closeFile(path, true);
+  }
+}
+
+async function reopenEditorPaths(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    await editorStore.openFile(path);
+  }
+}
+
+const workspaceMutationCoordinator = createWorkspaceMutationCoordinator({
+  stagedDocuments: createStagedDocumentService(),
+  fileBackend: fileService,
+  projections: {
+    refreshTree: async () => {
+      await projectStore.refreshTree();
+    },
+    syncContentMutation: async (path, content, context) => {
+      await syncContentMutationProjection(path, content, context);
+    },
+    closePaths: closeEditorPaths,
+    reopenPaths: reopenEditorPaths,
+  },
+});
 
 /**
  * Sync editor with file service (lightweight - file service handles the heavy lifting)
@@ -276,28 +312,36 @@ async function getPostEditDiagnostics(
       if (latestContent && ext === "svelte") {
         try {
           await notifySvelteDocumentChanged(absolutePath, latestContent);
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 3. Notify HTML
       if (latestContent && ["html", "htm"].includes(ext)) {
         try {
           await notifyHtmlDocumentChanged(absolutePath, latestContent);
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 4. Notify CSS/SCSS/LESS
       if (latestContent && ["css", "scss", "less", "sass"].includes(ext)) {
         try {
           await notifyCssDocumentChanged(absolutePath, latestContent);
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 5. Notify JSON
       if (latestContent && ext === "json") {
         try {
           await notifyJsonDocumentChanged(absolutePath, latestContent);
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 6. Notify Dart LSP for Dart files and pubspec.yaml
@@ -311,7 +355,9 @@ async function getPostEditDiagnostics(
           if (isDartLspRunning()) {
             await notifyDartDocumentChanged(absolutePath, latestContent);
           }
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 7. Notify YAML LSP for YAML files
@@ -320,7 +366,9 @@ async function getPostEditDiagnostics(
           if (isYamlLspRunning()) {
             await notifyYamlDocumentChanged(absolutePath, latestContent);
           }
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 8. Notify XML LSP for XML and plist files
@@ -329,7 +377,9 @@ async function getPostEditDiagnostics(
           if (isXmlLspRunning()) {
             await notifyXmlDocumentChanged(absolutePath, latestContent);
           }
-        } catch {}
+        } catch {
+          // Continue anyway
+        }
       }
 
       // 9. Notify Tailwind
@@ -337,7 +387,9 @@ async function getPostEditDiagnostics(
         if (latestContent && isTailwindLspConnected()) {
           await notifyTailwindDocumentChanged(absolutePath, latestContent);
         }
-      } catch {}
+      } catch {
+        // Continue anyway
+      }
 
       const collectDiagnostics = async (): Promise<PostEditDiagnosticsResult> => {
         const { handleGetDiagnostics } = await import("$core/ai/tools/handlers/diagnostics");
@@ -410,12 +462,10 @@ export async function handleWriteFile(
 
   // ALWAYS read fresh from disk to avoid stale cache issues
   let before = "";
-  let expectedVersion: number | undefined;
   let isNewFile = false;
   try {
     const beforeDoc = await readFileDocumentFresh(path);
     before = beforeDoc.content;
-    expectedVersion = beforeDoc.version;
   } catch {
     isNewFile = true;
   }
@@ -440,33 +490,21 @@ export async function handleWriteFile(
     };
   }
 
-  // Write with verification and retry logic
+  // Write through coordinator
   emitRuntimeUpdate(runtime, isNewFile ? "Creating file..." : "Writing file...");
-  const writeResult = await writeFileWithSync(
+  const mutationResult = await runContentMutationIntent({
     path,
+    relativePath,
     content,
-    isNewFile ? undefined : expectedVersion,
-    isNewFile ? undefined : before,
-  );
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to write: ${writeResult.error}` };
-  }
-
-  // Refresh tree if new file
-  if (isNewFile) {
-    try {
-      await projectStore.refreshTree();
-    } catch {}
+    createIfMissing: true,
+    normalizedPath,
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to write: ${mutationResult.error}` };
   }
 
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, content);
-
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, content, {
-    relativePath,
-    firstChangedLine,
-    lastChangedLine,
-  }, runtime);
 
   // If file wasn't open, open it now
   try {
@@ -480,7 +518,9 @@ export async function handleWriteFile(
     if (!existing) {
       await editorStore.openFile(path);
     }
-  } catch {}
+  } catch {
+    // Best-effort open to surface the file after write
+  }
 
   const newLines = content.split("\n").length;
   const oldLines = before.split("\n").length;
@@ -555,12 +595,9 @@ export async function handleAppendFile(
   emitRuntimeUpdate(runtime, "Reading file...");
 
   // ALWAYS read fresh from disk
-  let existing = "";
-  let expectedVersion: number;
+  let existing: string;
   try {
-    const existingDoc = await readFileDocumentFresh(path);
-    existing = existingDoc.content;
-    expectedVersion = existingDoc.version;
+    existing = (await readFileDocumentFresh(path)).content;
   } catch {
     return { success: false, error: `File not found: ${relativePath}. Use write_file to create.` };
   }
@@ -568,22 +605,25 @@ export async function handleAppendFile(
   // Add newline if needed
   const needsNewline = existing.length > 0 && !existing.endsWith("\n");
   const newContent = existing + (needsNewline ? "\n" : "") + textToAppend;
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(existing, newContent);
 
-  // Write with verification
+  // Write through coordinator
   emitRuntimeUpdate(runtime, "Appending to file...");
-  const writeResult = await writeFileWithSync(path, newContent, expectedVersion, existing);
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to append: ${writeResult.error}` };
+  const mutationResult = await runContentMutationIntent({
+    path,
+    relativePath,
+    content: newContent,
+    createIfMissing: false,
+    normalizedPath,
+    firstChangedLine,
+    lastChangedLine,
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to append: ${mutationResult.error}` };
   }
 
   const addedLines = textToAppend.split("\n").length;
-  const { firstChangedLine, lastChangedLine } = calculateChangedLines(existing, newContent);
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, newContent, {
-    relativePath,
-    firstChangedLine,
-    lastChangedLine,
-  }, runtime);
   const diffStats = calculateDiffStats(existing, newContent);
 
   // Get diagnostics after edit
@@ -650,12 +690,9 @@ export async function handleStrReplace(
   emitRuntimeUpdate(runtime, "Reading file...");
 
   // ALWAYS read fresh from disk
-  let content = "";
-  let expectedVersion: number;
+  let content: string;
   try {
-    const contentDoc = await readFileDocumentFresh(path);
-    content = contentDoc.content;
-    expectedVersion = contentDoc.version;
+    content = (await readFileDocumentFresh(path)).content;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -706,25 +743,27 @@ IMPORTANT: The file content may have changed from previous edits. Regenerate wit
     return { success: false, error: syntaxError };
   }
 
-  // Write with verification
+  // Write through coordinator
   emitRuntimeUpdate(runtime, "Applying replacement...");
-  const writeResult = await writeFileWithSync(path, newContent, expectedVersion, content);
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to write: ${writeResult.error}` };
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, newContent);
+  const mutationResult = await runContentMutationIntent({
+    path,
+    relativePath,
+    content: newContent,
+    createIfMissing: false,
+    normalizedPath,
+    firstChangedLine,
+    lastChangedLine,
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to write: ${mutationResult.error}` };
   }
 
   const oldLines = oldStr.split("\n").length;
   const newLines = newStr.split("\n").length;
   const confidence = match.similarity < 1 ? ` (${Math.round(match.similarity * 100)}% match)` : "";
 
-  // Calculate changed line range for highlighting
-  const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, newContent);
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, newContent, {
-    relativePath,
-    firstChangedLine,
-    lastChangedLine,
-  }, runtime);
   const diffStats = calculateDiffStats(content, newContent);
 
   // Get diagnostics after edit
@@ -823,12 +862,9 @@ export async function handleMultiReplace(
   }
 
   // Read file fresh from disk
-  let content = "";
-  let expectedVersion: number;
+  let content: string;
   try {
-    const contentDoc = await readFileDocumentFresh(path);
-    content = contentDoc.content;
-    expectedVersion = contentDoc.version;
+    content = (await readFileDocumentFresh(path)).content;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -893,20 +929,22 @@ export async function handleMultiReplace(
     };
   }
 
-  // Write with verification
-  const writeResult = await writeFileWithSync(path, resultContent, expectedVersion, content);
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to write: ${writeResult.error}` };
+  const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, resultContent);
+  const mutationResult = await runContentMutationIntent({
+    path,
+    relativePath,
+    content: resultContent,
+    createIfMissing: false,
+    normalizedPath,
+    firstChangedLine,
+    lastChangedLine,
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to write: ${mutationResult.error}` };
   }
 
   // Stats
-  const { firstChangedLine, lastChangedLine } = calculateChangedLines(content, resultContent);
-  // Sync editor
-  await syncEditorWithDisk(path, normalizedPath, resultContent, {
-    relativePath,
-    firstChangedLine,
-    lastChangedLine,
-  });
   const diffStats = calculateDiffStats(content, resultContent);
 
   // Diagnostics
@@ -974,10 +1012,6 @@ export async function handleApplyPatch(
   const path = resolvePath(relativePath);
   const normalizedPath = path.replace(/\\/g, "/");
   const patch = String(args.patch ?? "");
-  const expectedVersionArg =
-    typeof args.expected_version === "number" && Number.isFinite(args.expected_version)
-      ? Math.floor(args.expected_version)
-      : undefined;
   emitRuntimeUpdate(runtime, "Parsing patch...");
 
   let parsedPatch: {
@@ -996,13 +1030,10 @@ export async function handleApplyPatch(
     };
   }
 
-  let before = "";
-  let expectedVersion: number | undefined = expectedVersionArg;
   emitRuntimeUpdate(runtime, "Reading file...");
+  let before: string;
   try {
-    const contentDoc = await readFileDocumentFresh(path);
-    before = contentDoc.content;
-    expectedVersion = expectedVersionArg ?? contentDoc.version;
+    before = (await readFileDocumentFresh(path)).content;
   } catch {
     // Missing file is allowed only for "add-only" patch hunks.
     const hasNonAddLines = parsedPatch.hunks.some((hunk) =>
@@ -1015,7 +1046,6 @@ export async function handleApplyPatch(
       };
     }
     before = "";
-    expectedVersion = undefined;
   }
 
   let after: string;
@@ -1035,18 +1065,20 @@ export async function handleApplyPatch(
     return { success: false, error: syntaxError };
   }
 
-  const writeResult = await writeFileWithSync(path, after, expectedVersion, before);
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to write: ${writeResult.error}` };
-  }
-
   const { firstChangedLine, lastChangedLine } = calculateChangedLines(before, after);
-  await syncEditorWithDisk(path, normalizedPath, after, {
+  const mutationResult = await runContentMutationIntent({
+    path,
     relativePath,
+    content: after,
+    createIfMissing: false,
+    normalizedPath,
     firstChangedLine,
     lastChangedLine,
-  }, runtime);
-  const diffStats = calculateDiffStats(before, after);
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to write: ${mutationResult.error}` };
+  }
   const patchStats = getCodexPatchLineStats(parsedPatch.hunks);
   const diagnostics =
     args.postEditDiagnostics === false
@@ -1104,27 +1136,19 @@ export async function handleCreateDir(args: Record<string, unknown>): Promise<To
   const relativePath = String(args.path);
   const path = resolvePath(relativePath);
 
-  try {
-    // If it already exists, treat as success
-    try {
-      const info = await invoke<{ isDir?: boolean }>("get_file_info", { path });
-      if (info?.isDir) {
-        return { success: true, output: `Directory already exists: ${relativePath}` };
-      }
-    } catch {
-      // Not found or invalid -> continue to create
-    }
+  const result = await workspaceMutationCoordinator.run({
+    type: "create_dir",
+    path,
+  });
 
-    await invoke("create_dir", { path });
-  } catch (err) {
-    const msg = extractErrorMessage(err);
-    if (msg.toLowerCase().includes("already exists")) {
+  if (!result.success) {
+    const error = result.error ?? "create_dir failed";
+    if (error.includes("already exists")) {
       return { success: true, output: `Directory already exists: ${relativePath}` };
     }
-    return { success: false, error: `Failed to create: ${msg}` };
+    return { success: false, error: `Failed to create: ${error}` };
   }
 
-  await projectStore.refreshTree();
   return {
     success: true,
     output: `Created directory: ${relativePath}`,
@@ -1160,32 +1184,29 @@ export async function handleDeleteFile(args: Record<string, unknown>): Promise<T
     isDirectory = true;
   }
 
-  try {
-    await invoke("delete_path", { path });
-  } catch (err) {
-    const errMsg = extractErrorMessage(err);
-    if (errMsg.includes("not found") || errMsg.includes("No such file")) {
+  const openPaths = editorStore.openFiles
+    .filter((f) => isSameOrSuffixPath(f.path, path, relativePath))
+    .map((f) => f.path);
+
+  const result = await workspaceMutationCoordinator.run({
+    type: "delete",
+    path,
+    openPaths,
+  });
+
+  if (!result.success) {
+    const error = result.error ?? "delete failed";
+    if (error.includes("not found") || error.includes("missing") || error.includes("No such file")) {
       return { success: false, error: `File not found: ${relativePath}` };
     }
-    if (errMsg.includes("permission") || errMsg.includes("denied")) {
+    if (error.includes("permission") || error.includes("denied")) {
       return { success: false, error: `Permission denied: Cannot delete ${relativePath}` };
     }
-    if (errMsg.includes("directory not empty")) {
+    if (error.includes("directory not empty")) {
       return { success: false, error: `Directory not empty: ${relativePath}` };
     }
-    return { success: false, error: `Failed to delete ${relativePath}: ${errMsg}` };
+    return { success: false, error: `Failed to delete ${relativePath}: ${error}` };
   }
-
-  // Close if open in editor
-  const openFiles = editorStore.openFiles.filter((f) =>
-    isSameOrSuffixPath(f.path, path, relativePath),
-  );
-  for (const f of openFiles) {
-    editorStore.closeFile(f.path, true);
-  }
-
-  projectStore.removeNode(path);
-
   const output = explanation
     ? `Deleted: ${relativePath}\nReason: ${explanation}`
     : `Deleted: ${relativePath}`;
@@ -1213,48 +1234,21 @@ export async function handleRenamePath(args: Record<string, unknown>): Promise<T
   const oldPath = resolvePath(oldRelPath);
   const newPath = resolvePath(newRelPath);
 
-  try {
-    await invoke("rename_path", { oldPath, newPath });
-  } catch (err) {
-    return { success: false, error: `Failed to rename: ${extractErrorMessage(err)}` };
+  const openPaths = editorStore.openFiles
+    .filter((f) => isSameOrSuffixPath(f.path, oldPath, oldRelPath))
+    .map((f) => f.path);
+
+  const result = await workspaceMutationCoordinator.run({
+    type: "rename",
+    oldPath,
+    newPath,
+    openPaths,
+  });
+
+  if (!result.success) {
+    const error = result.error ?? "rename failed";
+    return { success: false, error: `Failed to rename: ${error}` };
   }
-
-  // Update editor tabs
-  const normalizeForCompare = (value: string) => value.replace(/\\/g, "/").toLowerCase();
-  const oldAbsNorm = normalizeForCompare(oldPath);
-  const oldRelNorm = normalizeForCompare(oldRelPath);
-  const newPathNormalized = newPath.replace(/\\/g, "/");
-  const reopenPaths = new Set<string>();
-
-  const openFiles = editorStore.openFiles.filter((f) =>
-    isSameOrSuffixPath(f.path, oldPath, oldRelPath),
-  );
-  for (const f of openFiles) {
-    const openNorm = normalizeForCompare(f.path);
-    let reopenedPath = newPath;
-
-    if (openNorm !== oldAbsNorm && openNorm !== oldRelNorm) {
-      const matchedPrefix = openNorm.startsWith(`${oldAbsNorm}/`)
-        ? oldAbsNorm
-        : openNorm.startsWith(`${oldRelNorm}/`)
-          ? oldRelNorm
-          : null;
-
-      if (matchedPrefix) {
-        const suffix = f.path.replace(/\\/g, "/").slice(matchedPrefix.length);
-        reopenedPath = `${newPathNormalized}${suffix}`.replace(/\//g, "\\");
-      }
-    }
-
-    editorStore.closeFile(f.path, true);
-    reopenPaths.add(reopenedPath);
-  }
-
-  for (const reopenedPath of reopenPaths) {
-    await editorStore.openFile(reopenedPath);
-  }
-
-  await projectStore.refreshTree();
   return {
     success: true,
     output: `Renamed: ${oldRelPath} → ${newRelPath}`,
@@ -1292,12 +1286,9 @@ export async function handleReplaceLines(
   }
 
   // ALWAYS read fresh from disk
-  let content = "";
-  let expectedVersion: number;
+  let content: string;
   try {
-    const contentDoc = await readFileDocumentFresh(path);
-    content = contentDoc.content;
-    expectedVersion = contentDoc.version;
+    content = (await readFileDocumentFresh(path)).content;
   } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
@@ -1339,20 +1330,21 @@ export async function handleReplaceLines(
     };
   }
 
-  // Write with verification
-  const writeResult = await writeFileWithSync(path, resultContent, expectedVersion, content);
-  if (!writeResult.success) {
-    return { success: false, error: `Failed to write: ${writeResult.error}` };
-  }
-
   const replacedLines = actualEndLine - startLine + 1;
   const insertedLines = newLines.length;
-  // Force sync editor with the new disk content
-  await syncEditorWithDisk(path, normalizedPath, resultContent, {
+  const mutationResult = await runContentMutationIntent({
+    path,
     relativePath,
+    content: resultContent,
+    createIfMissing: false,
+    normalizedPath,
     firstChangedLine: startLine,
     lastChangedLine: startLine + insertedLines - 1,
-  }, runtime);
+    runtime,
+  });
+  if (!mutationResult.success) {
+    return { success: false, error: `Failed to write: ${mutationResult.error}` };
+  }
   const diffStats = calculateDiffStats(content, resultContent);
 
   // Get diagnostics after edit
@@ -1440,12 +1432,16 @@ export async function handleWritePlanFile(args: Record<string, unknown>): Promis
   // Refresh tree to show new file
   try {
     await projectStore.refreshTree();
-  } catch {}
+  } catch {
+    // Directory might already exist, that's fine
+  }
 
   // Open in editor
   try {
     await editorStore.openFile(path);
-  } catch {}
+  } catch {
+    // Tree refresh is best-effort here
+  }
 
   return {
     success: true,
@@ -1491,7 +1487,7 @@ export async function handleFormatFile(args: Record<string, unknown>): Promise<T
       return { success: false, error: `File not found: ${relativePath}` };
     }
     content = doc.content;
-  } catch (err) {
+  } catch {
     return { success: false, error: `File not found: ${relativePath}` };
   }
 

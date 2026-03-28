@@ -7,6 +7,11 @@
   interface Props {
     node: TreeNode;
     depth: number;
+    stagedIndicator?: {
+      state: string;
+      title: string;
+      className: string;
+    } | null;
     onSelect?: (node: TreeNode, e: MouseEvent | KeyboardEvent) => void;
     onContextMenu?: (node: TreeNode, e: MouseEvent) => void;
     isEditing?: boolean;
@@ -29,6 +34,7 @@
   let {
     node,
     depth,
+    stagedIndicator = null,
     onSelect,
     onContextMenu,
     isEditing,
@@ -300,6 +306,14 @@
     <span class="name" class:git-modified={gitIndicator} title={node.path}
       >{node.name}</span
     >
+    {#if stagedIndicator}
+      <span
+        class={stagedIndicator.className}
+        title={stagedIndicator.title}
+      >
+        {stagedIndicator.state}
+      </span>
+    {/if}
     {#if gitIndicator}
       <span
         class="git-indicator"
@@ -400,6 +414,41 @@
   }
 
   /* Git status indicator (M, U, A, D, etc.) */
+  .staged-indicator {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-hover) 85%, transparent);
+    flex-shrink: 0;
+  }
+
+  .staged-indicator + .git-indicator {
+    margin-left: 6px;
+  }
+
+  .staged-staged_modified,
+  .staged-staged_new {
+    color: var(--color-success);
+    background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  }
+
+  .staged-staged_delete,
+  .staged-failed {
+    color: var(--color-error);
+    background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  }
+
+  .staged-committed {
+    color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+
   .git-indicator {
     font-size: 11px;
     font-weight: 600;

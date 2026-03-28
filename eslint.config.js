@@ -22,6 +22,16 @@ export default ts.config(
     },
   },
   {
+    files: ["**/*.svelte.ts"],
+    languageOptions: {
+      parser: ts.parser,
+      parserOptions: {
+        projectService: true,
+        extraFileExtensions: [".svelte"],
+      },
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "warn",

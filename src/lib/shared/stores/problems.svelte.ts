@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 /**
  * Problems store using Svelte 5 runes
  * SaaS-Ready real-time diagnostics management
@@ -18,6 +19,7 @@ import { writable, type Writable } from 'svelte/store';
 
 export type ProblemSeverity = 'error' | 'warning' | 'info' | 'hint';
 export type SeverityFilter = ProblemSeverity | 'all';
+export type DiagnosticsBasis = 'committed_disk' | 'editor_buffer' | 'staged_tool_output';
 
 export interface DiagnosticSourceState {
   source: string;
@@ -79,6 +81,7 @@ class ProblemsStore {
   private readonly searchQueryStore: Writable<string>;
   private readonly isUpdatingStore: Writable<boolean>;
   private readonly sourceStatesStore: Writable<Record<string, DiagnosticSourceState>>;
+  private readonly diagnosticsBasisStore: Writable<DiagnosticsBasis>;
   private readonly lastUpdateStore: Writable<number>;
   private readonly freshnessNowStore: Writable<number>;
 
@@ -104,6 +107,9 @@ class ProblemsStore {
 
   /** Diagnostics source health state */
   sourceStates: Record<string, DiagnosticSourceState> = {};
+
+  /** Canonical basis for the currently projected diagnostics */
+  diagnosticsBasis: DiagnosticsBasis = 'committed_disk';
   
   /** Last update timestamp */
   lastUpdate = 0;
@@ -134,6 +140,10 @@ class ProblemsStore {
     this.sourceStatesStore = writable<Record<string, DiagnosticSourceState>>(this.sourceStates);
     this.sourceStatesStore.subscribe((value) => {
       this.sourceStates = value;
+    });
+    this.diagnosticsBasisStore = writable<DiagnosticsBasis>(this.diagnosticsBasis);
+    this.diagnosticsBasisStore.subscribe((value) => {
+      this.diagnosticsBasis = value;
     });
     this.lastUpdateStore = writable<number>(this.lastUpdate);
     this.lastUpdateStore.subscribe((value) => {
@@ -168,6 +178,11 @@ class ProblemsStore {
   private setSourceStates(next: Record<string, DiagnosticSourceState>): void {
     this.sourceStates = next;
     this.sourceStatesStore.set(next);
+  }
+
+  private setDiagnosticsBasisState(next: DiagnosticsBasis): void {
+    this.diagnosticsBasis = next;
+    this.diagnosticsBasisStore.set(next);
   }
 
   private setLastUpdate(next: number): void {
@@ -229,7 +244,7 @@ class ProblemsStore {
    */
   private getDedupedProblems(): Problem[] {
     const all = Object.values(this.problemsByFile).flat();
-    const byFingerprint = new Map<string, Problem>();
+    const byFingerprint = new SvelteMap<string, Problem>();
 
     const fingerprint = (problem: Problem): string => {
       return [
@@ -321,6 +336,10 @@ class ProblemsStore {
 
     return summarizeDiagnosticSources(snapshots, this.freshnessNow);
   }
+
+  setDiagnosticsBasis(next: DiagnosticsBasis): void {
+    this.setDiagnosticsBasisState(next);
+  }
   
   /** Set severity filter */
   setSeverityFilter(filter: SeverityFilter): void {
@@ -388,7 +407,6 @@ class ProblemsStore {
 
   markSourceFresh(source: string): void {
     if (!source || source === 'monaco-native') return;
-    const current = this.sourceStates[source];
     const now = Date.now();
     this.setSourceStates({
       ...this.sourceStates,
@@ -505,7 +523,12 @@ class ProblemsStore {
    */
   clearAll(): void {
     this.setProblemsByFile({});
+    this.setIsUpdatingState(false);
     this.setSourceStates({});
+    if (this.updateTimeout) {
+      clearTimeout(this.updateTimeout);
+      this.updateTimeout = null;
+    }
     for (const timeout of this.sourceUpdateTimeouts.values()) {
       clearTimeout(timeout);
     }
