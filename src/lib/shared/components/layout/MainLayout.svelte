@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import MenuBar from "./MenuBar.svelte";
   import StatusBar from "./StatusBar.svelte";
   import ResizablePanel from "./ResizablePanel.svelte";
@@ -70,6 +71,14 @@
   let monacoFeatureLoading = $state(false);
   let xtermWarmStarted = $state(false);
   let mcpInitStarted = $state(false);
+
+  function emitShellDebug(message: string): void {
+    console.info("[VoltStartup]", message);
+    void invoke("debug_log_frontend", {
+      topic: "frontend",
+      message,
+    }).catch(() => {});
+  }
 
   function getFileExt(path: string): string {
     const name = path.split(/[/\\]/).pop() ?? path;
@@ -213,6 +222,7 @@
 
   // Initialize lightweight app services immediately.
   onMount(() => {
+    emitShellDebug("MainLayout onMount start");
     logOutput("Volt", "Volt IDE started");
     const telemetryDebug =
       typeof localStorage !== "undefined" &&
@@ -223,7 +233,21 @@
 
     // Initialize ProjectStore (restores last project)
     // We do this here instead of in the store constructor to avoid HMR loops
-    void projectStore.init();
+    void projectStore
+      .init()
+      .then(() => {
+        emitShellDebug("projectStore.init resolved");
+      })
+      .catch((error) => {
+        const message =
+          error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : String(error);
+        emitShellDebug(`projectStore.init failed: ${message}`);
+        if (error instanceof Error && error.stack) {
+          emitShellDebug(`projectStore.init.stack ${error.stack}`);
+        }
+      });
 
     // Handle window beforeunload to clean up services
     const handleBeforeUnload = () => {

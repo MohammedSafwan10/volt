@@ -4,7 +4,7 @@ mod domains;
 mod lsp;
 mod observability;
 
-use observability::debug_log;
+use observability::{debug_log, debug_log_frontend};
 use tauri::Manager;
 
 use chat_history::{
@@ -246,6 +246,7 @@ pub fn run() {
             semantic_index_status,
             semantic_index_rebuild,
             semantic_index_compact,
+            debug_log_frontend,
             // File watching
             start_file_watch,
             stop_file_watch,

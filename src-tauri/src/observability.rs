@@ -7,6 +7,11 @@ pub fn debug_log(topic: &str, message: impl AsRef<str>) {
     }
 }
 
+#[tauri::command]
+pub fn debug_log_frontend(topic: String, message: String) {
+    debug_log(&topic, message);
+}
+
 pub struct DebugScope {
     topic: &'static str,
     action: String,
