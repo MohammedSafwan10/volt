@@ -13,10 +13,17 @@ export interface RuntimeGitSummary {
   conflicted: number;
 }
 
+export interface RuntimeWorkspaceSummary {
+  rootEntryCount?: number;
+  rootEntries?: string[];
+  isProbablyEmpty?: boolean;
+}
+
 export interface RuntimeContextInput {
   workspaceRoot?: string | null;
   terminals?: RuntimeTerminalSummary[];
   git?: RuntimeGitSummary;
+  workspaceSummary?: RuntimeWorkspaceSummary;
   now?: Date;
 }
 
@@ -49,6 +56,20 @@ export function buildRuntimeContextBlock(input: RuntimeContextInput): string {
     },
     workspace: {
       root: safeString(input.workspaceRoot ?? undefined) ?? null,
+      summary: {
+        root_entry_count:
+          typeof input.workspaceSummary?.rootEntryCount === 'number'
+            ? input.workspaceSummary.rootEntryCount
+            : null,
+        root_entries: (input.workspaceSummary?.rootEntries ?? [])
+          .map((entry) => safeString(entry))
+          .filter((entry): entry is string => Boolean(entry))
+          .slice(0, 24),
+        is_probably_empty:
+          typeof input.workspaceSummary?.isProbablyEmpty === 'boolean'
+            ? input.workspaceSummary.isProbablyEmpty
+            : null,
+      },
     },
     active_terminals: {
       count: input.terminals?.length ?? 0,

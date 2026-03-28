@@ -174,11 +174,23 @@ export async function handleReadFile(
     // Use fileService for consistent file access - always get fresh from disk for AI reads
     const doc = await fileService.read(path, true);
     if (!doc) {
-      return { success: false, error: `File not found: ${relativePath}` };
+      return {
+        success: false,
+        error:
+          `File not found: ${relativePath}\n` +
+          'If you are exploring a new or empty workspace, use list_dir or get_file_tree first.\n' +
+          'If you intend to create this file from scratch, use write_file or apply_patch with an Add File patch.',
+      };
     }
     content = doc.content;
   } catch (err) {
-    return { success: false, error: `File not found: ${relativePath}` };
+    return {
+      success: false,
+      error:
+        `File not found: ${relativePath}\n` +
+        'If you are exploring a new or empty workspace, use list_dir or get_file_tree first.\n' +
+        'If you intend to create this file from scratch, use write_file or apply_patch with an Add File patch.',
+    };
   }
 
   const totalLines = content.split('\n').length;
@@ -300,7 +312,12 @@ export async function handleListDir(args: Record<string, unknown>): Promise<Tool
     }>>('list_dir', { path });
 
     if (entries.length === 0) {
-      return { success: true, output: `${relativePath}/ (empty)` };
+      return {
+        success: true,
+        output:
+          `${relativePath}/ (empty)\n` +
+          'Workspace appears empty. Scaffold new files or directories instead of assuming existing project files.',
+      };
     }
 
     // Sort: directories first, then files
@@ -499,6 +516,10 @@ function formatFileTreeBetter(entries: TreeEntry[], rootPath: string, stats: Tre
 
   if (wasTruncated) {
     lines.push(`   ⚠️ Large project - showing first ${MAX_TREE_ENTRIES} entries. Use find_files or workspace_search for specific files.`);
+  }
+
+  if (entries.length === 0) {
+    lines.push('   Workspace appears empty. Scaffold new files/directories instead of assuming existing app files.');
   }
   lines.push('');
 

@@ -113,6 +113,32 @@
     console.info('[AssistantPanelSession]', { event, ...details, at: Date.now() });
   }
 
+  function buildWorkspaceRuntimeSummary(): {
+    rootEntryCount: number | null;
+    rootEntries: string[];
+    isProbablyEmpty: boolean | null;
+  } {
+    if (!projectStore.rootPath) {
+      return {
+        rootEntryCount: null,
+        rootEntries: [],
+        isProbablyEmpty: null,
+      };
+    }
+
+    const rootEntries = (projectStore.tree ?? [])
+      .map((entry) => String(entry?.name ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 24);
+    const rootEntryCount = Array.isArray(projectStore.tree) ? projectStore.tree.length : 0;
+
+    return {
+      rootEntryCount,
+      rootEntries,
+      isProbablyEmpty: rootEntryCount === 0,
+    };
+  }
+
   const {
     buildNativeRuntimeDecision,
     applyNativeRuntimeDecision,
@@ -411,6 +437,7 @@
 
     const runtimeContextBlock = buildRuntimeContextBlock({
       workspaceRoot: projectStore.rootPath,
+      workspaceSummary: buildWorkspaceRuntimeSummary(),
       terminals: terminalStore.sessions.map((session) => ({
         id: session.id,
         cwd: session.cwd || session.info.cwd,

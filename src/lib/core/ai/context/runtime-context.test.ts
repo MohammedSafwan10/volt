@@ -27,5 +27,21 @@ describe('buildRuntimeContextBlock', () => {
     expect(block).toContain('"truncated": true');
     expect(block).toContain('"branch": "main"');
   });
-});
 
+  it('includes empty-workspace summary when the workspace has no visible root entries', () => {
+    const block = buildRuntimeContextBlock({
+      workspaceRoot: 'e:/volt-project/home',
+      terminals: [],
+      workspaceSummary: {
+        rootEntryCount: 0,
+        rootEntries: [],
+        isProbablyEmpty: true,
+      },
+      now: new Date('2026-03-28T12:00:00.000Z'),
+    });
+
+    expect(block).toContain('"root_entry_count": 0');
+    expect(block).toContain('"is_probably_empty": true');
+    expect(block).toContain('"root_entries": []');
+  });
+});
