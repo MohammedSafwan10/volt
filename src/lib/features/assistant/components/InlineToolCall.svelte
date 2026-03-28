@@ -4,6 +4,7 @@
    * Shows tool name, status, and expandable output
    */
   import { UIIcon, type UIIconName } from "$shared/components/ui";
+  import { getFilePillPresentation } from "./file-edit-card-presentation";
   import { onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { editorStore } from "$features/editor/stores/editor.svelte";
@@ -507,7 +508,7 @@
     return path.split(".").pop()?.toLowerCase() || "";
   }
 
-  function getFileIcon(ext: string, filename?: string): UIIconName {
+  function getDiagnosticFileIcon(ext: string, filename?: string): UIIconName {
     switch (ext) {
       case "svelte":
         return "svelte";
@@ -554,13 +555,14 @@
     if (allPaths.length === 0) return [];
 
     return allPaths.map((p) => {
-      // robust splitting for Windows
-      const parts = p.split(/[/\\]/);
-      const filename = parts[parts.length - 1] || p;
-      const ext = getFileExt(filename);
+      const presentation = getFilePillPresentation({
+        toolName: toolCall.name,
+        path: p,
+        isRunning,
+      });
       return {
-        filename,
-        icon: getFileIcon(ext, filename),
+        filename: presentation.filename,
+        icon: presentation.icon,
         path: p,
       };
     });
@@ -905,7 +907,7 @@
                 onclick={() => handleFileClick(file.path)}
                 type="button"
               >
-                <UIIcon name={getFileIcon(getFileExt(file.path))} size={14} />
+                <UIIcon name={getDiagnosticFileIcon(getFileExt(file.path))} size={14} />
                 <span class="diag-filename">{file.path}</span>
                 <div class="diag-file-badges">
                   {#if file.errorCount > 0}
