@@ -333,6 +333,11 @@ function parseOscSequences(data: string): { events: ShellIntegrationEvent[]; cle
 	return { events, cleanData };
 }
 
+import {
+	inferTerminalCommandFailure,
+	normalizeCommandForTerminalShell,
+} from './terminal-command-safety';
+
 function decodeOscString(str: string): string {
 	if (!str) return '';
 	return str.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
@@ -712,7 +717,8 @@ export class TerminalSession {
 	}
 
 	public async executeCommand(command: string, timeoutMs = 300000): Promise<CommandCompletion> {
-		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(command, timeoutMs);
+		const normalizedCommand = normalizeCommandForTerminalShell(command, this.info.shell);
+		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(normalizedCommand, timeoutMs);
 		return new Promise((resolve) => {
 			const startOffset = this.getCleanOutputCursor();
 			let tid: ReturnType<typeof setTimeout> | null = null;
@@ -728,7 +734,7 @@ export class TerminalSession {
 				outputBuffer: [],
 				startOffset
 			});
-			this.write(`\x1b]633;C\x07${command}\r`);
+			this.write(`\x1b]633;C\x07${normalizedCommand}\r`);
 		});
 	}
 
@@ -740,7 +746,18 @@ export class TerminalSession {
 
 		try {
 			const effectiveTimeout = timeoutMs > 0 ? timeoutMs : Number.POSITIVE_INFINITY;
-			const raw = await this.waitForOutput(t => t.includes(`__VOLT_DONE_${sentinel}__`), effectiveTimeout, startOffset);
+			const raw = await this.waitForOutput((t) => {
+				if (t.includes(`__VOLT_DONE_${sentinel}__`)) return true;
+				return Boolean(
+					inferTerminalCommandFailure({
+						shell: this.info.shell,
+						command,
+						exitCode: 0,
+						timedOut: false,
+						output: stripTerminalArtifacts(t),
+					}),
+				);
+			}, effectiveTimeout, startOffset);
 			const exitMatch = raw.match(/__VOLT_EXIT_CODE_(\d+)__/);
 			const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
 			const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
@@ -752,8 +769,40 @@ export class TerminalSession {
 				if (lines[i].includes('$voltExit') || lines[i].includes('__VOLT_DONE_') || lines[i].includes(command.slice(0, 20))) startIdx = i + 1;
 			}
 			const final = lines.slice(startIdx).filter(l => !l.includes('__VOLT_') && !l.includes('$voltExit') && !l.includes('PS ')).join('\n').trim();
+			const inferredFailure = inferTerminalCommandFailure({
+				shell: this.info.shell,
+				command,
+				exitCode,
+				timedOut: false,
+				output: final || cleaned,
+			});
+			if (inferredFailure) {
+				return {
+					exitCode: inferredFailure.exitCode,
+					output: final || cleaned || inferredFailure.reason,
+					cwd: this.currentCwd ?? undefined,
+					timedOut: false,
+				};
+			}
 			return { exitCode, output: final || '[Done]', cwd: this.currentCwd ?? undefined, timedOut: false };
 		} catch {
+			const raw = this.readOutputSince(startOffset).text;
+			const cleaned = stripTerminalArtifacts(raw);
+			const inferredFailure = inferTerminalCommandFailure({
+				shell: this.info.shell,
+				command,
+				exitCode: 0,
+				timedOut: false,
+				output: cleaned,
+			});
+			if (inferredFailure) {
+				return {
+					exitCode: inferredFailure.exitCode,
+					output: cleaned || inferredFailure.reason,
+					cwd: this.currentCwd ?? undefined,
+					timedOut: false,
+				};
+			}
 			return { exitCode: -1, output: '[Timeout]', timedOut: true };
 		}
 	}

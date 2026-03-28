@@ -132,6 +132,48 @@ describe("terminal-tool-run-coordinator", () => {
     });
   });
 
+  it("surfaces failure reasons for foreground command failures", async () => {
+    const store = createTerminalToolRunStore();
+    const session = {
+      id: "term-4",
+      info: { shell: "powershell.exe" },
+      getCleanOutputCursor: () => 0,
+      executeCommand: vi.fn().mockResolvedValue({
+        output: "ParserError output",
+        exitCode: 1,
+        timedOut: false,
+      }),
+      readCleanOutputSince: vi.fn().mockReturnValue({
+        text: "ParserError output",
+        nextOffset: 18,
+        truncatedBeforeOffset: false,
+      }),
+    };
+
+    const coordinator = createTerminalToolRunCoordinator({
+      runStore: store,
+      getSession: vi.fn().mockResolvedValue(session),
+      classifyLongRunning: vi.fn().mockReturnValue(false),
+      trackDetachedProcess: vi.fn(),
+    });
+
+    const result = await coordinator.runForeground({
+      runId: "run-4",
+      toolCallId: "tool-4",
+      command: "bad command",
+      cwd: "C:/tauri/volt",
+      timeoutMs: 1000,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Command failed with exit code 1");
+    expect(store.get("run-4")).toMatchObject({
+      state: "failed",
+      failureReason: "Command failed with exit code 1",
+      exitCode: 1,
+    });
+  });
+
   it("routes run_command through the terminal tool coordinator", async () => {
     const coordinator = {
       runForeground: vi.fn().mockResolvedValue({

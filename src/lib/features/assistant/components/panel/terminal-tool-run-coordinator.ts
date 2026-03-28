@@ -3,6 +3,7 @@ import {
   readTerminalTranscriptSlice,
   type TerminalTranscriptReader,
 } from "./terminal-tool-transcript";
+import { inferTerminalCommandFailure } from "$features/terminal/services/terminal-command-safety";
 import type {
   TerminalToolExecutionMode,
   TerminalToolRunStore,
@@ -10,6 +11,9 @@ import type {
 
 export interface TerminalCoordinatorSession extends TerminalTranscriptReader {
   id: string;
+  info?: {
+    shell?: string;
+  };
   getCleanOutputCursor: () => number;
   executeCommand?: (
     command: string,
@@ -49,6 +53,16 @@ export interface RunForegroundResult {
   success: boolean;
   output?: string;
   error?: string;
+  meta?: {
+    terminalRun?: {
+      state?: string;
+      commandPreview?: string;
+      processId?: number;
+      terminalId?: string;
+      detectedUrl?: string;
+      excerpt?: string;
+    };
+  };
 }
 
 const MAX_TRANSCRIPT_CHARS = 16_000;
@@ -116,6 +130,17 @@ export function createTerminalToolRunCoordinator(
           MAX_TRANSCRIPT_CHARS,
         );
         const output = finalSlice.text || completion.output;
+        const inferredFailure = inferTerminalCommandFailure({
+          shell: session.info?.shell,
+          command: input.command,
+          exitCode: completion.exitCode,
+          timedOut: completion.timedOut,
+          output,
+        });
+        const effectiveExitCode = inferredFailure?.exitCode ?? completion.exitCode;
+        const failureReason =
+          inferredFailure?.reason ??
+          getFailureReason(effectiveExitCode, completion.timedOut);
 
         if (deps.classifyLongRunning(input.command, output)) {
           deps.runStore.patch(input.runId, {
@@ -146,26 +171,42 @@ export function createTerminalToolRunCoordinator(
           return {
             success: true,
             output: excerpt,
+            meta: {
+              terminalRun: {
+                state: "detached",
+                commandPreview: input.command,
+                terminalId: session.id,
+                processId: detached.processId,
+                detectedUrl: detached.detectedUrl,
+                excerpt,
+              },
+            },
           };
         }
 
         deps.runStore.patch(input.runId, {
-          state: getCompletedState(completion.exitCode, completion.timedOut),
+          state: getCompletedState(effectiveExitCode, completion.timedOut),
           captureCurrentOffset: finalSlice.nextOffset,
           captureEndOffset: finalSlice.nextOffset,
           excerpt: buildTerminalToolExcerpt(output, MAX_EXCERPT_LINES),
           transcriptTruncated: finalSlice.truncatedBeforeOffset,
-          exitCode: completion.exitCode,
+          exitCode: effectiveExitCode,
           endedAt: Date.now(),
-          failureReason: getFailureReason(
-            completion.exitCode,
-            completion.timedOut,
-          ),
+          failureReason,
         });
 
         return {
-          success: completion.exitCode === 0 && !completion.timedOut,
+          success: !failureReason,
           output,
+          error: failureReason,
+          meta: {
+            terminalRun: {
+              state: getCompletedState(effectiveExitCode, completion.timedOut),
+              commandPreview: input.command,
+              terminalId: session.id,
+              excerpt: buildTerminalToolExcerpt(output, MAX_EXCERPT_LINES),
+            },
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
