@@ -1,0 +1,15 @@
+{
+  "featureId": "restabilize-document-core-recurring-timeout-specs",
+  "reviewedAt": "2026-03-25T11:29:39.005326+00:00",
+  "commitId": "f8ba6ef",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation stays narrowly scoped to the flaky file-index spec and addresses the reproduced race by waiting for listener registration, request-id capture, and cleanup registration before emitting the synthetic completion event. That matches the feature intent of stabilizing the recurring full-suite timeout gate without changing product code, and the paired save-reload suite was revalidated unchanged in the worker evidence.",
+    "issues": []
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed handoff, transcript skeleton, commit f8ba6ef, and shared-state docs. The change correctly hardens the async test orchestration in src/lib/core/services/file-index.test.ts so the prior full-suite race no longer depends on immediate listener setup, and I found no blocking or non-blocking issues within this feature scope."
+}

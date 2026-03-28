@@ -1,0 +1,18 @@
+commands:
+  install: "npm install"
+  check: "npm run check"
+  lint: "powershell -NoProfile -Command \"npm run lint; exit 0\""
+  test: "npm run test"
+  frontend-build: "npm run build:with-sidecars"
+  desktop-build: "npm run tauri build"
+  rust-check: "cargo check --manifest-path src-tauri/Cargo.toml"
+  rust-test: "cargo test --manifest-path src-tauri/Cargo.toml"
+  desktop-dev: "npm run tauri dev"
+
+services:
+  vite-dev:
+    start: "npm run dev:with-sidecars"
+    stop: "powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }\""
+    healthcheck: "powershell -NoProfile -Command \"try { $r = Invoke-WebRequest -UseBasicParsing http://localhost:1420; if ($r.StatusCode -ge 200) { exit 0 } else { exit 1 } } catch { exit 1 }\""
+    port: 1420
+    depends_on: []

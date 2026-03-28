@@ -1,0 +1,156 @@
+{
+  "milestone": "document-core",
+  "round": 3,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "npm run test",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "npm run check",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "powershell -NoProfile -Command \"npm run lint; exit 0\"",
+      "exitCode": 0,
+      "advisory": true,
+      "notes": "Lint remains advisory for document-core per orchestrator guidance and .factory/services.yaml. The current run surfaced extensive pre-existing lint debt (389 problems: 288 errors, 101 warnings), including parser errors in multiple `.svelte.ts` files and widespread pre-existing rule violations, so lint was not used as a blocking signal."
+    }
+  },
+  "reviewsSummary": {
+    "total": 17,
+    "passed": 4,
+    "failed": 13,
+    "failedFeatures": [
+      "repair-problemsview-svelte-parse-baseline",
+      "stabilize-validation-baseline-and-remove-browser-cdp",
+      "native-document-manager-core",
+      "document-ui-adapter-and-file-flow-parity",
+      "fix-editor-file-service-init-cycle",
+      "stabilize-file-index-hmr-cleanup-test-baseline",
+      "document-core-save-reload-and-problems-hardening",
+      "retire-legacy-assistant-browser-attachments",
+      "stabilize-document-core-timeout-test-baseline",
+      "stabilize-cleanup-and-file-index-validator-baseline",
+      "document-core-save-reload-and-problems-followup",
+      "stabilize-document-core-timeout-gate-followup",
+      "finish-assistant-browser-retirement-followup"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "repair-problemsview-svelte-parse-baseline",
+      "severity": "blocking",
+      "description": "ProblemsView baseline still relies on ProblemsView.toString() plus exact copy strings, and the promised manual Problems-panel verification never actually completed, so user-visible Problems behavior remains unverified."
+    },
+    {
+      "featureId": "stabilize-validation-baseline-and-remove-browser-cdp",
+      "severity": "blocking",
+      "description": "Assistant runtime/UI still preserves legacy browser-era element attachment paths (`assistant.svelte.ts`, `UserMessage.svelte`), so browser/CDP retirement is incomplete even though shell entrypoints were removed."
+    },
+    {
+      "featureId": "native-document-manager-core",
+      "severity": "blocking",
+      "description": "The native document manager can bypass conflict safety for first edits to unopened files and still ignores advertised createIfMissing writes, so the native document command surface is not yet trustworthy."
+    },
+    {
+      "featureId": "document-ui-adapter-and-file-flow-parity",
+      "severity": "blocking",
+      "description": "reloadFile() now routes through native document_reload and can overwrite dirty in-memory editor buffers without warning in flows such as assistant revert, violating the required unsaved-edit protection."
+    },
+    {
+      "featureId": "fix-editor-file-service-init-cycle",
+      "severity": "blocking",
+      "description": "The init-cycle fix appears implemented, but the claimed regression test coverage is not present in the cited feature commit, so the feature lacks trustworthy committed proof against reintroducing the startup/HMR cycle."
+    },
+    {
+      "featureId": "stabilize-file-index-hmr-cleanup-test-baseline",
+      "severity": "blocking",
+      "description": "The HMR cleanup test fix exists only as working-tree state and not in the cited feature commit, so the feature cannot be trusted as a committed baseline repair."
+    },
+    {
+      "featureId": "document-core-save-reload-and-problems-hardening",
+      "severity": "blocking",
+      "description": "Assistant revert/restore and related save paths still bypass native expectedVersion semantics, and Problems baseline coverage regressed to store-only checks instead of durable UI assertions."
+    },
+    {
+      "featureId": "retire-legacy-assistant-browser-attachments",
+      "severity": "blocking",
+      "description": "Legacy browser-era `element` attachments remain part of the assistant runtime model without committed regression evidence proving persisted-history sanitization."
+    },
+    {
+      "featureId": "stabilize-document-core-timeout-test-baseline",
+      "severity": "blocking",
+      "description": "The timeout-baseline stabilization was handed off against an unrelated assistant commit; the actual test edits remain working-tree-only and are therefore not trustworthy as a committed milestone artifact."
+    },
+    {
+      "featureId": "stabilize-cleanup-and-file-index-validator-baseline",
+      "severity": "blocking",
+      "description": "The commit only contained the file-index timing fix; the required move of cleanup regression coverage into a TypeScript/Vitest-compatible harness was not committed as part of the feature."
+    },
+    {
+      "featureId": "document-core-save-reload-and-problems-followup",
+      "severity": "blocking",
+      "description": "Dirty-buffer reload/revert safety is still incomplete because reloadFile remains unconditional for key callers and assistant revert still falls back to force-write semantics."
+    },
+    {
+      "featureId": "stabilize-document-core-timeout-gate-followup",
+      "severity": "blocking",
+      "description": "The committed file-index test change in 05de7c5 still left a race; a later commit was required to actually make the full-suite timeout deterministic."
+    },
+    {
+      "featureId": "finish-assistant-browser-retirement-followup",
+      "severity": "blocking",
+      "description": "The intended assistant-side browser-retirement cleanup and its regression test remain uncommitted working-tree changes, so scrutiny cannot approve them as a trustworthy artifact."
+    },
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skills",
+      "suggestion": "Strengthen worker-skill guidance so features with required manual/UI verification cannot be reported as successful when those checks were skipped or blocked, and clarify how scrutiny should treat 'working-tree-only, commit isolation blocked' implementations.",
+      "evidence": "repair-problemsview-svelte-parse-baseline, document-ui-adapter-and-file-flow-parity, document-core-save-reload-and-problems-hardening, and finish-assistant-browser-retirement-followup all relied on incomplete manual verification and/or uncommitted evidence while still reaching completed/positive handoffs.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills",
+      "suggestion": "Add an explicit handoff rule that the recorded commitId must actually contain the scoped implementation and regression coverage being claimed, rather than reusing repo HEAD or an unrelated prior commit when the working tree is dirty.",
+      "evidence": "fix-editor-file-service-init-cycle, stabilize-file-index-hmr-cleanup-test-baseline, stabilize-document-core-timeout-test-baseline, and stabilize-document-core-timeout-gate-followup all failed because the cited commit did not include the reviewed fix.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills",
+      "suggestion": "Update stability-hardening-worker startup instructions to stop requiring `.factory/library/user-testing.md` unless that file actually exists, or create a durable replacement reference and point the skill at it.",
+      "evidence": "Multiple reviews (for example harden-dev-surface-startup-reachability and stabilize-document-core-timeout-gate-followup) recorded that `.factory/library/` is empty while the skill still mandates reading `.factory/library/user-testing.md`.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Add repository knowledge that commit IDs were missing or null in individual feature handoffs.",
+      "reason": "rejected as process symptom already covered by the broader guidance update to require trustworthy commitId evidence for scoped feature artifacts."
+    },
+    {
+      "observation": "Add a library note for the native document command/event surface.",
+      "reason": "rejected for now because document-core scrutiny failed on core semantic correctness; documenting the current surface as shared knowledge would risk canonizing behavior that reviewers found incomplete."
+    },
+    {
+      "observation": "Record the current `npm run check` warning baseline in shared knowledge.",
+      "reason": "rejected because warnings are tool-output state rather than stable repository knowledge, and documenting them here would not fix the underlying validation debt."
+    },
+    {
+      "observation": "Record that cleanup regression tests must live under `src/**/*.test.ts` and avoid Node-only imports like `fs/promises`.",
+      "reason": "rejected as duplicate/non-essential for orchestrator guidance because the specific cleanup harness feature already passed and the repo's Vitest config is the authoritative source."
+    }
+  ],
+  "orchestratorOverride": {
+    "applied": true,
+    "date": "2026-03-25",
+    "reason": "User explicitly chose to continue without scrutiny proof. The orchestrator is overriding this failing scrutiny result so the mission can proceed to user-testing despite unresolved evidence-quality concerns in the dirty working tree."
+  },
+  "previousRound": ".factory/validation/document-core/scrutiny/synthesis.json"
+}

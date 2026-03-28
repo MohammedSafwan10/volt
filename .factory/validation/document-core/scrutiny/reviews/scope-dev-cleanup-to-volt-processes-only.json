@@ -1,0 +1,21 @@
+{
+  "featureId": "scope-dev-cleanup-to-volt-processes-only",
+  "reviewedAt": "2026-03-25T10:30:00Z",
+  "commitId": "0b7469809a631adf4c8d3423cb7b65d335e48945",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The feature removes the unsafe retry-time `killByPattern('node')` fallback and replaces it with Volt-scoped cleanup calls plus regression coverage that locks in the narrower behavior. The committed script still retries using only project-owned node processes, the debug sidecar executable, and known Volt dev ports, which matches the feature contract.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The worker followed the stability-hardening procedure by reproducing the issue, narrowing the fix, and adding characterization coverage. The only deviation encountered was an initial test file placement under `scripts/`, but the worker corrected this within the session after discovering Vitest only includes `src/**/*.test.ts`.",
+      "evidence": "Transcript skeleton for session c38a570d-8cd6-47a8-8f28-32828bf5d754 shows the failed targeted run against `scripts/cleanup-before-dev.test.mjs`, followed by relocating coverage to `src/lib/core/dev/cleanup-before-dev.test.ts`. `.factory/skills/stability-hardening-worker/SKILL.md` explicitly prefers targeted fixes with characterization tests."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the feature handoff, transcript skeleton, committed diff, and surrounding cleanup script/test. The implementation satisfies the requested scope reduction: no system-wide Node kill fallback remains, and the retry cleanup stays limited to Volt-owned processes and known dev ports."
+}

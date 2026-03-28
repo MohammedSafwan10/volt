@@ -1,0 +1,50 @@
+{
+  "featureId": "workspace-supervisor-native-lifecycle",
+  "reviewedAt": "2026-03-25T00:00:00Z",
+  "commitId": "f8ba6efe20b97b1655b0eb5a42b45b94a5f43448",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature adds a Rust workspace manager and routes the frontend store through native commands, but it does not fully satisfy the required native lifecycle/event ownership. The new backend event surface is emitted but never consumed, recent-workspace persistence still depends on frontend localStorage for restore/clear behavior, and invalid refresh failures do not surface visible user feedback even though the feature contract requires it.",
+    "issues": [
+      {
+        "file": "src/lib/shared/stores/project.svelte.ts",
+        "line": 510,
+        "severity": "blocking",
+        "description": "Only invalid open failures show visible feedback. When workspace_refresh fails, refreshTree() returns quietly without surfacing result.message, so a broken/inaccessible workspace refresh does not provide the visible failure feedback required by the feature contract."
+      },
+      {
+        "file": "src/lib/shared/stores/project.svelte.ts",
+        "line": 449,
+        "severity": "blocking",
+        "description": "Restore-on-launch and close-folder persistence are still frontend-owned through localStorage (volt.currentProject). The Rust workspace manager only stores in-memory recentProjects and active_root_path, so the claimed native ownership of lifecycle persistence handling is not actually implemented in this feature."
+      },
+      {
+        "file": "src-tauri/src/domains/workspace/manager.rs",
+        "line": 92,
+        "severity": "non_blocking",
+        "description": "The backend emits workspace://lifecycle events, but no frontend code listens to them. This leaves the advertised native command/event surface effectively unused and means lifecycle state transitions are still driven entirely by direct command responses and local store logic."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The native-core-worker skill says user-visible behavior changes should use the agent-browser when the local app surface is reachable, but the transcript contains no browser/manual UI verification and the handoff only reports command-level validation.",
+      "evidence": "Skill file .factory/skills/native-core-worker/SKILL.md section \"Verify at three levels\" requires manual/user-surface verification when behavior changes are visible. Transcript skeleton for worker session c1b740e7-557f-407f-b37f-cb624ed31c35 shows only Read/Grep/ApplyPatch/Execute validation steps and no agent-browser invocation or interactiveChecks."
+    },
+    {
+      "area": "knowledge",
+      "observation": "Workspace lifecycle now spans a native manager plus frontend localStorage restore semantics, but .factory/library has no note documenting that persistence is still partially frontend-owned after this feature.",
+      "evidence": ".factory/library is empty, while src/lib/shared/stores/project.svelte.ts lines 449-457 and 543 still read/write volt.currentProject from localStorage despite the new Rust workspace manager in src-tauri/src/domains/workspace/manager.rs."
+    },
+    {
+      "area": "services",
+      "observation": "No shared-state/service documentation records the new native workspace commands or emitted workspace lifecycle event channel.",
+      "evidence": ".factory/services.yaml only lists high-level repo commands/services and .factory/library is empty, while src-tauri/src/lib.rs registers workspace_get_state/workspace_open/workspace_refresh/workspace_close/workspace_replace_recent_projects and src-tauri/src/domains/workspace/manager.rs emits workspace://lifecycle."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Review failed: the feature moves some workspace orchestration into Rust, but native lifecycle ownership is incomplete. Persistence handling remains frontend-owned via localStorage, refresh failures lack required visible feedback, and the new workspace event surface is emitted but unused by the frontend."
+}

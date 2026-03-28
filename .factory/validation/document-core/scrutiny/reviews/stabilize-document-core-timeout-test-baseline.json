@@ -1,0 +1,28 @@
+{
+  "featureId": "stabilize-document-core-timeout-test-baseline",
+  "reviewedAt": "2026-03-25T10:30:00Z",
+  "commitId": "17a0c1f620f7a11df4bcf476fdfdc38264762446",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The worker verified the right suites and the current working tree does contain deterministic test changes for `file-index.test.ts`, but the claimed commit is unrelated and does not include either reviewed test file. Because the success handoff points to commit `17a0c1f`, scrutiny cannot trust that the claimed timeout-baseline stabilization was actually captured in committed history.",
+    "issues": [
+      {
+        "file": "src/lib/core/services/file-index.test.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The feature handoff claims commit `17a0c1f620f7a11df4bcf476fdfdc38264762446` implemented the timeout-baseline stabilization, but `git show`/`git diff --stat` for that commit contain no changes to `src/lib/core/services/file-index.test.ts` or `src/lib/features/editor/services/save-reload-hardening.test.ts`. The reviewed stabilization exists only as working-tree state, so the feature is not trustworthy as a committed milestone artifact."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The stability-hardening worker transcript reported success with `returnToOrchestrator: false` and reused the previous assistant commit ID even though the reviewed test edits were not part of that commit and the repository was already dirty. The worker/worker-base procedure appears not to guard against claiming success on uncommitted working-tree-only fixes.",
+      "evidence": "Handoff `2026-03-25T10-06-29-154Z__stabilize-document-core-timeout-test-baseline__060f0a82-7f0f-4583-a097-492756f35c96.json` records commitId `17a0c1f...`; `git show --stat 17a0c1f...` only changes assistant files, while `git status --short -- src/lib/core/services/file-index.test.ts src/lib/features/editor/services/save-reload-hardening.test.ts` still shows `M`/`??` for the reviewed test files."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the timeout-stabilization behavior appears present in the current working tree and was reportedly validated, but the feature’s claimed commit is unrelated to the reviewed files. Because scrutiny needs trustworthy diff/commit evidence for milestone validation, this feature cannot pass until the actual test changes are captured in the recorded feature artifact."
+}

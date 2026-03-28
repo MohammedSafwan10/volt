@@ -1,0 +1,85 @@
+{
+  "milestone": "document-core",
+  "round": 1,
+  "status": "fail",
+  "assertionsSummary": {
+    "total": 15,
+    "passed": 1,
+    "failed": 14,
+    "blocked": 14
+  },
+  "passedAssertions": [
+    "VAL-EDITOR-007"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [
+    {
+      "id": "VAL-EDITOR-001",
+      "blockedBy": "No trustworthy desktop-shell or user-surface evidence proving tab reuse."
+    },
+    {
+      "id": "VAL-EDITOR-002",
+      "blockedBy": "No trustworthy user-surface evidence for dirty indicator and clean-after-save behavior."
+    },
+    {
+      "id": "VAL-EDITOR-003",
+      "blockedBy": "No trustworthy evidence for dirty-tab close confirmation UX."
+    },
+    {
+      "id": "VAL-EDITOR-004",
+      "blockedBy": "Rename/move parity lacks committed regression coverage and desktop validation per scrutiny."
+    },
+    {
+      "id": "VAL-EDITOR-005",
+      "blockedBy": "Create-if-missing write path is tested, but explorer insertion/openability was not validated on the user surface."
+    },
+    {
+      "id": "VAL-EDITOR-006",
+      "blockedBy": "Delete/removal convergence across tree and editors lacks trustworthy user-surface validation."
+    },
+    {
+      "id": "VAL-EDITOR-008",
+      "blockedBy": "No direct proof that diff view remains read-only and Accept/Discard produce the correct final state."
+    },
+    {
+      "id": "VAL-EDITOR-009",
+      "blockedBy": "Neighbor-tab selection after close lacks committed regression coverage and desktop validation."
+    },
+    {
+      "id": "VAL-EDITOR-010",
+      "blockedBy": "Scrutiny still reports incomplete dirty-buffer reload/revert safety despite partial targeted coverage."
+    },
+    {
+      "id": "VAL-EDITOR-011",
+      "blockedBy": "Binary/media preview-mode behavior lacks trustworthy automated or desktop validation evidence."
+    },
+    {
+      "id": "VAL-ASSISTANT-007",
+      "blockedBy": "Strict tool-router tests exist, but scrutiny reports assistant-side legacy browser attachment/runtime paths are still incompletely retired or not trustworthily evidenced."
+    },
+    {
+      "id": "VAL-REMOVAL-001",
+      "blockedBy": "No trustworthy user-surface evidence proves browser panel removal from shared app chrome."
+    },
+    {
+      "id": "VAL-REMOVAL-002",
+      "blockedBy": "Browser/CDP retirement is not fully proven on assistant/runtime surfaces according to scrutiny."
+    },
+    {
+      "id": "VAL-REMOVAL-003",
+      "blockedBy": "Scrutiny still reports unresolved document-core regressions, so non-browser surface health after browser removal is not proven."
+    }
+  ],
+  "appliedUpdates": [],
+  "previousRound": null,
+  "notes": [
+    "No prior user-testing synthesis existed.",
+    "Project guidance and AGENTS.md explicitly avoid worker-run Tauri desktop validation by default and treat localhost:1420 as an internal helper, not a supported browser validation surface.",
+    "Automated validators were run successfully (npm run check, npm run test), but only VAL-EDITOR-007 had sufficiently direct automated evidence for user-visible behavior."
+  ],
+  "orchestratorOverride": {
+    "applied": true,
+    "date": "2026-03-25",
+    "reason": "User explicitly waived user-testing/manual desktop validation as a mission gate. The orchestrator is overriding this failed user-testing result so implementation can continue based on automated validators and implementation evidence."
+  }
+}

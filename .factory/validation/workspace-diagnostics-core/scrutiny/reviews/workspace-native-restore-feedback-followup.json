@@ -1,0 +1,26 @@
+{
+  "featureId": "workspace-native-restore-feedback-followup",
+  "reviewedAt": "2026-03-26T00:00:00Z",
+  "commitId": null,
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The follow-up closes the targeted ownership gap: persisted current-workspace state now comes from the native workspace manager, and frontend open/refresh failure paths now surface visible toast feedback instead of failing silently. Targeted lifecycle/store regression tests cover native state restoration, refresh routing, close clearing, and invalid-open preservation. I did not find a feature-scoped correctness regression in the reviewed paths.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The native-core-worker skill tells workers to add explicit regression coverage for newly native-owned persistence/state flows, but it does not explicitly call out backend-emitted workspace lifecycle events as a required verification target. This worker introduced/relied on `workspace://lifecycle` in the Rust manager, yet the transcript shows no listener/UI verification for that event surface, so a future worker could miss event-consumer regressions while still following the written procedure.",
+      "evidence": "Skill: C:\\tauri\\volt\\.factory\\skills\\native-core-worker\\SKILL.md step 5 mentions persistence/state regression coverage generally. Code: src-tauri/src/domains/workspace/manager.rs:12,22-37 emits `workspace://lifecycle` events. Transcript skeleton for session f8c9178e-36a5-44e2-b70e-5d05a0ba9f58 shows greps for the event name but no verification of any consumer in src."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The repo library appears to lack workspace-lifecycle-specific guidance documenting that persisted current workspace and recent-project ownership now live in the native workspace manager instead of frontend localStorage, even though this follow-up depends on that architectural rule.",
+      "evidence": "`LS C:\\tauri\\volt\\.factory\\library` returned no workspace-specific notes, and `Grep` across `.factory/library/*.md` only found a generic architecture bullet (`architecture.md:34 - workspace lifecycle supervision`). Reviewed code now centralizes this in src-tauri/src/domains/workspace/manager.rs:14-19, 138-187, 217-260 and src/lib/shared/stores/project.svelte.ts:436-455, 1242-1313."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Pass. The reviewed implementation satisfies the scoped follow-up: native workspace state now owns restore semantics, recent-project syncing is routed through native commands, and open/refresh failures visibly toast instead of silently falling back. I found no blocking or non-blocking code defects in the reviewed feature paths, but noted a skill/library documentation gap around verifying and documenting the native workspace lifecycle event/persistence contract."
+}

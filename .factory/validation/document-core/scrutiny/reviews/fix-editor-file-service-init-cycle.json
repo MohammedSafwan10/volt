@@ -1,0 +1,28 @@
+{
+  "featureId": "fix-editor-file-service-init-cycle",
+  "reviewedAt": "2026-03-25T09:10:00Z",
+  "commitId": "2566895",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The fix successfully defers the editor-store/file-service subscription out of the constructor and adds cleanup/reinit coverage, which addresses the reported startup/HMR TDZ crash. However, the referenced regression test file was not part of commit `2566895`, so the implementation did not actually add persistent test coverage in the reviewed feature commit despite the handoff claiming it did.",
+    "issues": [
+      {
+        "file": "src/lib/features/editor/stores/editor.svelte.test.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The feature handoff says this regression test was updated and the scoped diff only touched the editor store plus its lifecycle test, but commit `2566895` does not include `src/lib/features/editor/stores/editor.svelte.test.ts` at all (`git show --stat 2566895` lists only `file-service.ts`, `diff.svelte.ts`, and `editor.svelte.ts`). That means the promised initialization-order regression coverage was not actually delivered in the reviewed commit, leaving this fix without committed protection against reintroducing the startup/HMR cycle."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "knowledge",
+      "observation": "The document-core feature commit already introduced a direct constructor-time `fileService.subscribeAll(...)` in `editor.svelte.ts`, and this feature repaired it by switching to an idempotent `initialize()` plus microtask retry for TDZ cases. That startup/HMR caveat is now a known migration hazard that is not captured in `.factory/library/`.",
+      "evidence": "`git show 2566895:src/lib/features/editor/stores/editor.svelte.ts` shows the original constructor subscription; the reviewed file now catches `ReferenceError` mentioning `fileService` and retries via `queueMicrotask`, but `.factory/library/` is empty."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the feature handoff, transcript skeleton, commit diff, and shared-state docs. The code change appears to fix the reported initialization cycle, but the review fails because the claimed regression test coverage is not present in commit `2566895`, so the feature did not fully satisfy its own verification/coverage claim."
+}

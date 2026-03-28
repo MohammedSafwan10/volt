@@ -1,0 +1,21 @@
+{
+  "featureId": "diagnostics-cooldown-reconciliation-followup",
+  "reviewedAt": "2026-03-26T05:11:49Z",
+  "commitId": null,
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The follow-up correctly threads scheduler freshness metadata from Rust to the frontend so delayed runs mark requested sources stale and resumed runs immediately refresh only the sources that will actually execute, while leaving cooldown-blocked sources stale until a real rerun occurs. I did not find a feature-scoped correctness regression in the reviewed paths.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "knowledge",
+      "observation": "The repo library has architecture guidance but no focused note for the diagnostics scheduler freshness contract that this worker had to reconstruct from code (delayed sources remain stale across cooldown windows, fresh_sources should be emitted for resumed sidecars before sidecar startup, and problems store source state is the frontend convergence point). Recording that contract would make future diagnostics follow-ups easier to review and implement.",
+      "evidence": "Worker transcript shows repeated code spelunking across src-tauri/src/domains/lsp/manager.rs, src/lib/core/services/project-diagnostics.ts, and src/lib/shared/stores/problems.svelte.ts before implementing the change; .factory/library/ only contains broad architecture notes."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the handoff, transcript skeleton, working-tree diff, and affected diagnostics code/tests. The feature appears correct and sufficiently covered for the stated stale/fresh reconciliation gap; no blocking or non-blocking code issues were found in scope."
+}

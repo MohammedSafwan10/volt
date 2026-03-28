@@ -1,0 +1,33 @@
+{
+  "featureId": "stabilize-validation-baseline-and-remove-browser-cdp",
+  "reviewedAt": "2026-03-25T09:31:30Z",
+  "commitId": "17b9c13c519960dae6626a2a43bbed9db43e8998",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The reviewed commit usefully hardens strict-tool retirement and keeps browser/CDP out of the shared shell, but it does not fully satisfy the feature because it bundles large unrelated assistant-store changes beyond the browser/CDP retirement scope. The removal-specific behavior in the commit appears sound, yet the change is not a narrowly scoped hardening pass as required by the feature skill and mission expectations.",
+    "issues": [
+      {
+        "file": "src/lib/features/assistant/stores/assistant.svelte.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "This commit rewrites broad assistant runtime/state concerns unrelated to browser/CDP retirement, including synthetic spec-prompt metadata, conversation-tab title truncation/renaming helpers, auto-approve persistence, and conversation run-state helpers. That violates the feature scope ('finish browser/CDP removal and rerun baseline validation') and the stability-hardening-worker rule to keep narrow hardening features narrow instead of bundling adjacent assistant refactors."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The stability-hardening-worker skill correctly says narrow hardening features should not bundle broad adjacent refactors, but this worker still landed a very large assistant-store rewrite inside a browser-retirement feature. The skill may need stronger review guidance or an explicit checklist for rejecting scope expansion in shared runtime stores.",
+      "evidence": "SKILL.md step 7 says 'Keep narrowly targeted hardening features narrow' and 'do not bundle broad adjacent refactors just because they are in nearby files.' Commit 17b9c13 changes src/lib/features/assistant/stores/assistant.svelte.ts by hundreds of lines, adding syntheticPrompt, autoApproveAllTools, setConversationTitle, completeStreamingForConversation, and other spec/runtime helpers that are unrelated to browser/CDP retirement."
+    },
+    {
+      "area": "knowledge",
+      "observation": "Mission shared state does not currently capture that browser/CDP retirement in assistant surfaces had become entangled with broader assistant/spec-runtime work, which raises review risk for follow-up retirement fixes.",
+      "evidence": "The reviewed feature description and AGENTS.md frame this as browser/CDP removal and validation stabilization, but commit 17b9c13 mixes retirement edits with unrelated assistant runtime capabilities in src/lib/features/assistant/stores/assistant.svelte.ts and touches assistant UI behavior beyond retired tool handling."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the commit's retirement-specific edits look reasonable, but the implementation is not acceptably scoped for this feature because it mixes final browser/CDP cleanup with a large unrelated assistant-store refactor."
+}

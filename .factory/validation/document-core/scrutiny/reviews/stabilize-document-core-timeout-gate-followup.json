@@ -1,0 +1,28 @@
+{
+  "featureId": "stabilize-document-core-timeout-gate-followup",
+  "reviewedAt": "2026-03-25T11:05:10.879Z",
+  "commitId": "05de7c57a03a400c107bd5defcf938b675927aae",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature produced trustworthy scoped commit evidence for the auto-save timeout fix, but the committed file-index test change did not actually make the full-suite cleanup spec deterministic. The worker transcript shows the first attempt still relied on a race where the done event could fire before listeners were installed, and a later follow-up commit was needed to capture the request id and dispatch completion after registration.",
+    "issues": [
+      {
+        "file": "src/lib/core/services/file-index.test.ts",
+        "line": 48,
+        "severity": "blocking",
+        "description": "Commit `05de7c5` still leaves `registers HMR cleanup on first indexing start` race-prone: the mocked `index_workspace_stream` no longer resolves the promise because `doneListener` is often still undefined when `invokeMock` runs, so `indexProject()` can hang waiting for `indexCompletePromise`. The worker transcript confirms this commit was followed by a separate timing fix in `f8ba6ef` to capture `streamRequestId`, wait for listener registration, and emit the done event afterward, which means the reviewed feature did not itself satisfy the deterministic full-suite requirement in a trustworthy committed form."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The stability-hardening skill still tells workers to read `.factory/library/user-testing.md` first, but this repository currently has no `.factory/library/` entries and the reviewed worker did not read that file. The procedure does not match the current shared-state layout, so following it literally would fail or waste time.",
+      "evidence": "Skill file `C:/tauri/volt/.factory/skills/stability-hardening-worker/SKILL.md` step 1 requires `.factory/library/user-testing.md`; `C:/tauri/volt/.factory/library` is empty and the reviewed transcript skeleton for session `2e7ba088-51c1-4fe6-822d-4c2590cea6f4` contains no read of that file."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed feature `stabilize-document-core-timeout-gate-followup` using the feature metadata, worker transcript skeleton, skill/shared-state files, and commit `05de7c5`. The auto-save test hardening is fine, but the committed file-index change still contained the race that a later commit (`f8ba6ef`) had to fix, so this feature does not fully satisfy its deterministic timeout-gate objective."
+}

@@ -1,0 +1,45 @@
+{
+  "featureId": "native-document-manager-core",
+  "reviewedAt": "2026-03-25T11:18:45Z",
+  "commitId": null,
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature establishes a Rust document domain and wires frontend file-service/editor paths onto it, but the implementation does not yet satisfy the feature's source-of-truth/scope requirements. Native save flow bypasses conflict checks by forcing writes, frontend state remains a parallel authority, and the added Rust tests only cover scaffolding/request shape rather than document manager behavior.",
+    "issues": [
+      {
+        "file": "src-tauri/src/domains/document/manager.rs",
+        "line": 375,
+        "severity": "blocking",
+        "description": "document_save forwards to write_document with expected_version: None and force: true, so the save path bypasses the native conflict/version checks the feature explicitly promised for save semantics. Any stale in-memory document can overwrite newer disk state instead of being rejected."
+      },
+      {
+        "file": "src/lib/features/editor/stores/editor.svelte.ts",
+        "line": 165,
+        "severity": "blocking",
+        "description": "The editor store still owns an independent openFiles/originalContent cache and mutates it directly in many flows, so frontend state remains a parallel source of truth instead of a thin adapter over native document state. That falls short of the feature's required Rust-owned document authority and stable backend API for frontend migration."
+      },
+      {
+        "file": "src-tauri/src/domains/document/manager_tests.rs",
+        "line": 1,
+        "severity": "non_blocking",
+        "description": "The new Rust tests only assert default emptiness, request field preservation, and temp-path normalization. They do not verify the actual document manager behavior promised by the feature (dirty tracking, apply/save transitions, write verification, reload/conflict handling), leaving the core native semantics effectively untested at the unit level."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The native-core-worker skill says to characterize existing behavior first and add/update focused tests before implementation when feasible, but the transcript added only minimal scaffolding tests after implementation and did not add coverage for the core document-manager semantics that were being migrated.",
+      "evidence": "Transcript for workerSessionId 0a2f42dd-06b9-422c-980d-5648d1d63efb shows implementation patches landing before manager_tests.rs was added; manager_tests.rs only contains default_state_starts_empty, document_write_request_carries_expected_version, and temp_file_setup_for_document_paths_works."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The mission shared state does not record that document_save currently forces writes without expectedVersion protection, which is a critical semantic trap for downstream document-ui convergence work.",
+      "evidence": "src-tauri/src/domains/document/manager.rs:375 passes expected_version: None and force: true into write_document; downstream features depend on native document save semantics being trustworthy."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the feature handoff, transcript skeleton, and implementation. The native document manager landed, but the save path still bypasses conflict enforcement and the frontend/editor side remains a parallel state authority, so the feature does not fully meet its documented behavior."
+}

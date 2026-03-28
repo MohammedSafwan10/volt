@@ -1,0 +1,39 @@
+{
+  "featureId": "document-ui-adapter-and-file-flow-parity",
+  "reviewedAt": "2026-03-25T00:00:00Z",
+  "commitId": "2566895027fa8b1b1535cd7b76dbde3d8b21f856",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature moves more editor flows onto the native document manager, but it still leaves a blocking correctness gap in reload behavior and lacks the promised user-visible verification evidence for rename/delete/preview parity.",
+    "issues": [
+      {
+        "file": "src/lib/features/editor/stores/editor.svelte.ts",
+        "line": 591,
+        "severity": "blocking",
+        "description": "`reloadFile()` now calls `fileService.reload()`, which invokes the native `document_reload` command. That command unconditionally replaces the cached document with on-disk contents, so any caller that bypasses this store-level dirty guard can still erase unsaved in-memory edits before the editor sees the new state. The feature promise says unsaved in-memory edits are not silently overwritten by external changes, but the native reload path itself is still destructive rather than conflict-aware."
+      },
+      {
+        "file": "src/lib/features/editor/stores/editor.svelte.ts",
+        "line": 656,
+        "severity": "non_blocking",
+        "description": "The rename path updates the open tab and refreshes from native state, but this feature added no committed regression coverage for rename/move, delete, neighbor-tab selection, or preview-mode behavior despite those behaviors being explicitly called out in expectedBehavior. The handoff also records no interactive checks, so parity for those user-visible flows is unverified in the reviewed evidence."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "knowledge",
+      "observation": "The shared library still does not document the native document command/event surface that this feature depends on (`document_read`, `document_write`, `document_save`, `document_reload`, `document_close`, `document://changed`, `document://closed`). Downstream workers are continuing to rediscover this contract from code and handoffs.",
+      "evidence": "`.factory/library/` is empty, while this feature and `native-document-manager-core` both rely on the command/event surface implemented in `src-tauri/src/domains/document/commands.rs` and consumed in `src/lib/core/services/file-service.ts`."
+    },
+    {
+      "area": "skills",
+      "observation": "`native-core-worker` says visible-behavior changes should use `agent-browser` when reachable and otherwise document an explicit deferral. This worker did document the deferral, but the skill does not make clear that a feature with manual checks listed in `verificationSteps` should not be considered fully satisfied on validators alone when those checks are skipped.",
+      "evidence": "Feature `document-ui-adapter-and-file-flow-parity` lists manual explorer/editor and preview verification in `features.json`, but the handoff for worker session `8321972c-62ce-4204-b844-130c657a72f1` reports `interactiveChecks: []` and only a non-blocking discovered issue noting manual desktop verification was not performed."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the migrated editor/file adapter work is substantial, but reload behavior can still destructively replace dirty state via the native reload command, and the reviewed evidence does not verify several user-visible parity behaviors that the feature explicitly promised."
+}

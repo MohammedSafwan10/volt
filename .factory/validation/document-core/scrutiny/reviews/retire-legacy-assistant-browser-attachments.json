@@ -1,0 +1,22 @@
+{
+  "featureId": "retire-legacy-assistant-browser-attachments",
+  "reviewedAt": "2026-03-25T11:23:50.101Z",
+  "commitId": "17a0c1f620f7a11df4bcf476fdfdc38264762446",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The commit correctly removes active provider/runtime element-attachment handling and preserves non-browser history rendering, but it leaves a live legacy element type in the assistant store without regression coverage proving persisted history sanitization. That mismatch means browser-era attachments are not fully removed from the runtime surface described by the feature.",
+    "issues": [
+      {
+        "file": "src/lib/features/assistant/stores/assistant.svelte.ts",
+        "line": 295,
+        "severity": "blocking",
+        "description": "The store still exports `LegacyElementAttachment` with `type: 'element'`, so browser-era attachment objects remain part of the runtime model even after the feature claims those assistant attachment paths are retired. Existing persisted-history handling only drops these attachments via `sanitizeMessageAttachments`, but the commit did not add coverage for that store-level restore path, leaving the cleanup incomplete and unverified."
+      }
+    ]
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed feature evidence from features.json, the worker transcript skeleton, skill file, and commit `17a0c1f`. The change removes provider/UI rendering of active element attachments, but it still leaves a runtime `LegacyElementAttachment` type in the assistant store without end-to-end regression evidence for persisted history sanitization, so I marked the review as failed."
+}

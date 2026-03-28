@@ -1,0 +1,34 @@
+{
+  "featureId": "native-diagnostics-scheduler-and-problems-integration",
+  "reviewedAt": "2026-03-25T12:59:00Z",
+  "commitId": "c5c2bb1",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The Rust scheduler correctly adds stale-source signaling and the frontend Problems adapter consumes those hints, but the claimed commit evidence is not trustworthy and the implementation still leaves stale diagnostics unresolved when resumed runs skip cooled-down sources. That means the feature, as evidenced here, does not fully satisfy stale-problem clearing and meaningful freshness-transition requirements.",
+    "issues": [
+      {
+        "file": "src/lib/core/services/project-diagnostics.ts",
+        "line": 265,
+        "severity": "blocking",
+        "description": "When a scheduler-delayed run resumes with `plan.sidecars` omitting a previously requested source because that sidecar is still in cooldown, the loop never revisits that source, so nothing clears its stale freshness state or any lingering rows for that source. The Problems panel can remain indefinitely stale even though the scheduler has advanced, which breaks the feature's stale-problem clearing / meaningful-status contract. Evidence: this exact gap was later fixed by follow-up feature `diagnostics-stale-source-reconciliation-followup`, and the current implementation here only marks skipped sources stale (`handleSchedulerPlan` / `applySchedulerSourceFreshness`) without reconciling them if the resumed run skips them."
+      },
+      {
+        "file": "commit c5c2bb1",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The handoff cites commit `c5c2bb1` as proof, but `git show --stat c5c2bb1` is an unrelated broad commit ('Harden file access and move search into Rust') that does not isolate or clearly evidence this diagnostics feature. The worker transcript shows the implementation was present as working-tree changes instead (`git diff -- src/lib/core/services/project-diagnostics.ts src/lib/core/services/project-diagnostics.test.ts src-tauri/src/domains/lsp/manager.rs`), so the feature's claimed committed evidence is not trustworthy per mission guidance."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The worker followed the native-core-worker procedure, but the feature handoff still claimed a commit that did not cleanly contain the reviewed implementation. This suggests shared guidance around trustworthy feature-to-commit attribution was insufficient at the time of execution.",
+      "evidence": "Handoff `C:\\Users\\User\\.factory\\missions\\a751629e-aa17-4ca2-8216-dab17f68a6ab\\handoffs\\2026-03-25T12-26-10-246Z__native-diagnostics-scheduler-and-problems-integration__093c5056-967e-4bf3-9426-659209869c36.json` cites commit `c5c2bb1`, but `git show --stat c5c2bb1` reports a broad search/file-access commit unrelated to this scoped diagnostics change, while the transcript shows the worker relied on working-tree diffs for `project-diagnostics.ts`, `project-diagnostics.test.ts`, and `src-tauri/src/domains/lsp/manager.rs`."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the feature metadata, handoff, transcript skeleton, commit evidence, and diagnostics/problems implementation. Result: fail, due to a real stale-source reconciliation regression in the reviewed code and untrustworthy commit attribution for the claimed feature evidence."
+}

@@ -1,0 +1,45 @@
+{
+  "featureId": "repair-problemsview-svelte-parse-baseline",
+  "reviewedAt": "2026-03-25T11:17:34Z",
+  "commitId": "764b6400710201cdab8fde56b54e65fad6425a0b",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The commit replaces brittle ProblemsView.toString() CSS-string checks, but the new suite only asserts store state and no longer verifies the view layout or Problems-panel rendering behavior required by the feature. The worker also reported that manual Problems-panel UI verification could not be completed because the dev surface never became reachable.",
+    "issues": [
+      {
+        "file": "src/lib/shared/components/panel/problems-layout.test.ts",
+        "line": 6,
+        "severity": "blocking",
+        "description": "The replacement test no longer exercises ProblemsView layout assertions at all. It only checks problemsStore counters and search state, so it does not verify the shared empty-state shell, rendered messaging, or any ProblemsView structure that the feature description and expected behavior require."
+      },
+      {
+        "file": "src/lib/shared/components/panel/problems-layout.test.ts",
+        "line": 13,
+        "severity": "blocking",
+        "description": "The filtered-empty test asserts store filtering internals rather than durable layout/rendered output. This leaves the ProblemsView baseline unprotected against regressions in the actual panel markup or messaging despite claiming to harden layout assertions."
+      },
+      {
+        "file": "src/lib/shared/components/panel/problems-layout.test.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "Feature verification required completing manual Problems-panel UI verification, but the transcript and handoff explicitly show the interactive check did not happen because npm run dev:with-sidecars never produced a reachable localhost:1420 surface. The feature should not be considered fully verified."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The stability-hardening-worker skill correctly says to return non-success if required manual verification could not actually be performed, but the worker still marked this feature successful after the Problems-panel UI check failed to run. This suggests either the skill needs stronger enforcement language or validator guidance should explicitly reject success handoffs with blocked required manual checks.",
+      "evidence": "Skill step 6 in .factory/skills/stability-hardening-worker/SKILL.md says not to imply manual verification happened and to return non-success if the missing check matters. The 7d297563 handoff reports success while stating the Problems-panel browser/manual pass could not be completed because port 1420 was unreachable."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The mission shared state does not appear to capture that the ProblemsView baseline should be tested through render/store-visible behavior rather than ProblemsView.toString() compiled output. Multiple worker transcripts for this same feature spent time rediscovering that compiled-source-string assertions are brittle and misleading.",
+      "evidence": "Worker session 34c5d4af ended partial with a discovered issue recommending moving away from ProblemsView.toString() assertions, and session 7d297563 again reframed the test. No corresponding note exists in AGENTS.md or .factory/library/ (library directory is empty in this repo snapshot)."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Review failed: commit 764b640 hardens away from compiled CSS-string assertions, but it does so by dropping layout/render verification entirely and replacing it with store-only checks. Required manual Problems-panel UI verification was also not completed, so the feature does not yet satisfy its stated contract."
+}

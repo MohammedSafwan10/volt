@@ -1,0 +1,45 @@
+{
+  "featureId": "restabilize-workspace-validator-file-index-timeout-baseline",
+  "reviewedAt": "2026-03-26T05:15:17.929Z",
+  "commitId": "f8ba6efe20b97b1655b0eb5a42b45b94a5f43448",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The committed feature evidence only covers the file-index test stabilization. The worker handoff also claims save-reload and assistant typecheck changes, but those changes are outside commit f8ba6ef and the current working-tree edits broaden the feature beyond its scoped description.",
+    "issues": [
+      {
+        "file": "src/lib/features/editor/services/save-reload-hardening.test.ts",
+        "line": 124,
+        "severity": "blocking",
+        "description": "The worker handoff claims this feature updated the save/reload hardening timeout spec, but the cited feature commit f8ba6ef does not touch this file. The actual change lives in earlier commit 05de7c5, so the submitted feature evidence does not trustworthy prove the claimed implementation for this feature."
+      },
+      {
+        "file": "src/lib/features/assistant/components/ContextGatheringCard.svelte",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The handoff says this feature also fixed the assistant icon typecheck baseline, but neither the reviewed commit nor the feature scope includes that assistant fix. The current dirty-tree assistant edits are unrelated to the feature description and are not backed by feature-scoped committed evidence."
+      },
+      {
+        "file": "src/lib/features/assistant/components/AssistantMessageRow.svelte",
+        "line": 635,
+        "severity": "blocking",
+        "description": "Current working-tree edits add a large unrelated assistant refactor/type adjustment to this feature review surface. Because the feature description explicitly says the stabilization should not broaden into unrelated behavior changes, the lack of isolated committed evidence means the feature cannot be accepted as implemented as claimed."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The stability-hardening worker skill tells workers to keep narrowly scoped hardening features narrow and to return for follow-up if scope expands, but this worker bundled unrelated assistant baseline/type work into a file-index timeout feature after the user interruption/resume. The skill may need stronger guidance to split recurring validator blockers into separate feature-scoped evidence when multiple baselines are red.",
+      "evidence": "Transcript skeleton for worker session ff9b9ea4-2e4d-4e51-8cdc-5fbcfff2df7a shows edits to ContextGatheringCard.svelte and a large AssistantMessageRow.svelte patch in addition to the file-index timeout work, while features.json for restabilize-workspace-validator-file-index-timeout-baseline says the fix should stay tightly scoped to the file-index cleanup spec."
+    },
+    {
+      "area": "knowledge",
+      "observation": "There is no shared library note capturing that timeout-baseline features in this mission may rely on pre-existing commits rather than fresh feature-scoped commits when the tree is dirty, which repeatedly forces reviewers to reconstruct whether claimed evidence actually matches the feature. A repo-state/evidence note in .factory/library/ would make this limitation explicit for future workers and reviewers.",
+      "evidence": "AGENTS.md warns that cited commitId evidence must actually contain the scoped implementation, yet the handoff for this feature still cites broad dirty-tree work while the only matching commit is f8ba6ef, which excludes the save-reload and assistant changes claimed in the same handoff."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the reviewed commit f8ba6ef correctly stabilizes the file-index cleanup test, but the feature handoff claims additional save-reload and assistant typecheck work that is not contained in the feature-scoped commit and broadens the change beyond the feature description. The implementation evidence for this feature is therefore not trustworthy enough to pass scrutiny."
+}

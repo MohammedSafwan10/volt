@@ -1,0 +1,21 @@
+{
+  "featureId": "harden-dev-surface-startup-reachability",
+  "reviewedAt": "2026-03-25T16:47:22.8005960+05:30",
+  "commitId": "f747ea40ade78fb2b10c7f3fa700e29a731f1272",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The feature is narrowly scoped and matches the requirement to harden desktop dev startup without promoting localhost:1420 into a supported browser surface. The commit replaces the retry path's global `killByPattern('node')` fallback with project-scoped node process cleanup and expands the explicit port cleanup to both 1420 and 1421, which is consistent with the recorded startup evidence from `npm run dev:with-sidecars` and `npm run tauri dev`. I found no blocking or non-blocking implementation defects in the reviewed diff.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `stability-hardening-worker` skill requires reading `.factory/library/user-testing.md` first, but this repository's `.factory/library/` directory is empty. Workers can only discover that mismatch ad hoc from the filesystem, so the skill's startup procedure does not match the current shared state.",
+      "evidence": "`.factory/skills/stability-hardening-worker/SKILL.md` step 1 explicitly lists `.factory/library/user-testing.md`; `LS C:\\tauri\\volt\\.factory\\library` returned empty during this review and the worker transcript shows the same pattern of probing an empty library directory before proceeding."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Pass. Commit `f747ea40ade78fb2b10c7f3fa700e29a731f1272` hardens `scripts/cleanup-before-dev.mjs` so desktop dev startup cleanup targets Volt-owned Node processes and both dev ports instead of retrying with a system-wide `killByPattern('node')`. No blocking issues were found in the feature diff or transcript evidence; the only triage-worthy shared-state gap is the stale skill instruction that points workers at an empty `.factory/library/` location."
+}

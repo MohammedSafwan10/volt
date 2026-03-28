@@ -1,0 +1,28 @@
+{
+  "featureId": "diagnostics-stale-source-reconciliation-followup",
+  "reviewedAt": "2026-03-25T13:00:49Z",
+  "commitId": "f8ba6efe20b97b1655b0eb5a42b45b94a5f43448",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The intended stale-source reconciliation fix appears correct in the working tree, but the worker handoff cites commit \f8ba6efe20b97b1655b0eb5a42b45b94a5f43448, which does not contain the claimed diagnostics changes. That breaks the feature's evidence chain, so the claimed behavior is not trustworthily evidenced from the submitted commit.",
+    "issues": [
+      {
+        "file": "C:/Users/User/.factory/missions/a751629e-aa17-4ca2-8216-dab17f68a6ab/handoffs/2026-03-25T12-53-34-293Z__diagnostics-stale-source-reconciliation-followup__28987c04-7c00-4510-b6c3-bbb1b98d9181.json",
+        "line": 5,
+        "severity": "blocking",
+        "description": "The handoff reports commit \f8ba6efe20b97b1655b0eb5a42b45b94a5f43448 as proof of the diagnostics follow-up, but git show --stat for that commit only changes src/lib/core/services/file-index.test.ts and contains none of the claimed edits to src-tauri/src/domains/lsp/manager.rs or src/lib/core/services/project-diagnostics.test.ts. Scrutiny cannot trust the claimed behavior without a commit that actually contains the scoped implementation and regression coverage."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "The mission guidance says handoff evidence must be trustworthy and feature-scoped, but this worker reported a commit unrelated to the feature while claiming it contained the diagnostics fix.",
+      "evidence": "AGENTS.md states that cited commit IDs must actually contain the scoped implementation. The feature handoff names commit \f8ba6efe20b97b1655b0eb5a42b45b94a5f43448, yet git show --stat f8ba6efe20b97b1655b0eb5a42b45b94a5f43448 only shows changes to src/lib/core/services/file-index.test.ts."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Review failed because the submitted commit evidence is mismatched: the claimed commit does not contain the diagnostics scheduler fix or its regression test, so the feature cannot be accepted as trustworthily evidenced despite the working-tree code appearing aligned with the goal."
+}

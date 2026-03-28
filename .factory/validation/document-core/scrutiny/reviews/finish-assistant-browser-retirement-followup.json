@@ -1,0 +1,34 @@
+{
+  "featureId": "finish-assistant-browser-retirement-followup",
+  "reviewedAt": "2026-03-25T11:05:00Z",
+  "commitId": null,
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The working-tree change does implement the intended assistant-side cleanup by sanitizing restored and persisted attachments so retired `element` attachments no longer survive runtime/history paths. However, the feature requirement explicitly says the implementation should be in trustworthy feature-scoped evidence, and this worker returned without creating an isolated commit while the handoff still implied completed validation. Because the evidence remains uncommitted and mixed into a large unrelated working tree, the feature is not reviewable as a trustworthy completed implementation artifact.",
+    "issues": [
+      {
+        "file": "src/lib/features/assistant/stores/assistant.svelte.ts",
+        "line": 354,
+        "severity": "blocking",
+        "description": "The cleanup exists only as an uncommitted working-tree edit (`git blame` shows `Not Committed Yet` for `sanitizeMessageAttachments` and its restore-path call sites), so the feature still lacks the trustworthy feature-scoped implementation evidence its description requires. Scrutiny cannot treat a broad dirty tree as completed proof for this follow-up."
+      },
+      {
+        "file": "src/lib/features/assistant/components/panel/conversation-persistence.test.ts",
+        "line": 80,
+        "severity": "blocking",
+        "description": "The claimed regression coverage for stripping retired element attachments is also uncommitted (`git blame` shows the new spec as `Not Committed Yet`), so there is no committed regression proof backing the feature's expected behavior."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "`stability-hardening-worker` does not currently tell workers how to handle features whose implementation is intentionally left in the working tree for later commit isolation, even though multiple document-core follow-up features now use that pattern. This review's worker followed the procedure but still returned a 'partial' handoff with green validators and no commit, leaving scrutiny to infer whether that counts as sufficient evidence.",
+      "evidence": "SKILL.md says to keep hardening features narrow and return to the orchestrator if the fix expands, but it has no explicit guidance for 'implementation present in working tree; commit isolation blocked'. The feature description itself says 'implementation is present in the working tree and validators are green; only feature-specific commit isolation remains blocked', and the worker handoff repeats that no feature-specific commit was created."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the handoff, transcript skeleton, working-tree diff, skill, and shared-state docs for `finish-assistant-browser-retirement-followup`. The code change appears directionally correct, but the feature fails review because both the implementation and its regression test remain uncommitted in a heavily mixed working tree, so there is no trustworthy feature-scoped artifact to approve."
+}

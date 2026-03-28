@@ -1,0 +1,51 @@
+{
+  "featureId": "document-core-save-reload-and-problems-followup",
+  "reviewedAt": "2026-03-25T11:00:00Z",
+  "commitId": "7034946f8c09b1563d8bf8bb236a75f0022c204e",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature correctly wires createIfMissing through the native document write path and removes the brittle ProblemsView.toString assertions, but it does not fully meet the dirty-buffer reload/revert requirement. editorStore.reloadFile() still reloads from disk unconditionally, and both diff accept/reject and assistant revert call reloadFile() immediately after writing, which can still overwrite a dirty in-memory buffer. The committed Problems regression test also only checks store state and no longer verifies the layout contract it claims to guard.",
+    "issues": [
+      {
+        "file": "src/lib/features/editor/stores/editor.svelte.ts",
+        "line": 574,
+        "severity": "blocking",
+        "description": "reloadFile() still calls fileService.reload() without any dirty-buffer guard in the reviewed commit, so callers can still overwrite unsaved editor content. This contradicts the feature requirement that reload/revert flows no longer overwrite dirty editor buffers without warning."
+      },
+      {
+        "file": "src/lib/features/editor/stores/diff.svelte.ts",
+        "line": 123,
+        "severity": "blocking",
+        "description": "Both diff accept and reject immediately call editorStore.reloadFile(filePath) after writing. Because reloadFile() is still unconditional, these revert flows can still replace a dirty in-memory buffer from disk, so the requested hardening is not actually enforced end to end."
+      },
+      {
+        "file": "src/lib/features/assistant/stores/assistant.svelte.ts",
+        "line": 2958,
+        "severity": "blocking",
+        "description": "Assistant revert now uses expectedVersion, but it still falls back to force: expectedVersion === undefined. For a path that is open in the editor but missing from the native document cache, this still allows a blind force-write instead of preserving trustworthy conflict semantics for the first write."
+      },
+      {
+        "file": "src/lib/shared/components/panel/problems-layout.test.ts",
+        "line": 5,
+        "severity": "non_blocking",
+        "description": "The rewritten Problems test no longer checks the layout or empty-state shell it claims to guard; it only asserts store counters and filtered state. That is more durable than compiled-source string checks, but it drops direct regression coverage for the panel layout contract described by the test name and feature summary."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The worker followed the stability-hardening skill, but the skill's reproduction guidance is too weak for document-core reload safety: the transcript declared the dirty-buffer overwrite gap fixed even though the committed reloadFile() path remained unconditional. The procedure should explicitly require checking all callers of the hardened flow, not just targeted tests.",
+      "evidence": "Skill step 2 says to reproduce the visible regression before fixing it, while the transcript states that revert and diff writes use version-aware conflict semantics instead of unconditional force writes even though commit 7034946 leaves editorStore.reloadFile() unconditional and diff and assistant revert still call it."
+    },
+    {
+      "area": "knowledge",
+      "observation": "Document-core shared knowledge is missing an explicit note that native document dirty state and editor dirty state must be validated together when reviewing reload/revert flows.",
+      "evidence": "The feature targeted dirty-buffer safety, but neither AGENTS.md nor .factory/library documented the need to inspect both fileService native cache state and editorStore.reloadFile() callers; the worker transcript focused on tests and missed the remaining unconditional reload path."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed feature document-core-save-reload-and-problems-followup using the feature metadata, worker transcript skeleton, skill instructions, and commit 7034946f8c09b1563d8bf8bb236a75f0022c204e. The feature improves create-if-missing wiring and replaces brittle Problems string assertions, but it does not fully satisfy the dirty-buffer reload/revert hardening contract, so the review fails."
+}

@@ -1,0 +1,51 @@
+{
+  "featureId": "document-core-save-reload-and-problems-hardening",
+  "reviewedAt": "2026-03-25T10:05:00Z",
+  "commitId": null,
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature only partially covers its contract. Native expectedVersion propagation and dirty-buffer reload protection are implemented, and the file-index regression proof is present, but the Problems baseline was weakened to store-level checks instead of durable UI assertions, and key revert/save callers still bypass native conflict enforcement.",
+    "issues": [
+      {
+        "file": "src/lib/features/editor/services/save-reload-hardening.test.ts",
+        "line": 172,
+        "severity": "blocking",
+        "description": "The committed regression proof for create-if-missing/native conflict behavior lives only in a test and does not correspond to any production change in this feature. The review diff shows no implementation changes to the relevant write path, so the feature does not actually restore or harden that user flow."
+      },
+      {
+        "file": "src/lib/shared/components/panel/problems-layout.test.ts",
+        "line": 6,
+        "severity": "blocking",
+        "description": "The Problems baseline no longer asserts rendered layout behavior at all. It now checks only ProblemsStore counts/query state, which would still pass if ProblemsView stopped rendering the empty state or filtered-empty state correctly. This does not satisfy the requirement for durable Problems assertions."
+      },
+      {
+        "file": "src/lib/features/assistant/components/AssistantMessageRow.svelte",
+        "line": 456,
+        "severity": "blocking",
+        "description": "Revert/restore flows still call writeFile without expectedVersion, so these common save paths continue to bypass native document conflict enforcement when reverting assistant edits."
+      },
+      {
+        "file": "src/lib/features/assistant/components/AssistantMessageRow.svelte",
+        "line": 462,
+        "severity": "blocking",
+        "description": "After writing reverted content, the code calls editorStore.reloadFile(). Because reloadFile now no-ops on dirty buffers, a dirty open tab can stay out of sync with the just-written disk content while the UI still reports success. This leaves the revert/restore flow semantically incomplete."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The worker marked the stability-hardening procedure as followed, but the procedure requires a focused manual sweep for affected user-visible flows unless explicitly deferred. The transcript and handoff contain no manual verification for save/reload or Problems UI behavior.",
+      "evidence": "`.factory/skills/stability-hardening-worker/SKILL.md` step 6 requires focused manual checks; the handoff for `d9f7dbfa-4af3-48d6-94a9-79d08cfadc88` reports only automated commands under `verification.commandsRun` and no `interactiveChecks`."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The mission shared state does not currently capture that `npm run check` is considered passing with four known assistant warnings, even though multiple document-core handoffs rely on that interpretation.",
+      "evidence": "This feature handoff and earlier document-core handoffs note `npm run check` completed with 0 errors and 4 pre-existing assistant warnings, while `.factory/library/` is empty and `AGENTS.md` does not record this warning baseline."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the feature transcript skeleton, handoff, skill, shared-state files, and the local diff for the touched files. The feature fails review because it does not fully implement the claimed save/reload/Problems hardening: Problems coverage was reduced to store assertions, and assistant revert/save paths still bypass expectedVersion protection and can now report success without converging dirty open buffers."
+}

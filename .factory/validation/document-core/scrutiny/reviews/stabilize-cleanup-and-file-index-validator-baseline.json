@@ -1,0 +1,33 @@
+{
+  "featureId": "stabilize-cleanup-and-file-index-validator-baseline",
+  "reviewedAt": "2026-03-25T00:00:00Z",
+  "commitId": "f8ba6efe20b97b1655b0eb5a42b45b94a5f43448",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The file-index flake fix is present and matches the intended stabilization, but the feature does not include the cleanup regression harness move required by the feature contract. The reviewed commit only changes `src/lib/core/services/file-index.test.ts`, while the TypeScript/Vitest-compatible cleanup harness remains as an uncommitted working-tree change, so the feature evidence is incomplete.",
+    "issues": [
+      {
+        "file": "src/lib/core/dev/cleanup-before-dev.test.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The feature required moving the cleanup regression coverage into a TypeScript/Vitest-compatible harness that passes `npm run check`, but the reviewed commit `f8ba6ef` contains no change for the cleanup regression test at all. Transcript evidence shows the harness edit stayed only in the dirty working tree, so the committed feature evidence does not satisfy that part of the expected behavior."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `stability-hardening-worker` skill says to return non-success when required visible/manual verification cannot be performed, but it does not explain how to handle a feature whose scoped fix is complete yet cannot be committed because the mission branch is intentionally dirty. The worker explicitly deviated on the success/commit step for this reason.",
+      "evidence": "`.factory/skills/stability-hardening-worker/SKILL.md` only says to return to the orchestrator when scope expands or verification is blocked. The transcript for worker session `d64d4d4e-f234-4552-8cbf-f51a6150279b` records `skillFeedback.followedProcedure: false` with deviation `Returned a partial handoff without a commit` because broader mission working tree state blocked isolated commit creation."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The mission shared state does not currently capture that cleanup-script regression tests must live under `src/**/*.test.ts` and avoid Node-only imports like `fs/promises` to satisfy this repo's Vitest/Svelte check setup. That repo-specific constraint caused the prior feature to fail and had to be rediscovered in the reviewed transcript.",
+      "evidence": "`vitest.config.ts` includes only `src/**/*.test.ts`, the final harness lives at `src/lib/core/dev/cleanup-before-dev.test.ts`, and the reviewed transcript shows the worker first reproduced the `fs/promises` typecheck breakage from the earlier cleanup feature before replacing it with a `?raw`-based harness. Neither `AGENTS.md` nor `.factory/library/` mentions this testing constraint."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Reviewed the transcript skeleton, current code, and committed diff for `stabilize-cleanup-and-file-index-validator-baseline`. The file-index timing stabilization is valid, but the feature still fails review because the cleanup regression harness move was not included in the reviewed commit evidence, leaving the feature contract only partially satisfied."
+}

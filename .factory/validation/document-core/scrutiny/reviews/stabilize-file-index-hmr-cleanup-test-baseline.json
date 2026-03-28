@@ -1,0 +1,28 @@
+{
+  "featureId": "stabilize-file-index-hmr-cleanup-test-baseline",
+  "reviewedAt": "2026-03-25T11:24:47Z",
+  "commitId": "2566895027fa8b1b1535cd7b76dbde3d8b21f856",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The working-tree change in `src/lib/core/services/file-index.test.ts` does make the targeted HMR cleanup tests deterministic and the worker transcript shows targeted/full test plus `npm run check` passing. However, the handoff ties this feature to commit `2566895027fa8b1b1535cd7b76dbde3d8b21f856`, and that commit does not contain the claimed test fix; it only changes editor/file-service implementation files. Because the claimed implementation is not actually present in the cited commit, the feature is not trustworthy as reviewed evidence.",
+    "issues": [
+      {
+        "file": "src/lib/core/services/file-index.test.ts",
+        "line": 1,
+        "severity": "blocking",
+        "description": "The reviewed feature claims commit `2566895027fa8b1b1535cd7b76dbde3d8b21f856` implemented the file-index HMR cleanup test fix, but `git show` for that commit changes only `src/lib/core/services/file-service.ts`, `src/lib/features/editor/stores/diff.svelte.ts`, and `src/lib/features/editor/stores/editor.svelte.ts`. The actual fix exists only as an uncommitted working-tree change in `src/lib/core/services/file-index.test.ts`, so the feature cannot be trusted to be captured by its cited commit/handoff."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The worker followed the stabilization procedure and produced validator evidence, but the handoff/EndFeatureRun recorded the repository HEAD commit instead of a commit containing the scoped fix. This makes scrutiny based on git-show commit evidence unreliable for features completed in a dirty mission working tree.",
+      "evidence": "Handoff file `C:\\Users\\User\\.factory\\missions\\a751629e-aa17-4ca2-8216-dab17f68a6ab\\handoffs\\2026-03-25T09-16-41-603Z__stabilize-file-index-hmr-cleanup-test-baseline__ea9d0292-914b-493d-882e-30e5a387a11a.json` cites commit `2566895027fa8b1b1535cd7b76dbde3d8b21f856`, while `git show 2566895027fa8b1b1535cd7b76dbde3d8b21f856 --stat` contains no `file-index.test.ts` change and later handoffs show scoped commit IDs (for example `f8ba6ef` for `restabilize-document-core-recurring-timeout-specs`)."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the test fix itself looks reasonable in the working tree and validator evidence is positive, but the cited feature commit does not contain the implementation, so the reviewed feature is not trustworthy as committed evidence."
+}

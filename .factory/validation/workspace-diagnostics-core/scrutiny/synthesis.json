@@ -1,0 +1,152 @@
+{
+  "milestone": "workspace-diagnostics-core",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": false,
+      "command": "npm run test",
+      "exitCode": 1
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "npm run check",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "powershell -NoProfile -Command \"npm run lint; exit 0\"",
+      "exitCode": 0
+    },
+    "rust-check": {
+      "passed": true,
+      "command": "cargo check --manifest-path src-tauri/Cargo.toml",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 7,
+    "passed": 2,
+    "failed": 5,
+    "failedFeatures": [
+      "workspace-supervisor-native-lifecycle",
+      "native-diagnostics-scheduler-and-problems-integration",
+      "workspace-lifecycle-native-persistence-and-refresh-followup",
+      "diagnostics-stale-source-reconciliation-followup",
+      "restabilize-workspace-validator-file-index-timeout-baseline"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "workspace-supervisor-native-lifecycle",
+      "severity": "blocking",
+      "description": "Only invalid open failures show visible feedback. When workspace_refresh fails, refreshTree() returns quietly without surfacing result.message, so a broken/inaccessible workspace refresh does not provide the visible failure feedback required by the feature contract."
+    },
+    {
+      "featureId": "workspace-supervisor-native-lifecycle",
+      "severity": "blocking",
+      "description": "Restore-on-launch and close-folder persistence are still frontend-owned through localStorage (volt.currentProject). The Rust workspace manager only stores in-memory recentProjects and active_root_path, so the claimed native ownership of lifecycle persistence handling is not actually implemented in this feature."
+    },
+    {
+      "featureId": "native-diagnostics-scheduler-and-problems-integration",
+      "severity": "blocking",
+      "description": "When a scheduler-delayed run resumes with `plan.sidecars` omitting a previously requested source because that sidecar is still in cooldown, the loop never revisits that source, so nothing clears its stale freshness state or any lingering rows for that source. The Problems panel can remain indefinitely stale even though the scheduler has advanced, which breaks the feature's stale-problem clearing / meaningful-status contract. Evidence: this exact gap was later fixed by follow-up feature `diagnostics-stale-source-reconciliation-followup`, and the current implementation here only marks skipped sources stale (`handleSchedulerPlan` / `applySchedulerSourceFreshness`) without reconciling them if the resumed run skips them."
+    },
+    {
+      "featureId": "native-diagnostics-scheduler-and-problems-integration",
+      "severity": "blocking",
+      "description": "The handoff cites commit `c5c2bb1` as proof, but `git show --stat c5c2bb1` is an unrelated broad commit ('Harden file access and move search into Rust') that does not isolate or clearly evidence this diagnostics feature. The worker transcript shows the implementation was present as working-tree changes instead (`git diff -- src/lib/core/services/project-diagnostics.ts src/lib/core/services/project-diagnostics.test.ts src-tauri/src/domains/lsp/manager.rs`), so the feature's claimed committed evidence is not trustworthy per mission guidance."
+    },
+    {
+      "featureId": "workspace-lifecycle-native-persistence-and-refresh-followup",
+      "severity": "blocking",
+      "description": "Recent-project persistence now depends on `workspace_replace_recent_projects`, but there is still no feature-specific regression coverage showing that remove/dedupe/restore behavior actually persists through the native workspace manager. `project.svelte.test.ts` only covers invalid-open preservation, restore from mocked state, close clearing search state, and no-op reopen, so the new backend-owned persistence contract claimed by the feature is not trustworthily evidenced."
+    },
+    {
+      "featureId": "workspace-lifecycle-native-persistence-and-refresh-followup",
+      "severity": "blocking",
+      "description": "The handoff omits a usable `commitId` and explicitly says feature-specific commit isolation remained unresolved. Per AGENTS.md, handoff evidence must be trustworthy when a feature claims scoped implementation proof; this feature therefore still lacks a verifiable commit artifact tying the reviewed changes to the claimed validation results."
+    },
+    {
+      "featureId": "diagnostics-stale-source-reconciliation-followup",
+      "severity": "blocking",
+      "description": "The handoff reports commit `f8ba6efe20b97b1655b0eb5a42b45b94a5f43448` as proof of the diagnostics follow-up, but `git show --stat` for that commit only changes `src/lib/core/services/file-index.test.ts` and contains none of the claimed edits to `src-tauri/src/domains/lsp/manager.rs` or `src/lib/core/services/project-diagnostics.test.ts`. Scrutiny cannot trust the claimed behavior without a commit that actually contains the scoped implementation and regression coverage."
+    },
+    {
+      "featureId": "restabilize-workspace-validator-file-index-timeout-baseline",
+      "severity": "blocking",
+      "description": "The worker handoff claims `src/lib/features/editor/services/save-reload-hardening.test.ts` was updated by this feature, but the cited feature commit `f8ba6ef` does not touch this file. The actual change lives in earlier commit `05de7c5`, so the submitted feature evidence does not trustworthy prove the claimed implementation for this feature."
+    },
+    {
+      "featureId": "restabilize-workspace-validator-file-index-timeout-baseline",
+      "severity": "blocking",
+      "description": "The handoff says this feature also fixed the assistant icon typecheck baseline, but neither the reviewed commit nor the feature scope includes that assistant fix. The current dirty-tree assistant edits are unrelated to the feature description and are not backed by feature-scoped committed evidence."
+    },
+    {
+      "featureId": "restabilize-workspace-validator-file-index-timeout-baseline",
+      "severity": "blocking",
+      "description": "Current working-tree edits add a large unrelated assistant refactor/type adjustment to this feature review surface. Because the feature description explicitly says the stabilization should not broaden into unrelated behavior changes, the lack of isolated committed evidence means the feature cannot be accepted as implemented as claimed."
+    },
+    {
+      "featureId": "workspace-diagnostics-core",
+      "severity": "blocking",
+      "description": "The recurring test validator is red: src/lib/core/services/file-index.test.ts > file-index cleanup > registers HMR cleanup on first indexing start timed out during npm run test."
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skills/AGENTS.md",
+      "suggestion": "The native-core-worker skill says user-visible behavior changes should use the agent-browser when the local app surface is reachable, but the transcript contains no browser/manual UI verification and the handoff only reports command-level validation.",
+      "evidence": "Skill file .factory/skills/native-core-worker/SKILL.md section \"Verify at three levels\" requires manual/user-surface verification when behavior changes are visible. Transcript skeleton for worker session c1b740e7-557f-407f-b37f-cb624ed31c35 shows only Read/Grep/ApplyPatch/Execute validation steps and no agent-browser invocation or interactiveChecks.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills/AGENTS.md",
+      "suggestion": "The worker followed the native-core-worker procedure, but the feature handoff still claimed a commit that did not cleanly contain the reviewed implementation. This suggests shared guidance around trustworthy feature-to-commit attribution was insufficient at the time of execution.",
+      "evidence": "Handoff `C:\\Users\\User\\.factory\\missions\\a751629e-aa17-4ca2-8216-dab17f68a6ab\\handoffs\\2026-03-25T12-26-10-246Z__native-diagnostics-scheduler-and-problems-integration__093c5056-967e-4bf3-9426-659209869c36.json` cites commit `c5c2bb1`, but `git show --stat c5c2bb1` reports a broad search/file-access commit unrelated to this scoped diagnostics change, while the transcript shows the worker relied on working-tree diffs for `project-diagnostics.ts`, `project-diagnostics.test.ts`, and `src-tauri/src/domains/lsp/manager.rs`.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills/AGENTS.md",
+      "suggestion": "The `native-core-worker` skill already requires explicit regression coverage for newly native-owned persistence/state flows, but this worker still returned with only refresh-routing coverage and mocked state tests. The skill guidance should be tightened so backend-owned persistence migrations like recent projects require dedicated proof for dedupe/remove/restore semantics before review can pass.",
+      "evidence": "C:\\tauri\\volt\\.factory\\skills\\native-core-worker\\SKILL.md step 5 requires explicit regression coverage for newly native-owned persistence/state flows; the handoff `tests.coverage` says only `src/lib/core/workspace/workspace-lifecycle.test.ts` was updated for `workspace_refresh`, while `src/lib/shared/stores/project.svelte.test.ts` contains only mocked lifecycle-state assertions.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills/AGENTS.md",
+      "suggestion": "The mission guidance says handoff evidence must be trustworthy and feature-scoped, but this worker reported a commit unrelated to the feature while claiming it contained the diagnostics fix.",
+      "evidence": "AGENTS.md states that cited commit IDs must actually contain the scoped implementation. The feature handoff names commit `f8ba6efe20b97b1655b0eb5a42b45b94a5f43448`, yet `git show --stat f8ba6efe20b97b1655b0eb5a42b45b94a5f43448` only shows changes to `src/lib/core/services/file-index.test.ts`.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills/AGENTS.md",
+      "suggestion": "The stability-hardening worker skill tells workers to keep narrowly scoped hardening features narrow and to return for follow-up if scope expands, but this worker bundled unrelated assistant baseline/type work into a file-index timeout feature after the user interruption/resume. The skill may need stronger guidance to split recurring validator blockers into separate feature-scoped evidence when multiple baselines are red.",
+      "evidence": "Transcript skeleton for worker session ff9b9ea4-2e4d-4e51-8cdc-5fbcfff2df7a shows edits to ContextGatheringCard.svelte and a large AssistantMessageRow.svelte patch in addition to the file-index timeout work, while features.json for restabilize-workspace-validator-file-index-timeout-baseline says the fix should stay tightly scoped to the file-index cleanup spec.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Workspace lifecycle now spans a native manager plus frontend localStorage restore semantics, but .factory/library has no note documenting that persistence is still partially frontend-owned after this feature.",
+      "reason": "library updates were not applied because the observation is factual but ambiguous/incomplete without orchestrator-approved wording."
+    },
+    {
+      "observation": "No shared-state/service documentation records the new native workspace commands or emitted workspace lifecycle event channel.",
+      "reason": "services.yaml changes were not applied because the note described documentation gaps rather than a concrete additive service/command entry."
+    },
+    {
+      "observation": "The repo library appears to lack workspace-lifecycle-specific guidance documenting that persisted current workspace and recent-project ownership now live in the native workspace manager instead of frontend localStorage, even though this follow-up depends on that architectural rule.",
+      "reason": "library updates were not applied because the observation is factual but ambiguous/incomplete without orchestrator-approved wording."
+    },
+    {
+      "observation": "The repo library has architecture guidance but no focused note for the diagnostics scheduler freshness contract that this worker had to reconstruct from code (delayed sources remain stale across cooldown windows, fresh_sources should be emitted for resumed sidecars before sidecar startup, and problems store source state is the frontend convergence point). Recording that contract would make future diagnostics follow-ups easier to review and implement.",
+      "reason": "library updates were not applied because the observation is factual but ambiguous/incomplete without orchestrator-approved wording."
+    },
+    {
+      "observation": "There is no shared library note capturing that timeout-baseline features in this mission may rely on pre-existing commits rather than fresh feature-scoped commits when the tree is dirty, which repeatedly forces reviewers to reconstruct whether claimed evidence actually matches the feature. A repo-state/evidence note in .factory/library/ would make this limitation explicit for future workers and reviewers.",
+      "reason": "library updates were not applied because the observation is factual but ambiguous/incomplete without orchestrator-approved wording."
+    }
+  ],
+  "previousRound": null
+}
