@@ -72,4 +72,17 @@ describe('monaco-models', () => {
     expect(uri.toString()).toContain('inmemory://model/');
     expect(uri.toString()).toContain(encodeURIComponent('C:/repo/src/main.ts'));
   });
+
+  it('skips model writes when the incoming value is identical', async () => {
+    const models = await import('./monaco-models');
+    await models.getOrCreateModel({
+      path: 'C:\\repo\\src\\main.ts',
+      content: 'same',
+      language: 'typescript',
+    });
+
+    const updated = models.setModelValue('C:\\repo\\src\\main.ts', 'same');
+
+    expect(updated).toBe(false);
+  });
 });

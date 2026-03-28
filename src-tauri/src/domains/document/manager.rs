@@ -74,7 +74,11 @@ impl DocumentManagerState {
     }
 
     fn detect_language(path: &str) -> Option<String> {
-        let ext = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+        let ext = path
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let language = match ext.as_str() {
             "ts" => "typescript",
             "tsx" => "typescriptreact",
@@ -105,7 +109,56 @@ impl DocumentManagerState {
             .unwrap_or(0)
     }
 
-    fn emit_change<R: Runtime>(&self, app: &AppHandle<R>, state: &DocumentState, source: &str, previous_content: Option<String>) {
+    async fn load_document_from_disk(
+        &self,
+        normalized_path: &str,
+    ) -> Result<Option<DocumentState>, FileError> {
+        let content = match read_file(normalized_path.to_string()).await {
+            Ok(content) => content,
+            Err(FileError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+
+        let mut documents = self.documents.lock().map_err(|err| FileError::IoError {
+            message: format!("Failed to acquire document lock: {err}"),
+        })?;
+
+        let existing = documents.get(normalized_path).cloned();
+        let mut version = existing.as_ref().map(|doc| doc.version).unwrap_or(1);
+        let mut disk_version = existing
+            .as_ref()
+            .map(|doc| doc.disk_version)
+            .unwrap_or(version);
+        let is_dirty = existing.as_ref().map(|doc| doc.is_dirty).unwrap_or(false);
+
+        if let Some(existing_doc) = existing {
+            if existing_doc.content != content {
+                version = existing_doc.version + 1;
+                disk_version = version;
+            }
+        }
+
+        let state = DocumentState {
+            path: normalized_path.to_string(),
+            content,
+            version,
+            disk_version,
+            is_dirty,
+            last_modified: Self::now_millis(),
+            language: Self::detect_language(normalized_path),
+        };
+
+        documents.insert(normalized_path.to_string(), state.clone());
+        Ok(Some(state))
+    }
+
+    fn emit_change<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        state: &DocumentState,
+        source: &str,
+        previous_content: Option<String>,
+    ) {
         let _ = app.emit(
             DOCUMENT_EVENT_CHANGED,
             DocumentChangeEvent {
@@ -120,7 +173,11 @@ impl DocumentManagerState {
         );
     }
 
-    pub async fn read_document(&self, path: String, force_refresh: bool) -> Result<Option<DocumentState>, FileError> {
+    pub async fn read_document(
+        &self,
+        path: String,
+        force_refresh: bool,
+    ) -> Result<Option<DocumentState>, FileError> {
         let normalized_path = Self::normalize_path(&path);
 
         if !force_refresh {
@@ -131,40 +188,7 @@ impl DocumentManagerState {
             }
         }
 
-        let content = match read_file(normalized_path.clone()).await {
-            Ok(content) => content,
-            Err(FileError::NotFound { .. }) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-
-        let mut documents = self.documents.lock().map_err(|err| FileError::IoError {
-            message: format!("Failed to acquire document lock: {err}"),
-        })?;
-
-        let existing = documents.get(&normalized_path).cloned();
-        let mut version = existing.as_ref().map(|doc| doc.version).unwrap_or(1);
-        let mut disk_version = existing.as_ref().map(|doc| doc.disk_version).unwrap_or(version);
-        let is_dirty = existing.as_ref().map(|doc| doc.is_dirty).unwrap_or(false);
-
-        if let Some(existing_doc) = existing {
-            if existing_doc.content != content {
-                version = existing_doc.version + 1;
-                disk_version = version;
-            }
-        }
-
-        let state = DocumentState {
-            path: normalized_path.clone(),
-            content,
-            version,
-            disk_version,
-            is_dirty,
-            last_modified: Self::now_millis(),
-            language: Self::detect_language(&normalized_path),
-        };
-
-        documents.insert(normalized_path, state.clone());
-        Ok(Some(state))
+        self.load_document_from_disk(&normalized_path).await
     }
 
     pub fn get_document(&self, path: String) -> Result<Option<DocumentState>, String> {
@@ -236,6 +260,16 @@ impl DocumentManagerState {
             documents.get(&normalized_path).cloned()
         };
 
+        let existing = if let Some(existing) = existing {
+            Some(existing)
+        } else if request.create_if_missing {
+            None
+        } else {
+            self.load_document_from_disk(&normalized_path)
+                .await
+                .map_err(|error| error.to_string())?
+        };
+
         if existing.is_none() && !request.create_if_missing {
             return Ok(DocumentWriteResult {
                 success: false,
@@ -245,7 +279,9 @@ impl DocumentManagerState {
             });
         }
 
-        if let (Some(expected_version), Some(existing_doc)) = (request.expected_version, existing.clone()) {
+        if let (Some(expected_version), Some(existing_doc)) =
+            (request.expected_version, existing.clone())
+        {
             if existing_doc.version != expected_version && !request.force {
                 return Ok(DocumentWriteResult {
                     success: false,
@@ -339,7 +375,11 @@ impl DocumentManagerState {
             .collect())
     }
 
-    pub async fn save_document<R: Runtime>(&self, app: &AppHandle<R>, path: String) -> Result<DocumentWriteResult, String> {
+    pub async fn save_document<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        path: String,
+    ) -> Result<DocumentWriteResult, String> {
         let normalized_path = Self::normalize_path(&path);
         let existing = {
             let documents = self
@@ -398,7 +438,11 @@ impl DocumentManagerState {
         Ok(state)
     }
 
-    pub fn close_document<R: Runtime>(&self, app: &AppHandle<R>, path: String) -> Result<(), String> {
+    pub fn close_document<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        path: String,
+    ) -> Result<(), String> {
         let normalized_path = Self::normalize_path(&path);
         let mut documents = self
             .documents

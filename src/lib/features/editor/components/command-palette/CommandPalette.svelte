@@ -149,7 +149,9 @@
           }
         }
         editorStore.updateContent(activeFile.path, contentToSave);
-        const success = await writeFile(activeFile.path, contentToSave);
+        const success = await writeFile(activeFile.path, contentToSave, {
+          expectedVersion: editorStore.getDocumentVersion(activeFile.path) ?? undefined,
+        });
         if (success) editorStore.markSaved(activeFile.path);
       },
       enabled: () => editorStore.activeFile !== null,

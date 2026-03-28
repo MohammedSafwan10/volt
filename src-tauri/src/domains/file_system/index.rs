@@ -3,6 +3,7 @@
 //! Uses the `ignore` crate for fast filesystem walking with gitignore support.
 //! Streams results to the frontend in batches for responsive Quick Open.
 
+use crate::observability::{debug_log, DebugScope};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -380,7 +381,12 @@ fn clear_root_disk_cache(app: &AppHandle, root_path: &str) {
     }
 }
 
-fn upsert_cached_file(cached: &mut CachedIndex, absolute_path: &str, relative_path: &str, is_dir: bool) {
+fn upsert_cached_file(
+    cached: &mut CachedIndex,
+    absolute_path: &str,
+    relative_path: &str,
+    is_dir: bool,
+) {
     if should_ignore_relative_path(relative_path) {
         cached.files.retain(|file| file.path != absolute_path);
         cached.timestamp = current_timestamp();
@@ -399,7 +405,11 @@ fn upsert_cached_file(cached: &mut CachedIndex, absolute_path: &str, relative_pa
         is_dir,
     };
 
-    if let Some(existing) = cached.files.iter_mut().find(|file| file.path == absolute_path) {
+    if let Some(existing) = cached
+        .files
+        .iter_mut()
+        .find(|file| file.path == absolute_path)
+    {
         *existing = updated;
     } else {
         cached.files.push(updated);
@@ -609,6 +619,10 @@ pub async fn index_workspace_stream(
     request_id: u64,
     use_cache: bool,
 ) -> Result<(), IndexError> {
+    let scope = DebugScope::new(
+        "file-index",
+        format!("request={request_id} root={root_path} use_cache={use_cache}"),
+    );
     if root_path.is_empty() {
         return Err(IndexError::InvalidPath { path: root_path });
     }
@@ -646,6 +660,7 @@ pub async fn index_workspace_stream(
                 && cached.root_path == root_path
                 && !cached.files.is_empty()
             {
+                scope.checkpoint(format!("served memory cache count={}", cached.files.len()));
                 // Send cached results immediately
                 let files = cached.files.clone();
                 drop(cache_guard);
@@ -692,6 +707,7 @@ pub async fn index_workspace_stream(
             &state.current_request_id,
             &state.cache,
         ) {
+            scope.checkpoint("served disk cache");
             return Ok(());
         }
     }
@@ -704,6 +720,10 @@ pub async fn index_workspace_stream(
     let persist_cache = use_cache;
 
     tokio::task::spawn_blocking(move || {
+        debug_log(
+            "file-index",
+            format!("spawn_blocking begin request={request_id} root={root_path_clone}"),
+        );
         use std::fs;
         use std::io::{BufWriter, Write};
 
@@ -792,6 +812,13 @@ pub async fn index_workspace_stream(
             // Check for cancellation
             if cancelled.load(Ordering::Relaxed) || current_id.load(Ordering::Relaxed) != request_id
             {
+                debug_log(
+                    "file-index",
+                    format!(
+                        "cancelled request={request_id} root={} count={total_count}",
+                        root_path_clone
+                    ),
+                );
                 if let Some(tmp) = list_tmp_path.as_ref() {
                     let _ = fs::remove_file(tmp);
                 }
@@ -950,7 +977,7 @@ pub async fn index_workspace_stream(
                     let meta = DiskCacheMeta {
                         version: DISK_CACHE_VERSION,
                         timestamp: current_timestamp(),
-                        root_path: root_path_clone,
+                        root_path: root_path_clone.clone(),
                         count: total_count,
                     };
 
@@ -971,6 +998,14 @@ pub async fn index_workspace_stream(
                 cancelled: false,
                 duration_ms: start.elapsed().as_millis() as u64,
             },
+        );
+        debug_log(
+            "file-index",
+            format!(
+                "finished request={request_id} root={} count={total_count} duration_ms={}",
+                root_path_clone,
+                start.elapsed().as_millis()
+            ),
         );
     });
 

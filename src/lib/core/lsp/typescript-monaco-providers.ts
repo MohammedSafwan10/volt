@@ -10,7 +10,7 @@
 
 import type * as Monaco from 'monaco-editor';
 import { getMonaco } from '$core/services/monaco-loader';
-import { editorStore } from '$features/editor/stores/editor.svelte';
+import { openFileInEditor } from '$features/editor/stores/editor-entry';
 import {
   getCompletions,
   getHover,
@@ -445,7 +445,7 @@ function registerEditorOpener(monaco: typeof Monaco): void {
         const filepath = decodeURIComponent(resource.path.slice(1)); // Remove leading /
         
         // Open the file in the editor
-        const opened = await editorStore.openFile(filepath);
+        const opened = await openFileInEditor(filepath);
         if (!opened) {
           console.warn('[TS Monaco Providers] Failed to open file:', filepath);
           return false;

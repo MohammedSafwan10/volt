@@ -154,6 +154,10 @@ export function setModelValue(path: string, value: string): boolean {
     return true;
   }
 
+  if (model.getValue() === value) {
+    return false;
+  }
+
   // Use pushEditOperations to preserve undo history
   const fullRange = model.getFullModelRange();
   model.pushEditOperations(

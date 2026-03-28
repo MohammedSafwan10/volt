@@ -2,6 +2,8 @@
   import { settingsStore } from "$shared/stores/settings.svelte";
   import { themeStore, type ThemeMode } from "$shared/stores/theme.svelte";
   import AISettingsSection from "./AISettingsSection.svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import { rescanDartSdk } from "$core/lsp/dart-sidecar";
 
   function toNumber(value: string): number | null {
     if (value.trim() === "") return null;
@@ -15,7 +17,8 @@
       value === "dark-modern" ||
       value === "dark" ||
       value === "light" ||
-      value === "midnight"
+      value === "midnight" ||
+      value === "solarized-dark"
     ) {
       themeStore.setMode(value);
     }
@@ -44,6 +47,28 @@
     themeStore.setMode("dark-modern");
   }
 
+  async function pickFlutterSdkPath(): Promise<void> {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select Flutter SDK root",
+    });
+    if (typeof selected === "string") {
+      settingsStore.setFlutterSdkPath(selected);
+    }
+  }
+
+  async function pickDartSdkPath(): Promise<void> {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select Dart SDK root",
+    });
+    if (typeof selected === "string") {
+      settingsStore.setDartSdkPath(selected);
+    }
+  }
+
   const previewText = `function hello(name) {
   return "Hello, " + name;
 }
@@ -70,7 +95,7 @@
       <div class="setting-label">
         <div class="name">Color theme</div>
         <div class="description">
-          Choose Dark Modern, Dark, Midnight, Light, or follow System.
+          Choose Dark Modern, Dark, Midnight, Solarized Dark, or Light.
         </div>
       </div>
       <div class="setting-control">
@@ -83,6 +108,7 @@
           <option value="dark-modern">Dark Modern</option>
           <option value="dark">Dark</option>
           <option value="midnight">Midnight</option>
+          <option value="solarized-dark">Solarized Dark</option>
           <option value="light">Light</option>
         </select>
       </div>
@@ -249,6 +275,79 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Dart / Flutter</div>
+
+    <div class="setting">
+      <div class="setting-label">
+        <div class="name">Flutter SDK root</div>
+        <div class="description">
+          Optional. Set this when Volt cannot see the same PATH as your terminal on Windows.
+        </div>
+      </div>
+      <div class="setting-control column">
+        <div class="path-row">
+          <input
+            class="text"
+            type="text"
+            value={settingsStore.flutterSdkPath}
+            oninput={(e) =>
+              settingsStore.setFlutterSdkPath((e.target as HTMLInputElement).value)}
+            aria-label="Flutter SDK root"
+            placeholder="C:\\src\\flutter"
+          />
+          <button class="secondary-button" type="button" onclick={pickFlutterSdkPath}>
+            Browse
+          </button>
+          <button
+            class="secondary-button"
+            type="button"
+            onclick={() => settingsStore.setFlutterSdkPath("")}
+            disabled={!settingsStore.flutterSdkPath}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="setting">
+      <div class="setting-label">
+        <div class="name">Dart SDK root</div>
+        <div class="description">
+          Optional fallback for standalone Dart installations.
+        </div>
+      </div>
+      <div class="setting-control column">
+        <div class="path-row">
+          <input
+            class="text"
+            type="text"
+            value={settingsStore.dartSdkPath}
+            oninput={(e) =>
+              settingsStore.setDartSdkPath((e.target as HTMLInputElement).value)}
+            aria-label="Dart SDK root"
+            placeholder="C:\\tools\\dart-sdk"
+          />
+          <button class="secondary-button" type="button" onclick={pickDartSdkPath}>
+            Browse
+          </button>
+          <button
+            class="secondary-button"
+            type="button"
+            onclick={() => settingsStore.setDartSdkPath("")}
+            disabled={!settingsStore.dartSdkPath}
+          >
+            Clear
+          </button>
+        </div>
+        <button class="secondary-button self-start" type="button" onclick={() => void rescanDartSdk()}>
+          Re-scan SDKs
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Formatting</div>
 
     <div class="setting">
@@ -353,6 +452,46 @@
     margin-top: 8px;
     font-size: 12px;
     color: var(--color-text-secondary);
+  }
+
+  .setting-control.column {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .path-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .text {
+    flex: 1;
+    min-width: 0;
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .secondary-button {
+    background: var(--color-bg-input);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-radius: 4px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .secondary-button:hover {
+    background: var(--color-hover);
+  }
+
+  .self-start {
+    align-self: flex-start;
   }
 
   .section {

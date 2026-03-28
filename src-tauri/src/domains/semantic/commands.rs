@@ -1,3 +1,4 @@
+use crate::observability::{debug_log, DebugScope};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
@@ -53,7 +54,7 @@ pub struct SemanticRemoveArgs {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticQueryArgs {
     pub query: String,
@@ -707,10 +708,27 @@ pub async fn semantic_index_upsert_files(
     state: tauri::State<'_, SemanticIndexState>,
     args: SemanticUpsertArgs,
 ) -> Result<SemanticMutationResult, String> {
+    let scope = DebugScope::new(
+        "semantic",
+        format!(
+            "upsert root={} requested_paths={}",
+            args.root_path,
+            args.paths.len()
+        ),
+    );
     let state_clone = (*state).clone();
     let app_clone = app.clone();
+    let root_path = args.root_path.clone();
+    let requested_path_count = args.paths.len();
 
     tokio::task::spawn_blocking(move || {
+        debug_log(
+            "semantic",
+            format!(
+                "spawn_blocking upsert root={} requested_paths={requested_path_count}",
+                root_path
+            ),
+        );
         let enabled = semantic_enabled();
         let backend = state_clone
             .runtime_meta
@@ -752,7 +770,16 @@ pub async fn semantic_index_upsert_files(
         })
     })
     .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    .map_err(|e| format!("Task join error: {}", e))
+    .and_then(|result| {
+        if let Ok(ref value) = result {
+            scope.checkpoint(format!(
+                "processed_files={} semantic_enabled={}",
+                value.processed_files, value.semantic_enabled
+            ));
+        }
+        result
+    })
 }
 
 #[tauri::command]
@@ -839,11 +866,10 @@ pub fn semantic_index_remove_paths(
     })
 }
 
-#[tauri::command]
-pub fn semantic_index_query(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SemanticIndexState>,
-    args: SemanticQueryArgs,
+fn semantic_index_query_blocking(
+    app: &tauri::AppHandle,
+    state: &SemanticIndexState,
+    args: &SemanticQueryArgs,
 ) -> Result<SemanticQueryResult, String> {
     let enabled = semantic_enabled();
     let backend = state
@@ -878,13 +904,9 @@ pub fn semantic_index_query(
     }
 
     let started = now_ms();
-    let _guard = state
-        .lock
-        .lock()
-        .map_err(|_| "Semantic index lock poisoned".to_string())?;
     let conn = open_db(&app, &args.root_path)?;
 
-    let q_embed = embed_text(&app, &state, query);
+    let q_embed = embed_text(app, state, query);
 
     let mut stmt = conn
         .prepare(
@@ -967,14 +989,62 @@ pub fn semantic_index_query(
     let total = limited.len();
     let final_candidates = limited.into_iter().take(top_k).collect::<Vec<_>>();
 
+    let resolved_backend = state
+        .runtime_meta
+        .lock()
+        .ok()
+        .map(|m| m.backend.clone())
+        .unwrap_or(backend);
+
     Ok(SemanticQueryResult {
         candidates: final_candidates,
         total_candidates: total,
         top_k,
         lane_cap,
         semantic_enabled: true,
-        backend,
+        backend: resolved_backend,
         query_ms: now_ms().saturating_sub(started),
+    })
+}
+
+#[tauri::command]
+pub async fn semantic_index_query(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SemanticIndexState>,
+    args: SemanticQueryArgs,
+) -> Result<SemanticQueryResult, String> {
+    let scope = DebugScope::new(
+        "semantic",
+        format!(
+            "query root={} top_k={} lane_cap={}",
+            args.root_path, args.top_k, args.lane_cap
+        ),
+    );
+    let state_clone = (*state).clone();
+    let app_clone = app.clone();
+    let root_path = args.root_path.clone();
+    let query_len = args.query.len();
+
+    tokio::task::spawn_blocking(move || {
+        debug_log(
+            "semantic",
+            format!(
+                "spawn_blocking query root={} query_len={query_len}",
+                root_path
+            ),
+        );
+        semantic_index_query_blocking(&app_clone, &state_clone, &args)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))
+    .and_then(|result| {
+        if let Ok(ref value) = result {
+            scope.checkpoint(format!(
+                "candidates={} query_ms={}",
+                value.total_candidates, value.query_ms
+            ));
+        }
+        result
     })
 }
 
@@ -984,6 +1054,7 @@ pub fn semantic_index_status(
     state: tauri::State<'_, SemanticIndexState>,
     args: SemanticStatusArgs,
 ) -> Result<SemanticIndexStatus, String> {
+    let _scope = DebugScope::new("semantic", format!("status root={}", args.root_path));
     let enabled = semantic_enabled();
     let runtime_meta = state
         .runtime_meta
@@ -1008,10 +1079,6 @@ pub fn semantic_index_status(
         });
     }
 
-    let _guard = state
-        .lock
-        .lock()
-        .map_err(|_| "Semantic index lock poisoned".to_string())?;
     let conn = open_db(&app, &args.root_path)?;
 
     let file_count: usize = conn

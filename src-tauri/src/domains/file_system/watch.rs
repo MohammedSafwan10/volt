@@ -3,6 +3,7 @@
 //! Uses the `notify` crate with a small debounce window to watch for filesystem
 //! changes and emit batched events to the frontend.
 
+use crate::observability::{debug_log, DebugScope};
 use notify::{event::ModifyKind, recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,6 +64,14 @@ impl FileWatchState {
         if let Ok(mut watchers) = self.watchers.lock() {
             watchers.clear();
         }
+    }
+
+    pub fn stop(&self, workspace_root: &str) -> bool {
+        self.watchers
+            .lock()
+            .ok()
+            .and_then(|mut watchers| watchers.remove(workspace_root))
+            .is_some()
     }
 }
 
@@ -197,6 +206,7 @@ pub async fn start_file_watch(
     app: AppHandle,
     workspace_root: String,
 ) -> Result<(), WatchError> {
+    let _scope = DebugScope::new("file-watch", format!("start root={workspace_root}"));
     let root_path = PathBuf::from(&workspace_root);
 
     if !root_path.exists() || !root_path.is_dir() {
@@ -378,6 +388,7 @@ pub async fn stop_file_watch(
     state: tauri::State<'_, FileWatchState>,
     workspace_root: String,
 ) -> Result<(), WatchError> {
+    debug_log("file-watch", format!("stop root={workspace_root}"));
     let mut watchers = state
         .watchers
         .lock()
@@ -399,6 +410,7 @@ pub async fn stop_file_watch(
 pub async fn stop_all_file_watches(
     state: tauri::State<'_, FileWatchState>,
 ) -> Result<(), WatchError> {
+    debug_log("file-watch", "stop_all");
     let mut watchers = state
         .watchers
         .lock()

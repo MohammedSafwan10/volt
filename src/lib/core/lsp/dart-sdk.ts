@@ -21,41 +21,200 @@ export interface DartSdkInfo {
   flutterPath?: string;
   /** Flutter SDK version (if available) */
   flutterVersion?: string;
+  /** Resolved Flutter SDK root (if available) */
+  flutterSdkRoot?: string;
+  /** How this SDK was discovered */
+  detectionSource:
+    | 'settings:flutter'
+    | 'settings:dart'
+    | 'env:path'
+    | 'env:flutter_root'
+    | 'env:dart_sdk'
+    | 'common-path'
+    | 'flutter-bundled-dart';
 }
 
 /** Cached SDK info */
 let cachedSdkInfo: DartSdkInfo | null = null;
+let lastDetectionIssue: string | null = null;
+
+type DetectionOptions = {
+  flutterSdkRoot?: string | null;
+  dartSdkRoot?: string | null;
+};
+
+type DetectionSource = DartSdkInfo['detectionSource'];
+
+type ResolvedExecutable = {
+  path: string;
+  source: DetectionSource;
+};
+
+type VersionedExecutable = ResolvedExecutable & {
+  version: string;
+};
+
+function normalizeConfiguredRoot(root: string | null | undefined): string | null {
+  const trimmed = root?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function getFlutterExecutableFromRoot(root: string, isWindows: boolean): string {
+  return isWindows ? `${root}\\bin\\flutter.bat` : `${root}/bin/flutter`;
+}
+
+function getDartExecutableFromRoot(root: string, isWindows: boolean): string {
+  return isWindows ? `${root}\\bin\\dart.exe` : `${root}/bin/dart`;
+}
+
+function getFlutterSdkRootFromExecutablePath(flutterPath: string): string | null {
+  const normalized = flutterPath.replace(/\//g, '\\');
+  const suffix = '\\bin\\flutter.bat';
+  if (normalized.toLowerCase().endsWith(suffix.toLowerCase())) {
+    return normalized.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+function splitCommandOutput(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getFlutterBundledDartCandidates(flutterPath: string, isWindows: boolean): string[] {
+  const separator = isWindows ? '\\' : '/';
+  const normalized = isWindows
+    ? flutterPath.replace(/\//g, '\\')
+    : flutterPath.replace(/\\/g, '/');
+  const flutterBinIndex = normalized
+    .toLowerCase()
+    .lastIndexOf(`${separator}bin${separator}`.toLowerCase());
+  const sdkRoot =
+    flutterBinIndex >= 0
+      ? normalized.slice(0, flutterBinIndex)
+      : normalized.replace(/[\\/][^\\/]+$/, '').replace(/[\\/]bin$/, '');
+  const executableNames = isWindows ? ['dart.exe', 'dart.bat'] : ['dart'];
+  return executableNames.map(
+    (name) => `${sdkRoot}${separator}bin${separator}cache${separator}dart-sdk${separator}bin${separator}${name}`,
+  );
+}
+
+async function resolveFirstExistingPath(candidates: string[]): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function findCommandOnPath(command: string): Promise<string | null> {
+  const os = await platform();
+  const isWindows = os === 'windows';
+
+  try {
+    const result = await runCommand(isWindows ? 'where' : 'which', [command]);
+    if (result.exitCode !== 0 || !result.stdout.trim()) {
+      return null;
+    }
+    return splitCommandOutput(result.stdout)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function findFlutterExecutable(
+  options?: DetectionOptions,
+): Promise<ResolvedExecutable | null> {
+  const os = await platform();
+  const isWindows = os === 'windows';
+  const home = await homeDir();
+  const configuredFlutterRoot = normalizeConfiguredRoot(options?.flutterSdkRoot);
+
+  if (configuredFlutterRoot) {
+    const configuredFlutterExecutable = getFlutterExecutableFromRoot(configuredFlutterRoot, isWindows);
+    if (!(await fileExists(configuredFlutterExecutable))) {
+      lastDetectionIssue = `Configured Flutter SDK root does not contain a Flutter executable: ${configuredFlutterRoot}`;
+      return null;
+    }
+    return {
+      path: configuredFlutterExecutable,
+      source: 'settings:flutter',
+    };
+  }
+
+  const fromPath = await findCommandOnPath('flutter');
+  if (fromPath) {
+    return {
+      path: fromPath,
+      source: 'env:path',
+    };
+  }
+
+  const commonPaths = isWindows
+    ? [
+        `${home}\\flutter\\bin\\flutter.bat`,
+        `${home}\\development\\flutter\\bin\\flutter.bat`,
+        `${home}\\src\\flutter\\bin\\flutter.bat`,
+        `C:\\flutter\\bin\\flutter.bat`,
+        `C:\\src\\flutter\\bin\\flutter.bat`,
+        `D:\\flutter\\bin\\flutter.bat`,
+      ]
+    : [
+        `${home}/flutter/bin/flutter`,
+        `${home}/development/flutter/bin/flutter`,
+        `${home}/src/flutter/bin/flutter`,
+        '/usr/local/flutter/bin/flutter',
+        '/opt/flutter/bin/flutter',
+      ];
+
+  const flutterRoot = await getEnvVar('FLUTTER_ROOT');
+  if (flutterRoot) {
+    commonPaths.unshift(getFlutterExecutableFromRoot(flutterRoot, isWindows));
+  }
+  const resolved = await resolveFirstExistingPath(commonPaths);
+  if (!resolved) {
+    return null;
+  }
+  return {
+    path: resolved,
+    source: flutterRoot && resolved === getFlutterExecutableFromRoot(flutterRoot, isWindows)
+      ? 'env:flutter_root'
+      : 'common-path',
+  };
+}
 
 /**
  * Detect Dart SDK installation
  * Returns null if Dart is not installed
  */
-export async function detectDartSdk(): Promise<DartSdkInfo | null> {
+export async function detectDartSdk(options?: DetectionOptions): Promise<DartSdkInfo | null> {
   if (cachedSdkInfo) {
     return cachedSdkInfo;
   }
 
   try {
-    // Try to get Dart version via command
-    const dartPath = await findDartExecutable();
-    if (!dartPath) {
+    lastDetectionIssue = null;
+    const resolved = await resolveValidatedDartSdk(options);
+    if (!resolved) {
+      if (!lastDetectionIssue) {
+        lastDetectionIssue = 'Dart SDK not found. Install Flutter or Dart SDK, or configure an SDK path in Settings.';
+      }
       return null;
     }
-
-    const version = await getDartVersion(dartPath);
-    if (!version) {
-      return null;
-    }
-
-    // Check if this is part of a Flutter SDK
-    const flutterInfo = await detectFlutterSdk();
 
     cachedSdkInfo = {
-      dartPath,
-      version,
-      isFlutterSdk: !!flutterInfo,
-      flutterPath: flutterInfo?.flutterPath,
-      flutterVersion: flutterInfo?.version,
+      dartPath: resolved.dart.path,
+      version: resolved.dart.version,
+      isFlutterSdk: !!resolved.flutter,
+      flutterPath: resolved.flutter?.path,
+      flutterVersion: resolved.flutter?.version,
+      flutterSdkRoot: resolved.flutter?.path
+        ? getFlutterSdkRootFromExecutablePath(resolved.flutter.path) ?? undefined
+        : undefined,
+      detectionSource: resolved.dart.source,
     };
 
     console.log('[Dart SDK] Detected:', cachedSdkInfo);
@@ -69,78 +228,210 @@ export async function detectDartSdk(): Promise<DartSdkInfo | null> {
 /**
  * Find the dart executable in PATH or common locations
  */
-async function findDartExecutable(): Promise<string | null> {
+async function findDartExecutable(
+  options?: DetectionOptions,
+): Promise<ResolvedExecutable | null> {
   const os = await platform();
   const isWindows = os === 'windows';
-  const dartCmd = isWindows ? 'dart.bat' : 'dart';
-
-  // First, try PATH via 'where' (Windows) or 'which' (Unix)
-  try {
-    const result = await runCommand(isWindows ? 'where' : 'which', [isWindows ? 'dart' : 'dart']);
-    if (result.exitCode === 0 && result.stdout.trim()) {
-      const path = result.stdout.trim().split('\n')[0].trim();
-      if (path) return path;
+  const configuredFlutterRoot = normalizeConfiguredRoot(options?.flutterSdkRoot);
+  if (configuredFlutterRoot) {
+    const flutterExecutable = getFlutterExecutableFromRoot(configuredFlutterRoot, isWindows);
+    if (!(await fileExists(flutterExecutable))) {
+      lastDetectionIssue = `Configured Flutter SDK root does not contain a Flutter executable: ${configuredFlutterRoot}`;
+      return null;
     }
-  } catch {
-    // Continue to check common locations
+
+    const bundledCandidates = getFlutterBundledDartCandidates(flutterExecutable, isWindows);
+    const bundledDart = await resolveFirstExistingPath(bundledCandidates);
+    if (!bundledDart) {
+      lastDetectionIssue = `Configured Flutter SDK root does not contain a bundled Dart SDK: ${configuredFlutterRoot}`;
+      return null;
+    }
+    return {
+      path: bundledDart,
+      source: 'settings:flutter',
+    };
   }
 
-  // Check common installation locations
+  const configuredDartRoot = normalizeConfiguredRoot(options?.dartSdkRoot);
+  if (configuredDartRoot) {
+    const configuredDartExecutable = getDartExecutableFromRoot(configuredDartRoot, isWindows);
+    if (!(await fileExists(configuredDartExecutable))) {
+      lastDetectionIssue = `Configured Dart SDK root does not contain a Dart executable: ${configuredDartRoot}`;
+      return null;
+    }
+    return {
+      path: configuredDartExecutable,
+      source: 'settings:dart',
+    };
+  }
+
+  const fromPath = await findCommandOnPath('dart');
+  if (fromPath) {
+    return {
+      path: fromPath,
+      source: 'env:path',
+    };
+  }
+
   const home = await homeDir();
   const commonPaths = isWindows
     ? [
-        // Flutter SDK locations
-        `${home}\\flutter\\bin\\dart.bat`,
-        `${home}\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.bat`,
-        `C:\\flutter\\bin\\dart.bat`,
-        `C:\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.bat`,
+        `${home}\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
+        `${home}\\development\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
+        `${home}\\src\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
+        `C:\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
+        `C:\\src\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
+        `D:\\flutter\\bin\\cache\\dart-sdk\\bin\\dart.exe`,
         // Standalone Dart SDK
-        `C:\\tools\\dart-sdk\\bin\\dart.bat`,
-        `${home}\\.dart\\bin\\dart.bat`,
+        `C:\\tools\\dart-sdk\\bin\\dart.exe`,
+        `${home}\\.dart\\bin\\dart.exe`,
         // Chocolatey
         `C:\\ProgramData\\chocolatey\\bin\\dart.bat`,
       ]
     : [
-        // Flutter SDK locations
-        `${home}/flutter/bin/dart`,
         `${home}/flutter/bin/cache/dart-sdk/bin/dart`,
-        '/usr/local/flutter/bin/dart',
+        `${home}/development/flutter/bin/cache/dart-sdk/bin/dart`,
+        `${home}/src/flutter/bin/cache/dart-sdk/bin/dart`,
+        '/usr/local/flutter/bin/cache/dart-sdk/bin/dart',
+        '/opt/flutter/bin/cache/dart-sdk/bin/dart',
         // Standalone Dart SDK
         '/usr/local/dart/bin/dart',
         '/usr/lib/dart/bin/dart',
         `${home}/.dart/bin/dart`,
-        // Homebrew (macOS)
         '/opt/homebrew/bin/dart',
         '/usr/local/bin/dart',
       ];
 
-  // Check FLUTTER_ROOT environment variable
   const flutterRoot = await getEnvVar('FLUTTER_ROOT');
   if (flutterRoot) {
     commonPaths.unshift(
       isWindows
-        ? `${flutterRoot}\\bin\\dart.bat`
-        : `${flutterRoot}/bin/dart`
+        ? `${flutterRoot}\\bin\\cache\\dart-sdk\\bin\\dart.exe`
+        : `${flutterRoot}/bin/cache/dart-sdk/bin/dart`,
     );
   }
 
-  // Check DART_SDK environment variable
   const dartSdk = await getEnvVar('DART_SDK');
   if (dartSdk) {
     commonPaths.unshift(
       isWindows
-        ? `${dartSdk}\\bin\\dart.bat`
-        : `${dartSdk}/bin/dart`
+        ? `${dartSdk}\\bin\\dart.exe`
+        : `${dartSdk}/bin/dart`,
     );
   }
 
-  for (const path of commonPaths) {
-    if (await fileExists(path)) {
-      return path;
+  const directCandidate = await resolveFirstExistingPath(commonPaths);
+  if (directCandidate) {
+    const flutterRootCandidate = flutterRoot
+      ? isWindows
+        ? `${flutterRoot}\\bin\\cache\\dart-sdk\\bin\\dart.exe`
+        : `${flutterRoot}/bin/cache/dart-sdk/bin/dart`
+      : null;
+    const dartSdkCandidate = dartSdk
+      ? getDartExecutableFromRoot(dartSdk, isWindows)
+      : null;
+
+    return {
+      path: directCandidate,
+      source:
+        flutterRootCandidate && directCandidate === flutterRootCandidate
+          ? 'env:flutter_root'
+          : dartSdkCandidate && directCandidate === dartSdkCandidate
+            ? 'env:dart_sdk'
+            : 'common-path',
+    };
+  }
+
+  const flutterExecutable = await findFlutterExecutable(options);
+  if (flutterExecutable) {
+    const bundledDart = await resolveFirstExistingPath(
+      getFlutterBundledDartCandidates(flutterExecutable.path, isWindows),
+    );
+    if (bundledDart) {
+      return {
+        path: bundledDart,
+        source: 'flutter-bundled-dart',
+      };
     }
   }
 
   return null;
+}
+
+async function validateDartExecutable(
+  executable: ResolvedExecutable | null,
+  fallbackIssue?: string,
+): Promise<VersionedExecutable | null> {
+  if (!executable) return null;
+
+  const version = await getDartVersion(executable.path);
+  if (!version) {
+    lastDetectionIssue = fallbackIssue ?? `Detected Dart executable could not be validated: ${executable.path}`;
+    return null;
+  }
+
+  return {
+    ...executable,
+    version,
+  };
+}
+
+async function resolveValidatedDartSdk(
+  options?: DetectionOptions,
+): Promise<{
+  dart: VersionedExecutable;
+  flutter: { path: string; version: string; source: DetectionSource } | null;
+} | null> {
+  const configuredFlutterRoot = normalizeConfiguredRoot(options?.flutterSdkRoot);
+  const configuredDartRoot = normalizeConfiguredRoot(options?.dartSdkRoot);
+
+  const primaryCandidate = await validateDartExecutable(
+    await findDartExecutable(options),
+    configuredFlutterRoot || configuredDartRoot
+      ? lastDetectionIssue ?? undefined
+      : undefined,
+  );
+
+  if (primaryCandidate) {
+    const flutter = await detectFlutterSdk(options);
+    return {
+      dart: primaryCandidate,
+      flutter,
+    };
+  }
+
+  if (configuredFlutterRoot || configuredDartRoot) {
+    return null;
+  }
+
+  const flutter = await detectFlutterSdk(options);
+  if (!flutter) {
+    return null;
+  }
+
+  const os = await platform();
+  const isWindows = os === 'windows';
+  const flutterBundledDart = await resolveFirstExistingPath(
+    getFlutterBundledDartCandidates(flutter.path, isWindows),
+  );
+  const validatedBundledDart = await validateDartExecutable(
+    flutterBundledDart
+      ? {
+          path: flutterBundledDart,
+          source: 'flutter-bundled-dart',
+        }
+      : null,
+  );
+
+  if (!validatedBundledDart) {
+    return null;
+  }
+
+  return {
+    dart: validatedBundledDart,
+    flutter,
+  };
 }
 
 /**
@@ -161,30 +452,32 @@ async function getDartVersion(dartPath: string): Promise<string | null> {
 /**
  * Detect Flutter SDK (optional, used to enrich Dart SDK info)
  */
-async function detectFlutterSdk(): Promise<{ flutterPath: string; version: string } | null> {
-  const os = await platform();
-  const isWindows = os === 'windows';
+async function detectFlutterSdk(
+  options?: DetectionOptions,
+): Promise<{ path: string; version: string; source: DetectionSource } | null> {
+  const resolvedFlutter = await findFlutterExecutable(options);
+  if (!resolvedFlutter) {
+    return null;
+  }
 
   try {
-    const result = await runCommand(isWindows ? 'where' : 'which', ['flutter']);
-    if (result.exitCode === 0 && result.stdout.trim()) {
-      const flutterPath = result.stdout.trim().split('\n')[0].trim();
-      
-      // Get Flutter version
-      const versionResult = await runCommand(flutterPath, ['--version', '--machine']);
-      if (versionResult.exitCode === 0) {
-        try {
-          const info = JSON.parse(versionResult.stdout);
+    const versionResult = await runCommand(resolvedFlutter.path, ['--version', '--machine']);
+    if (versionResult.exitCode === 0) {
+      try {
+        const info = JSON.parse(versionResult.stdout);
+        return {
+          path: resolvedFlutter.path,
+          version: info.frameworkVersion || info.version,
+          source: resolvedFlutter.source,
+        };
+      } catch {
+        const match = versionResult.stdout.match(/Flutter\s+(\d+\.\d+\.\d+)/);
+        if (match) {
           return {
-            flutterPath,
-            version: info.frameworkVersion || info.version,
+            path: resolvedFlutter.path,
+            version: match[1],
+            source: resolvedFlutter.source,
           };
-        } catch {
-          // Try parsing plain text output
-          const match = versionResult.stdout.match(/Flutter\s+(\d+\.\d+\.\d+)/);
-          if (match) {
-            return { flutterPath, version: match[1] };
-          }
         }
       }
     }
@@ -249,12 +542,17 @@ async function fileExists(path: string): Promise<boolean> {
  */
 export function clearDartSdkCache(): void {
   cachedSdkInfo = null;
+  lastDetectionIssue = null;
+}
+
+export function getLastDartSdkDetectionIssue(): string | null {
+  return lastDetectionIssue;
 }
 
 /**
  * Check if Dart is available on the system
  */
-export async function isDartAvailable(): Promise<boolean> {
-  const sdk = await detectDartSdk();
+export async function isDartAvailable(options?: DetectionOptions): Promise<boolean> {
+  const sdk = await detectDartSdk(options);
   return sdk !== null;
 }

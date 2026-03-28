@@ -212,10 +212,36 @@ export class EditorStore {
   /** Current editor options (indentation) */
   editorOptions = $state<EditorOptions>({ tabSize: 2, insertSpaces: true });
 
-  constructor() {
-    fileService.subscribeAll((event) => {
-      this.handleFileServiceChange(event);
-    });
+  fileServiceUnsubscribe: (() => void) | null = null;
+  private fileServiceInitRetryQueued = false;
+
+  initialize(): void {
+    if (this.fileServiceUnsubscribe || this.fileServiceInitRetryQueued) return;
+
+    try {
+      this.fileServiceUnsubscribe = fileService.subscribeAll((event) => {
+        this.handleFileServiceChange(event);
+      });
+    } catch (error) {
+      const isFileServiceTdz =
+        error instanceof ReferenceError &&
+        /fileService/.test(error.message);
+      if (!isFileServiceTdz) {
+        throw error;
+      }
+
+      this.fileServiceInitRetryQueued = true;
+      queueMicrotask(() => {
+        this.fileServiceInitRetryQueued = false;
+        this.initialize();
+      });
+    }
+  }
+
+  resetFileServiceSubscription(): void {
+    this.fileServiceUnsubscribe?.();
+    this.fileServiceUnsubscribe = null;
+    this.fileServiceInitRetryQueued = false;
   }
 
   /** Get the currently active file */
@@ -538,6 +564,10 @@ export class EditorStore {
     }
   }
 
+  getDocumentVersion(path: string): number | null {
+    return fileService.getVersion(normalizePath(path));
+  }
+
   /**
    * Reload file content from disk
    */
@@ -551,6 +581,10 @@ export class EditorStore {
     if (isBinaryLike) {
       // Binary previews are loaded by viewer components from disk directly.
       return true;
+    }
+
+    if (fileService.isDirty(normalizedPath)) {
+      return false;
     }
 
     try {
@@ -779,3 +813,8 @@ export class EditorStore {
 
 // Singleton instance
 export const editorStore = new EditorStore();
+editorStore.initialize();
+
+export function disposeEditorStore(): void {
+  editorStore.resetFileServiceSubscription();
+}

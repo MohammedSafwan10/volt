@@ -11,6 +11,18 @@
   import { showToast } from "$shared/stores/toast.svelte";
   import { UIIcon, type UIIconName } from "$shared/components/ui";
 
+  type VisibleProblemFile = {
+    filePath: string;
+    problems: Problem[];
+    counts: {
+      errors: number;
+      warnings: number;
+    };
+    expanded: boolean;
+    fileName: string;
+    fileDirectory: string;
+  };
+
   // Track expanded files (SvelteSet is already reactive)
   const expandedFiles = new SvelteSet<string>();
   const AUTO_EXPAND_FILE_LIMIT = 8;
@@ -172,6 +184,22 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     return Array.from(visibleFiles);
   }
 
+  function getVisibleProblemFiles(): VisibleProblemFile[] {
+    return getVisibleFilePaths().map((filePath) => {
+      const problems = getVisibleProblemsForFile(filePath);
+      const fileName = problems[0]?.fileName || filePath.split(/[\\/]/).pop() || filePath;
+
+      return {
+        filePath,
+        problems,
+        counts: getFileCounts(problems),
+        expanded: isExpanded(filePath),
+        fileName,
+        fileDirectory: formatFileDirectory(filePath, fileName),
+      };
+    });
+  }
+
   $effect(() => {
     const filePaths = getVisibleFilePaths();
 
@@ -197,7 +225,9 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   });
   
   // Handle filter change
-  function handleFilterChange(filter: 'all' | 'error' | 'warning' | 'info'): void {
+  function handleFilterChange(
+    filter: "all" | "error" | "warning" | "info",
+  ): void {
     problemsStore.setSeverityFilter(filter);
   }
   
@@ -219,7 +249,13 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
 
   function getFreshnessTone(status: string): "success" | "warning" | "muted" {
     if (status === "fresh") return "success";
-    if (status === "stale" || status === "updating" || status === "warming") return "warning";
+    if (
+      status === "stale" ||
+      status === "updating" ||
+      status === "warming"
+    ) {
+      return "warning";
+    }
     return "muted";
   }
 
@@ -374,12 +410,12 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
       </div>
     </div>
   {:else}
-    {@const visibleFilePaths = getVisibleFilePaths()}
+    {@const visibleProblemFiles = getVisibleProblemFiles()}
 
     <div class="results-meta">
       Showing {problemsStore.totalCount} problem{problemsStore.totalCount === 1
         ? ""
-        : "s"} across {visibleFilePaths.length} file{visibleFilePaths.length ===
+        : "s"} across {visibleProblemFiles.length} file{visibleProblemFiles.length ===
       1
         ? ""
         : "s"}
@@ -393,44 +429,38 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
     </div>
 
     <div class="problems-list">
-      {#each visibleFilePaths as filePath (filePath)}
-        {@const problems = getVisibleProblemsForFile(filePath)}
-        {@const counts = getFileCounts(problems)}
-        {@const expanded = isExpanded(filePath)}
-        {@const fileName = problems[0]?.fileName || filePath.split(/[\\/]/).pop() || filePath}
-        {@const fileDirectory = formatFileDirectory(filePath, fileName)}
-
+      {#each visibleProblemFiles as fileGroup (fileGroup.filePath)}
         <div class="file-group">
           <button
             class="file-header"
-            onclick={() => toggleFile(filePath)}
-            aria-expanded={expanded}
+            onclick={() => toggleFile(fileGroup.filePath)}
+            aria-expanded={fileGroup.expanded}
           >
             <span class="expand-icon">
               <UIIcon
-                name={expanded ? "chevron-down" : "chevron-right"}
+                name={fileGroup.expanded ? "chevron-down" : "chevron-right"}
                 size={14}
               />
             </span>
             <span class="file-header-main">
-              <span class="file-name">{fileName}</span>
-              {#if fileDirectory}
-                <span class="file-path">{fileDirectory}</span>
+              <span class="file-name">{fileGroup.fileName}</span>
+              {#if fileGroup.fileDirectory}
+                <span class="file-path">{fileGroup.fileDirectory}</span>
               {/if}
             </span>
             <span class="file-counts">
-              {#if counts.errors > 0}
-                <span class="count-badge error">{counts.errors}</span>
+              {#if fileGroup.counts.errors > 0}
+                <span class="count-badge error">{fileGroup.counts.errors}</span>
               {/if}
-              {#if counts.warnings > 0}
-                <span class="count-badge warning">{counts.warnings}</span>
+              {#if fileGroup.counts.warnings > 0}
+                <span class="count-badge warning">{fileGroup.counts.warnings}</span>
               {/if}
             </span>
           </button>
 
-          {#if expanded}
+          {#if fileGroup.expanded}
             <div class="problems-items">
-              {#each problems as problem (problem.id)}
+              {#each fileGroup.problems as problem (problem.id)}
                 <div class="problem-item-row">
                   <button
                     class="problem-item"

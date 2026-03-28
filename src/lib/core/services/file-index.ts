@@ -9,6 +9,18 @@ export const indexUpdateTick = writable(0);
 
 const FULL_RESCAN_THRESHOLD = 200;
 
+function countChangedPaths(
+  changes: Array<{
+    kind: string;
+    paths: string[];
+    absolutePaths: string[];
+  }>
+): number {
+  return changes.reduce((total, change) => {
+    return total + Math.max(change.absolutePaths.length, change.paths.length, 1);
+  }, 0);
+}
+
 export function shouldIgnorePath(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
   const parts = normalized.split('/');
@@ -475,7 +487,7 @@ export async function handleFileChangeBatch(
     absolutePaths: string[];
   }>
 ): Promise<boolean> {
-  if (changes.length > FULL_RESCAN_THRESHOLD) {
+  if (countChangedPaths(changes) > FULL_RESCAN_THRESHOLD) {
     return false;
   }
 

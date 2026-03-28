@@ -209,6 +209,19 @@ impl GitProcessManager {
 
         Err(GitError::CommandFailed { message: stderr })
     }
+
+    pub fn cancel_all(&self) {
+        let processes = self
+            .processes
+            .lock()
+            .ok()
+            .map(|map| map.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        for process in processes {
+            process.cancel_requested.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 /// File status in git (porcelain v2 format)

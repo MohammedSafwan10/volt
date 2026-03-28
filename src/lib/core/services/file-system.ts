@@ -114,12 +114,17 @@ export async function readFile(path: string): Promise<string | null> {
  */
 export async function writeFile(
   path: string,
-  content: string
+  content: string,
+  options: { expectedVersion?: number; force?: boolean; source?: 'editor' | 'ai' | 'lsp' | 'disk' } = {}
 ): Promise<boolean> {
   try {
     logOutput('File System', `Writing file: ${path}`);
     // Use fileService for consistent file writes
-    const result = await fileService.write(path, content, { source: 'editor' });
+    const result = await fileService.write(path, content, {
+      source: options.source ?? 'editor',
+      expectedVersion: options.expectedVersion,
+      force: options.force ?? false
+    });
     if (!result.success) {
       logOutput('File System', `Error writing file: ${path} - ${result.error}`);
       showToast({ message: result.error || 'Write failed', type: 'error' });
@@ -258,6 +263,26 @@ export async function readFileQuiet(path: string): Promise<string | null> {
     }
     console.error(`[FileSystem] Read file (quiet) error for ${path}:`, error);
     return null;
+  }
+}
+
+export async function writeFileQuiet(
+  path: string,
+  content: string
+): Promise<boolean> {
+  try {
+    logOutput('File System', `Writing file (quiet): ${path}`);
+    const result = await fileService.write(path, content, { source: 'editor' });
+    if (!result.success) {
+      logOutput('File System', `Quiet write failed: ${path} - ${result.error}`);
+      return false;
+    }
+    logOutput('File System', `Wrote ${content.length} bytes to ${path}`);
+    return true;
+  } catch (error) {
+    console.error(`[FileSystem] Write file (quiet) error for ${path}:`, error);
+    logOutput('File System', `Write file (quiet) error: ${path}`);
+    return false;
   }
 }
 

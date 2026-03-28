@@ -8,6 +8,7 @@
 //! - Proper LSP message framing (Content-Length based)
 //! - Clean shutdown on app/project close
 
+use crate::observability::{debug_log, DebugScope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -205,6 +206,8 @@ pub struct LspProjectDiagnosticsPlan {
     pub delay_ms: u64,
     pub stagger_ms: u64,
     pub sidecars: Vec<String>,
+    pub stale_sources: Vec<String>,
+    pub fresh_sources: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +218,7 @@ struct ProjectDiagnosticsSchedulerState {
     next_run_id: u64,
     last_run_finished_at_ms: u64,
     sidecar_retry_after: HashMap<String, u64>,
+    delayed_sources: HashSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,6 +324,99 @@ impl<R: Runtime> LspManager<R> {
             sidecar,
             "css" | "html" | "typescript" | "svelte" | "eslint" | "dart"
         )
+    }
+
+    fn diagnostics_source_for_sidecar(sidecar: &str) -> &str {
+        match sidecar {
+            "eslint" => "eslint",
+            "typescript" => "typescript",
+            other => other,
+        }
+    }
+
+    fn collect_stale_sources(
+        scheduler: &mut ProjectDiagnosticsSchedulerState,
+        sidecars: &[String],
+    ) -> Vec<String> {
+        let stale = sidecars
+            .iter()
+            .map(|sidecar| Self::diagnostics_source_for_sidecar(sidecar).to_string())
+            .collect::<Vec<_>>();
+        for source in &stale {
+            scheduler.delayed_sources.insert(source.clone());
+        }
+        stale
+    }
+
+    fn collect_fresh_sources(
+        requested_sidecars: &[String],
+        scheduled_sidecars: &[String],
+    ) -> Vec<String> {
+        let scheduled_sources = scheduled_sidecars
+            .iter()
+            .map(|sidecar| Self::diagnostics_source_for_sidecar(sidecar).to_string())
+            .collect::<HashSet<_>>();
+        let mut seen_sources = HashSet::new();
+        let mut fresh_sources = Vec::new();
+
+        for sidecar in requested_sidecars {
+            let normalized = sidecar.trim();
+            if normalized.is_empty() || !Self::is_known_project_diagnostics_sidecar(normalized) {
+                continue;
+            }
+
+            let source = Self::diagnostics_source_for_sidecar(normalized).to_string();
+            if !scheduled_sources.contains(&source) || !seen_sources.insert(source.clone()) {
+                continue;
+            }
+
+            fresh_sources.push(source);
+        }
+
+        fresh_sources
+    }
+
+    fn take_stale_sources(scheduler: &mut ProjectDiagnosticsSchedulerState) -> Vec<String> {
+        let stale = scheduler
+            .delayed_sources
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        scheduler.delayed_sources.clear();
+        stale
+    }
+
+    fn collect_cooldown_blocked_sources(
+        scheduler: &mut ProjectDiagnosticsSchedulerState,
+        requested_sidecars: &[String],
+        now: u64,
+    ) -> Vec<String> {
+        let mut blocked_sources = Vec::new();
+        let mut seen_sources = HashSet::new();
+
+        for sidecar in requested_sidecars {
+            let normalized = sidecar.trim();
+            if normalized.is_empty() || !Self::is_known_project_diagnostics_sidecar(normalized) {
+                continue;
+            }
+
+            let retry_after = scheduler
+                .sidecar_retry_after
+                .get(normalized)
+                .copied()
+                .unwrap_or(0);
+            if retry_after <= now {
+                continue;
+            }
+
+            let source = Self::diagnostics_source_for_sidecar(normalized).to_string();
+            scheduler.delayed_sources.insert(source.clone());
+            if seen_sources.insert(source.clone()) {
+                blocked_sources.push(source);
+            }
+        }
+
+        blocked_sources
     }
 
     fn should_cooldown_project_diagnostics_sidecar(
@@ -528,9 +625,12 @@ impl<R: Runtime> LspManager<R> {
         text: &str,
     ) -> Result<LspTrackedDocumentSyncResult, LspError> {
         let uri = Self::file_path_to_uri(file_path);
-        let mut tracked = self.tracked_documents.lock().map_err(|e| LspError::ProcessError {
-            message: format!("Failed to acquire tracked document lock: {}", e),
-        })?;
+        let mut tracked = self
+            .tracked_documents
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire tracked document lock: {}", e),
+            })?;
         let server_docs = tracked.entry(server_id.to_string()).or_default();
 
         if let Some(document) = server_docs.get_mut(&uri) {
@@ -606,9 +706,12 @@ impl<R: Runtime> LspManager<R> {
         &self,
         server_id: &str,
     ) -> Result<Vec<LspTrackedDocumentInfo>, LspError> {
-        let tracked = self.tracked_documents.lock().map_err(|e| LspError::ProcessError {
-            message: format!("Failed to acquire tracked document lock: {}", e),
-        })?;
+        let tracked = self
+            .tracked_documents
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire tracked document lock: {}", e),
+            })?;
 
         let mut documents = tracked
             .get(server_id)
@@ -661,12 +764,15 @@ impl<R: Runtime> LspManager<R> {
                 delay_ms: 0,
                 stagger_ms: STAGGER_MS,
                 sidecars: Vec::new(),
+                stale_sources: Vec::new(),
+                fresh_sources: Vec::new(),
             });
         }
 
         let elapsed = now.saturating_sub(scheduler.last_run_finished_at_ms);
         if scheduler.last_run_finished_at_ms != 0 && elapsed < MIN_INTERVAL_MS {
             scheduler.pending_root = Some(trimmed_root.to_string());
+            let stale_sources = Self::collect_stale_sources(&mut scheduler, requested_sidecars);
             return Ok(LspProjectDiagnosticsPlan {
                 action: "delay".to_string(),
                 run_id: None,
@@ -674,6 +780,8 @@ impl<R: Runtime> LspManager<R> {
                 delay_ms: MIN_INTERVAL_MS - elapsed,
                 stagger_ms: STAGGER_MS,
                 sidecars: Vec::new(),
+                stale_sources,
+                fresh_sources: Vec::new(),
             });
         }
 
@@ -705,7 +813,16 @@ impl<R: Runtime> LspManager<R> {
 
                 Some(normalized.to_string())
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut stale_sources = Self::take_stale_sources(&mut scheduler);
+        let cooldown_blocked_sources =
+            Self::collect_cooldown_blocked_sources(&mut scheduler, requested_sidecars, now);
+        for source in cooldown_blocked_sources {
+            if !stale_sources.iter().any(|existing| existing == &source) {
+                stale_sources.push(source);
+            }
+        }
+        let fresh_sources = Self::collect_fresh_sources(requested_sidecars, &sidecars);
 
         Ok(LspProjectDiagnosticsPlan {
             action: "run".to_string(),
@@ -714,6 +831,8 @@ impl<R: Runtime> LspManager<R> {
             delay_ms: 0,
             stagger_ms: STAGGER_MS,
             sidecars,
+            stale_sources,
+            fresh_sources,
         })
     }
 
@@ -739,6 +858,8 @@ impl<R: Runtime> LspManager<R> {
                 delay_ms: 0,
                 stagger_ms: STAGGER_MS,
                 sidecars: Vec::new(),
+                stale_sources: Vec::new(),
+                fresh_sources: Vec::new(),
             });
         }
 
@@ -754,6 +875,8 @@ impl<R: Runtime> LspManager<R> {
                 delay_ms: MIN_INTERVAL_MS,
                 stagger_ms: STAGGER_MS,
                 sidecars: Vec::new(),
+                stale_sources: Vec::new(),
+                fresh_sources: Vec::new(),
             });
         }
 
@@ -764,6 +887,8 @@ impl<R: Runtime> LspManager<R> {
             delay_ms: 0,
             stagger_ms: STAGGER_MS,
             sidecars: Vec::new(),
+            stale_sources: Vec::new(),
+            fresh_sources: Vec::new(),
         })
     }
 
@@ -833,6 +958,13 @@ impl<R: Runtime> LspManager<R> {
 
     /// Start a language server sidecar with the given configuration
     pub fn start_server(&self, config: LspServerConfig) -> Result<LspServerInfo, LspError> {
+        let _scope = DebugScope::new(
+            "lsp",
+            format!(
+                "start_sidecar server_id={} server_type={}",
+                config.server_id, config.server_type
+            ),
+        );
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
@@ -915,7 +1047,10 @@ impl<R: Runtime> LspManager<R> {
         );
 
         if let Ok(mut saved_configs) = self.saved_configs.lock() {
-            saved_configs.insert(server_id.clone(), SavedServerConfig::Sidecar(config.clone()));
+            saved_configs.insert(
+                server_id.clone(),
+                SavedServerConfig::Sidecar(config.clone()),
+            );
         }
 
         Ok(LspServerInfo {
@@ -931,6 +1066,13 @@ impl<R: Runtime> LspManager<R> {
         &self,
         config: ExternalLspConfig,
     ) -> Result<LspServerInfo, LspError> {
+        let _scope = DebugScope::new(
+            "lsp",
+            format!(
+                "start_external server_id={} server_type={} command={}",
+                config.server_id, config.server_type, config.command
+            ),
+        );
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
@@ -1066,7 +1208,10 @@ impl<R: Runtime> LspManager<R> {
         );
 
         if let Ok(mut saved_configs) = self.saved_configs.lock() {
-            saved_configs.insert(server_id.clone(), SavedServerConfig::External(config.clone()));
+            saved_configs.insert(
+                server_id.clone(),
+                SavedServerConfig::External(config.clone()),
+            );
         }
 
         Ok(LspServerInfo {
@@ -1537,6 +1682,10 @@ impl<R: Runtime> LspManager<R> {
 
     /// Stop a running server
     pub fn stop_server(&self, server_id: &str, preserve_state: bool) -> Result<(), LspError> {
+        let _scope = DebugScope::new(
+            "lsp",
+            format!("stop server_id={server_id} preserve_state={preserve_state}"),
+        );
         let mut servers = self.servers.lock().map_err(|e| LspError::ProcessError {
             message: format!("Failed to acquire lock: {}", e),
         })?;
@@ -1612,12 +1761,14 @@ impl<R: Runtime> LspManager<R> {
 
     /// Stop all running servers
     pub fn stop_all(&self) -> Result<(), LspError> {
+        let _scope = DebugScope::new("lsp", "stop_all");
         let server_ids: Vec<String> = {
             let servers = self.servers.lock().map_err(|e| LspError::ProcessError {
                 message: format!("Failed to acquire lock: {}", e),
             })?;
             servers.keys().cloned().collect()
         };
+        debug_log("lsp", format!("stop_all count={}", server_ids.len()));
 
         for server_id in server_ids {
             let _ = self.stop_server(&server_id, false);

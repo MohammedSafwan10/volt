@@ -14,8 +14,7 @@
     void initializeFileService();
   });
 
-  // Global handler for external links - opens in system browser instead of Tauri webview
-  // EXCEPT for links marked with data-external-link="true" which open in built-in browser
+  // Global handler for external links - always opens in the system browser.
   onMount(() => {
     function handleGlobalClick(event: MouseEvent): void {
       const target = event.target as HTMLElement;
@@ -25,11 +24,6 @@
         const href = link.getAttribute('href');
         // Check if it's an external URL (http/https)
         if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
-          // Skip links that should open in built-in browser (handled by Markdown component)
-          if (link.hasAttribute('data-external-link')) {
-            return; // Let the Markdown handler deal with it
-          }
-          
           event.preventDefault();
           event.stopPropagation();
           void openUrl(href);

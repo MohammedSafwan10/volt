@@ -2,6 +2,7 @@
 mod tests {
     use crate::domains::document::manager::{DocumentManagerState, DocumentWriteRequest};
     use tempfile::tempdir;
+
     #[test]
     fn default_state_starts_empty() {
         let manager = DocumentManagerState::default();
@@ -31,5 +32,34 @@ mod tests {
         std::fs::write(&file_path, "hello").unwrap();
         let normalized = file_path.to_string_lossy().replace('\\', "/");
         assert!(normalized.ends_with("doc.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_document_hydrates_existing_disk_file_into_cache() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("doc.tsx");
+        std::fs::write(&file_path, "export const value = 1;\n").unwrap();
+        let normalized = file_path.to_string_lossy().replace('\\', "/");
+        let manager = DocumentManagerState::default();
+
+        let state = manager
+            .read_document(normalized.clone(), false)
+            .await
+            .unwrap()
+            .expect("existing disk file should load");
+
+        assert_eq!(state.path, normalized);
+        assert_eq!(state.content, "export const value = 1;\n");
+        assert_eq!(state.version, 1);
+        assert_eq!(state.disk_version, 1);
+        assert!(!state.is_dirty);
+        assert_eq!(state.language.as_deref(), Some("typescriptreact"));
+
+        let cached = manager
+            .get_document(file_path.to_string_lossy().into_owned())
+            .unwrap()
+            .expect("loaded file should be cached");
+        assert_eq!(cached.content, state.content);
+        assert_eq!(cached.version, state.version);
     }
 }

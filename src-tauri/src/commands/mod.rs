@@ -1,5 +1,5 @@
 pub mod ai;
-pub mod browser;
+pub mod document;
 pub mod file_index;
 pub mod file_ops;
 pub mod file_watch;
@@ -10,3 +10,4 @@ pub mod search;
 pub mod semantic_index;
 pub mod system;
 pub mod terminal;
+pub mod workspace;

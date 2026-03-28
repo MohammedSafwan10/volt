@@ -1,7 +1,8 @@
 use tauri::{AppHandle, Runtime, State};
 
 use super::manager::{
-    DocumentApplyResult, DocumentManagerState, DocumentState, DocumentWriteRequest, DocumentWriteResult,
+    DocumentApplyResult, DocumentManagerState, DocumentState, DocumentWriteRequest,
+    DocumentWriteResult,
 };
 
 #[tauri::command]

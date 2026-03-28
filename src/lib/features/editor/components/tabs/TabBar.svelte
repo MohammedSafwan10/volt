@@ -16,13 +16,14 @@
   let contextY = $state(0);
   let contextFile = $state<OpenFile | null>(null);
 
-  function handleSelect(path: string) {
+  async function handleSelect(path: string) {
     // Trigger auto-save before switching tabs
-    triggerImmediateAutoSave();
+    await triggerImmediateAutoSave();
     editorStore.setActiveFile(path);
   }
 
-  function handleClose(path: string) {
+  async function handleClose(path: string) {
+    await triggerImmediateAutoSave();
     editorStore.closeFile(path);
   }
 

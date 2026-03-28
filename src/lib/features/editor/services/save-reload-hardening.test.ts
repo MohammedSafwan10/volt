@@ -140,12 +140,37 @@ describe('save/reload hardening', () => {
     fileServiceMock.isDirty.mockImplementation(((path?: string) => path === 'c:/repo/src/main.ts') as never);
 
     triggerImmediateAutoSave();
-    await vi.waitFor(() => {
-      expect(writeFileMock).toHaveBeenCalledWith('c:/repo/src/main.ts', 'changed', {
-        expectedVersion: 7,
-      });
+    await Promise.resolve();
+
+    expect(writeFileMock).toHaveBeenCalledWith('c:/repo/src/main.ts', 'changed', {
+      expectedVersion: 7,
     });
 
+    expect(writeFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a promise from immediate auto-save so callers can await completion', async () => {
+    const { editorStore } = await import('../stores/editor.svelte');
+    const { triggerImmediateAutoSave } = await import('./auto-save');
+
+    editorStore.openFiles = [
+      {
+        path: 'c:/repo/src/main.ts',
+        name: 'main.ts',
+        content: 'changed',
+        originalContent: 'before',
+        language: 'typescript',
+        lineEnding: 'LF',
+        encoding: 'utf-8',
+      },
+    ];
+    editorStore.activeFilePath = 'c:/repo/src/main.ts';
+    fileServiceMock.isDirty.mockImplementation(((path?: string) => path === 'c:/repo/src/main.ts') as never);
+
+    const result = triggerImmediateAutoSave();
+
+    expect(result).toBeInstanceOf(Promise);
+    await result;
     expect(writeFileMock).toHaveBeenCalledTimes(1);
   });
 

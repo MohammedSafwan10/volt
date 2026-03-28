@@ -14,6 +14,7 @@ import {
   type DiagnosticFreshnessSummary,
   type DiagnosticSourceSnapshot,
 } from '$core/services/diagnostics-freshness';
+import { writable, type Writable } from 'svelte/store';
 
 export type ProblemSeverity = 'error' | 'warning' | 'info' | 'hint';
 export type SeverityFilter = ProblemSeverity | 'all';
@@ -73,6 +74,13 @@ function problemSortValue(severity: ProblemSeverity): number {
 
 class ProblemsStore {
   private readonly NATIVE_SOURCE = 'monaco-native';
+  private readonly problemsByFileStore: Writable<ProblemsByFile>;
+  private readonly severityFilterStore: Writable<SeverityFilter>;
+  private readonly searchQueryStore: Writable<string>;
+  private readonly isUpdatingStore: Writable<boolean>;
+  private readonly sourceStatesStore: Writable<Record<string, DiagnosticSourceState>>;
+  private readonly lastUpdateStore: Writable<number>;
+  private readonly freshnessNowStore: Writable<number>;
 
   private normalizePath(filePath: string): string {
     let normalized = filePath.replace(/\\/g, '/');
@@ -83,28 +91,94 @@ class ProblemsStore {
   }
 
   /** All problems grouped by file */
-  problemsByFile = $state<ProblemsByFile>({});
+  problemsByFile: ProblemsByFile = {};
   
   /** Current severity filter */
-  severityFilter = $state<SeverityFilter>('all');
+  severityFilter: SeverityFilter = 'all';
   
   /** Search query for filtering problems */
-  searchQuery = $state('');
+  searchQuery = '';
   
   /** Is currently receiving updates (for activity indicator) */
-  isUpdating = $state(false);
+  isUpdating = false;
 
   /** Diagnostics source health state */
-  sourceStates = $state<Record<string, DiagnosticSourceState>>({});
+  sourceStates: Record<string, DiagnosticSourceState> = {};
   
   /** Last update timestamp */
-  lastUpdate = $state(0);
+  lastUpdate = 0;
   
   /** Update timeout for activity indicator */
   private updateTimeout: ReturnType<typeof setTimeout> | null = null;
   private sourceUpdateTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-  private freshnessNow = $state(Date.now());
+  private freshnessNow = Date.now();
   private freshnessTicker: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.problemsByFileStore = writable<ProblemsByFile>(this.problemsByFile);
+    this.problemsByFileStore.subscribe((value) => {
+      this.problemsByFile = value;
+    });
+    this.severityFilterStore = writable<SeverityFilter>(this.severityFilter);
+    this.severityFilterStore.subscribe((value) => {
+      this.severityFilter = value;
+    });
+    this.searchQueryStore = writable<string>(this.searchQuery);
+    this.searchQueryStore.subscribe((value) => {
+      this.searchQuery = value;
+    });
+    this.isUpdatingStore = writable<boolean>(this.isUpdating);
+    this.isUpdatingStore.subscribe((value) => {
+      this.isUpdating = value;
+    });
+    this.sourceStatesStore = writable<Record<string, DiagnosticSourceState>>(this.sourceStates);
+    this.sourceStatesStore.subscribe((value) => {
+      this.sourceStates = value;
+    });
+    this.lastUpdateStore = writable<number>(this.lastUpdate);
+    this.lastUpdateStore.subscribe((value) => {
+      this.lastUpdate = value;
+    });
+    this.freshnessNowStore = writable<number>(this.freshnessNow);
+    this.freshnessNowStore.subscribe((value) => {
+      this.freshnessNow = value;
+    });
+  }
+
+  private setProblemsByFile(next: ProblemsByFile): void {
+    this.problemsByFile = next;
+    this.problemsByFileStore.set(next);
+  }
+
+  private setSeverityFilterState(next: SeverityFilter): void {
+    this.severityFilter = next;
+    this.severityFilterStore.set(next);
+  }
+
+  private setSearchQueryState(next: string): void {
+    this.searchQuery = next;
+    this.searchQueryStore.set(next);
+  }
+
+  private setIsUpdatingState(next: boolean): void {
+    this.isUpdating = next;
+    this.isUpdatingStore.set(next);
+  }
+
+  private setSourceStates(next: Record<string, DiagnosticSourceState>): void {
+    this.sourceStates = next;
+    this.sourceStatesStore.set(next);
+  }
+
+  private setLastUpdate(next: number): void {
+    this.lastUpdate = next;
+    this.lastUpdateStore.set(next);
+  }
+
+  private setFreshnessNow(next: number): void {
+    this.freshnessNow = next;
+    this.freshnessNowStore.set(next);
+  }
 
   /** Get all problems as a flat array (with filters applied) */
   get allProblems(): Problem[] {
@@ -223,7 +297,7 @@ class ProblemsStore {
 
     if (this.freshnessTicker) return;
     this.freshnessTicker = setInterval(() => {
-      this.freshnessNow = Date.now();
+      this.setFreshnessNow(Date.now());
     }, 1000);
   }
 
@@ -250,31 +324,31 @@ class ProblemsStore {
   
   /** Set severity filter */
   setSeverityFilter(filter: SeverityFilter): void {
-    this.severityFilter = filter;
+    this.setSeverityFilterState(filter);
   }
   
   /** Set search query */
   setSearchQuery(query: string): void {
-    this.searchQuery = query;
+    this.setSearchQueryState(query);
   }
   
   /** Mark as updating (shows activity indicator) */
   private markUpdating(): void {
-    this.isUpdating = true;
-    this.lastUpdate = Date.now();
+    this.setIsUpdatingState(true);
+    this.setLastUpdate(Date.now());
     
     // Auto-clear after 500ms of no updates
     if (this.updateTimeout) {
       clearTimeout(this.updateTimeout);
     }
     this.updateTimeout = setTimeout(() => {
-      this.isUpdating = false;
+      this.setIsUpdatingState(false);
     }, 500);
   }
 
   private markSourceUpdating(source: string): void {
     const now = Date.now();
-    this.sourceStates = {
+    this.setSourceStates({
       ...this.sourceStates,
       [source]: {
         source,
@@ -282,7 +356,7 @@ class ProblemsStore {
         isUpdating: true,
         isStale: false,
       },
-    };
+    });
 
     const existing = this.sourceUpdateTimeouts.get(source);
     if (existing) {
@@ -292,14 +366,14 @@ class ProblemsStore {
     const timeout = setTimeout(() => {
       const current = this.sourceStates[source];
       if (!current) return;
-      this.sourceStates = {
+      this.setSourceStates({
         ...this.sourceStates,
         [source]: {
           ...current,
           isUpdating: false,
           isStale: false,
         },
-      };
+      });
       this.sourceUpdateTimeouts.delete(source);
     }, 500);
 
@@ -316,7 +390,7 @@ class ProblemsStore {
     if (!source || source === 'monaco-native') return;
     const current = this.sourceStates[source];
     const now = Date.now();
-    this.sourceStates = {
+    this.setSourceStates({
       ...this.sourceStates,
       [source]: {
         source,
@@ -324,7 +398,7 @@ class ProblemsStore {
         isUpdating: false,
         isStale: false,
       },
-    };
+    });
 
     const existing = this.sourceUpdateTimeouts.get(source);
     if (existing) {
@@ -337,7 +411,7 @@ class ProblemsStore {
     if (!source || source === 'monaco-native') return;
     const current = this.sourceStates[source];
     const now = Date.now();
-    this.sourceStates = {
+    this.setSourceStates({
       ...this.sourceStates,
       [source]: {
         source,
@@ -345,7 +419,7 @@ class ProblemsStore {
         isUpdating: false,
         isStale: true,
       },
-    };
+    });
 
     const existing = this.sourceUpdateTimeouts.get(source);
     if (existing) {
@@ -379,23 +453,23 @@ class ProblemsStore {
 
       if (mergedProblems.length === 0) {
         const { [normalizedPath]: _, ...rest } = this.problemsByFile;
-        this.problemsByFile = rest;
+        this.setProblemsByFile(rest);
       } else {
-        this.problemsByFile = {
+        this.setProblemsByFile({
           ...this.problemsByFile,
           [normalizedPath]: mergedProblems
-        };
+        });
       }
     } else {
       // Replace all problems for the file
       if (timestampedProblems.length === 0) {
         const { [normalizedPath]: _, ...rest } = this.problemsByFile;
-        this.problemsByFile = rest;
+        this.setProblemsByFile(rest);
       } else {
-        this.problemsByFile = {
+        this.setProblemsByFile({
           ...this.problemsByFile,
           [normalizedPath]: timestampedProblems
-        };
+        });
       }
     }
   }
@@ -413,16 +487,16 @@ class ProblemsStore {
 
       if (remainingProblems.length === 0) {
         const { [normalizedPath]: _, ...rest } = this.problemsByFile;
-        this.problemsByFile = rest;
+        this.setProblemsByFile(rest);
       } else {
-        this.problemsByFile = {
+        this.setProblemsByFile({
           ...this.problemsByFile,
           [normalizedPath]: remainingProblems
-        };
+        });
       }
     } else {
       const { [normalizedPath]: _, ...rest } = this.problemsByFile;
-      this.problemsByFile = rest;
+      this.setProblemsByFile(rest);
     }
   }
 
@@ -430,8 +504,8 @@ class ProblemsStore {
    * Clear all problems
    */
   clearAll(): void {
-    this.problemsByFile = {};
-    this.sourceStates = {};
+    this.setProblemsByFile({});
+    this.setSourceStates({});
     for (const timeout of this.sourceUpdateTimeouts.values()) {
       clearTimeout(timeout);
     }

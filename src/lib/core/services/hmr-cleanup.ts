@@ -18,6 +18,17 @@ const cleanupRegistry = new Map<string, CleanupFn>();
 // Track if we've already set up the beforeunload handler
 let initialized = false;
 let backendWatchCleanupDone = false;
+const BACKEND_CLEANUP_SESSION_KEY = 'volt.hmrCleanupDone';
+const CLEANUP_TRACE_STORAGE_KEY = 'volt.hmrCleanup.trace';
+
+function isCleanupTraceEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(CLEANUP_TRACE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Best-effort startup cleanup for stale backend watchers left from a previous
@@ -25,6 +36,19 @@ let backendWatchCleanupDone = false;
  */
 export async function cleanupStaleBackendWatchers(): Promise<void> {
   if (backendWatchCleanupDone) return;
+
+  if (typeof window !== 'undefined') {
+    try {
+      if (window.sessionStorage.getItem(BACKEND_CLEANUP_SESSION_KEY) === 'true') {
+        backendWatchCleanupDone = true;
+        return;
+      }
+      window.sessionStorage.setItem(BACKEND_CLEANUP_SESSION_KEY, 'true');
+    } catch {
+      // Ignore session storage failures; the in-memory guard still helps for this page lifecycle.
+    }
+  }
+
   backendWatchCleanupDone = true;
 
   await Promise.allSettled([
@@ -38,20 +62,14 @@ export async function cleanupStaleBackendWatchers(): Promise<void> {
 
 /**
  * Register a cleanup function for a service.
- * If the service was already registered, the old cleanup is called first.
+ * If the service was already registered, replace it without running the old cleanup.
+ * Running cleanup eagerly during re-registration can tear down live services when
+ * modules are re-evaluated or components remount within the same page session.
  */
 export function registerCleanup(serviceName: string, cleanup: CleanupFn): void {
-  // Call existing cleanup if re-registering (HMR scenario)
   const existing = cleanupRegistry.get(serviceName);
-  if (existing) {
-    try {
-      const result = existing();
-      if (result instanceof Promise) {
-        result.catch((e) => console.warn(`[HMR Cleanup] Async cleanup error for ${serviceName}:`, e));
-      }
-    } catch (e) {
-      console.warn(`[HMR Cleanup] Cleanup error for ${serviceName}:`, e);
-    }
+  if (existing && existing !== cleanup && isCleanupTraceEnabled()) {
+    console.warn(`[HMR Cleanup] Replacing cleanup handler for ${serviceName} without eager cleanup`);
   }
 
   cleanupRegistry.set(serviceName, cleanup);
@@ -92,7 +110,7 @@ export async function runAllCleanups(): Promise<void> {
  * Initialize the beforeunload handler (only once)
  */
 function initializeIfNeeded(): void {
-  if (initialized) return;
+  if (initialized || typeof window === 'undefined') return;
   initialized = true;
 
   // Handle page unload (full reload, navigation away)

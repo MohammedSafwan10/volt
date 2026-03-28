@@ -18,6 +18,8 @@ const startDartAnalysisMock = vi.fn(async () => {});
 const problemsStoreMock = {
   setProblemsForFile: vi.fn(),
   clearProblemsForFile: vi.fn(),
+  markSourceStale: vi.fn(),
+  markSourceFresh: vi.fn(),
 };
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -117,5 +119,93 @@ describe('ProjectDiagnostics', () => {
     await firstRun;
     diagnostics.reset();
     await secondRun;
+  });
+
+  it('marks requested sources stale when the backend scheduler delays project diagnostics', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'get_system_info') {
+        return { os_name: 'windows' };
+      }
+
+      if (command === 'lsp_begin_project_diagnostics') {
+        return {
+          action: 'delay',
+          runId: null,
+          rootPath: 'c:/repo',
+          delayMs: 2500,
+          staggerMs: 150,
+          sidecars: [],
+          staleSources: ['typescript', 'eslint'],
+          freshSources: [],
+        };
+      }
+
+      return null;
+    });
+
+    const { ProjectDiagnostics } = await import('./project-diagnostics');
+    const diagnostics = new ProjectDiagnostics();
+
+    await diagnostics.runDiagnostics('c:/repo');
+
+    expect(invokeMock).toHaveBeenCalledWith('lsp_begin_project_diagnostics', {
+      rootPath: 'c:/repo',
+      sidecars: ['css', 'html', 'typescript', 'svelte', 'eslint'],
+    });
+    expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('typescript');
+    expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('eslint');
+  });
+
+  it('marks cooldown-blocked sources stale when a resumed scheduler run skips them', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'get_system_info') {
+        return { os_name: 'windows' };
+      }
+
+      if (command === 'lsp_begin_project_diagnostics') {
+        return {
+          action: 'run',
+          runId: 42,
+          rootPath: 'c:/repo',
+          delayMs: 0,
+          staggerMs: 150,
+          sidecars: ['css', 'html'],
+          staleSources: ['typescript', 'eslint'],
+          freshSources: ['css', 'html'],
+        };
+      }
+
+      if (command === 'lsp_complete_project_diagnostics') {
+        return {
+          action: 'noop',
+          runId: null,
+          rootPath: null,
+          delayMs: 0,
+          staggerMs: 150,
+          sidecars: [],
+          staleSources: [],
+          freshSources: [],
+        };
+      }
+
+      return null;
+    });
+    getAllFilesMock.mockImplementation(
+      () => ['c:/repo/src/App.svelte'] as ReturnType<typeof getAllFilesMock>,
+    );
+
+    const { ProjectDiagnostics } = await import('./project-diagnostics');
+    const diagnostics = new ProjectDiagnostics();
+
+    await diagnostics.runDiagnostics('c:/repo');
+
+    expect(startCssAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(startHtmlAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(startTsAnalysisMock).not.toHaveBeenCalled();
+    expect(startEslintAnalysisMock).not.toHaveBeenCalled();
+    expect(problemsStoreMock.markSourceFresh).toHaveBeenCalledWith('css');
+    expect(problemsStoreMock.markSourceFresh).toHaveBeenCalledWith('html');
+    expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('typescript');
+    expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('eslint');
   });
 });

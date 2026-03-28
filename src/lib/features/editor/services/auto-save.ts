@@ -49,7 +49,9 @@ async function saveFile(path: string, skipFormat = false): Promise<boolean> {
 
   editorStore.updateContent(path, contentToSave);
   
-  const success = await writeFile(path, contentToSave);
+  const success = await writeFile(path, contentToSave, {
+    expectedVersion: editorStore.getDocumentVersion(path) ?? undefined,
+  });
   if (success) {
     editorStore.markSaved(path);
   }
@@ -114,14 +116,14 @@ export function cancelAutoSave(): void {
 /**
  * Trigger immediate auto-save (for tab switch, window blur)
  */
-export function triggerImmediateAutoSave(): void {
-  if (!settingsStore.autoSaveEnabled) return;
+export function triggerImmediateAutoSave(): Promise<void> {
+  if (!settingsStore.autoSaveEnabled) return Promise.resolve();
   
   // Cancel pending timer
   cancelAutoSave();
   
   // Save immediately
-  void saveActiveFile();
+  return saveActiveFile();
 }
 
 /**

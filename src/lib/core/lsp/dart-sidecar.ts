@@ -26,9 +26,17 @@ import {
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
-import { detectDartSdk, isDartAvailable, type DartSdkInfo } from './dart-sdk';
+import {
+  detectDartSdk,
+  getLastDartSdkDetectionIssue,
+  isDartAvailable,
+  clearDartSdkCache,
+  type DartSdkInfo,
+} from './dart-sdk';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { settingsStore } from '$shared/stores/settings.svelte';
+import { showToast } from '$shared/stores/toast.svelte';
 
 // Server instance tracking
 let dartServerTransport: LspTransport | null = null;
@@ -37,6 +45,7 @@ let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
 let dartSdkInfo: DartSdkInfo | null = null;
 let isAnalyzing = false;
+let lastDartStartupIssue: string | null = null;
 const dartRecovery = createLspRecoveryController({
   source: 'dart',
   restart: async () => {
@@ -61,7 +70,7 @@ export function isDartFile(filepath: string): boolean {
  * Dart Analysis Server provides validation for pubspec.yaml and analysis_options.yaml
  */
 export function isDartProjectFile(filepath: string): boolean {
-  const filename = filepath.split(/[\/\\]/).pop()?.toLowerCase() || '';
+  const filename = filepath.split(/[/\\]/).pop()?.toLowerCase() || '';
   return filename === 'pubspec.yaml' || filename === 'analysis_options.yaml';
 }
 
@@ -99,13 +108,27 @@ function pathToUri(filepath: string): string {
 /**
  * Handle incoming LSP messages
  */
+interface WorkspaceConfigurationParams {
+  items?: unknown[];
+}
+
+interface AnalyzerStatusParams {
+  isAnalyzing?: boolean;
+}
+
+interface ProgressParams {
+  value?: {
+    kind?: 'begin' | 'report' | 'end' | string;
+  };
+}
+
 function handleLspMessage(message: JsonRpcMessage): void {
   // Handle server requests that require a response
   if ('id' in message && 'method' in message && message.id !== null) {
     const id = message.id;
     if (message.method === 'workspace/configuration') {
       // Respond with default configurations to unblock the server
-      const items = (message.params as any)?.items || [];
+      const items = (message.params as WorkspaceConfigurationParams | undefined)?.items || [];
       const result = items.map(() => ({}));
       dartServerTransport?.sendResponse(id, result);
     } else {
@@ -125,13 +148,13 @@ function handleLspMessage(message: JsonRpcMessage): void {
     } else if (message.method === 'dart/textDocument/publishFlutterOutline') {
       // Dart-specific: Flutter widget outline
     } else if (message.method === '$/analyzerStatus') {
-      isAnalyzing = (message.params as any)?.isAnalyzing || false;
+      isAnalyzing = (message.params as AnalyzerStatusParams | undefined)?.isAnalyzing || false;
       console.log(`[Dart LSP] Analysis status: ${isAnalyzing ? 'Analyzing...' : 'Ready'}`);
     } else if (message.method === '$/progress') {
       // Progress support
-      const params = message.params as any;
-      if (params.value?.kind === 'begin') isAnalyzing = true;
-      if (params.value?.kind === 'end') isAnalyzing = false;
+      const params = message.params as ProgressParams | undefined;
+      if (params?.value?.kind === 'begin') isAnalyzing = true;
+      if (params?.value?.kind === 'end') isAnalyzing = false;
     }
   }
 }
@@ -140,7 +163,10 @@ function handleLspMessage(message: JsonRpcMessage): void {
  * Check if Dart SDK is available
  */
 export async function checkDartSdkAvailable(): Promise<boolean> {
-  return isDartAvailable();
+  return isDartAvailable({
+    flutterSdkRoot: settingsStore.flutterSdkPath,
+    dartSdkRoot: settingsStore.dartSdkPath,
+  });
 }
 
 /**
@@ -148,7 +174,10 @@ export async function checkDartSdkAvailable(): Promise<boolean> {
  */
 export async function getDartSdkInfo(): Promise<DartSdkInfo | null> {
   if (!dartSdkInfo) {
-    dartSdkInfo = await detectDartSdk();
+    dartSdkInfo = await detectDartSdk({
+      flutterSdkRoot: settingsStore.flutterSdkPath,
+      dartSdkRoot: settingsStore.dartSdkPath,
+    });
   }
   return dartSdkInfo;
 }
@@ -160,6 +189,24 @@ export function isDartLspReady(): boolean {
   return dartServerInitialized && !isAnalyzing;
 }
 
+export function getDartLspStatus(): {
+  running: boolean;
+  ready: boolean;
+  analyzing: boolean;
+  initializedRootPath: string | null;
+  sdkInfo: DartSdkInfo | null;
+  lastIssue: string | null;
+} {
+  return {
+    running: dartServerInitialized && dartServerTransport !== null,
+    ready: isDartLspReady(),
+    analyzing: isAnalyzing,
+    initializedRootPath,
+    sdkInfo: dartSdkInfo,
+    lastIssue: lastDartStartupIssue ?? getLastDartSdkDetectionIssue(),
+  };
+}
+
 /**
  * Initialize the Dart language server
  */
@@ -167,9 +214,15 @@ async function initializeServer(): Promise<void> {
   if (!projectStore.rootPath) return;
 
   // Check if Dart SDK is available
-  dartSdkInfo = await detectDartSdk();
+  dartSdkInfo = await detectDartSdk({
+    flutterSdkRoot: settingsStore.flutterSdkPath,
+    dartSdkRoot: settingsStore.dartSdkPath,
+  });
   if (!dartSdkInfo) {
-    console.warn('[Dart LSP] Dart SDK not found. Install Flutter or Dart SDK to enable Dart support.');
+    lastDartStartupIssue =
+      getLastDartSdkDetectionIssue() ??
+      'Dart SDK not found. Install Flutter or Dart SDK to enable Dart support.';
+    console.warn(`[Dart LSP] ${lastDartStartupIssue}`);
     return;
   }
 
@@ -359,10 +412,12 @@ async function initializeServer(): Promise<void> {
 
       dartServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
+      lastDartStartupIssue = null;
       dartRecovery.reset();
 
       console.log('[Dart LSP] Using Dart SDK:', dartSdkInfo);
     } catch (error) {
+      lastDartStartupIssue = error instanceof Error ? error.message : String(error);
       console.error('[Dart LSP] Failed to initialize server:', error);
       dartServerTransport = null;
       initializationPromise = null;
@@ -537,7 +592,7 @@ export async function getCodeActions(filepath: string, startLine: number, startC
 /**
  * Get workspace symbols
  */
-export async function getWorkspaceSymbols(query: string): Promise<any> {
+export async function getWorkspaceSymbols(query: string): Promise<unknown> {
   if (!dartServerTransport || !dartServerInitialized) return null;
 
   return dartServerTransport.sendRequest('workspace/symbol', {
@@ -579,6 +634,7 @@ export async function stopDartLsp(): Promise<void> {
   dartServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
+  lastDartStartupIssue = null;
   dartRecovery.reset();
 
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -595,6 +651,33 @@ export async function restartDartLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
+}
+
+export async function rescanDartSdk(): Promise<void> {
+  clearDartSdkCache();
+  dartSdkInfo = null;
+  lastDartStartupIssue = null;
+
+  if (projectStore.rootPath) {
+    await restartDartLsp();
+  } else {
+    dartSdkInfo = await detectDartSdk({
+      flutterSdkRoot: settingsStore.flutterSdkPath,
+      dartSdkRoot: settingsStore.dartSdkPath,
+    });
+    lastDartStartupIssue = getLastDartSdkDetectionIssue();
+  }
+
+  if (dartSdkInfo?.flutterSdkRoot && !settingsStore.flutterSdkPath.trim()) {
+    settingsStore.setFlutterSdkPath(dartSdkInfo.flutterSdkRoot);
+  }
+
+  showToast({
+    message: dartSdkInfo
+      ? `Dart SDK detected via ${dartSdkInfo.detectionSource}`
+      : (lastDartStartupIssue ?? 'Dart SDK scan completed with no valid SDK found.'),
+    type: dartSdkInfo ? 'success' : 'warning',
+  });
 }
 
 async function recoverDartLspAfterExit(): Promise<void> {
@@ -617,6 +700,16 @@ export function isDartLspRunning(): boolean {
  */
 export async function startDartLsp(rootPath: string): Promise<void> {
   if (!rootPath) return;
+  if (projectStore.rootPath !== rootPath) {
+    console.log(
+      '[Dart LSP] Skipping start for stale root:',
+      rootPath,
+      'current root is',
+      projectStore.rootPath,
+    );
+    return;
+  }
+  console.log('[Dart LSP] Requested startup for root:', rootPath);
   // initializeServer already checks for rootPath and SDK availability
   await initializeServer();
 }
@@ -654,13 +747,14 @@ export async function startProjectWideAnalysis(): Promise<void> {
     ),
   );
 
-  const runId = ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId ?? 0) + 1;
-  (startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId = runId;
+  const analysisFn = startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number };
+  const runId = (analysisFn._runId ?? 0) + 1;
+  analysisFn._runId = runId;
 
   let processedSinceYield = 0;
 
   for (const file of dartFiles) {
-    if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+    if (analysisFn._runId !== runId) {
       return;
     }
 
@@ -670,7 +764,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
     if (trackedDocumentPaths.has(normalizedPath)) continue;
 
     const content = await readFileQuiet(file.path);
-    if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+    if (analysisFn._runId !== runId) {
       return;
     }
 
@@ -682,7 +776,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
       if (processedSinceYield >= 10) {
         processedSinceYield = 0;
         await new Promise(r => setTimeout(r, 20));
-        if ((startProjectWideAnalysis as typeof startProjectWideAnalysis & { _runId?: number })._runId !== runId) {
+        if (analysisFn._runId !== runId) {
           return;
         }
       }

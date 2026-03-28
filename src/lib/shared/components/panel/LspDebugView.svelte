@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getLspRegistry } from '$core/lsp/sidecar';
+  import { getDartLspStatus } from '$core/lsp/dart-sidecar';
   import { problemsStore } from '$shared/stores/problems.svelte';
+  import { projectStore } from '$shared/stores/project.svelte';
   import { UIIcon } from '$shared/components/ui';
 
   type ServerHealthRow = {
@@ -20,13 +22,21 @@
 
   let serverHealth = $state<ServerHealthRow[]>([]);
   let runtimeSnapshot = $state<RuntimeSnapshot | null>(null);
+  let dartLspStatus = $state(getDartLspStatus());
 
   const diagnosticsFreshness = $derived(problemsStore.diagnosticsFreshness);
+  const isDartWorkspace = $derived(
+    Boolean(projectStore.rootPath) &&
+      projectStore.tree.some((node) =>
+        ['pubspec.yaml', 'analysis_options.yaml'].includes(node.name.toLowerCase()),
+      ),
+  );
 
   function refresh(): void {
     const registry = getLspRegistry();
     serverHealth = registry.getAllServerHealth();
     runtimeSnapshot = registry.getRuntimeSnapshot();
+    dartLspStatus = getDartLspStatus();
   }
 
   function formatTimestamp(value: number | null): string {
@@ -67,6 +77,31 @@
 
   <div class="debug-section">
     <div class="section-title">Server Health</div>
+    {#if isDartWorkspace && !dartLspStatus.running}
+      <div class="dart-status-banner warning">
+        <div class="section-title">Dart / Flutter</div>
+        <div class="server-message">
+          {#if dartLspStatus.sdkInfo}
+            Dart SDK detected at {dartLspStatus.sdkInfo.dartPath} via {dartLspStatus.sdkInfo.detectionSource}, but the Dart LSP is not running yet.
+          {:else}
+            {dartLspStatus.lastIssue ?? 'Dart SDK not detected yet. Volt cannot start Flutter analysis without a working Dart or Flutter SDK.'}
+          {/if}
+        </div>
+        {#if dartLspStatus.sdkInfo}
+          <div class="server-message">
+            {#if dartLspStatus.sdkInfo.flutterPath}
+              Flutter: {dartLspStatus.sdkInfo.flutterPath} ({dartLspStatus.sdkInfo.flutterVersion ?? 'version unavailable'})
+            {:else}
+              Dart only: {dartLspStatus.sdkInfo.version}
+            {/if}
+          </div>
+        {:else}
+          <div class="server-message">
+            Tip: open Settings → Dart / Flutter and set a Flutter SDK root if Volt cannot see your terminal PATH.
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if serverHealth.length === 0}
       <div class="empty-state">No running LSP servers</div>
     {:else}
@@ -144,6 +179,13 @@
     border: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-bg-sidebar);
+  }
+  .dart-status-banner {
+    border: 1px solid var(--color-warning);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 10px;
+    background: color-mix(in srgb, var(--color-warning) 10%, var(--color-bg-sidebar));
   }
   .summary-card {
     padding: 10px 12px;

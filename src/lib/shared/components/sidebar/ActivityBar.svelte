@@ -1,7 +1,6 @@
 <script lang="ts">
   import { uiStore, type SidebarPanel } from '$shared/stores/ui.svelte';
   import { editorStore, VOLT_SETTINGS_PATH } from '$features/editor/stores/editor.svelte';
-  import { browserStore } from '$features/browser/stores/browser.svelte';
   import { gitStore } from '$features/git/stores/git.svelte';
   import { showToast } from '$shared/stores/toast.svelte';
   import { UIIcon, type UIIconName } from '$shared/components/ui';
@@ -19,8 +18,7 @@
     { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: true },
     { id: 'prompts', icon: 'code', label: 'Prompt Library', implemented: true },
     { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true },
-    { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true },
-    { id: 'browser', icon: 'globe', label: 'Browser', implemented: true }
+    { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true }
   ];
 
   const bottomItems: ActivityItem[] = [
@@ -33,33 +31,7 @@
   function handleClick(item: ActivityItem): void {
     if (item.id === 'settings') {
       editorStore.openSettingsTab();
-      // Hide browser if showing (don't destroy it)
-      if (browserStore.isOpen && browserStore.isVisible) {
-        browserStore.setVisible(false);
-      }
       return;
-    }
-
-    // Browser opens full screen (replaces editor area)
-    if (item.id === 'browser') {
-      if (browserStore.isOpen) {
-        // Keep browser visible; don't toggle-hide on repeated click.
-        // Closing is handled by browser toolbar close button.
-        if (!browserStore.isVisible) {
-          browserStore.setVisible(true);
-        }
-        uiStore.sidebarOpen = false;
-      } else {
-        // First time opening - create browser
-        browserStore.open();
-        uiStore.sidebarOpen = false;
-      }
-      return;
-    }
-
-    // Hide browser when switching to any other sidebar panel (don't destroy it)
-    if (browserStore.isOpen && browserStore.isVisible) {
-      browserStore.setVisible(false);
     }
 
     uiStore.setActiveSidebarPanel(item.id);
@@ -83,9 +55,6 @@
   function isActive(itemId: SidebarPanel): boolean {
     if (itemId === 'settings') {
       return editorStore.activeFilePath === VOLT_SETTINGS_PATH;
-    }
-    if (itemId === 'browser') {
-      return browserStore.isOpen && browserStore.isVisible;
     }
     return uiStore.sidebarOpen && uiStore.activeSidebarPanel === itemId;
   }

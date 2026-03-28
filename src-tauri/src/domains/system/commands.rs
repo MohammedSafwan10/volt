@@ -7,6 +7,8 @@ use sysinfo::System;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::observability::{debug_log, DebugScope};
+
 // Track running watch processes
 static WATCH_PROCESSES: Lazy<Mutex<HashMap<String, std::process::Child>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -265,6 +267,16 @@ pub async fn start_watch_command(
     args: Vec<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
+    let _scope = DebugScope::new(
+        "watch-command",
+        format!(
+            "start watch_id={} command={} args={} cwd={}",
+            watch_id,
+            command,
+            args.len(),
+            cwd.as_deref().unwrap_or("<none>")
+        ),
+    );
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     use std::thread;
@@ -394,6 +406,7 @@ pub async fn start_watch_command(
 /// Stop a running watch command
 #[tauri::command]
 pub fn stop_watch_command(watch_id: String) -> Result<(), String> {
+    debug_log("watch-command", format!("stop watch_id={watch_id}"));
     let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
     if let Some(mut child) = processes.remove(&watch_id) {
         let _ = child.kill();
@@ -407,6 +420,10 @@ pub fn stop_watch_command(watch_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn stop_all_watch_commands() -> Result<(), String> {
     let mut processes = WATCH_PROCESSES.lock().map_err(|e| e.to_string())?;
+    debug_log(
+        "watch-command",
+        format!("stop_all count={}", processes.len()),
+    );
     for (_, mut child) in processes.drain() {
         let _ = child.kill();
     }

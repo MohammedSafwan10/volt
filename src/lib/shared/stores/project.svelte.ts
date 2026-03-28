@@ -48,9 +48,6 @@ import type { FileChangeBatchEvent } from '$core/services/file-watch';
 import { projectDiagnostics } from '$core/services/project-diagnostics';
 import { tscWatcher } from '$core/services/tsc-watcher';
 import { problemsStore } from './problems.svelte';
-import { mcpStore } from '$features/mcp/stores/mcp.svelte';
-import { editorStore } from '$features/editor/stores/editor.svelte';
-import { gitStore } from '$features/git/stores/git.svelte';
 import type { FileEntry } from '$core/types/files';
 import { invoke } from '@tauri-apps/api/core';
 import { clearContextV2Cache } from '$core/ai/context/context-v2';
@@ -61,15 +58,23 @@ import {
   warmSemanticIndex,
 } from '$core/ai/retrieval/semantic-index';
 import { WorkspaceLifecycleManager } from '$core/workspace/workspace-lifecycle';
+import {
+  cleanupEditorStore,
+  cleanupMcpStore,
+  closeAllEditorFiles,
+  initGitStore,
+  hasOpenEditorFile,
+  initializeMcpStore,
+  reloadEditorFile,
+  resetGitStore,
+} from './project-bridge';
+import { searchStore } from '$features/search/stores/search.svelte';
+import { showToast } from '$shared/stores/toast.svelte';
 
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 
 /** Lock files to watch for package manager detection */
 const LOCK_FILES = ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json'];
-
-const RECENT_PROJECTS_KEY = 'volt.recentProjects';
-const CURRENT_PROJECT_KEY = 'volt.currentProject';
-const MAX_RECENT_PROJECTS = 10;
 
 export interface TreeNode extends FileEntry {
   children: TreeNode[] | null;
@@ -152,6 +157,7 @@ const DIAGNOSTIC_RELEVANT_FILENAMES = new Set([
   'vite.config.mjs',
   'vite.config.ts',
 ]);
+const EXPANDED_PATHS_STORAGE_PREFIX = 'volt.project.expandedPaths:';
 
 class ProjectStore {
   // Current project root path
@@ -208,7 +214,6 @@ class ProjectStore {
   });
 
   constructor() {
-    this.loadRecentProjects();
     setTerminalProblemMatcherProjectRootResolver(() => this.rootPath);
     this.registerWorkspaceLifecycleHooks();
     // Init must be called manually by the app root to avoid HMR loops
@@ -244,9 +249,12 @@ class ProjectStore {
             await this.stopLspServers();
           });
           await runTeardownStep('cleanup mcp', async () => {
-            await mcpStore.cleanup();
+            await cleanupMcpStore();
           });
-          gitStore.reset();
+          await runTeardownStep('cleanup editor store subscriptions', async () => {
+            await cleanupEditorStore();
+          });
+          await resetGitStore();
           await runTeardownStep('clear file index', async () => {
             await clearIndex(false);
           });
@@ -265,9 +273,10 @@ class ProjectStore {
             clearTimeout(timer);
           }
           this.pendingFolderRefreshes.clear();
+          this.clearWorkspaceScopedUiState();
           problemsStore.clearAll();
           terminalProblemMatcher.clear();
-          editorStore.closeAllFiles(true);
+          await closeAllEditorFiles(true);
           const { terminalStore } = await import('$features/terminal/stores/terminal.svelte');
           await runTeardownStep('kill terminals', async () => {
             await terminalStore.killAll();
@@ -275,9 +284,6 @@ class ProjectStore {
         } finally {
           if (!context.preserveVisualState) {
             this.rootPath = null;
-            if (context.removePersistence && typeof window !== 'undefined') {
-              localStorage.removeItem(CURRENT_PROJECT_KEY);
-            }
             this.projectName = '';
             if (context.clearFileTree) {
               this.tree = [];
@@ -300,7 +306,7 @@ class ProjectStore {
           console.warn('[ProjectStore] Workspace teardown completed with errors', teardownErrors);
         }
       },
-      activate: async ({ rootPath }) => {
+      activate: async ({ rootPath, reuseExistingWorkspace = false }) => {
         const generation = ++this.startupGeneration;
         this.packageManager = await this.detectPackageManager(rootPath);
         if (!this.isStartupCurrent(rootPath, generation)) return;
@@ -310,11 +316,16 @@ class ProjectStore {
         this.clearActivationTasks();
         this.startupSerialChain = Promise.resolve();
 
+        this.scheduleActivationTask(rootPath, generation, 120, async () => {
+          if (!(await this.isDartWorkspace(rootPath))) return;
+          console.log('[ProjectStore] Dart/Flutter workspace detected, starting Dart LSP early...');
+          await startDartLsp(rootPath);
+        });
         this.scheduleActivationTask(rootPath, generation, 80, async () => {
           await this.startFileWatching(rootPath);
         });
         this.scheduleSerialActivationTask(rootPath, generation, 'core-bg', 150, async () => {
-          await gitStore.init(rootPath);
+          await initGitStore(rootPath);
         });
         this.scheduleSerialActivationTask(rootPath, generation, 'core-bg', 450, async () => {
           const startedAt = Date.now();
@@ -328,10 +339,15 @@ class ProjectStore {
           this.largeRepoMode = this.classifyLargeRepo(status.count, indexDurationMs);
           this.coreReady = true;
 
+          if (reuseExistingWorkspace) {
+            this.backgroundReady = true;
+            return;
+          }
+
           const diagnosticsDelay = this.largeRepoMode ? 4000 : 1800;
           const tscDelay = this.largeRepoMode ? 5500 : 2600;
-          const semanticDelay = this.largeRepoMode ? 12000 : 2600;
-          const mcpDelay = this.largeRepoMode ? 7000 : 2200;
+          const semanticDelay = this.largeRepoMode ? 20000 : 8000;
+          const mcpDelay = this.largeRepoMode ? 12000 : 6000;
           const finalizeDelay = this.largeRepoMode ? 7800 : 3400;
 
           this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', diagnosticsDelay, async () => {
@@ -341,26 +357,28 @@ class ProjectStore {
             await tscWatcher.start(rootPath);
           });
           this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', 1800, async () => {
-            const pubspecInfo = await getFileInfoQuiet(`${rootPath}/pubspec.yaml`);
-            if (pubspecInfo) {
-              console.log('[ProjectStore] Dart project detected, starting LSP...');
-              await startDartLsp(rootPath);
-            }
+            if (!(await this.isDartWorkspace(rootPath))) return;
+            console.log('[ProjectStore] Verifying Dart LSP after background startup...');
+            await startDartLsp(rootPath);
           });
           this.scheduleSerialActivationTask(
             rootPath,
             generation,
-            this.largeRepoMode ? 'background-ready' : 'heavy-bg',
+            'background-ready',
             mcpDelay,
             async () => {
-              await mcpStore.initialize(rootPath);
+              await initializeMcpStore(rootPath);
             },
           );
-          if (!this.largeRepoMode) {
-            this.scheduleSerialActivationTask(rootPath, generation, 'heavy-bg', semanticDelay, async () => {
+          this.scheduleSerialActivationTask(
+            rootPath,
+            generation,
+            'background-ready',
+            semanticDelay,
+            async () => {
               await warmSemanticIndex(rootPath);
-            });
-          }
+            },
+          );
           this.scheduleSerialActivationTask(rootPath, generation, 'background-ready', finalizeDelay, async () => {
             this.backgroundReady = true;
           });
@@ -376,8 +394,23 @@ class ProjectStore {
     this.activationTaskTimers.clear();
   }
 
+  private invalidatePendingStartupWork(): void {
+    this.startupGeneration += 1;
+    this.startupSerialChain = Promise.resolve();
+    this.clearActivationTasks();
+    clearSemanticQueue();
+  }
+
   private isStartupCurrent(rootPath: string, generation: number): boolean {
     return this.rootPath === rootPath && this.startupGeneration === generation;
+  }
+
+  private async isDartWorkspace(rootPath: string): Promise<boolean> {
+    const [pubspecInfo, analysisOptionsInfo] = await Promise.all([
+      getFileInfoQuiet(`${rootPath}/pubspec.yaml`),
+      getFileInfoQuiet(`${rootPath}/analysis_options.yaml`),
+    ]);
+    return Boolean(pubspecInfo || analysisOptionsInfo);
   }
 
   private classifyLargeRepo(indexedCount: number, indexDurationMs: number): boolean {
@@ -435,15 +468,14 @@ class ProjectStore {
     }
 
     try {
-      const lastProject = localStorage.getItem(CURRENT_PROJECT_KEY);
+      await this.syncWorkspaceState();
+      const lastProject = this.workspaceLifecycle.getPersistedRootPath();
       if (lastProject) {
         console.log('[ProjectStore] Restoring last project:', lastProject);
-        // We check if the directory still exists before opening
-        const exists = await invoke('get_file_info', { path: lastProject }).then(() => true).catch(() => false);
-        if (exists) {
-          await this.openProject(lastProject);
-        } else {
-          localStorage.removeItem(CURRENT_PROJECT_KEY);
+        const restored = await this.openProject(lastProject);
+        if (!restored) {
+          this.removeFromRecentProjects(lastProject);
+          await this.workspaceLifecycle.clearPersistedRootPath();
         }
       }
     } finally {
@@ -479,57 +511,91 @@ class ProjectStore {
    */
   async openProject(path: string): Promise<boolean> {
     this.loading = true;
+    try {
+      // Check if we are already in this project (and it's valid)
+      // This prevents re-initialization loops on HMR or redundant calls
+      if (this.rootPath && this.rootPath === path) {
+        console.log('[ProjectStore] Project already open:', path);
+        return true;
+      }
 
-    // Check if we are already in this project (and it's valid)
-    // This prevents re-initialization loops on HMR or redundant calls
-    if (this.rootPath && this.rootPath === path) {
-      console.log('[ProjectStore] Project already open:', path);
-      this.loading = false;
+      if (this.rootPath && this.rootPath !== path) {
+        // Cancel delayed startup work for the old workspace immediately. This
+        // prevents restored-workspace semantic warmup / MCP startup from
+        // continuing to launch while the user is already switching folders.
+        this.invalidatePendingStartupWork();
+      }
+
+      const workspaceOpen = await this.workspaceLifecycle.open(path, this.rootPath);
+      this.recentProjects = workspaceOpen.recentProjects;
+      if (!workspaceOpen.opened || !workspaceOpen.activeRootPath) {
+        if (this.rootPath || workspaceOpen.message) {
+          showToast({
+            message: workspaceOpen.message ?? `Failed to open folder: ${path}`,
+            type: 'error',
+          });
+        }
+        return false;
+      }
+
+      const shouldReuseExistingWorkspace = workspaceOpen.unchanged && !this.rootPath;
+
+      if (workspaceOpen.unchanged && !shouldReuseExistingWorkspace) {
+        console.log('[ProjectStore] Ignoring reopen for already-active workspace:', path);
+        return true;
+      }
+
+      const entries = await listDirectory(workspaceOpen.activeRootPath);
+      if (entries === null) {
+        return false;
+      }
+
+      const previousRootPath = this.rootPath;
+      const teardownPromise = previousRootPath
+        ? this.workspaceLifecycle.teardown({
+            removePersistence: false,
+            clearFileTree: false,
+            previousRootPath,
+            preserveVisualState: true,
+          })
+        : Promise.resolve();
+
+      this.rootPath = workspaceOpen.activeRootPath;
+      this.projectName = this.extractFolderName(workspaceOpen.activeRootPath);
+      this.selectedPaths.clear();
+      this.expandedPaths = this.loadExpandedPaths(workspaceOpen.activeRootPath);
+      this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
+      await this.restoreExpandedState(this.tree);
+      this.startupRootHasHeavyDirs = entries.some((entry) =>
+        LARGE_REPO_HEAVY_DIRS.has(entry.name.toLowerCase()),
+      );
+      this.startupPhase = 'paint';
+      this.uiReady = true;
+      this.coreReady = false;
+      this.backgroundReady = false;
+      this.largeRepoMode = false;
+      this.indexedFileCount = 0;
+      this.initialIndexDurationMs = 0;
+      this.recentProjects = workspaceOpen.recentProjects;
+
+      await teardownPromise;
+      await this.workspaceLifecycle.activate({
+        rootPath: workspaceOpen.activeRootPath,
+        previousRootPath,
+        reuseExistingWorkspace: shouldReuseExistingWorkspace,
+      });
+
       return true;
-    }
-
-    const entries = await listDirectory(path);
-    if (entries === null) {
-      // Keep the currently-open project visible if a refresh/switch fails.
-      this.loading = false;
+    } catch (error) {
+      console.error('[ProjectStore] Failed to open project:', error);
+      showToast({
+        message: `Failed to open folder: ${path}`,
+        type: 'error',
+      });
       return false;
+    } finally {
+      this.loading = false;
     }
-
-    const previousRootPath = this.rootPath;
-    const teardownPromise = previousRootPath
-      ? this.workspaceLifecycle.teardown({
-          removePersistence: false,
-          clearFileTree: false,
-          previousRootPath,
-          preserveVisualState: true,
-        })
-      : Promise.resolve();
-
-    this.rootPath = path;
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(CURRENT_PROJECT_KEY, path);
-    }
-    this.projectName = this.extractFolderName(path);
-    this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
-    this.selectedPaths.clear();
-    this.expandedPaths = new Set();
-    this.startupRootHasHeavyDirs = entries.some((entry) =>
-      LARGE_REPO_HEAVY_DIRS.has(entry.name.toLowerCase()),
-    );
-    this.startupPhase = 'paint';
-    this.uiReady = true;
-    this.coreReady = false;
-    this.backgroundReady = false;
-    this.largeRepoMode = false;
-    this.indexedFileCount = 0;
-    this.initialIndexDurationMs = 0;
-    this.loading = false;
-    this.addToRecentProjects(path);
-
-    await teardownPromise;
-    await this.workspaceLifecycle.activate({ rootPath: path });
-
-    return true;
   }
 
   /**
@@ -567,20 +633,36 @@ class ProjectStore {
   private async handleFileChanges(batch: FileChangeBatchEvent): Promise<void> {
     // Update the file index incrementally
     const handledIncrementally = await handleFileChangeBatch(batch.changes);
+    const hasLockfileChanges = batch.changes.some((change) =>
+      change.paths.some((relativePath) => {
+        const basename = relativePath.replace(/\\/g, '/').split('/').pop() || '';
+        return LOCK_FILES.includes(basename);
+      }),
+    );
+    const shouldRefreshDiagnostics =
+      this.rootPath && this.shouldTriggerProjectDiagnostics(batch);
 
     // If too many changes, trigger a full rescan
     if (!handledIncrementally && this.rootPath) {
       // Large burst (git checkout / install): fall back to a full re-index.
       void indexProject(this.rootPath, false);
 
-      // Also refresh the file tree after a short debounce so new files appear.
-      if (this.treeRefreshTimer) clearTimeout(this.treeRefreshTimer);
-      this.treeRefreshTimer = setTimeout(() => {
-        if (this.rootPath) {
-          void this.refreshTree();
-        }
-        this.treeRefreshTimer = null;
-      }, 500);
+      // During huge clone/checkout bursts, per-file tree/LSP/semantic work can
+      // overwhelm the UI. Refresh once and let background services catch up.
+      this.scheduleTreeRefresh();
+      if (hasLockfileChanges) {
+        await this.refreshPackageManager();
+      }
+      if (shouldRefreshDiagnostics) {
+        if (this.diagTimer) clearTimeout(this.diagTimer);
+        this.diagTimer = setTimeout(() => {
+          if (this.rootPath) {
+            void projectDiagnostics.runDiagnostics(this.rootPath);
+          }
+          this.diagTimer = null;
+        }, 1500);
+      }
+      return;
     }
 
     // Update the file tree for visible changes
@@ -623,8 +705,8 @@ class ProjectStore {
             // This handles AI edits appearing in real-time
             const normalizedPath = absPath.replace(/\\/g, '/');
             // Check if open (using internal array to avoid reactive dependency if possible, but state is fine)
-            if (editorStore.openFiles.some(f => f.path === normalizedPath)) {
-              void editorStore.reloadFile(absPath);
+            if (await hasOpenEditorFile(normalizedPath)) {
+              void reloadEditorFile(absPath);
             }
             if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
@@ -637,18 +719,13 @@ class ProjectStore {
       dispatchWatchedFileChanges(lspEvents);
     }
 
-    if (batch.changes.some((change) =>
-      change.paths.some((relativePath) => {
-        const basename = relativePath.replace(/\\/g, '/').split('/').pop() || '';
-        return LOCK_FILES.includes(basename);
-      }),
-    )) {
+    if (hasLockfileChanges) {
       await this.refreshPackageManager();
       this.scheduleTreeRefresh();
     }
 
     // Debounce project-wide diagnostics only for relevant source/config changes.
-    if (this.rootPath && this.shouldTriggerProjectDiagnostics(batch)) {
+    if (shouldRefreshDiagnostics) {
       if (this.diagTimer) clearTimeout(this.diagTimer);
       this.diagTimer = setTimeout(() => {
         if (this.rootPath) {
@@ -775,11 +852,12 @@ class ProjectStore {
    * VS Code behavior: closes all open files and kills all terminals
    */
   async closeProject(): Promise<void> {
-    await this.workspaceLifecycle.teardown({
+    const result = await this.workspaceLifecycle.teardown({
       previousRootPath: this.rootPath,
       removePersistence: true,
       clearFileTree: true,
     });
+    this.recentProjects = result.recentProjects;
   }
 
   /**
@@ -819,6 +897,7 @@ class ProjectStore {
       node.expanded = false;
       this.expandedPaths.delete(this.normalizePath(node.path));
       this.expandedPaths = new Set(this.expandedPaths);
+      this.persistExpandedPaths();
       return;
     }
 
@@ -839,6 +918,7 @@ class ProjectStore {
     node.expanded = true;
     this.expandedPaths.add(this.normalizePath(node.path));
     this.expandedPaths = new Set(this.expandedPaths);
+    this.persistExpandedPaths();
   }
 
   /**
@@ -907,14 +987,26 @@ class ProjectStore {
    */
   async refreshTree(): Promise<void> {
     if (!this.rootPath) return;
-
     this.loading = true;
-    const entries = await listDirectory(this.rootPath);
-    this.loading = false;
+    try {
+      const result = await this.workspaceLifecycle.refresh(this.rootPath);
+      this.recentProjects = result.recentProjects;
+      const activeRootPath = result.activeRootPath ?? this.rootPath;
+      if (!result.refreshed || !activeRootPath) {
+        if (result.message) {
+          showToast({ message: result.message, type: 'error' });
+        }
+        return;
+      }
 
-    if (entries === null) return;
-    this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
-    await this.restoreExpandedState(this.tree);
+      const entries = await listDirectory(activeRootPath);
+      if (entries === null) return;
+      this.rootPath = activeRootPath;
+      this.tree = this.sortEntries(entries).map((entry) => this.createTreeNode(entry));
+      await this.restoreExpandedState(this.tree);
+    } finally {
+      this.loading = false;
+    }
   }
 
   /**
@@ -1003,6 +1095,7 @@ class ProjectStore {
     }
     if (changed) {
       this.expandedPaths = next;
+      this.persistExpandedPaths();
     }
   }
 
@@ -1044,6 +1137,7 @@ class ProjectStore {
     }
     if (updated) {
       this.expandedPaths = next;
+      this.persistExpandedPaths();
     }
   }
 
@@ -1063,6 +1157,7 @@ class ProjectStore {
     };
     collapse(this.tree);
     this.expandedPaths = new Set();
+    this.persistExpandedPaths();
   }
 
   /**
@@ -1094,6 +1189,7 @@ class ProjectStore {
 
     await expand(this.tree, 0);
     this.expandedPaths = new Set(this.expandedPaths);
+    this.persistExpandedPaths();
   }
 
   /**
@@ -1127,6 +1223,7 @@ class ProjectStore {
 
     await expand(node, 0);
     this.expandedPaths = new Set(this.expandedPaths);
+    this.persistExpandedPaths();
   }
 
   private normalizePath(filePath: string): string {
@@ -1135,6 +1232,39 @@ class ProjectStore {
       normalized = normalized[0].toLowerCase() + normalized.slice(1);
     }
     return normalized;
+  }
+
+  private getExpandedPathsStorageKey(rootPath: string): string {
+    return `${EXPANDED_PATHS_STORAGE_PREFIX}${this.normalizePath(rootPath)}`;
+  }
+
+  private loadExpandedPaths(rootPath: string): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(this.getExpandedPathsStorageKey(rootPath));
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(
+        parsed
+          .filter((value): value is string => typeof value === 'string' && value.length > 0)
+          .map((value) => this.normalizePath(value)),
+      );
+    } catch {
+      return new Set();
+    }
+  }
+
+  private persistExpandedPaths(rootPath = this.rootPath): void {
+    if (typeof window === 'undefined' || !rootPath) return;
+    try {
+      localStorage.setItem(
+        this.getExpandedPathsStorageKey(rootPath),
+        JSON.stringify([...this.expandedPaths]),
+      );
+    } catch {
+      // Ignore persistence failures; explorer state should still work in-memory.
+    }
   }
 
   private async restoreExpandedState(nodes: TreeNode[]): Promise<void> {
@@ -1199,41 +1329,17 @@ class ProjectStore {
     }
   }
 
-  private loadRecentProjects(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = localStorage.getItem(RECENT_PROJECTS_KEY);
-      if (stored) {
-        this.recentProjects = JSON.parse(stored);
-      }
-    } catch {
-      // Ignore errors
-    }
-  }
-
-  private saveRecentProjects(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(this.recentProjects));
-    } catch {
-      // Ignore errors
-    }
-  }
-
-  private addToRecentProjects(path: string): void {
-    // Remove if already exists
-    this.recentProjects = this.recentProjects.filter((p) => p !== path);
-    // Add to front
-    this.recentProjects = [path, ...this.recentProjects].slice(0, MAX_RECENT_PROJECTS);
-    this.saveRecentProjects();
-  }
-
   /**
    * Remove a project from recent list
    */
   removeFromRecentProjects(path: string): void {
-    this.recentProjects = this.recentProjects.filter((p) => p !== path);
-    this.saveRecentProjects();
+    const normalized = this.normalizePath(path);
+    this.recentProjects = this.recentProjects.filter((p) => this.normalizePath(p) !== normalized);
+    void this.syncRecentProjectsToBackend();
+  }
+
+  public clearWorkspaceScopedUiState(): void {
+    searchStore.clear();
   }
 
   private scheduleTreeRefresh(): void {
@@ -1277,6 +1383,26 @@ class ProjectStore {
       this.scheduleFolderRefresh(normalizedParent);
     } catch {
       this.scheduleTreeRefresh();
+    }
+  }
+
+  private async syncWorkspaceState(): Promise<void> {
+    try {
+      const state = await this.workspaceLifecycle.getState();
+      this.recentProjects = state.recentProjects;
+    } catch (error) {
+      console.warn('[ProjectStore] Failed to sync workspace state:', error);
+    }
+  }
+
+  private async syncRecentProjectsToBackend(): Promise<void> {
+    try {
+      const deduped = await invoke<string[]>('workspace_replace_recent_projects', {
+        recentProjects: this.recentProjects,
+      });
+      this.recentProjects = deduped;
+    } catch (error) {
+      console.warn('[ProjectStore] Failed to sync recent projects:', error);
     }
   }
 }

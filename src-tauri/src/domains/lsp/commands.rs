@@ -176,7 +176,9 @@ pub async fn lsp_list_tracked_documents<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     server_id: String,
 ) -> Result<Vec<LspTrackedDocumentInfo>, LspError> {
-    state.with_manager(&app_handle, |manager| manager.list_tracked_documents(&server_id))
+    state.with_manager(&app_handle, |manager| {
+        manager.list_tracked_documents(&server_id)
+    })
 }
 
 #[tauri::command]
@@ -197,7 +199,9 @@ pub async fn lsp_complete_project_diagnostics<R: Runtime>(
     state: State<'_, LspManagerState<R>>,
     run_id: u64,
 ) -> Result<LspProjectDiagnosticsPlan, LspError> {
-    state.with_manager(&app_handle, |manager| manager.complete_project_diagnostics(run_id))
+    state.with_manager(&app_handle, |manager| {
+        manager.complete_project_diagnostics(run_id)
+    })
 }
 
 #[tauri::command]
@@ -222,7 +226,9 @@ pub async fn lsp_reset_project_diagnostics_scheduler<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, LspManagerState<R>>,
 ) -> Result<(), LspError> {
-    state.with_manager(&app_handle, |manager| manager.reset_project_diagnostics_scheduler())
+    state.with_manager(&app_handle, |manager| {
+        manager.reset_project_diagnostics_scheduler()
+    })
 }
 
 /// List all running language servers

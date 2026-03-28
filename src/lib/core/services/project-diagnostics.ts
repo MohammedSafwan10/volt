@@ -41,6 +41,8 @@ interface LspProjectDiagnosticsPlan {
     delayMs: number;
     staggerMs: number;
     sidecars: SidecarKey[];
+    staleSources: string[];
+    freshSources: string[];
 }
 
 type SidecarKey = 'css' | 'html' | 'typescript' | 'svelte' | 'eslint' | 'dart';
@@ -58,6 +60,8 @@ export class ProjectDiagnostics {
     private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
     private eslintBuildFiles = new Set<string>();
     private activeRunToken: DiagnosticsRunToken | null = null;
+    private isRunning = false;
+    private pendingRoot: string | null = null;
 
     constructor() {
         this.checkPlatform();
@@ -66,6 +70,8 @@ export class ProjectDiagnostics {
     reset(): void {
         this.eslintBuildFiles.clear();
         this.activeRunToken = null;
+        this.isRunning = false;
+        this.pendingRoot = null;
         if (this.scheduledTimer) {
             clearTimeout(this.scheduledTimer);
             this.scheduledTimer = null;
@@ -92,51 +98,74 @@ export class ProjectDiagnostics {
      * Run diagnostics for a project
      */
     async runDiagnostics(rootPath: string): Promise<void> {
+        if (this.isRunning) {
+            this.pendingRoot = rootPath;
+            return;
+        }
+
+        this.isRunning = true;
         // Ensure platform detection is finished
-        await this.checkPlatform();
-
-        const requestedSidecars = await this.getRequestedSidecars(rootPath);
-        const plan = await invoke<LspProjectDiagnosticsPlan>(
-            'lsp_begin_project_diagnostics',
-            {
-                rootPath,
-                sidecars: requestedSidecars,
-            },
-        );
-
-        if (this.handleSchedulerPlan(plan, rootPath)) {
-            return;
-        }
-
-        if (plan.action !== 'run' || plan.runId === null) {
-            return;
-        }
-
-        const runToken = { id: plan.runId, rootPath };
-        this.activeRunToken = runToken;
-
-        console.log('[ProjectDiagnostics] Starting project-wide analysis...');
-
-        // Run detections in parallel
-        // NOTE: We skip runTscDiagnostics here because tsc-watcher.ts handles
-        // real-time TypeScript errors via `tsc --watch`. Running both would cause duplicates.
         try {
-            await Promise.allSettled([
-                // this.runTscDiagnostics(rootPath), // Handled by tsc-watcher.ts
-                this.runEslintDiagnostics(rootPath, runToken),
-                this.runLspDiagnostics(rootPath, runToken, plan),
-            ]);
-        } finally {
-            if (this.activeRunToken?.id === runToken.id) {
-                this.activeRunToken = null;
-            }
-            console.log('[ProjectDiagnostics] Analysis complete.');
+            await this.checkPlatform();
 
-            const followUp = await invoke<LspProjectDiagnosticsPlan>(
-                'lsp_complete_project_diagnostics',
-                { runId: runToken.id },
+            if (this.pendingRoot && this.pendingRoot !== rootPath) {
+                return;
+            }
+
+            const requestedSidecars = await this.getRequestedSidecars(rootPath);
+            const plan = await invoke<LspProjectDiagnosticsPlan | null>(
+                'lsp_begin_project_diagnostics',
+                {
+                    rootPath,
+                    sidecars: requestedSidecars,
+                },
             );
-            this.handleSchedulerPlan(followUp, rootPath);
+
+            if (!plan || this.handleSchedulerPlan(plan, rootPath)) {
+                return;
+            }
+
+            if (plan.action !== 'run' || plan.runId === null) {
+                return;
+            }
+
+            const runToken = { id: plan.runId, rootPath };
+            this.activeRunToken = runToken;
+
+            console.log('[ProjectDiagnostics] Starting project-wide analysis...');
+
+            // Run detections in parallel
+            // NOTE: We skip runTscDiagnostics here because tsc-watcher.ts handles
+            // real-time TypeScript errors via `tsc --watch`. Running both would cause duplicates.
+            try {
+                await Promise.allSettled([
+                    // this.runTscDiagnostics(rootPath), // Handled by tsc-watcher.ts
+                    this.runEslintDiagnostics(rootPath, runToken),
+                    this.runLspDiagnostics(rootPath, runToken, plan),
+                ]);
+            } finally {
+                if (this.activeRunToken?.id === runToken.id) {
+                    this.activeRunToken = null;
+                }
+                console.log('[ProjectDiagnostics] Analysis complete.');
+
+                const followUp = await invoke<LspProjectDiagnosticsPlan | null>(
+                    'lsp_complete_project_diagnostics',
+                    { runId: runToken.id },
+                );
+                if (followUp) {
+                    this.handleSchedulerPlan(followUp, rootPath);
+                }
+            }
+        } finally {
+            this.isRunning = false;
+            if (this.pendingRoot && this.pendingRoot !== rootPath) {
+                const nextRoot = this.pendingRoot;
+                this.pendingRoot = null;
+                await this.runDiagnostics(nextRoot);
+            } else if (this.pendingRoot === rootPath) {
+                this.pendingRoot = null;
+            }
         }
     }
 
@@ -156,6 +185,8 @@ export class ProjectDiagnostics {
         plan: LspProjectDiagnosticsPlan,
         fallbackRootPath: string,
     ): boolean {
+        this.applySchedulerSourceFreshness(plan);
+
         if (plan.action === 'delay') {
             const nextRoot = plan.rootPath ?? fallbackRootPath;
             if (this.scheduledTimer) {
@@ -169,6 +200,15 @@ export class ProjectDiagnostics {
         }
 
         return plan.action !== 'run';
+    }
+
+    private applySchedulerSourceFreshness(plan: LspProjectDiagnosticsPlan): void {
+        for (const source of plan.freshSources) {
+            problemsStore.markSourceFresh(source);
+        }
+        for (const source of plan.staleSources) {
+            problemsStore.markSourceStale(source);
+        }
     }
 
     private async runLspDiagnostics(
@@ -226,6 +266,7 @@ export class ProjectDiagnostics {
 
             for (const analysis of analysisSteps.filter(({ key }) => plan.sidecars.includes(key))) {
                 if (!this.isRunCurrent(token)) return;
+                problemsStore.markSourceFresh(this.getProblemsSourceForSidecar(analysis.key));
                 await this.startSidecarAnalysis(analysis.key, analysis.start, token);
                 if (!this.isRunCurrent(token)) return;
                 await new Promise((resolve) => setTimeout(resolve, plan.staggerMs));
@@ -277,9 +318,21 @@ export class ProjectDiagnostics {
             await start();
         } catch (error) {
             if (await this.noteSidecarFailure(sidecar, error)) {
+                problemsStore.markSourceStale(this.getProblemsSourceForSidecar(sidecar));
                 return;
             }
             throw error;
+        }
+    }
+
+    private getProblemsSourceForSidecar(sidecar: SidecarKey): string {
+        switch (sidecar) {
+            case 'typescript':
+                return 'typescript';
+            case 'eslint':
+                return 'eslint';
+            default:
+                return sidecar;
         }
     }
 
