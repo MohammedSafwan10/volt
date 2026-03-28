@@ -45,8 +45,6 @@ bytes = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 
-# CDP (Chrome DevTools Protocol) - Browser automation like Playwright/Puppeteer
-chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"] }
 futures = "0.3"
 base64 = "0.22"
 tracing = "0.1"
