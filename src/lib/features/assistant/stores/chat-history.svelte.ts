@@ -58,8 +58,25 @@ export interface GroupedConversations {
 // ============================================================================
 
 class ChatHistoryStore {
+    private knownMessageIds = new Map<string, Set<string>>();
+
+    private findConversationSummary(id: string): ConversationSummary | undefined {
+        return this.allConversations.find((convo) => convo.id === id)
+            ?? this.conversations.find((convo) => convo.id === id);
+    }
+
     private sanitizeVisibleHistoryText(content: string): string {
         return sanitizeVisibleAssistantText(content);
+    }
+
+    private isSyntheticPromptMetadata(metadata?: string): boolean {
+        if (!metadata) return false;
+        try {
+            const parsed = JSON.parse(metadata) as { syntheticPrompt?: unknown };
+            return Boolean(parsed.syntheticPrompt);
+        } catch {
+            return false;
+        }
     }
 
     // State
@@ -130,8 +147,15 @@ class ChatHistoryStore {
      * Create a new conversation
      */
     async createConversation(id: string, mode: string): Promise<ConversationSummary> {
-        await invoke<ConversationSummary>('chat_create_conversation', { id, mode });
-        const convo = await this.getConversationSummary(id);
+        const existing = this.findConversationSummary(id);
+        if (existing) {
+            this.activeConversationId = id;
+            this.knownMessageIds.set(id, this.knownMessageIds.get(id) ?? new Set());
+            return existing;
+        }
+
+        const convo = await invoke<ConversationSummary>('chat_create_conversation', { id, mode });
+        this.knownMessageIds.set(id, this.knownMessageIds.get(id) ?? new Set());
         this.upsertConversationSummary(convo);
         this.activeConversationId = id;
         return convo;
@@ -141,7 +165,12 @@ class ChatHistoryStore {
      * Load a full conversation with messages
      */
     async getConversation(id: string): Promise<Conversation> {
-        return await invoke<Conversation>('chat_get_conversation', { conversationId: id });
+        const conversation = await invoke<Conversation>('chat_get_conversation', { conversationId: id });
+        this.knownMessageIds.set(
+            id,
+            new Set(conversation.messages.map((message) => message.id)),
+        );
+        return conversation;
     }
 
     async getConversationSummary(id: string): Promise<ConversationSummary> {
@@ -166,19 +195,40 @@ class ChatHistoryStore {
     async saveMessage(conversationId: string, message: ChatMessage): Promise<void> {
         await invoke('chat_save_message', { conversationId, message });
 
-        const summary = await this.getConversationSummary(conversationId);
+        const knownIds = this.ensureKnownMessageIds(conversationId);
+        const isNewMessage = !knownIds.has(message.id);
+        knownIds.add(message.id);
+
+        const existing = this.findConversationSummary(conversationId);
         const visibleContent = this.sanitizeVisibleHistoryText(message.content);
+        const isSyntheticPrompt = this.isSyntheticPromptMetadata(message.metadata);
+        const defaultSummary: ConversationSummary = {
+            id: conversationId,
+            title: 'New Chat',
+            createdAt: message.timestamp,
+            updatedAt: message.timestamp,
+            messageCount: 0,
+            firstUserMessage: null,
+            isPinned: false,
+            mode: 'agent',
+        };
+        const summary = existing ?? defaultSummary;
+        const nextFirstUserMessage =
+            summary.firstUserMessage ??
+            (message.role === 'user' && !isSyntheticPrompt ? visibleContent : null);
         const nextTitle =
             summary.title && summary.title !== 'New Chat'
                 ? summary.title
-                : (message.role === 'user'
+                : (message.role === 'user' && !isSyntheticPrompt
                     ? (visibleContent.length > 50 ? `${visibleContent.slice(0, 50)}...` : visibleContent)
                     : summary.title || 'New Chat');
 
         this.upsertConversationSummary({
             ...summary,
+            updatedAt: Date.now(),
+            messageCount: isNewMessage ? summary.messageCount + 1 : summary.messageCount,
             title: nextTitle,
-            firstUserMessage: summary.firstUserMessage ?? (message.role === 'user' ? visibleContent : null),
+            firstUserMessage: nextFirstUserMessage,
         });
     }
 
@@ -239,6 +289,7 @@ class ChatHistoryStore {
      */
     async deleteConversation(conversationId: string): Promise<void> {
         await invoke('chat_delete_conversation', { conversationId });
+        this.knownMessageIds.delete(conversationId);
 
         // Check if we're deleting the active conversation BEFORE clearing state
         const deletingActive = this.activeConversationId === conversationId;
@@ -271,6 +322,7 @@ class ChatHistoryStore {
             // Sequential deletion for safety with SQLite, or we could add a backend command for batch
             for (const id of ids) {
                 await invoke('chat_delete_conversation', { conversationId: id });
+                this.knownMessageIds.delete(id);
             }
 
             // Update local state
@@ -300,6 +352,7 @@ class ChatHistoryStore {
         this.isLoading = true;
         try {
             await invoke('chat_clear_all');
+            this.knownMessageIds.clear();
             this.allConversations = [];
             this.conversations = [];
             this.activeConversationId = null;
@@ -437,6 +490,15 @@ class ChatHistoryStore {
             ...this.allConversations.filter((c) => c.id !== summary.id),
         ];
         this.applyVisibleConversations();
+    }
+
+    private ensureKnownMessageIds(conversationId: string): Set<string> {
+        let knownIds = this.knownMessageIds.get(conversationId);
+        if (!knownIds) {
+            knownIds = new Set<string>();
+            this.knownMessageIds.set(conversationId, knownIds);
+        }
+        return knownIds;
     }
 
     closeSidebar(): void {

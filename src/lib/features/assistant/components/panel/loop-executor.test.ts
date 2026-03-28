@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { executeFileEditQueues } from './loop-executor';
+import { executeFileEditQueues, executeQueuedNonFileTools } from './loop-executor';
 
 describe('loop-executor retry policy', () => {
   it('retries exact-match failures once and succeeds when second attempt passes', async () => {
@@ -62,5 +62,91 @@ describe('loop-executor retry policy', () => {
     expect(results[0].result.success).toBe(false);
     expect(String(results[0].result.error)).toContain('Retry exhausted');
     expect((results[0].result.meta as Record<string, unknown>)?.code).toBe('EDIT_RETRY_EXHAUSTED');
+  });
+
+  it('publishes live tool patches for non-file tools', async () => {
+    const publishedPatches: Array<{ toolId: string; patch: Record<string, unknown> }> = [];
+
+    const results = await executeQueuedNonFileTools(
+      [{ id: 't1', name: 'read_file', args: { path: 'src/a.ts' }, runAfterFileEdits: false }],
+      {
+        executeToolCall: async (_name, _args, options) => {
+          options.runtime?.onUpdate?.({
+            liveStatus: 'Reading file...',
+            meta: { phase: 'read' },
+          });
+          return { success: true, output: 'ok', meta: { bytes: 12 } };
+        },
+        signal: new AbortController().signal,
+        toolRunScope: 'scope',
+        getToolIdempotencyKey: () => 'id',
+        updateToolCallInMessage: () => undefined,
+        messageId: 'm1',
+        trackToolOutcome: () => undefined,
+        getFailureSignature: () => null,
+        onFailureSignature: () => undefined,
+        publishToolPatch: (toolId, patch) => {
+          publishedPatches.push({ toolId, patch });
+        },
+      },
+    );
+
+    expect(results[0].result.success).toBe(true);
+    expect(publishedPatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolId: 't1',
+          patch: expect.objectContaining({
+            status: 'running',
+          }),
+        }),
+        expect.objectContaining({
+          toolId: 't1',
+          patch: expect.objectContaining({
+            meta: expect.objectContaining({
+              liveStatus: 'Reading file...',
+              phase: 'read',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          toolId: 't1',
+          patch: expect.objectContaining({
+            status: 'completed',
+            output: 'ok',
+            meta: expect.objectContaining({
+              bytes: 12,
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('does not reactivate a tool call that is already failed before execution starts', async () => {
+    const patches: Array<Record<string, unknown>> = [];
+
+    const results = await executeQueuedNonFileTools(
+      [{ id: 't-invalid', name: 'run_command', args: { command: 'echo hi' }, runAfterFileEdits: false }],
+      {
+        executeToolCall: async () => ({ success: true, output: 'should not run' }),
+        signal: new AbortController().signal,
+        toolRunScope: 'scope',
+        getToolIdempotencyKey: () => 'id',
+        updateToolCallInMessage: (_messageId, _toolId, patch) => {
+          patches.push(patch);
+        },
+        messageId: 'm1',
+        trackToolOutcome: () => undefined,
+        getFailureSignature: () => null,
+        onFailureSignature: () => undefined,
+        publishToolPatch: () => undefined,
+      },
+    );
+
+    expect(results[0].result.success).toBe(true);
+    expect(patches[0]).toMatchObject({
+      status: 'running',
+    });
   });
 });

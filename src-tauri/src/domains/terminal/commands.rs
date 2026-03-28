@@ -1,3 +1,5 @@
+use crate::observability::{debug_log, DebugScope};
+use base64::Engine as _;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -131,7 +133,40 @@ fn lock_manager(
 }
 
 /// Detect the best shell to use based on the platform
-fn detect_shell() -> (String, Vec<String>) {
+#[cfg(windows)]
+fn build_ai_powershell_args() -> Vec<String> {
+    let script = concat!(
+        "function prompt { ",
+        "try { ",
+        "$e = [char]27; $a = [char]7; $c = (Get-Location).Path; ",
+        "Write-Host -NoNewline \"$e]633;P;Cwd=$c$a\"; ",
+        "Write-Host -NoNewline \"$e]633;A$a\"; ",
+        "$p = \"PS $c> \"; ",
+        "Write-Host -NoNewline \"$e]633;B$a\"; ",
+        "if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline \"$e]633;D;$LASTEXITCODE$a\" }; ",
+        "return $p; ",
+        "} catch { return \"PS > \" } ",
+        "}; ",
+        "Write-Host -NoNewline \"$([char]27)]633;P;ShellIntegration=Volt$([char]7)\"; ",
+        "Write-Host -NoNewline \"$([char]27)]633;P;Cwd=$((Get-Location).Path)$([char]7)\";"
+    );
+
+    let utf16_bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16_bytes);
+
+    vec![
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NoExit".to_string(),
+        "-EncodedCommand".to_string(),
+        encoded,
+    ]
+}
+
+fn detect_shell(ai: bool) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
         // On Windows, just use PowerShell directly - it's always available
@@ -148,7 +183,12 @@ fn detect_shell() -> (String, Vec<String>) {
                 } else {
                     "powershell"
                 };
-                return (shell_name.to_string(), vec!["-NoLogo".to_string()]);
+                let args = if ai {
+                    build_ai_powershell_args()
+                } else {
+                    vec!["-NoLogo".to_string()]
+                };
+                return (shell_name.to_string(), args);
             }
         }
 
@@ -174,8 +214,9 @@ pub fn terminal_create(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    ai: Option<bool>,
 ) -> Result<TerminalInfo, TerminalError> {
-    create_terminal_sync(app, cwd, cols, rows)
+    create_terminal_sync(app, cwd, cols, rows, ai.unwrap_or(false))
 }
 
 /// Synchronous terminal creation (runs in blocking thread)
@@ -184,7 +225,15 @@ fn create_terminal_sync(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    ai: bool,
 ) -> Result<TerminalInfo, TerminalError> {
+    let _scope = DebugScope::new(
+        "terminal",
+        format!(
+            "create cwd={} ai={ai}",
+            cwd.clone().unwrap_or_else(|| "<default>".to_string())
+        ),
+    );
     let pty_system = native_pty_system();
 
     let cols = cols.unwrap_or(80);
@@ -203,7 +252,7 @@ fn create_terminal_sync(
         })?;
 
     // Detect shell and build command
-    let (shell, args) = detect_shell();
+    let (shell, args) = detect_shell(ai);
     let mut cmd = CommandBuilder::new(&shell);
     for arg in &args {
         cmd.arg(arg);
@@ -618,8 +667,10 @@ pub fn terminal_get_scrollback(
 /// Kill all active terminals
 #[tauri::command]
 pub fn terminal_kill_all() -> Result<(), TerminalError> {
+    let _scope = DebugScope::new("terminal", "kill_all");
     let manager = get_terminal_manager();
     let mut mgr = lock_manager(&manager)?;
+    debug_log("terminal", format!("kill_all count={}", mgr.sessions.len()));
 
     let terminal_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
 

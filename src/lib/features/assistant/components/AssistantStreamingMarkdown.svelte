@@ -1,14 +1,12 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { Streamdown } from "svelte-streamdown";
-  import { browserStore } from "$features/browser/stores/browser.svelte";
   import {
     ASSISTANT_STREAMDOWN_THEME,
     normalizeAssistantMarkdown,
     STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
     STREAMDOWN_ALLOWED_LINK_PREFIXES,
     STREAMDOWN_DEFAULT_ORIGIN,
-    shouldOpenInBuiltInBrowser,
   } from "./assistant-streamdown";
 
   interface Props {
@@ -16,55 +14,70 @@
     streaming?: boolean;
   }
 
+  const STREAM_FLUSH_JUMP_THRESHOLD = 320;
+
   let { content, streaming = false }: Props = $props();
-  let renderedContent = $state(content);
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let renderedContent = $state("");
+  let queuedContent = "";
+  let flushFrame: number | null = null;
+
+  function cancelPendingFlush(): void {
+    if (flushFrame !== null) {
+      cancelAnimationFrame(flushFrame);
+      flushFrame = null;
+    }
+  }
+
+  function flushContent(nextContent: string): void {
+    cancelPendingFlush();
+    queuedContent = nextContent;
+    renderedContent = nextContent;
+  }
+
+  function scheduleContentFlush(nextContent: string): void {
+    queuedContent = nextContent;
+    if (flushFrame !== null) return;
+    flushFrame = requestAnimationFrame(() => {
+      flushFrame = null;
+      renderedContent = queuedContent;
+    });
+  }
 
   $effect(() => {
     const normalizedContent = normalizeAssistantMarkdown(content);
-    if (!streaming) {
-      renderedContent = normalizedContent;
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
+    const isStreaming = streaming;
+
+    if (!isStreaming) {
+      flushContent(normalizedContent);
       return;
     }
 
-    if (renderedContent === normalizedContent || flushTimer) return;
-    flushTimer = setTimeout(() => {
-      renderedContent = normalizedContent;
-      flushTimer = null;
-    }, 120);
+    if (normalizedContent === renderedContent) {
+      cancelPendingFlush();
+      return;
+    }
+
+    const deltaLength = Math.abs(normalizedContent.length - renderedContent.length);
+    const shouldFlushImmediately =
+      renderedContent.length === 0 ||
+      deltaLength >= STREAM_FLUSH_JUMP_THRESHOLD ||
+      normalizedContent.endsWith("\n") ||
+      normalizedContent.endsWith("```");
+
+    if (shouldFlushImmediately) {
+      flushContent(normalizedContent);
+      return;
+    }
+
+    scheduleContentFlush(normalizedContent);
   });
 
   onDestroy(() => {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-    }
+    cancelPendingFlush();
   });
-
-  function handleClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement;
-    const link = target.closest("a[href]") as HTMLAnchorElement | null;
-    if (!link || !shouldOpenInBuiltInBrowser(link.href)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (browserStore.isOpen) {
-      browserStore.navigate(link.href);
-    } else {
-      browserStore.open(link.href);
-    }
-  }
 </script>
 
-<div
-  class="assistant-streamdown"
-  onclick={handleClick}
-  role="presentation"
->
+<div class="assistant-streamdown">
   <Streamdown
     class="assistant-streamdown-content"
     content={renderedContent}

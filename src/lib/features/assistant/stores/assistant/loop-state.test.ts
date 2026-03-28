@@ -5,6 +5,7 @@ describe('loop-state transitions', () => {
   it('allows valid transitions', () => {
     expect(isValidLoopTransition('running', 'waiting_tool')).toBe(true);
     expect(isValidLoopTransition('waiting_tool', 'completing')).toBe(true);
+    expect(isValidLoopTransition('waiting_tool', 'completed')).toBe(true);
     expect(isValidLoopTransition('completing', 'completed')).toBe(true);
   });
 
@@ -14,4 +15,3 @@ describe('loop-state transitions', () => {
     expect(isValidLoopTransition('waiting_approval', 'completed')).toBe(false);
   });
 });
-

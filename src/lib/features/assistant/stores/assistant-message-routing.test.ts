@@ -5,11 +5,12 @@ import {
   sanitizeVisibleAssistantText,
   stripSystemReminderTags,
 } from './assistant-message-routing';
+import type { AssistantMessage } from './assistant.svelte';
 
 describe('assistant message routing helpers', () => {
   it('finds owning conversation for active and background messages', () => {
-    const message = { id: 'm1' } as any;
-    const background = { id: 'm2' } as any;
+    const message = { id: 'm1' } as AssistantMessage;
+    const background = { id: 'm2' } as AssistantMessage;
 
     expect(
       findConversationIdByMessageId('m1', 'active', [message], {
@@ -36,8 +37,34 @@ describe('assistant message routing helpers', () => {
   it('sanitizes internal assistant control blocks from visible text', () => {
     expect(
       sanitizeVisibleAssistantText(
-        'Hi\n<system_context>secret</system_context>\n<smart_context>more</smart_context>\n<system-reminder>x</system-reminder>\nDone',
+        'Hi\n<system_context>secret</system_context>\n<smart_context>more</smart_context>\n<system-reminder>x</system-reminder>\n<volt-spec-verify-json>{"verdict":"pass"}</volt-spec-verify-json>\nDone',
       ),
     ).toBe('Hi\n\nDone');
+  });
+
+  it('repairs malformed fenced-code closers in finalized assistant text', () => {
+    expect(
+      sanitizeVisibleAssistantText(
+        [
+          'Before',
+          '',
+          '```ts',
+          'const value = 1;',
+          '``',
+          '',
+          '## After',
+        ].join('\n'),
+      ),
+    ).toBe(
+      [
+        'Before',
+        '',
+        '```ts',
+        'const value = 1;',
+        '```',
+        '',
+        '## After',
+      ].join('\n'),
+    );
   });
 });

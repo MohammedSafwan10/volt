@@ -2,10 +2,10 @@
  * AI Tool Definitions
  *
  * Design: Each tool does ONE distinct thing. No overlap between tools.
- * 16 core tools + browser tools (gated behind CDP connection).
  */
 
 import type { ToolDefinition } from '$core/ai/types';
+import type { AIMode } from '$features/assistant/stores/ai.svelte';
 import { getMcpToolDefinitions } from '$core/ai/tools/handlers/mcp';
 
 export type ToolCategory =
@@ -14,19 +14,12 @@ export type ToolCategory =
   | 'file_write'
   | 'terminal'
   | 'diagnostics'
-  | 'browser';
+  | 'workflow';
 
 export interface VoltToolDefinition extends ToolDefinition {
   category: ToolCategory;
   requiresApproval: boolean;
-  allowedModes: ('ask' | 'plan' | 'agent')[];
-}
-
-// Browser tools are only exposed when CDP devtools connection is active.
-let browserToolsEnabled = false;
-
-export function setBrowserToolsEnabled(enabled: boolean): void {
-  browserToolsEnabled = enabled;
+  allowedModes: AIMode[];
 }
 
 export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
@@ -43,7 +36,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     },
     category: 'workspace_read',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
   {
     name: 'read_file',
@@ -60,7 +53,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     },
     category: 'workspace_read',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
   {
     name: 'file_outline',
@@ -74,7 +67,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     },
     category: 'workspace_read',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
 
   // ── SEARCH ────────────────────────────────────
@@ -95,7 +88,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     },
     category: 'workspace_search',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
   {
     name: 'find_files',
@@ -112,7 +105,7 @@ export const TOOL_DEFINITIONS: VoltToolDefinition[] = [
     },
     category: 'workspace_search',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
 
   // ── WRITE ─────────────────────────────────────
@@ -266,7 +259,7 @@ Returns a processId. Use get_process_output to read its output afterward.`,
     },
     category: 'diagnostics',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
   {
     name: 'attempt_completion',
@@ -283,169 +276,66 @@ Returns a processId. Use get_process_output to read its output afterward.`,
     requiresApproval: false,
     allowedModes: ['agent']
   },
-
-  // ── BROWSER (only exposed when CDP devtools are connected) ──
   {
-    name: 'browser_get_console_logs',
-    description: 'Get console logs from the browser. Filter by level (log/warn/error/info/debug) or time.',
+    name: 'get_spec_state',
+    description: 'Get the current Spec Mode workspace state: active spec, current phase, pending draft, and task summary. Use before deciding whether to ask questions, draft requirements, update a phase, or start a task.',
     parameters: {
       type: 'object',
-      properties: {
-        limit: { type: 'number', description: 'Max logs to return (default: 50)' },
-        level: { type: 'string', description: 'Filter by level: log, info, warn, error, debug' },
-        since_minutes: { type: 'number', description: 'Only logs from last N minutes' }
-      }
+      properties: {}
     },
-    category: 'browser',
+    category: 'workflow',
     requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['spec']
   },
   {
-    name: 'browser_get_errors',
-    description: 'Get JavaScript errors from the browser including stack traces.',
+    name: 'stage_spec_requirements',
+    description: 'Stage the first requirements draft for user confirmation without writing files yet. Use this after clarifying enough detail for a real feature spec.',
     parameters: {
       type: 'object',
       properties: {
-        limit: { type: 'number', description: 'Max errors to return (default: 20)' },
-        include_console_errors: { type: 'boolean', description: 'Include console.error logs (default: true)' }
-      }
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'browser_get_network_requests',
-    description: 'Get network requests from the browser. Filter by method, status, or URL.',
-    parameters: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: 'Max requests to return (default: 50)' },
-        method: { type: 'string', description: 'Filter by HTTP method (GET, POST, etc.)' },
-        status: { type: 'number', description: 'Filter by status code' },
-        failed_only: { type: 'boolean', description: 'Only show failed requests' },
-        url_contains: { type: 'string', description: 'Filter by URL substring' }
-      }
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
-  },
-  {
-    name: 'browser_navigate',
-    description: 'Navigate the browser to a URL.',
-    parameters: {
-      type: 'object',
-      properties: {
-        url: { type: 'string', description: 'URL to navigate to' }
+        title: { type: 'string', description: 'Human-readable spec title' },
+        slug: { type: 'string', description: 'Slug for the spec folder under .volt/specs' },
+        requirementsMarkdown: { type: 'string', description: 'Requirements markdown with stable ids like REQ-1, REQ-2' }
       },
-      required: ['url']
+      required: ['title', 'slug', 'requirementsMarkdown']
     },
-    category: 'browser',
+    category: 'workflow',
     requiresApproval: false,
-    allowedModes: ['agent']
+    allowedModes: ['spec']
   },
   {
-    name: 'browser_click',
-    description: 'Click an element in the browser by CSS selector.',
+    name: 'write_spec_phase',
+    description: 'Create or update a spec phase in .volt/specs. Use for confirmed requirements creation, design generation, or task-list updates.',
     parameters: {
       type: 'object',
       properties: {
-        selector: { type: 'string', description: 'CSS selector of element to click' }
+        phase: { type: 'string', enum: ['requirements', 'design', 'tasks'], description: 'Spec phase to write' },
+        title: { type: 'string', description: 'Spec title. Required when creating a new requirements phase.' },
+        slug: { type: 'string', description: 'Spec slug. Required when creating a new requirements phase without an active spec.' },
+        requirementsMarkdown: { type: 'string', description: 'Requirements markdown for the requirements phase' },
+        designMarkdown: { type: 'string', description: 'Design markdown for the design phase' },
+        tasks: {
+          type: 'array',
+          description: 'Task definitions for the tasks phase',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              summary: { type: 'string' },
+              requirementIds: { type: 'array', items: { type: 'string' } },
+              dependencyIds: { type: 'array', items: { type: 'string' } },
+              scopeHints: { type: 'array', items: { type: 'string' } },
+              verification: { type: 'string' }
+            }
+          }
+        }
       },
-      required: ['selector']
+      required: ['phase']
     },
-    category: 'browser',
+    category: 'file_write',
     requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_type',
-    description: 'Type text into an input element in the browser.',
-    parameters: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector of input element (optional - types into focused element if omitted)' },
-        text: { type: 'string', description: 'Text to type' }
-      },
-      required: ['text']
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_screenshot',
-    description: 'Take a screenshot of the page or a specific element.',
-    parameters: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector to screenshot (optional - full page if omitted)' },
-        full_page: { type: 'boolean', description: 'Capture full scrollable page (default: false)' }
-      }
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_evaluate',
-    description: 'Execute JavaScript in the browser and return the result.',
-    parameters: {
-      type: 'object',
-      properties: {
-        expression: { type: 'string', description: 'JavaScript expression to evaluate' }
-      },
-      required: ['expression']
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_scroll',
-    description: 'Scroll the page to an element or by pixel amount.',
-    parameters: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector to scroll to (optional)' },
-        x: { type: 'number', description: 'Pixels to scroll horizontally (optional)' },
-        y: { type: 'number', description: 'Pixels to scroll vertically (optional)' }
-      }
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_wait_for',
-    description: 'Wait for an element to appear on the page.',
-    parameters: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector to wait for' },
-        timeout_ms: { type: 'number', description: 'Max wait time in ms (default: 5000)' }
-      },
-      required: ['selector']
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'browser_get_element',
-    description: 'Get detailed info about elements matching a CSS selector (tag, id, classes, text, dimensions).',
-    parameters: {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: 'CSS selector' },
-        limit: { type: 'number', description: 'Max elements to return (default: 10)' }
-      },
-      required: ['selector']
-    },
-    category: 'browser',
-    requiresApproval: false,
-    allowedModes: ['ask', 'plan', 'agent']
+    allowedModes: ['spec']
   },
 ];
 
@@ -453,13 +343,10 @@ Returns a processId. Use get_process_output to read its output afterward.`,
 
 /**
  * Get tools available for the given mode.
- * All non-browser tools are always available (filtered by mode).
- * Browser tools are only available when CDP devtools are connected.
  */
-export function getToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
+export function getToolsForMode(mode: AIMode): ToolDefinition[] {
   return TOOL_DEFINITIONS
     .filter(tool => tool.allowedModes.includes(mode))
-    .filter(tool => tool.category !== 'browser' || browserToolsEnabled)
     .map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
@@ -471,13 +358,13 @@ export function doesToolRequireApproval(toolName: string): boolean {
   return getToolByName(toolName)?.requiresApproval ?? false;
 }
 
-export function isToolAllowed(toolName: string, mode: 'ask' | 'plan' | 'agent'): boolean {
+export function isToolAllowed(toolName: string, mode: AIMode): boolean {
   return getToolByName(toolName)?.allowedModes.includes(mode) ?? false;
 }
 
-export function getAllToolsForMode(mode: 'ask' | 'plan' | 'agent'): ToolDefinition[] {
+export function getAllToolsForMode(mode: AIMode): ToolDefinition[] {
   const builtInTools = getToolsForMode(mode);
-  const mcpTools = mode === 'agent' ? getMcpToolDefinitions() : [];
+  const mcpTools = mode === 'agent' || mode === 'spec' ? getMcpToolDefinitions() : [];
   return [...builtInTools, ...mcpTools];
 }
 
@@ -532,7 +419,18 @@ export const RETIRED_TOOL_NAMES = new Set<string>([
   'get_tool_metrics',
   'get_file_info',
 
-  // Removed browser tools (consolidated)
+  // Removed browser tools
+  'browser_get_console_logs',
+  'browser_get_errors',
+  'browser_get_network_requests',
+  'browser_navigate',
+  'browser_click',
+  'browser_type',
+  'browser_screenshot',
+  'browser_evaluate',
+  'browser_scroll',
+  'browser_wait_for',
+  'browser_get_element',
   'browser_get_network_request_details',
   'browser_get_performance',
   'browser_get_selected_element',

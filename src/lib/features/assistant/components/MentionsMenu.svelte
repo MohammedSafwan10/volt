@@ -347,51 +347,59 @@
         bottom: 100%;
         left: 0;
         right: 0;
-        margin-bottom: 4px;
+        margin-bottom: 8px;
         max-height: 320px;
         overflow-y: auto;
-        background: #0f0f0f;
-        border: 1px solid #1a1a1a;
-        border-radius: 10px;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8);
-        padding: 6px 0;
+        background: rgba(15, 15, 15, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        padding: 8px;
         z-index: 1100;
-        animation: menuIn 0.12s cubic-bezier(0, 0, 0.2, 1);
+        animation: menuIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        transform-origin: bottom center;
     }
 
     @keyframes menuIn {
         from {
             opacity: 0;
-            transform: translateY(8px);
+            transform: translateY(12px) scale(0.98);
         }
         to {
             opacity: 1;
-            transform: translateY(0);
+            transform: translateY(0) scale(1);
         }
     }
 
     .mention-item {
         display: flex;
         align-items: center;
-        gap: 10px;
-        width: calc(100% - 12px);
-        margin: 2px 6px;
+        gap: 12px;
+        width: 100%;
         padding: 8px 12px;
-        font-size: 14px;
+        font-size: 13.5px;
         font-weight: 500;
-        color: #e5e5e5;
+        color: #e0e0e0;
         text-align: left;
-        border-radius: 6px;
-        transition: background 0.1s ease;
+        border-radius: 8px;
+        transition: all 0.15s ease;
+        border: 1px solid transparent;
+        background: transparent;
     }
 
     .mention-item:hover,
     .mention-item.selected {
-        background: rgba(59, 130, 246, 0.15);
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.05);
+        color: #ffffff;
     }
 
     .mention-item.selected {
-        color: #3b82f6;
+        background: color-mix(in srgb, var(--color-accent, #ffffff) 20%, transparent);
+        border-color: color-mix(in srgb, var(--color-accent, #ffffff) 40%, transparent);
+        color: var(--color-accent, #ffffff);
     }
 
     .mention-label {
@@ -399,45 +407,49 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        letter-spacing: 0.2px;
     }
 
     .mention-sublabel {
-        font-size: 12px;
-        color: #737373;
+        font-size: 11.5px;
+        color: #888888;
         flex-shrink: 0;
-        max-width: 150px;
+        max-width: 160px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
     .mention-arrow {
-        color: #525252;
+        color: rgba(255, 255, 255, 0.3);
         margin-left: auto;
+        font-size: 16px;
     }
 
     .mention-empty {
-        padding: 16px;
+        padding: 24px;
         text-align: center;
-        color: #525252;
-        font-size: 13px;
+        color: #888888;
+        font-size: 13.5px;
+        font-style: italic;
     }
 
     /* Scrollbar styling */
     .mentions-menu::-webkit-scrollbar {
-        width: 6px;
+        width: 4px;
     }
 
     .mentions-menu::-webkit-scrollbar-track {
         background: transparent;
+        margin: 8px 0;
     }
 
     .mentions-menu::-webkit-scrollbar-thumb {
-        background: #2e2e2e;
-        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
     }
 
     .mentions-menu::-webkit-scrollbar-thumb:hover {
-        background: #3f3f3f;
+        background: rgba(255, 255, 255, 0.3);
     }
 </style>

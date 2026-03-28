@@ -33,9 +33,7 @@ function isGemini3Model(model: string): boolean {
   return model.includes('gemini-3');
 }
 
-function isGemini3ProModel(model: string): boolean {
-  return model.includes('gemini-3-pro');
-}
+
 
 /**
  * Build thinking config based on model series
@@ -50,15 +48,7 @@ function buildThinkingConfig(model: string, thinkingEnabled: boolean): GeminiThi
     // Gemini will use default dynamic reasoning for the model.
     if (!thinkingEnabled) return undefined;
 
-    // Gemini 3 Pro supports LOW/HIGH only.
-    if (isGemini3ProModel(model)) {
-      return {
-        includeThoughts: true,
-        thinkingLevel: 'HIGH'
-      };
-    }
-
-    // Gemini 3 Flash supports MINIMAL/LOW/MEDIUM/HIGH.
+    // Gemini 3 models support thinking parameters.
     return {
       includeThoughts: true,
       thinkingLevel: 'HIGH'

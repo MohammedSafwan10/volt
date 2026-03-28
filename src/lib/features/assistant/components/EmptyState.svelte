@@ -67,6 +67,34 @@
             },
           ],
         };
+      case "spec":
+        return {
+          title: "Spec Mode",
+          hint: "Draft requirements first, confirm the spec, then continue into design and tasks under .volt/specs.",
+          actions: [
+            {
+              icon: "file-plus" as const,
+              label: "Draft requirements",
+              desc: "Start a phased spec without writing files yet.",
+              prompt:
+                "Draft the requirements for a new production-ready spec for this feature. I want to review and confirm them before any files are created.",
+            },
+            {
+              icon: "check" as const,
+              label: "Break down tasks",
+              desc: "Create implementation-ready tasks with verification.",
+              prompt:
+                "Break this feature into small, verifiable implementation tasks with dependencies and verification notes.",
+            },
+            {
+              icon: "refresh" as const,
+              label: "Sync spec files",
+              desc: "Regenerate stale downstream docs from the current spec.",
+              prompt:
+                "Sync the current spec files and regenerate stale downstream design and task artifacts.",
+            },
+          ],
+        };
       default:
         return {
           title: "Ask Mode",

@@ -44,14 +44,6 @@
 	let inputWriteFailed = false;
 	let containerMouseDownCleanup: (() => void) | null = null;
 
-	async function ensureInitialPromptVisible(): Promise<void> {
-		// Some Windows shells occasionally start without painting the first prompt
-		// until they receive input. Nudge once with Enter when output is still empty.
-		const hasOutput = session.getRecentOutput(256).trim().length > 0;
-		if (hasOutput) return;
-		await session.write('\r\n');
-	}
-
 	function handleContainerMouseDown(): void {
 		if (terminal && initialized) terminal.focus();
 	}
@@ -236,12 +228,11 @@
 		// This avoids racing prompt kicks against PTY/shell startup.
 		await session.waitForReady(2500);
 
-		// Backend now handles initial resize to trigger prompt.
+		// Backend now handles initial resize to trigger the first prompt.
 		// Just do a final fit after everything is ready.
 		requestAnimationFrame(() => {
 			setTimeout(async () => {
 				await fitTerminal();
-				await ensureInitialPromptVisible();
 			}, 100);
 		});
 	}
@@ -384,7 +375,7 @@
 
 	/* xterm.js styles */
 	:global(.terminal-view .xterm) {
-		padding: 6px 10px;
+		padding: 2px 8px;
 		height: 100%;
 	}
 

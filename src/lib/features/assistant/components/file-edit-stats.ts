@@ -1,5 +1,33 @@
-import type { ToolCall } from "$features/assistant/stores/assistant.svelte";
-import { calculateDiffStats } from "$core/ai/tools/utils";
+import type { ToolCall } from "$features/assistant/types/tool-call";
+
+function calculateDiffStats(before: string, after: string): { added: number; removed: number } {
+  if (before === after) return { added: 0, removed: 0 };
+
+  const beforeLines = before.split('\n');
+  const afterLines = after.split('\n');
+
+  const beforeMap = new Map<string, number>();
+  for (const line of beforeLines) {
+    beforeMap.set(line, (beforeMap.get(line) || 0) + 1);
+  }
+
+  let added = 0;
+  for (const line of afterLines) {
+    const count = beforeMap.get(line) || 0;
+    if (count > 0) {
+      beforeMap.set(line, count - 1);
+    } else {
+      added++;
+    }
+  }
+
+  let removed = 0;
+  for (const count of beforeMap.values()) {
+    removed += count;
+  }
+
+  return { added, removed };
+}
 
 export interface FileEditDiffStats {
   added: number;

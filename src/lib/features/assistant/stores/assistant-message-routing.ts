@@ -1,4 +1,5 @@
 import type { AssistantMessage } from './assistant.svelte';
+import { normalizeAssistantMarkdown } from '../utils/assistant-markdown';
 
 export function findConversationIdByMessageId(
   messageId: string,
@@ -40,10 +41,12 @@ export function stripSystemReminderTags(content: string): {
 }
 
 export function sanitizeVisibleAssistantText(content: string): string {
-  return content
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
-    .replace(/<system_context>[\s\S]*?<\/system_context>/gi, '')
-    .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return normalizeAssistantMarkdown(
+    content
+      .replace(/<volt-spec-verify-json>[\s\S]*?<\/volt-spec-verify-json>/gi, '')
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+      .replace(/<system_context>[\s\S]*?<\/system_context>/gi, '')
+      .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, '')
+      .replace(/\n{3,}/g, '\n\n'),
+  ).trim();
 }

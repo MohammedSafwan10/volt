@@ -1,10 +1,14 @@
 import type { ToolResult } from '$core/ai/tools';
 import type { CompletionGateFreshness } from '$features/assistant/components/panel/completion-gate';
+import type { ToolCallStatus } from '$features/assistant/types/tool-call';
+import type { AIMode } from '$features/assistant/stores/ai.svelte';
+import type { AgentLoopState } from '$features/assistant/stores/assistant/loop-state';
 import { evaluateCompletionGate } from '$features/assistant/components/panel/completion-gate';
 import {
   buildStructuralVerificationPlan,
   type StructuralVerificationPlan,
 } from './verification-engine';
+import type { AssistantRuntimeSnapshot } from '$features/assistant/stores/assistant.svelte';
 
 export interface ToolCallLike {
   id: string;
@@ -32,6 +36,79 @@ interface ApprovalFlowDecision {
   reason?: string;
   streamState?: 'failed';
   streamIssue?: string;
+  resumeState?: AgentLoopState;
+  resumeMeta?: Record<string, unknown>;
+  resolvedState?: 'running' | 'completed' | 'failed' | 'cancelled';
+}
+
+interface NativeRuntimeCommandRequest {
+  operation: string;
+  conversationId: string;
+  payload: Record<string, unknown>;
+}
+
+export interface NativeRuntimeCommandResult {
+  shouldApply: boolean;
+  operation: string;
+  conversationId: string;
+  loopState?: AgentLoopState;
+  loopMeta?: Record<string, unknown>;
+  messagePatch?: {
+    messageId?: string | null;
+    streamState?: 'failed' | 'cancelled' | 'completed' | 'interrupted';
+    streamIssue?: string;
+  };
+  toolPatch?: {
+    messageId?: string | null;
+    toolCallId?: string | null;
+    status?: ToolCallStatus | null;
+    error?: string;
+    output?: string;
+    meta?: Record<string, unknown>;
+  };
+  control?: {
+    retry?: {
+      allowed: boolean;
+      delayMs?: number;
+      maxRetries?: number;
+      reason?: string;
+    };
+    cancellation?: {
+      shouldCancel: boolean;
+      reason?: string;
+    };
+    timeout?: {
+      shouldTimeout: boolean;
+      maxDurationMs?: number;
+      reason?: string;
+    };
+    toolPolicy?: {
+      executeInOrder?: boolean;
+      deferUntilFileEditsComplete?: boolean;
+      approvalRequired?: boolean;
+      executionStages?: string[];
+      fileEditConcurrency?: number;
+      orderedFileQueueKeys?: string[];
+      orderedEagerToolIds?: string[];
+      orderedDeferredToolIds?: string[];
+      pendingApprovalToolIds?: string[];
+    };
+    approval?: {
+      shouldAbort: boolean;
+      reason?: string;
+      resumeState?: AgentLoopState;
+      approvedToolIds?: string[];
+      deniedToolIds?: string[];
+      unresolvedToolIds?: string[];
+    };
+  };
+  auditEntry?: {
+    timestampMs: number;
+    conversationId: string;
+    operation: string;
+    loopState?: string;
+    meta?: Record<string, unknown>;
+  };
 }
 
 interface CompletionAcceptance {
@@ -64,9 +141,110 @@ interface IterationErrorDecision {
   retryDelayMs?: number;
   recoveryNotice?: string;
   isInterrupted?: boolean;
+  auditMeta?: Record<string, unknown>;
 }
 
-export function createAgentRuntime() {
+interface ToolSchedulingDecision {
+  executeInOrder: boolean;
+  deferUntilFileEditsComplete: boolean;
+  approvalRequired: boolean;
+  executionStages?: string[];
+  fileEditConcurrency?: number;
+  orderedFileQueueKeys?: string[];
+  orderedEagerToolIds?: string[];
+  orderedDeferredToolIds?: string[];
+  pendingApprovalToolIds?: string[];
+}
+
+export interface AgentRuntimeNativeBridge {
+  sendCommand: (
+    request: NativeRuntimeCommandRequest,
+  ) => Promise<NativeRuntimeCommandResult>;
+}
+
+const AGENT_LOOP_STATES: readonly AgentLoopState[] = [
+  'running',
+  'waiting_approval',
+  'waiting_tool',
+  'completing',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
+function normalizeLoopState(value: unknown): AgentLoopState | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return AGENT_LOOP_STATES.includes(normalized as AgentLoopState)
+    ? (normalized as AgentLoopState)
+    : undefined;
+}
+
+function isAgentLoopState(value: string): value is AgentLoopState {
+  return (
+    value === 'running' ||
+    value === 'waiting_approval' ||
+    value === 'waiting_tool' ||
+    value === 'completing' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled'
+  );
+}
+
+export function createAgentRuntime(nativeBridge?: AgentRuntimeNativeBridge) {
+  const applyNativeDecision = async (params: {
+    operation: string;
+    snapshot: AssistantRuntimeSnapshot | null;
+    payload: Record<string, unknown>;
+  }): Promise<NativeRuntimeCommandResult | null> => {
+    if (!nativeBridge || !params.snapshot) return null;
+
+    const requestPayload = {
+      mode: params.snapshot.mode as AIMode,
+      isStreaming: params.snapshot.isStreaming,
+      agentLoopState: params.snapshot.agentLoopState,
+      agentLoopMeta: params.snapshot.agentLoopMeta,
+      runUpdatedAt: params.snapshot.runUpdatedAt,
+      activeMessageId: params.snapshot.activeMessageId,
+      activeToolCallId: params.snapshot.activeToolCallId,
+      activeToolCallName: params.snapshot.activeToolCallName,
+      activeToolStatus: params.snapshot.activeToolStatus,
+      activeToolRequiresApproval: params.snapshot.activeToolRequiresApproval,
+      pendingApprovalCount: params.snapshot.pendingApprovalCount,
+      runningToolCount: params.snapshot.runningToolCount,
+      messageCount: params.snapshot.messageCount,
+      ...params.payload,
+    };
+
+    try {
+      return await nativeBridge.sendCommand({
+        operation: params.operation,
+        conversationId: params.snapshot.conversationId,
+        payload: requestPayload,
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const buildRuntimeRequest = async (params: {
+    operation: string;
+    snapshot: AssistantRuntimeSnapshot | null;
+    payload: Record<string, unknown>;
+  }): Promise<NativeRuntimeCommandResult | null> => {
+    const result = await applyNativeDecision(params);
+    if (!result || !result.shouldApply) return null;
+    return {
+      ...result,
+        loopState: (() => {
+          const normalized = normalizeLoopState(result.loopState);
+          return normalized && isAgentLoopState(normalized) ? normalized : undefined;
+        })(),
+    };
+  };
+
   const evaluateCompletion = (params: {
       errorCount: number;
       freshness: CompletionGateFreshness;
@@ -189,7 +367,14 @@ export function createAgentRuntime() {
 
   const evaluateApprovalFlow = (approvalsProcessed: boolean): ApprovalFlowDecision => {
     if (approvalsProcessed) {
-      return { shouldAbort: false };
+      return {
+        shouldAbort: false,
+        resumeState: 'running',
+        resolvedState: 'running',
+        resumeMeta: {
+          resumedAfterApproval: true,
+        },
+      };
     }
 
     return {
@@ -197,6 +382,29 @@ export function createAgentRuntime() {
       reason: 'approval_flow_incomplete',
       streamState: 'failed',
       streamIssue: 'Approval flow incomplete',
+      resolvedState: 'failed',
+    };
+  };
+
+  const evaluateToolScheduling = (params: {
+    pendingApprovalCount: number;
+    hasQueuedFileEdits: boolean;
+    defaultExecuteInOrder?: boolean;
+    nativeDecision?: NativeRuntimeCommandResult | null;
+  }): ToolSchedulingDecision => {
+    const nativePolicy = params.nativeDecision?.control?.toolPolicy;
+    return {
+      executeInOrder: nativePolicy?.executeInOrder ?? params.defaultExecuteInOrder ?? false,
+      deferUntilFileEditsComplete:
+        nativePolicy?.deferUntilFileEditsComplete ?? params.hasQueuedFileEdits,
+      approvalRequired:
+        nativePolicy?.approvalRequired ?? params.pendingApprovalCount > 0,
+      executionStages: nativePolicy?.executionStages,
+      fileEditConcurrency: nativePolicy?.fileEditConcurrency,
+      orderedFileQueueKeys: nativePolicy?.orderedFileQueueKeys,
+      orderedEagerToolIds: nativePolicy?.orderedEagerToolIds,
+      orderedDeferredToolIds: nativePolicy?.orderedDeferredToolIds,
+      pendingApprovalToolIds: nativePolicy?.pendingApprovalToolIds,
     };
   };
 
@@ -204,10 +412,19 @@ export function createAgentRuntime() {
     completionResult?: ToolResultLike;
     allToolCalls: ToolCallLike[];
     fullContent?: string;
+    allowNaturalCompletion?: boolean;
+    nativeDecision?: NativeRuntimeCommandResult | null;
   }): CompletionAcceptance => {
+    if (params.nativeDecision?.control?.cancellation?.shouldCancel) {
+      return { shouldComplete: false };
+    }
     if (!params.completionResult) {
       const naturalText = params.fullContent?.trim() ?? '';
       if (!naturalText) {
+        return { shouldComplete: false };
+      }
+
+      if (params.allowNaturalCompletion === false) {
         return { shouldComplete: false };
       }
 
@@ -292,13 +509,26 @@ export function createAgentRuntime() {
     maxRecoveryRetries: number;
     stalledAbortReason: string | null;
     fullContent: string;
+    nativeDecision?: NativeRuntimeCommandResult | null;
   }): IterationErrorDecision => {
+    const nativeCancellation = params.nativeDecision?.control?.cancellation;
+    if (nativeCancellation?.shouldCancel) {
+      return {
+        action: 'cancelled',
+        reason: 'abort_during_iteration',
+        userMessage: nativeCancellation.reason ?? 'Streaming cancelled',
+        shouldRetry: false,
+        auditMeta: params.nativeDecision?.auditEntry?.meta,
+      };
+    }
+
     if (params.stalledAbortReason) {
       return {
         action: 'stalled',
         reason: 'stream_stalled',
         userMessage: params.stalledAbortReason,
         shouldRetry: false,
+        auditMeta: params.nativeDecision?.auditEntry?.meta,
       };
     }
 
@@ -310,19 +540,23 @@ export function createAgentRuntime() {
       params.message,
     );
 
-    if (
-      isRetryable &&
-      params.iteration < params.maxIterations - 1 &&
-      params.recoveryRetryCount < params.maxRecoveryRetries
-    ) {
+    const nativeRetry = params.nativeDecision?.control?.retry;
+    const allowRetry =
+      nativeRetry?.allowed ??
+      (isRetryable &&
+        params.iteration < params.maxIterations - 1 &&
+        params.recoveryRetryCount < params.maxRecoveryRetries);
+
+    if (allowRetry) {
       return {
         action: 'retry',
         reason: isInterrupted ? 'stream_interrupted' : 'iteration_error',
         userMessage: params.message,
         shouldRetry: true,
-        retryDelayMs: 1000,
+        retryDelayMs: nativeRetry?.delayMs ?? 1000,
         recoveryNotice: `A temporary error occurred: ${params.message}. Please continue with your task. If you were in the middle of something, resume from where you left off.`,
         isInterrupted,
+        auditMeta: params.nativeDecision?.auditEntry?.meta,
       };
     }
 
@@ -340,14 +574,17 @@ export function createAgentRuntime() {
       userMessage: assistantMessage,
       shouldRetry: false,
       isInterrupted,
+      auditMeta: params.nativeDecision?.auditEntry?.meta,
     };
   };
 
   return {
+    buildRuntimeRequest,
     evaluateCompletion,
     evaluateEditFailures,
     analyzeToolPass,
     evaluateApprovalFlow,
+    evaluateToolScheduling,
     evaluateCompletionAcceptance,
     evaluateIterationLimit,
     evaluateLoopBudget,

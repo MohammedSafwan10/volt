@@ -5,16 +5,50 @@
    */
   import { UIIcon, type UIIconName } from "$shared/components/ui";
   import { onMount } from "svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { editorStore } from "$features/editor/stores/editor.svelte";
   import { projectStore } from "$shared/stores/project.svelte";
-  import { projectDiagnostics } from "$core/services/project-diagnostics";
   import type {
     ToolCall,
-    ToolCallStatus,
   } from "$features/assistant/stores/assistant.svelte";
   import type { Problem } from "$shared/stores/problems.svelte";
-  import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
+  import { isTerminalTool as isTerminalToolName } from "$core/ai/tools";
   import { RETIRED_TOOL_NAMES } from "$core/ai/tools/definitions";
+
+  type ProblemWithRelativePath = Problem & { relativePath: string };
+
+  interface DiagnosticsMeta {
+    problems?: ProblemWithRelativePath[];
+    errorCount?: number;
+    warningCount?: number;
+    fileCount?: number;
+  }
+
+  interface FileEditMeta {
+    added?: number;
+    removed?: number;
+  }
+
+  interface TerminalRunMeta {
+    state?: string;
+    commandPreview?: string;
+    excerpt?: string;
+    detectedUrl?: string;
+    processId?: number;
+  }
+
+  interface OutputSegment {
+    key: string;
+    type: "text" | "link";
+    value: string;
+  }
+
+  interface InlineToolMeta extends Record<string, unknown> {
+    diagnostics?: DiagnosticsMeta;
+    fileEdit?: FileEditMeta;
+    reused?: boolean;
+    terminalRun?: TerminalRunMeta;
+  }
 
   interface Props {
     toolCall: ToolCall;
@@ -103,22 +137,41 @@
     loadScreenshotExpandedState();
   });
 
-  function escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+  function getOutputSegments(text: string): OutputSegment[] {
+    const segments: OutputSegment[] = [];
+    const urlPattern = /(https?:\/\/[^\s<>"']+)/gi;
+    let lastIndex = 0;
 
-  // Format output with clickable URLs (global handler in layout opens them in browser)
-  function formatOutputWithLinks(text: string): string {
-    const escaped = escapeHtml(text);
-    return escaped.replace(
-      /(https?:\/\/[^\s<>"']+)/gi,
-      '<a href="$1" class="output-link" rel="noopener noreferrer nofollow" target="_blank">$1</a>',
-    );
+    for (const match of text.matchAll(urlPattern)) {
+      const url = match[0];
+      const index = match.index ?? 0;
+
+      if (index > lastIndex) {
+        segments.push({
+          key: `text-${lastIndex}`,
+          type: "text",
+          value: text.slice(lastIndex, index),
+        });
+      }
+
+      segments.push({
+        key: `link-${index}`,
+        type: "link",
+        value: url,
+      });
+
+      lastIndex = index + url.length;
+    }
+
+    if (lastIndex < text.length) {
+      segments.push({
+        key: `text-${lastIndex}`,
+        type: "text",
+        value: text.slice(lastIndex),
+      });
+    }
+
+    return segments;
   }
 
   async function handleFileClick(path: string) {
@@ -146,9 +199,9 @@
     });
   }
 
-  async function handleRefreshDiagnostics(): Promise<void> {
-    if (!projectStore.rootPath) return;
-    await projectDiagnostics.runDiagnostics(projectStore.rootPath);
+  async function handleOutputLinkClick(url: string, event?: Event): Promise<void> {
+    event?.stopPropagation();
+    await openUrl(url);
   }
 
   // Tool display names (more user-friendly)
@@ -193,14 +246,6 @@
     run_command: "terminal",
     // Diagnostics
     get_diagnostics: "warning",
-  };
-
-  const statusIcons: Record<ToolCallStatus, UIIconName> = {
-    pending: "clock",
-    running: "spinner",
-    completed: "check",
-    failed: "error",
-    cancelled: "close",
   };
 
   // Tool category for color coding
@@ -324,7 +369,7 @@
       case "delete_file":
       case "apply_patch":
         return "";
-      case "rename_path":
+      case "rename_path": {
         const oldP = String(args.oldPath || "")
           .split(/[/\\]/)
           .pop();
@@ -332,6 +377,7 @@
           .split(/[/\\]/)
           .pop();
         return oldP && newP ? `${oldP} → ${newP}` : "";
+      }
       case "run_command":
         return args.command ? String(args.command).slice(0, 50) : "";
       case "get_diagnostics": {
@@ -420,7 +466,8 @@
   );
   const isComplete = $derived(toolCall.status === "completed");
   const isFailed = $derived(toolCall.status === "failed");
-  const reuseMeta = $derived(toolCall.meta as Record<string, unknown> | undefined);
+  const reuseMeta = $derived(toolCall.meta as InlineToolMeta | undefined);
+  const terminalRunMeta = $derived(reuseMeta?.terminalRun);
   const reusedTerminal = $derived(Boolean(reuseMeta?.reused));
 
   // Check if this is a terminal command tool
@@ -437,14 +484,23 @@
   );
 
   // Get the command for terminal tools
-  const terminalCommand = $derived(
-    isTerminalTool ? String(toolCall.arguments.command || "") : "",
+  const terminalCommand = $derived.by(() => {
+    if (!isTerminalTool) return "";
+    const preview = terminalRunMeta?.commandPreview;
+    if (typeof preview === "string" && preview.length > 0) return preview;
+    return String(toolCall.arguments.command || "");
+  });
+  const terminalExcerpt = $derived.by(() => {
+    if (!isTerminalTool) return "";
+    const excerpt = terminalRunMeta?.excerpt;
+    if (typeof excerpt === "string" && excerpt.length > 0) return excerpt;
+    return toolCall.output || "";
+  });
+  const terminalStateLabel = $derived(
+    terminalRunMeta?.state || toolCall.status,
   );
 
   // Check if this is a file write tool that supports streaming
-  const isFileWriteTool = $derived(
-    isFileMutatingTool(toolCall.name),
-  );
   const isStreaming = $derived(false);
 
   function getFileExt(path: string): string {
@@ -515,26 +571,27 @@
 
   const diagnosticSummary = $derived.by(() => {
     if (!toolCall.meta) return null;
-    const meta = toolCall.meta as any;
-    const diagnosticsMeta =
-      toolCall.name === "get_diagnostics" ? meta : meta.diagnostics;
+    const diagnosticsMeta: DiagnosticsMeta | undefined =
+      toolCall.name === "get_diagnostics"
+        ? (toolCall.meta as DiagnosticsMeta | undefined)
+        : (toolCall.meta as InlineToolMeta | undefined)?.diagnostics;
     if (!diagnosticsMeta) return null;
-    const items = (diagnosticsMeta.problems || []) as (Problem & {
-      relativePath: string;
-    })[];
+    const items = Array.isArray(diagnosticsMeta.problems)
+      ? diagnosticsMeta.problems
+      : [];
 
     // Group by file
-    const byFile = new Map<string, typeof items>();
-    for (const p of items) {
-      if (!byFile.has(p.relativePath)) byFile.set(p.relativePath, []);
-      byFile.get(p.relativePath)!.push(p);
+    const byFile: Record<string, ProblemWithRelativePath[]> = {};
+    for (const problem of items) {
+      const key = problem.relativePath;
+      byFile[key] = [...(byFile[key] || []), problem];
     }
 
     return {
-      errorCount: diagnosticsMeta.errorCount || 0,
-      warningCount: diagnosticsMeta.warningCount || 0,
-      fileCount: diagnosticsMeta.fileCount || 0,
-      files: Array.from(byFile.entries()).map(([path, problems]) => ({
+      errorCount: typeof diagnosticsMeta.errorCount === "number" ? diagnosticsMeta.errorCount : 0,
+      warningCount: typeof diagnosticsMeta.warningCount === "number" ? diagnosticsMeta.warningCount : 0,
+      fileCount: typeof diagnosticsMeta.fileCount === "number" ? diagnosticsMeta.fileCount : 0,
+      files: Object.entries(byFile).map(([path, problems]) => ({
         path,
         problems,
         errorCount: problems.filter((p) => p.severity === "error").length,
@@ -544,8 +601,8 @@
   });
 
   const diffStats = $derived.by(() => {
-    const meta = toolCall.meta as Record<string, any> | undefined;
-    const stats = meta?.fileEdit as Record<string, any> | undefined;
+    const meta = toolCall.meta as InlineToolMeta | undefined;
+    const stats = meta?.fileEdit;
     if (!stats) return null;
     return {
       added: typeof stats.added === "number" ? stats.added : 0,
@@ -556,7 +613,47 @@
   function getDisplayOutput(rawOutput: string): string {
     return rawOutput;
   }
+
+  const outputSegments = $derived.by(() =>
+    toolCall.output ? getOutputSegments(getDisplayOutput(toolCall.output)) : [],
+  );
 </script>
+
+{#snippet customToolIcon(toolName: string, active: boolean, size: number = 14)}
+  {#if active}
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" class="shimmer-icon" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z" />
+      <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z" />
+    </svg>
+  {:else if toolName === 'read_file'}
+    <!-- Beautiful custom Read/Eye icon -->
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  {:else if toolName === 'workspace_search' || toolName === 'gather_context'}
+    <!-- Deep RAG Search Node icon -->
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/>
+      <path d="m21 21-4.3-4.3"/>
+      <path d="M11 8v6"/>
+      <path d="M8 11h6"/>
+    </svg>
+  {:else if toolName === 'run_command' || toolName === 'execute_command'}
+    <!-- Custom sleek terminal -->
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="4 17 10 11 4 5"/>
+      <line x1="12" x2="20" y1="19" y2="19"/>
+    </svg>
+  {:else if toolName === 'find_files' || toolName === 'list_dir'}
+    <!-- Custom directory/tree icon -->
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+    </svg>
+  {:else}
+    <UIIcon name={getToolIcon()} size={size} />
+  {/if}
+{/snippet}
 
 <div
   class="inline-tool-call {toolCall.status} category-{getToolCategory()}"
@@ -574,49 +671,39 @@
         aria-expanded={expanded}
         type="button"
       >
-        <div class="terminal-badge icon-only">
-          <UIIcon name="terminal" size={14} />
+<div class="terminal-badge icon-only" class:shimmer-icon={isRunning} title={getToolDisplayName()}>
+            {@render customToolIcon(toolCall.name, isRunning, 14)}
         </div>
 
         <div class="terminal-command-preview">
           <span class="prompt-char">$</span>
-          <span class="command-text" class:loading-text={isRunning}
-            >{terminalCommand || "command"}</span
-          >
+          <span class="command-text">{terminalCommand || "command"}</span>
         </div>
 
         <div class="terminal-meta">
-          {#if isRunning}
-            <span class="status-pill running" title="Running">
-              <span class="pulse-dot"></span>
-              <span class="status-text">Running</span>
-            </span>
-          {:else if isComplete}
-            <span class="status-pill success" title="Completed">
-              <UIIcon name="check" size={12} />
-              <span class="status-text">Done</span>
-            </span>
-          {:else if isFailed}
-            <span class="status-pill error" title="Failed">
-              <UIIcon name="error" size={12} />
-              <span class="status-text">Failed</span>
-            </span>
-          {:else if isPending}
-            <span
-              class="status-pill pending"
-              title={isApprovedPending ? "Queued" : "Approval Needed"}
-            >
-              <UIIcon name="clock" size={12} />
-              <span class="status-text"
-                >{isApprovedPending ? "Queued" : "Pending"}</span
+          <span class="status-pill terminal-state">{terminalStateLabel}</span>
+          {#if !isRunning}
+            {#if isComplete}
+              <span class="status-pill success" title="Completed">
+                <UIIcon name="check" size={12} />
+              </span>
+            {:else if isFailed}
+              <span class="status-pill error" title="Failed">
+                <UIIcon name="error" size={12} />
+              </span>
+            {:else if isPending}
+              <span
+                class="status-pill pending"
+                title={isApprovedPending ? "Queued" : "Approval Needed"}
               >
-            </span>
-          {/if}
-          {#if reusedTerminal}
-            <span class="status-pill reused" title="Reused running terminal">
-              <UIIcon name="refresh" size={12} />
-              <span class="status-text">Reused</span>
-            </span>
+                <UIIcon name="clock" size={12} />
+              </span>
+            {/if}
+            {#if reusedTerminal}
+              <span class="status-pill reused" title="Reused running terminal">
+                <UIIcon name="refresh" size={12} />
+              </span>
+            {/if}
           {/if}
           <span class="expand-caret" class:rotated={expanded}>
             <UIIcon name="chevron-down" size={14} />
@@ -632,44 +719,40 @@
       aria-expanded={expanded}
       type="button"
     >
-      <div class="tool-main-info">
+      <div class="tool-main-info" class:icon-only-streaming={isRunning}>
         {#if files.length === 0}
           <span
             class="tool-icon category-{getToolCategory()}"
             class:running-shimmer={isRunning}
+            title={getToolDisplayName()}
           >
-            {#if isRunning}
-              <UIIcon name="sparkle" size={12} class="shimmer-icon" />
-            {:else}
-              <UIIcon name={getToolIcon()} size={12} />
-            {/if}
+            {@render customToolIcon(toolCall.name, isRunning, 12)}
           </span>
         {/if}
-        <span class="tool-name" class:loading-text={isRunning}
-          >{getToolDisplayName()}</span
-        >
       </div>
 
       <div class="header-right-meta">
         {#if diagnosticSummary}
           <div class="diag-mini-summary">
             {#if diagnosticSummary.errorCount > 0}
-              <span class="diag-badge error"
-                >{diagnosticSummary.errorCount}</span
+              <span class="diag-badge error" title="{diagnosticSummary.errorCount} Errors"
+                ><UIIcon name="error" size={12} /> {diagnosticSummary.errorCount}</span
               >
             {/if}
             {#if diagnosticSummary.warningCount > 0}
-              <span class="diag-badge warning"
-                >{diagnosticSummary.warningCount}</span
+              <span class="diag-badge warning" title="{diagnosticSummary.warningCount} Warnings"
+                ><UIIcon name="warning" size={12} /> {diagnosticSummary.warningCount}</span
               >
             {/if}
             {#if diagnosticSummary.errorCount === 0 && diagnosticSummary.warningCount === 0}
-              <span class="diag-badge success">Clean</span>
+              <span class="diag-badge success" title="No errors found">
+                <UIIcon name="check" size={12} />
+              </span>
             {/if}
           </div>
         {:else if files.length > 0}
           <div class="files-container" class:multi={files.length > 1}>
-            {#each primaryFiles as file}
+            {#each primaryFiles as file (file.path || file)}
               <div
                 class="file-pill-group"
                 role="button"
@@ -686,14 +769,29 @@
                 }}
               >
                 <div class="file-pill" class:is-loading={isRunning}>
-                  {#if isRunning && !isStreaming}
-                    <UIIcon name="sparkle" size={12} class="shimmer-icon" />
+                  {#if isRunning}
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      class="shimmer-icon"
+                    >
+                      <path
+                        d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
+                      />
+                      <path
+                        d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
+                      />
+                    </svg>
                   {:else}
                     <UIIcon name={file.icon} size={12} />
                   {/if}
-                  <span class="filename" class:loading-text={isRunning}
-                    >{file.filename}</span
-                  >
+                  {#if !isRunning}<span class="filename">{file.filename}</span>{/if}
                 </div>
               </div>
             {/each}
@@ -800,7 +898,7 @@
     <div class="tool-details">
       {#if diagnosticSummary && diagnosticSummary.files.length > 0}
         <div class="diagnostic-details">
-          {#each diagnosticSummary.files as file}
+          {#each diagnosticSummary.files as file (file.path)}
             <div class="diag-file-group">
               <button
                 class="diag-file-header"
@@ -822,7 +920,7 @@
                 </div>
               </button>
               <div class="diag-problems">
-                {#each file.problems as p}
+                {#each file.problems as p (p.id)}
                   <button
                     class="diag-problem-row"
                     onclick={() => handleProblemClick(p)}
@@ -850,7 +948,7 @@
           <div class="detail-section">
             <span class="detail-label">Files:</span>
             <div class="detail-file-list">
-              {#each files as file}
+              {#each files as file (file.path)}
                 <button
                   class="detail-file-item"
                   type="button"
@@ -886,12 +984,15 @@
           </div>
         {/if}
 
-        {#if toolCall.output}
+        {#if isTerminalTool && terminalExcerpt}
           <div class="detail-section">
             <span class="detail-label">Output:</span>
-            <pre class="detail-output">{@html formatOutputWithLinks(
-                getDisplayOutput(toolCall.output),
-              )}</pre>
+            <pre class="detail-output">{terminalExcerpt}</pre>
+          </div>
+        {:else if toolCall.output}
+          <div class="detail-section">
+            <span class="detail-label">Output:</span>
+            <pre class="detail-output">{#each outputSegments as segment (segment.key)}{#if segment.type === "link"}<button type="button" class="output-link" onclick={(event) => handleOutputLinkClick(segment.value, event)}>{segment.value}</button>{:else}{segment.value}{/if}{/each}</pre>
           </div>
         {:else if isRunning}
           <div class="detail-section">
@@ -999,8 +1100,8 @@
   .terminal-tool-container {
     margin: 4px 0;
     border-radius: 8px;
-    background: #1e1e1e; /* Specific heavy terminal background */
-    border: 1px solid var(--color-border);
+    background: transparent;
+    border: none;
     overflow: hidden;
     transition: all 0.2s ease;
   }
@@ -1013,12 +1114,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    width: 100%;
-    padding: 10px 14px;
-    background: transparent;
-    color: #cccccc;
-    font-family: var(--font-mono, monospace);
-    font-size: 13px;
+  width: max-content;
+  padding: 6px 14px;
     cursor: pointer;
     text-align: left;
   }
@@ -1029,6 +1126,16 @@
     font-size: 12px;
   }
 
+  .terminal-state {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 10px;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .terminal-badge {
     display: flex;
     align-items: center;
@@ -1036,8 +1143,8 @@
     width: 24px;
     height: 24px;
     border-radius: 6px;
-    background: rgba(255, 255, 255, 0.08); /* Slightly darker/subtle */
-    color: #a0a0a0;
+    background: transparent;
+    color: var(--color-text-secondary);
   }
 
   .terminal-command-preview {
@@ -1085,8 +1192,8 @@
   }
 
   .status-pill.running {
-    background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
+    background: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
   }
 
   .status-pill.success {
@@ -1105,8 +1212,8 @@
   }
 
   .status-pill.reused {
-    background: rgba(96, 165, 250, 0.15);
-    color: #60a5fa;
+    background: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
   }
 
   .pulse-dot {
@@ -1131,18 +1238,22 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
-    padding: 6px 0;
+    width: max-content;
+    padding: 6px 8px;
     text-align: left;
     color: var(--color-text-secondary);
     font-size: 13px;
     transition: all 0.2s ease;
-    border-radius: 6px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.02);
+  }
+  .tool-header:hover { 
+    background: rgba(255,255,255,0.06); 
+    color: var(--color-text);
   }
 
   .inline-tool-call.compact .tool-header {
-    gap: 6px;
-    padding: 4px 0;
+    padding: 4px 6px;
     font-size: 12px;
   }
 
@@ -1151,10 +1262,6 @@
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
-  }
-
-  .tool-header:hover {
-    color: var(--color-text);
   }
 
   /* Muted grey for all tool icons as requested */
@@ -1252,8 +1359,8 @@
   .file-pill-group {
     display: flex;
     align-items: center;
-    background: var(--color-bg-input);
-    border: 1px solid var(--color-border);
+    background: transparent;
+    border: none;
     border-radius: 4px;
     padding: 2px 6px;
     gap: 0;
@@ -1265,7 +1372,6 @@
 
   .file-pill-group:hover {
     background: var(--color-hover);
-    border-color: var(--color-active);
   }
 
   .more-files-pill {
@@ -1273,9 +1379,9 @@
     display: inline-flex;
     align-items: center;
     padding: 0 8px;
-    border: 1px solid var(--color-border);
+    border: none;
     border-radius: 4px;
-    background: var(--color-bg-input);
+    background: transparent;
     color: var(--color-text-secondary);
     font-size: 10px;
     font-weight: 600;
@@ -1285,7 +1391,6 @@
 
   .more-files-pill:hover {
     color: var(--color-text);
-    border-color: var(--color-active);
     background: var(--color-hover);
   }
 
@@ -1295,11 +1400,6 @@
     gap: 4px;
     min-width: 0;
     color: var(--color-text-secondary);
-  }
-
-  .shimmer-icon {
-    color: var(--color-accent);
-    animation: tool-text-shimmer 1.4s linear infinite;
   }
 
   .filename {
@@ -1383,8 +1483,8 @@
   }
 
   .tool-summary.is-line-range {
-    color: #60a5fa;
-    background: rgba(96, 165, 250, 0.08);
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
     padding: 0 4px;
     border-radius: 3px;
   }
@@ -1741,19 +1841,5 @@
     opacity: 0.8;
   }
 
-  .screenshot-container {
-    margin-top: 8px;
-    border-radius: 6px;
-    overflow: hidden;
-    border: 1px solid var(--color-border);
-  }
-
-  .screenshot-image {
-    display: block;
-    max-width: 100%;
-    height: auto;
-    max-height: 300px;
-    object-fit: contain;
-    background: var(--color-bg);
-  }
 </style>
+

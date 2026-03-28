@@ -1,10 +1,12 @@
+import { normalizeAssistantMarkdown } from "../utils/assistant-markdown";
+
 export const STREAMDOWN_DEFAULT_ORIGIN = "https://volt.local";
 
 export const STREAMDOWN_ALLOWED_LINK_PREFIXES = ["*", "mailto:", "tel:"];
 
 export const STREAMDOWN_ALLOWED_IMAGE_PREFIXES = ["*"];
 
-const ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF]/g;
+export { normalizeAssistantMarkdown };
 
 export const ASSISTANT_STREAMDOWN_THEME = {
   link: {
@@ -89,49 +91,3 @@ export const ASSISTANT_STREAMDOWN_THEME = {
     base: "text-[var(--color-text-secondary)]",
   },
 };
-
-export function normalizeAssistantMarkdown(content: string): string {
-  const normalized = content.replace(/\r\n?/g, "\n").replace(ZERO_WIDTH_RE, "");
-  const lines = normalized.split("\n");
-  let insideBacktickFence = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const rawLine = lines[index];
-    const trimmed = rawLine.trim();
-
-    if (/^```/.test(trimmed)) {
-      insideBacktickFence = !insideBacktickFence;
-      continue;
-    }
-
-    // Some models occasionally emit a malformed two-backtick closer after a fenced block.
-    // Repair it so the rest of the response doesn't stay trapped inside the code block.
-    if (insideBacktickFence && /^``$/.test(trimmed)) {
-      lines[index] = rawLine.replace(/``/, "```");
-      insideBacktickFence = false;
-    }
-  }
-
-  return lines.join("\n");
-}
-
-export function shouldOpenInBuiltInBrowser(href: string): boolean {
-  const raw = href.trim();
-  if (
-    !raw ||
-    raw.startsWith("/") ||
-    raw.startsWith("#") ||
-    raw.startsWith("?") ||
-    raw.startsWith("./") ||
-    raw.startsWith("../")
-  ) {
-    return false;
-  }
-
-  try {
-    const url = new URL(raw, STREAMDOWN_DEFAULT_ORIGIN);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}

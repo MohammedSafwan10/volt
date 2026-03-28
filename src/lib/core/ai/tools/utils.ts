@@ -4,6 +4,7 @@
 
 import { projectStore } from '$shared/stores/project.svelte';
 import { isFileError, getFileErrorMessage } from '$core/types/files';
+export type { CanonicalToolResult, ToolResult } from './result';
 
 // Maximum output size (100KB)
 export const MAX_OUTPUT_SIZE = 100 * 1024;
@@ -180,37 +181,6 @@ export function formatWithLineNumbers(content: string, startLine: number = 1): s
       return `${lineNum}│${line}`;
     })
     .join('\n');
-}
-
-/**
- * Tool result type
- */
-export interface ToolResult {
-  success: boolean;
-  output?: string;
-  error?: string;
-  truncated?: boolean;
-  meta?: Record<string, any>;
-  data?: any;
-  warnings?: string[];
-  tool?: string;
-  code?: string;
-  retryable?: boolean;
-  timestamp?: number;
-}
-
-export interface CanonicalToolResult {
-  success: boolean;
-  output: string;
-  error: string;
-  data: any;
-  meta: Record<string, any>;
-  warnings: string[];
-  tool: string;
-  code: string;
-  retryable: boolean;
-  timestamp: number;
-  truncated?: boolean;
 }
 
 export function normalizeToolOutputBudget(

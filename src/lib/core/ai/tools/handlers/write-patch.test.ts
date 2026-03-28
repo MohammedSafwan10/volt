@@ -46,6 +46,38 @@ describe('write-patch parser', () => {
     const parsed = parseCodexPatch(patch);
     expect(parsed.path).toBe('game.js');
     expect(parsed.hunks.length).toBe(1);
+    expect(parsed.mode).toBe('update');
+  });
+
+  it('accepts add-file codex patches', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: game.js',
+      '@@',
+      '+const value = 1;',
+      '+export default value;',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = parseCodexPatch(patch);
+    expect(parsed.path).toBe('game.js');
+    expect(parsed.mode).toBe('add');
+    expect(parsed.hunks.length).toBe(1);
+  });
+
+  it('auto-inserts missing initial hunk marker for common near-miss patch bodies', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: game.js',
+      ' const a = 1;',
+      '-const b = 2;',
+      '+const b = 3;',
+      ' const c = 4;',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = parseCodexPatch(patch);
+    expect(parsed.path).toBe('game.js');
+    expect(parsed.hunks.length).toBe(1);
+    expect(parsed.hunks[0].lines.length).toBe(4);
   });
 
   it('accepts fenced diff wrapper around codex patch body', () => {

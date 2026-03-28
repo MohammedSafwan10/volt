@@ -42,10 +42,11 @@ export interface TerminalReadyEvent {
 export async function createTerminal(
 	cwd?: string,
 	cols?: number,
-	rows?: number
+	rows?: number,
+	ai = false,
 ): Promise<TerminalInfo | null> {
 	try {
-		return await invoke<TerminalInfo>('terminal_create', { cwd, cols, rows });
+		return await invoke<TerminalInfo>('terminal_create', { cwd, cols, rows, ai });
 	} catch (error) {
 		console.error('Terminal create error:', error);
 		return null;
@@ -161,6 +162,7 @@ function getTerminalListenerState(): TerminalListenerState {
 }
 
 async function startGlobalListeners() {
+	if (typeof window === 'undefined') return;
 	const state = getTerminalListenerState();
 	if (state.started) return;
 	if (state.startPromise) return state.startPromise;
@@ -232,18 +234,21 @@ registerCleanup('terminal-client-events', () => stopGlobalListeners());
 export async function onTerminalData(
 	callback: (event: TerminalDataEvent) => void
 ): Promise<UnlistenFn> {
+	if (typeof window === 'undefined') return () => {};
 	return listen<TerminalDataEvent>('terminal://data', (event) => callback(event.payload));
 }
 
 export async function onTerminalExit(
 	callback: (event: TerminalExitEvent) => void
 ): Promise<UnlistenFn> {
+	if (typeof window === 'undefined') return () => {};
 	return listen<TerminalExitEvent>('terminal://exit', (event) => callback(event.payload));
 }
 
 export async function onTerminalReady(
 	callback: (event: TerminalReadyEvent) => void
 ): Promise<UnlistenFn> {
+	if (typeof window === 'undefined') return () => {};
 	return listen<TerminalReadyEvent>('terminal://ready', (event) => callback(event.payload));
 }
 
@@ -280,7 +285,8 @@ function stripTerminalArtifacts(data: string): string {
 	cleaned = cleaned
 		.replace(/__VOLT_EXIT_CODE_\d+__/g, '')
 		.replace(/__VOLT_DONE_[A-Za-z0-9]+__/g, '')
-		.replace(/^\s*\$voltExit\s*=.*$/gm, '');
+		.replace(/^\s*\$voltExit\s*=.*$/gm, '')
+		.replace(/\$voltExit\s*=\s*if\s*\(\$\?\)[\s\S]*?__VOLT_DONE_[A-Za-z0-9]+__/g, '');
 
 	// Remove leaked plain-text cursor query marker while preserving real ESC[6n control queries.
 	// Stripping ESC[6n would prevent xterm from answering DSR and can freeze prompt rendering.
@@ -289,7 +295,12 @@ function stripTerminalArtifacts(data: string): string {
 	// Remove any line that still contains raw shell integration markers
 	cleaned = cleaned
 		.replace(/^.*\]633;.*$/gm, '')
-		.replace(/^.*ShellIntegration=Volt.*$/gmi, '');
+		.replace(/^.*ShellIntegration=Volt.*$/gmi, '')
+		.replace(/^.*function prompt \{.*$/gmi, '')
+		.replace(/^.*Write-Host -NoNewline.*$/gmi, '')
+		.replace(/^.*\$e = \[char\]27.*$/gmi, '')
+		.replace(/^.*catch \{ return "PS > " \}.*$/gmi, '')
+		.replace(/^\s*>>\s*$/gm, '');
 
 	return cleaned;
 }
@@ -341,7 +352,7 @@ export const POWERSHELL_SHELL_INTEGRATION = [
 	'  } catch { return "PS > " }',
 	'};',
 	'Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=Volt$([char]7)";',
-	'Clear-Host'
+	'Write-Host -NoNewline "$([char]27)]633;P;Cwd=$((Get-Location).Path)$([char]7)"'
 ].join(' ');
 
 /**
@@ -362,6 +373,8 @@ export class TerminalSession {
 	private outputHistory: string[] = [];
 	private outputHistoryChars = 0;
 	private static readonly MAX_OUTPUT_HISTORY_CHARS = 1_000_000;
+	private outputStartOffset = 0;
+	private outputEndOffset = 0;
 
 	private cleanOutputHistory: string[] = [];
 	private cleanOutputHistoryChars = 0;
@@ -373,6 +386,7 @@ export class TerminalSession {
 	private resolveReady: (() => void) | null = null;
 
 	private shellIntegrationEnabled = false;
+	private shellIntegrationBootstrapPending = false;
 	private currentCwd: string | null = null;
 	private commandCompletionCallbacks: Array<{
 		resolve: (result: CommandCompletion) => void;
@@ -417,13 +431,14 @@ export class TerminalSession {
 
 	public handleDataEvent(payload: TerminalDataEvent): void {
 		this.markReady();
+		const suppressBootstrapEcho = this.shellIntegrationBootstrapPending;
 		const { events, cleanData } = parseOscSequences(payload.data);
 		for (const ev of events) this.handleShellIntegrationEvent(ev);
 
 		this.captureToHistory(payload.data);
 		if (cleanData) {
 			const sanitized = stripTerminalArtifacts(cleanData);
-			if (sanitized) {
+			if (sanitized && !suppressBootstrapEcho) {
 				this.captureToCleanHistory(sanitized);
 				for (const cb of this.commandCompletionCallbacks) cb.outputBuffer.push(sanitized);
 			}
@@ -431,7 +446,7 @@ export class TerminalSession {
 
 		const filteredDisplay = stripTerminalArtifacts(cleanData);
 
-		if (filteredDisplay) {
+		if (filteredDisplay && !suppressBootstrapEcho) {
 			if (this.onDataCallback) this.onDataCallback(filteredDisplay);
 			else this.bufferData(filteredDisplay);
 		}
@@ -496,6 +511,7 @@ export class TerminalSession {
 			case 'property':
 				if (event.property?.key === 'ShellIntegration') {
 					this.shellIntegrationEnabled = true;
+					this.shellIntegrationBootstrapPending = false;
 				} else if (event.property?.key === 'Cwd') {
 					this.currentCwd = event.property.value;
 				}
@@ -528,9 +544,12 @@ export class TerminalSession {
 	private captureToHistory(data: string): void {
 		this.outputHistory.push(data);
 		this.outputHistoryChars += data.length;
+		this.outputEndOffset += data.length;
 		while (this.outputHistoryChars > TerminalSession.MAX_OUTPUT_HISTORY_CHARS) {
 			const removed = this.outputHistory.shift();
-			this.outputHistoryChars -= (removed?.length ?? 0);
+			const removedLen = removed?.length ?? 0;
+			this.outputHistoryChars -= removedLen;
+			this.outputStartOffset += removedLen;
 		}
 	}
 
@@ -555,14 +574,83 @@ export class TerminalSession {
 		}
 	}
 
+	private getRecentSegments(chunks: string[], maxChars: number): string {
+		if (maxChars <= 0 || chunks.length === 0) return '';
+		let remaining = maxChars;
+		const selected: string[] = [];
+		for (let i = chunks.length - 1; i >= 0 && remaining > 0; i--) {
+			const chunk = chunks[i];
+			if (!chunk) continue;
+			if (chunk.length <= remaining) {
+				selected.push(chunk);
+				remaining -= chunk.length;
+				continue;
+			}
+			selected.push(chunk.slice(-remaining));
+			remaining = 0;
+		}
+		return selected.reverse().join('');
+	}
+
+	private sliceHistoryFromOffset(
+		chunks: string[],
+		historyStartOffset: number,
+		offset: number,
+		maxChars: number
+	): string {
+		if (chunks.length === 0) return '';
+		const normalizedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+		let absoluteCursor = historyStartOffset;
+		const collected: string[] = [];
+		for (const chunk of chunks) {
+			if (!chunk) continue;
+			const chunkStart = absoluteCursor;
+			const chunkEnd = chunkStart + chunk.length;
+			absoluteCursor = chunkEnd;
+			if (chunkEnd <= normalizedOffset) continue;
+			const localStart = Math.max(0, normalizedOffset - chunkStart);
+			collected.push(chunk.slice(localStart));
+		}
+		let text = collected.join('');
+		if (text.length > maxChars) {
+			text = text.slice(-maxChars);
+		}
+		return text;
+	}
+
 	public getRecentOutput(maxChars = 20000): string {
-		const full = this.outputHistory.join('');
-		return full.length <= maxChars ? full : full.slice(-maxChars);
+		return this.getRecentSegments(this.outputHistory, maxChars);
 	}
 
 	public getRecentCleanOutput(maxChars = 10000): string {
-		const full = this.cleanOutputHistory.join('');
-		return full.length <= maxChars ? full : full.slice(-maxChars);
+		return this.getRecentSegments(this.cleanOutputHistory, maxChars);
+	}
+
+	public getOutputCursor(): number {
+		return this.outputEndOffset;
+	}
+
+	public getOutputCharCount(): number {
+		return this.outputHistoryChars;
+	}
+
+	public readOutputSince(
+		offset: number,
+		maxChars = 200_000
+	): { text: string; nextOffset: number; truncatedBeforeOffset: boolean } {
+		const normalizedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+		const startOffset = Math.max(normalizedOffset, this.outputStartOffset);
+		const text = this.sliceHistoryFromOffset(
+			this.outputHistory,
+			this.outputStartOffset,
+			startOffset,
+			maxChars
+		);
+		return {
+			text,
+			nextOffset: this.outputEndOffset,
+			truncatedBeforeOffset: normalizedOffset < this.outputStartOffset
+		};
 	}
 
 	public getCleanOutputCursor(): number {
@@ -575,12 +663,12 @@ export class TerminalSession {
 	): { text: string; nextOffset: number; truncatedBeforeOffset: boolean } {
 		const normalizedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
 		const startOffset = Math.max(normalizedOffset, this.cleanOutputStartOffset);
-		const localStart = startOffset - this.cleanOutputStartOffset;
-		const full = this.cleanOutputHistory.join('');
-		let text = full.slice(localStart);
-		if (text.length > maxChars) {
-			text = text.slice(-maxChars);
-		}
+		const text = this.sliceHistoryFromOffset(
+			this.cleanOutputHistory,
+			this.cleanOutputStartOffset,
+			startOffset,
+			maxChars
+		);
 		return {
 			text,
 			nextOffset: this.cleanOutputEndOffset,
@@ -596,7 +684,7 @@ export class TerminalSession {
 		const startTime = Date.now();
 		return new Promise((resolve, reject) => {
 			const check = () => {
-				const recent = this.outputHistory.join('').slice(startOffset);
+				const recent = this.readOutputSince(startOffset).text;
 				if (predicate(recent)) resolve(recent);
 				else if (Date.now() - startTime > timeoutMs) reject(new Error('Timeout'));
 				else setTimeout(check, 100);
@@ -610,11 +698,15 @@ export class TerminalSession {
 		if (!this.info.shell.toLowerCase().match(/powershell|pwsh/)) return false;
 
 		// Send the complete integration script in a single line to be safe
+		this.shellIntegrationBootstrapPending = true;
 		await this.write(POWERSHELL_SHELL_INTEGRATION + '\r\n');
 
 		const start = Date.now();
 		while (!this.shellIntegrationEnabled && Date.now() - start < 3000) {
 			await new Promise(r => setTimeout(r, 100));
+		}
+		if (!this.shellIntegrationEnabled) {
+			this.shellIntegrationBootstrapPending = false;
 		}
 		return this.shellIntegrationEnabled;
 	}
@@ -642,7 +734,7 @@ export class TerminalSession {
 
 	private async executeCommandFallback(command: string, timeoutMs: number): Promise<CommandCompletion> {
 		const sentinel = Math.random().toString(36).substring(2, 12);
-		const startOffset = this.outputHistoryChars;
+		const startOffset = this.getOutputCursor();
 		const capture = `$voltExit = if ($?) { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 } }`;
 		await this.write(`${command}; ${capture}; echo "__VOLT_EXIT_CODE_$voltExit__"; echo "__VOLT_DONE_${sentinel}__"\r`);
 
@@ -680,8 +772,8 @@ export class TerminalSession {
 	}
 }
 
-export async function createTerminalSession(cwd?: string, cols?: number, rows?: number): Promise<TerminalSession | null> {
-	const info = await createTerminal(cwd, cols, rows);
+export async function createTerminalSession(cwd?: string, cols?: number, rows?: number, ai = false): Promise<TerminalSession | null> {
+	const info = await createTerminal(cwd, cols, rows, ai);
 	if (!info) return null;
 	const session = new TerminalSession(info);
 	await session.startListening();

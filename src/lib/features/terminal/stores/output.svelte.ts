@@ -3,6 +3,8 @@
  * Provides real log output for Volt, Terminal, and File System channels
  */
 
+import { writable, type Writable } from 'svelte/store';
+
 export type OutputChannel = 'Volt' | 'Terminal' | 'File System' | 'Prettier' | 'MCP';
 
 interface OutputLine {
@@ -17,15 +19,38 @@ interface ChannelData {
 const MAX_LINES_PER_CHANNEL = 1000;
 
 class OutputStore {
-  private channels = $state<Record<OutputChannel, ChannelData>>({
+  private readonly channelsStore: Writable<Record<OutputChannel, ChannelData>>;
+  private channels: Record<OutputChannel, ChannelData> = {
     'Volt': { lines: [] },
     'Terminal': { lines: [] },
     'File System': { lines: [] },
     'Prettier': { lines: [] },
     'MCP': { lines: [] }
-  });
+  };
 
-  activeChannel = $state<OutputChannel>('Volt');
+  private readonly activeChannelStore: Writable<OutputChannel>;
+  activeChannel: OutputChannel = 'Volt';
+
+  constructor() {
+    this.channelsStore = writable<Record<OutputChannel, ChannelData>>(this.channels);
+    this.channelsStore.subscribe((value) => {
+      this.channels = value;
+    });
+    this.activeChannelStore = writable<OutputChannel>(this.activeChannel);
+    this.activeChannelStore.subscribe((value) => {
+      this.activeChannel = value;
+    });
+  }
+
+  private setChannels(next: Record<OutputChannel, ChannelData>): void {
+    this.channels = next;
+    this.channelsStore.set(next);
+  }
+
+  private setActiveChannelValue(channel: OutputChannel): void {
+    this.activeChannel = channel;
+    this.activeChannelStore.set(channel);
+  }
 
   /**
    * Get all available channel names
@@ -53,38 +78,55 @@ class OutputStore {
    */
   append(channel: OutputChannel, message: string): void {
     const channelData = this.channels[channel];
-    channelData.lines.push({
+    const nextLines = [
+      ...channelData.lines,
+      {
       timestamp: new Date(),
       message
-    });
+      },
+    ];
 
     // Trim old lines if exceeding max
-    if (channelData.lines.length > MAX_LINES_PER_CHANNEL) {
-      channelData.lines = channelData.lines.slice(-MAX_LINES_PER_CHANNEL);
-    }
+    const normalizedLines =
+      nextLines.length > MAX_LINES_PER_CHANNEL
+        ? nextLines.slice(-MAX_LINES_PER_CHANNEL)
+        : nextLines;
+    this.setChannels({
+      ...this.channels,
+      [channel]: {
+        lines: normalizedLines,
+      },
+    });
   }
 
   /**
    * Set the active channel
    */
   setActiveChannel(channel: OutputChannel): void {
-    this.activeChannel = channel;
+    this.setActiveChannelValue(channel);
   }
 
   /**
    * Clear a specific channel
    */
   clear(channel: OutputChannel): void {
-    this.channels[channel].lines = [];
+    this.setChannels({
+      ...this.channels,
+      [channel]: { lines: [] },
+    });
   }
 
   /**
    * Clear all channels
    */
   clearAll(): void {
-    for (const channel of this.channelNames) {
-      this.channels[channel].lines = [];
-    }
+    this.setChannels({
+      'Volt': { lines: [] },
+      'Terminal': { lines: [] },
+      'File System': { lines: [] },
+      'Prettier': { lines: [] },
+      'MCP': { lines: [] },
+    });
   }
 }
 

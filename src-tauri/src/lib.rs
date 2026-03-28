@@ -1,21 +1,12 @@
-mod cdp;
 mod chat_history;
 mod commands;
 mod domains;
 mod lsp;
+mod observability;
 
+use observability::debug_log;
 use tauri::Manager;
 
-use cdp::commands::{
-    cdp_attach_to_page, cdp_clear_console, cdp_clear_errors, cdp_clear_network, cdp_click,
-    cdp_connect, cdp_disable_element_picker, cdp_disconnect, cdp_discover_url, cdp_emulate_device,
-    cdp_enable_console, cdp_enable_element_picker, cdp_enable_network, cdp_evaluate,
-    cdp_get_console_logs, cdp_get_content, cdp_get_element, cdp_get_elements, cdp_get_js_errors,
-    cdp_get_network_requests, cdp_get_performance, cdp_get_status, cdp_get_title, cdp_get_url,
-    cdp_is_available, cdp_navigate, cdp_press_key, cdp_screenshot, cdp_screenshot_element,
-    cdp_scroll_by, cdp_scroll_to_element, cdp_set_viewport, cdp_type, cdp_wait_for_selector,
-    CdpState,
-};
 use chat_history::{
     chat_clear_all, chat_create_conversation, chat_delete_conversation, chat_get_conversation,
     chat_list_conversations, chat_save_message, chat_search_conversations, chat_toggle_pin,
@@ -26,19 +17,9 @@ use commands::ai::{
     anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy, mistral_proxy_stream,
     openai_proxy, openai_proxy_stream, openrouter_proxy, openrouter_proxy_stream,
 };
-use commands::browser::{
-    browser_add_bookmark, browser_back, browser_clear_history, browser_close,
-    browser_content_extracted, browser_create, browser_devtools_application,
-    browser_devtools_console_log, browser_devtools_js_error, browser_devtools_network_request,
-    browser_devtools_network_response, browser_devtools_performance,
-    browser_devtools_security_issue, browser_element_selected, browser_execute_js,
-    browser_extract_content, browser_find, browser_find_clear, browser_find_next,
-    browser_find_prev, browser_find_result, browser_forward, browser_generate_code,
-    browser_get_bookmarks, browser_get_history, browser_get_state, browser_hard_reload,
-    browser_hide, browser_navigate, browser_open_devtools, browser_reload, browser_remove_bookmark,
-    browser_screenshot, browser_set_bounds, browser_set_responsive_mode, browser_set_select_mode,
-    browser_set_zoom, browser_show, browser_stop, browser_zoom_in, browser_zoom_out,
-    browser_zoom_reset, BrowserState,
+use commands::document::{
+    document_apply_edit, document_close, document_get, document_list_dirty, document_read,
+    document_reload, document_save, document_write,
 };
 use commands::file_index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
@@ -86,24 +67,37 @@ use commands::terminal::{
     terminal_create, terminal_get_scrollback, terminal_kill, terminal_kill_all, terminal_list,
     terminal_resize, terminal_write,
 };
+use commands::workspace::{
+    workspace_close, workspace_get_state, workspace_open, workspace_refresh,
+    workspace_replace_recent_projects, WorkspaceManagerState,
+};
+use domains::agent_runtime::commands::{
+    agent_runtime_apply, assistant_run_cancel, assistant_run_claim_dispatch_step,
+    assistant_run_complete_dispatch_step, assistant_run_get_snapshot,
+    assistant_run_register_approvals, assistant_run_resolve_approvals,
+    assistant_run_resume_approval, assistant_run_set_dispatch_plan, assistant_run_start,
+    assistant_run_update_approval, assistant_runtime_publish_event,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    debug_log("app", "starting tauri runtime");
     tauri::Builder::<tauri::Wry>::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .manage(LspManagerState::<tauri::Wry>::default())
+        .manage(domains::agent_runtime::manager::AssistantRuntimeManagerState::default())
+        .manage(domains::document::manager::DocumentManagerState::default())
         .manage(SearchManagerState::default())
         .manage(GitProcessManager::default())
         .manage(FileIndexState::default())
         .manage(FileWatchState::default())
         .manage(SemanticIndexState::default())
         .manage(McpState::default())
-        .manage(BrowserState::default())
-        .manage(CdpState::default())
         .manage(ChatHistoryState::default())
+        .manage(WorkspaceManagerState::default())
         .invoke_handler(tauri::generate_handler![
             // AI credentials (OS secure storage)
             ai_set_api_key,
@@ -120,6 +114,18 @@ pub fn run() {
             gemini_proxy_stream,
             mistral_proxy,
             mistral_proxy_stream,
+            agent_runtime_apply,
+            assistant_run_start,
+            assistant_run_cancel,
+            assistant_run_resume_approval,
+            assistant_run_register_approvals,
+            assistant_run_update_approval,
+            assistant_run_resolve_approvals,
+            assistant_run_set_dispatch_plan,
+            assistant_run_claim_dispatch_step,
+            assistant_run_complete_dispatch_step,
+            assistant_run_get_snapshot,
+            assistant_runtime_publish_event,
             // Chat history persistence
             chat_create_conversation,
             chat_list_conversations,
@@ -133,6 +139,14 @@ pub fn run() {
             chat_truncate_conversation,
             chat_clear_all,
             // File operations
+            document_read,
+            document_get,
+            document_apply_edit,
+            document_write,
+            document_save,
+            document_list_dirty,
+            document_reload,
+            document_close,
             read_file,
             read_binary_file_base64,
             write_file,
@@ -151,6 +165,12 @@ pub fn run() {
             terminal_kill_all,
             terminal_list,
             terminal_get_scrollback,
+            // Workspace lifecycle
+            workspace_get_state,
+            workspace_replace_recent_projects,
+            workspace_open,
+            workspace_refresh,
+            workspace_close,
             // LSP
             lsp_start_server,
             lsp_start_external_server,
@@ -179,84 +199,6 @@ pub fn run() {
             ensure_mcp_config,
             read_mcp_config,
             write_mcp_config,
-            // Browser
-            browser_create,
-            browser_close,
-            browser_navigate,
-            browser_back,
-            browser_forward,
-            browser_reload,
-            browser_hard_reload,
-            browser_stop,
-            browser_set_select_mode,
-            browser_execute_js,
-            browser_set_bounds,
-            browser_hide,
-            browser_show,
-            browser_zoom_in,
-            browser_zoom_out,
-            browser_zoom_reset,
-            browser_set_zoom,
-            browser_find,
-            browser_find_next,
-            browser_find_prev,
-            browser_find_clear,
-            browser_find_result,
-            browser_extract_content,
-            browser_content_extracted,
-            browser_generate_code,
-            browser_element_selected,
-            browser_get_state,
-            browser_add_bookmark,
-            browser_remove_bookmark,
-            browser_get_bookmarks,
-            browser_get_history,
-            browser_clear_history,
-            browser_set_responsive_mode,
-            browser_open_devtools,
-            browser_screenshot,
-            browser_devtools_console_log,
-            browser_devtools_js_error,
-            browser_devtools_network_request,
-            browser_devtools_network_response,
-            browser_devtools_performance,
-            browser_devtools_application,
-            browser_devtools_security_issue,
-            // CDP (Chrome DevTools Protocol) - Professional browser automation
-            cdp_is_available,
-            cdp_get_status,
-            cdp_discover_url,
-            cdp_connect,
-            cdp_disconnect,
-            cdp_attach_to_page,
-            cdp_enable_console,
-            cdp_enable_network,
-            cdp_get_console_logs,
-            cdp_get_js_errors,
-            cdp_get_network_requests,
-            cdp_clear_console,
-            cdp_clear_errors,
-            cdp_clear_network,
-            cdp_navigate,
-            cdp_get_url,
-            cdp_get_title,
-            cdp_get_content,
-            cdp_click,
-            cdp_type,
-            cdp_press_key,
-            cdp_evaluate,
-            cdp_screenshot,
-            cdp_screenshot_element,
-            cdp_get_element,
-            cdp_get_elements,
-            cdp_wait_for_selector,
-            cdp_scroll_to_element,
-            cdp_scroll_by,
-            cdp_get_performance,
-            cdp_set_viewport,
-            cdp_emulate_device,
-            cdp_enable_element_picker,
-            cdp_disable_element_picker,
             // System
             get_system_info,
             run_command,
@@ -312,6 +254,7 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                debug_log("app", "window close requested; starting cleanup");
                 // Kill all terminal PTY sessions
                 let _ = terminal_kill_all();
 
@@ -338,8 +281,11 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = stop_all_mcp_servers(mcp_app).await;
                 });
+                debug_log("app", "window close cleanup dispatched");
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|err| {
+            debug_log("app", format!("tauri runtime exited with error: {err}"));
+        });
 }

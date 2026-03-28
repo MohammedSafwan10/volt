@@ -4,10 +4,10 @@ import {
   getToolsForMode,
   type ToolCategory,
 } from '$core/ai/tools/definitions';
-import { BROWSER_GUIDANCE } from '$core/ai/tool-guidance/browser';
 import { DIAGNOSTICS_GUIDANCE } from '$core/ai/tool-guidance/diagnostics';
 import { FILE_WRITE_GUIDANCE } from '$core/ai/tool-guidance/file-write';
 import { TERMINAL_GUIDANCE } from '$core/ai/tool-guidance/terminal';
+import { WORKFLOW_GUIDANCE } from '$core/ai/tool-guidance/workflow';
 import { WORKSPACE_READ_GUIDANCE } from '$core/ai/tool-guidance/workspace-read';
 import { WORKSPACE_SEARCH_GUIDANCE } from '$core/ai/tool-guidance/workspace-search';
 
@@ -17,7 +17,7 @@ const CATEGORY_ORDER: ToolCategory[] = [
   'file_write',
   'terminal',
   'diagnostics',
-  'browser',
+  'workflow',
 ];
 
 const CATEGORY_LABELS: Record<ToolCategory, string> = {
@@ -26,7 +26,7 @@ const CATEGORY_LABELS: Record<ToolCategory, string> = {
   file_write: 'File Write',
   terminal: 'Terminal',
   diagnostics: 'Diagnostics',
-  browser: 'Browser',
+  workflow: 'Workflow',
 };
 
 const CATEGORY_GUIDANCE: Record<ToolCategory, string> = {
@@ -35,7 +35,7 @@ const CATEGORY_GUIDANCE: Record<ToolCategory, string> = {
   file_write: FILE_WRITE_GUIDANCE,
   terminal: TERMINAL_GUIDANCE,
   diagnostics: DIAGNOSTICS_GUIDANCE,
-  browser: BROWSER_GUIDANCE,
+  workflow: WORKFLOW_GUIDANCE,
 };
 
 function getRequiredArgs(parameters: Record<string, unknown>): string[] {

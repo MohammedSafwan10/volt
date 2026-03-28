@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { browserStore } from "$features/browser/stores/browser.svelte";
   import {
     renderMarkdown,
     type MarkdownProfile,
@@ -58,21 +57,6 @@
       return;
     }
 
-    const link = target.closest(
-      'a[data-external-link="true"]',
-    ) as HTMLAnchorElement | null;
-
-    if (link) {
-      e.preventDefault();
-      e.stopPropagation();
-      const url = link.href;
-
-      if (browserStore.isOpen) {
-        browserStore.navigate(url);
-      } else {
-        browserStore.open(url);
-      }
-    }
   }
 </script>
 

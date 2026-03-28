@@ -3,6 +3,8 @@
  * Tracks recently viewed and edited files to provide historical context to the AI
  */
 
+import { writable, type Writable } from 'svelte/store';
+
 const MAX_HISTORY = 10;
 const STORAGE_KEY = 'volt.activity.history';
 
@@ -13,10 +15,20 @@ interface ActivityItem {
 }
 
 class ActivityStore {
-  history = $state<ActivityItem[]>([]);
+  private readonly historyStore: Writable<ActivityItem[]>;
+  history: ActivityItem[] = [];
 
   constructor() {
+    this.historyStore = writable<ActivityItem[]>([]);
+    this.historyStore.subscribe((value) => {
+      this.history = value;
+    });
     this.loadHistory();
+  }
+
+  private setHistory(next: ActivityItem[]): void {
+    this.history = next;
+    this.historyStore.set(next);
   }
 
   /**
@@ -33,7 +45,7 @@ class ActivityStore {
     const filtered = this.history.filter(item => item.path !== path);
     
     // Add to top and trim
-    this.history = [newItem, ...filtered].slice(0, MAX_HISTORY);
+    this.setHistory([newItem, ...filtered].slice(0, MAX_HISTORY));
     this.saveHistory();
   }
 
@@ -49,7 +61,7 @@ class ActivityStore {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        this.history = JSON.parse(raw);
+        this.setHistory(JSON.parse(raw));
       }
     } catch {
       // Ignore parse errors

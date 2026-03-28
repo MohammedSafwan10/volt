@@ -57,7 +57,7 @@ const STRICT_WORKFLOW = `# WORKFLOW
 2. Inspect structure with file_outline or read_file only when the current context is insufficient.
 3. Edit with str_replace for single changes, apply_patch for multi-hunk edits, write_file for new files.
 4. Verify with get_diagnostics.
-5. When the task is done, respond naturally with the result. Use tools only when needed.
+5. When the task is done, respond naturally with the result. You may call attempt_completion as a finalization signal, but a natural final response is also valid once verification is complete.
 
 Execution priorities:
 - Prefer file_outline before full read_file to understand file structure cheaply.
@@ -78,7 +78,7 @@ const STRICT_PATCH_CONTRACT = `# APPLY_PATCH CONTRACT
 
 Patch must use Codex grammar:
 - *** Begin Patch
-- *** Update File: <path>
+- *** Update File: <path> or *** Add File: <path>
 - @@
 - context/remove/add lines prefixed by " ", "-", "+"
 - *** End Patch
@@ -92,7 +92,7 @@ const STRICT_RECOVERY = `# RECOVERY MATRIX
 - TOOL_DEPRECATED:
   switch to strict equivalent tool immediately.
 - Malformed patch:
-  regenerate patch in Codex grammar and retry once.
+  regenerate patch in Codex grammar, make sure there is an "@@" line before the first patch body rows, and retry once.
 - Patch apply mismatch/stale content:
   try a smaller/fresher patch; use targeted read_file only if needed, then retry once.
 - Completion blocked by diagnostics:

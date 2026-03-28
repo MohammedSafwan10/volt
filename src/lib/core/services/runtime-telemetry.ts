@@ -4,9 +4,6 @@ export interface RuntimeTelemetrySample {
   timestamp: number;
   uptimeMs: number;
   lsp: ReturnType<ReturnType<typeof getLspRegistry>['getRuntimeSnapshot']>;
-  cdp: {
-    listenerCount: number;
-  };
   heap: {
     usedJSHeapSize: number | null;
     totalJSHeapSize: number | null;
@@ -53,9 +50,6 @@ class RuntimeTelemetryStore {
 
   private async capture(logToConsole: boolean): Promise<void> {
     const lsp = getLspRegistry().getRuntimeSnapshot();
-    const { cdp } = await import('$features/browser/services/cdp');
-    const cdpSnapshot = cdp.getRuntimeSnapshot();
-
     const perf = performance as Performance & {
       memory?: {
         usedJSHeapSize: number;
@@ -79,7 +73,6 @@ class RuntimeTelemetryStore {
       timestamp: Date.now(),
       uptimeMs: Date.now() - this.startedAt,
       lsp,
-      cdp: cdpSnapshot,
       heap,
     };
 
@@ -98,7 +91,6 @@ class RuntimeTelemetryStore {
         lspServers: sample.lsp.serverCount,
         lspPendingRequests: sample.lsp.totals.pendingRequests,
         lspListeners: sample.lsp.totals.eventListeners,
-        cdpListeners: sample.cdp.listenerCount,
         heapMb,
       });
     }

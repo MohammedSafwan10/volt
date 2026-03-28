@@ -1,4 +1,4 @@
-import { countConversationTokens } from '$core/services/token-counter';
+import { countConversationTokens, countTokens } from '$core/services/token-counter';
 import { CONTEXT_LIMITS, getModelContextLimits } from './config';
 
 type LooseAttachment = {
@@ -38,6 +38,16 @@ export interface ContextUsage {
   isNearLimit: boolean;
   isOverLimit: boolean;
 }
+
+type UsageBase = {
+  usedTokens: number;
+  usedChars: number;
+};
+
+const usageBaseCache = new WeakMap<
+  LooseMessage[],
+  WeakMap<LooseAttachment[], UsageBase>
+>();
 
 function isTextAttachment(att: LooseAttachment): att is LooseAttachment & { content: string } {
   return (att.type === 'file' || att.type === 'selection') && typeof att.content === 'string';
@@ -169,8 +179,24 @@ export function getContextUsage(
   inputValue: string,
 ): ContextUsage {
   const { inputTokens: maxTokens } = getModelContextLimits(model);
-  const usedChars = getConversationContextChars(messages, pendingAttachments, inputValue);
-  const usedTokens = getConversationTokens(messages, inputValue, pendingAttachments);
+  let pendingCache = usageBaseCache.get(messages);
+  if (!pendingCache) {
+    pendingCache = new WeakMap<LooseAttachment[], UsageBase>();
+    usageBaseCache.set(messages, pendingCache);
+  }
+
+  let base = pendingCache.get(pendingAttachments);
+  if (!base) {
+    base = {
+      usedChars: getConversationContextChars(messages, pendingAttachments, ''),
+      usedTokens: getConversationTokens(messages, '', pendingAttachments),
+    };
+    pendingCache.set(pendingAttachments, base);
+  }
+
+  const inputTokens = inputValue ? countTokens(inputValue, 'mixed') : 0;
+  const usedChars = base.usedChars + inputValue.length;
+  const usedTokens = base.usedTokens + inputTokens;
   const percentage = Math.min(100, (usedTokens / maxTokens) * 100);
 
   return {

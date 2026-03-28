@@ -20,7 +20,7 @@ export const darkThemeVars = {
     '--color-text-disabled': '#525252',
 
     // Accent colors
-    '--color-accent': '#3b82f6', // Cursor blue
+    '--color-accent': '#ffffff', // Cursor blue
     '--color-success': '#22c55e',
     '--color-warning': '#eab308',
     '--color-error': '#ef4444',

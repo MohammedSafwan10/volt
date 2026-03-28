@@ -5,7 +5,6 @@ import {
   STREAMDOWN_ALLOWED_LINK_PREFIXES,
   STREAMDOWN_DEFAULT_ORIGIN,
   normalizeAssistantMarkdown,
-  shouldOpenInBuiltInBrowser,
 } from "./assistant-streamdown";
 
 describe("assistant streamdown config", () => {
@@ -19,17 +18,6 @@ describe("assistant streamdown config", () => {
 
   it("allows only wildcard http/https image prefixes by default", () => {
     expect(STREAMDOWN_ALLOWED_IMAGE_PREFIXES).toEqual(["*"]);
-  });
-
-  it("opens only external http-style links in the built-in browser", () => {
-    expect(shouldOpenInBuiltInBrowser("https://example.com")).toBe(true);
-    expect(shouldOpenInBuiltInBrowser("http://example.com/docs")).toBe(true);
-    expect(shouldOpenInBuiltInBrowser("/relative/path")).toBe(false);
-    expect(shouldOpenInBuiltInBrowser("#section")).toBe(false);
-    expect(shouldOpenInBuiltInBrowser("?tab=logs")).toBe(false);
-    expect(shouldOpenInBuiltInBrowser("./local")).toBe(false);
-    expect(shouldOpenInBuiltInBrowser("mailto:test@example.com")).toBe(false);
-    expect(shouldOpenInBuiltInBrowser("tel:+123456789")).toBe(false);
   });
 
   it("strips zero-width characters from assistant markdown", () => {

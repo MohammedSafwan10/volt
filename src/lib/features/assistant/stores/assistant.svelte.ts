@@ -31,6 +31,7 @@ import {
   redactSecrets,
   sanitizeUserInput,
 } from './assistant/utils';
+import { computeNovelStreamText } from '$core/ai/providers/stream-dedupe';
 import {
   findConversationIdByMessageId as resolveConversationIdByMessageId,
   sanitizeVisibleAssistantText,
@@ -55,6 +56,10 @@ import {
   isContextWithinLimits,
   type ContextUsage,
 } from './assistant/context-utils';
+import type {
+  AssistantRunSnapshot,
+  AssistantRuntimeEvent,
+} from '../runtime/native-runtime';
 
 // Message roles
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
@@ -114,6 +119,23 @@ export interface AssistantMessage {
   streamIssue?: string;
 }
 
+export interface AssistantRuntimeSnapshot {
+  conversationId: string;
+  mode: AIMode;
+  isStreaming: boolean;
+  agentLoopState: AgentLoopState;
+  agentLoopMeta: Record<string, unknown>;
+  runUpdatedAt: number | null;
+  activeMessageId: string | null;
+  activeToolCallId: string | null;
+  activeToolCallName: string | null;
+  activeToolStatus: ToolCallStatus | null;
+  activeToolRequiresApproval: boolean;
+  pendingApprovalCount: number;
+  runningToolCount: number;
+  messageCount: number;
+}
+
 interface AddUserMessageOptions {
   syntheticPrompt?: SyntheticPromptMeta;
   suppressAutoTitle?: boolean;
@@ -162,6 +184,15 @@ interface ConversationScopedStatePatch {
   agentLoopMeta?: Record<string, unknown>;
 }
 
+interface ConversationRunStateRecord {
+  isStreaming: boolean;
+  agentLoopState: AgentLoopState;
+  updatedAt: number;
+  lastError?: string | null;
+  nativeRunId?: string | null;
+  nativeOwned?: boolean;
+}
+
 interface ConversationSummaryLike {
   id: string;
   createdAt: number;
@@ -188,6 +219,19 @@ function deriveConversationTitleFromUserText(raw: string): string {
   const normalized = normalizeConversationTitle(raw);
   if (!normalized) return 'New Chat';
   return truncateConversationTitle(normalized, 46);
+}
+
+function normalizeAssistantLoopState(value: unknown): AgentLoopState | null {
+  if (value !== 'running' &&
+      value !== 'waiting_approval' &&
+      value !== 'waiting_tool' &&
+      value !== 'completing' &&
+      value !== 'completed' &&
+      value !== 'failed' &&
+      value !== 'cancelled') {
+    return null;
+  }
+  return value;
 }
 
 function inferSyntheticPromptMeta(content: string): SyntheticPromptMeta | undefined {
@@ -291,8 +335,18 @@ export interface ImageAttachment extends BaseAttachment {
   dimensions?: { width: number; height: number };
 }
 
+// Retired browser-era attachment shape that may still exist in persisted history.
+export interface LegacyElementAttachment extends BaseAttachment {
+  type: 'element';
+  [key: string]: unknown;
+}
+
 // Union type for all attachments
-export type MessageAttachment = FileAttachment | SelectionAttachment | FolderAttachment | ImageAttachment;
+export type MessageAttachment =
+  | FileAttachment
+  | SelectionAttachment
+  | FolderAttachment
+  | ImageAttachment;
 
 // Legacy attached context (for backward compatibility)
 export interface AttachedContext {
@@ -300,6 +354,53 @@ export interface AttachedContext {
   path?: string;
   content: string;
   label: string;
+}
+
+function isMessageAttachment(value: unknown): value is MessageAttachment {
+  if (!value || typeof value !== 'object') return false;
+  const attachment = value as Record<string, unknown>;
+  const type = attachment.type;
+  if (type === 'file') {
+    return (
+      typeof attachment.id === 'string' &&
+      typeof attachment.label === 'string' &&
+      typeof attachment.path === 'string' &&
+      typeof attachment.content === 'string'
+    );
+  }
+  if (type === 'selection') {
+    return (
+      typeof attachment.id === 'string' &&
+      typeof attachment.label === 'string' &&
+      typeof attachment.content === 'string'
+    );
+  }
+  if (type === 'folder') {
+    return (
+      typeof attachment.id === 'string' &&
+      typeof attachment.label === 'string' &&
+      typeof attachment.path === 'string'
+    );
+  }
+  if (type === 'image') {
+    return (
+      typeof attachment.id === 'string' &&
+      typeof attachment.label === 'string' &&
+      typeof attachment.filename === 'string' &&
+      typeof attachment.mimeType === 'string' &&
+      typeof attachment.data === 'string' &&
+      typeof attachment.byteSize === 'number'
+    );
+  }
+  return false;
+}
+
+export function sanitizeMessageAttachments(
+  attachments: unknown,
+): MessageAttachment[] | undefined {
+  if (!Array.isArray(attachments)) return undefined;
+  const sanitized = attachments.filter(isMessageAttachment);
+  return sanitized.length > 0 ? sanitized.map((attachment) => ({ ...attachment })) : undefined;
 }
 
 const MAX_THINKING_CHARS = 8000;
@@ -349,8 +450,9 @@ class AssistantStore {
   agentLoopMeta = $state<Record<string, unknown>>({});
   chatScrollRevision = $state(0);
 
-  private runStates = $state<Record<string, { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>>({});
+  private runStates = $state<Record<string, ConversationRunStateRecord>>({});
   private conversationRuntimeState = $state<Record<string, ConversationRuntimeState>>({});
+  private chatScrollRevisionTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.loadPanelWidth();
@@ -477,7 +579,8 @@ class AssistantStore {
       if (msg.metadata) {
         try {
           const meta = JSON.parse(msg.metadata);
-          if (meta.attachments) base.attachments = meta.attachments;
+          const sanitizedAttachments = sanitizeMessageAttachments(meta.attachments);
+          if (sanitizedAttachments) base.attachments = sanitizedAttachments;
           if (meta.toolCalls) base.toolCalls = meta.toolCalls;
           if (meta.inlineToolCalls) base.inlineToolCalls = meta.inlineToolCalls;
           if (meta.isSummary) base.isSummary = true;
@@ -788,7 +891,45 @@ class AssistantStore {
     }));
 
     if (this.currentConversation?.id === conversationId) {
-      this.syncRuntimeToActiveView(conversationId);
+      if (Object.prototype.hasOwnProperty.call(patch, 'messages') && patch.messages) {
+        this.messages = patch.messages;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'currentMode') && patch.currentMode) {
+        this.currentMode = patch.currentMode;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'inputValue') && typeof patch.inputValue === 'string') {
+        this.inputValue = patch.inputValue;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'attachedContext') && patch.attachedContext) {
+        this.attachedContext = [...patch.attachedContext];
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'inputHistory') && patch.inputHistory) {
+        this.inputHistory = [...patch.inputHistory];
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'historyIndex') && typeof patch.historyIndex === 'number') {
+        this.historyIndex = patch.historyIndex;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'draftValue') && typeof patch.draftValue === 'string') {
+        this.draftValue = patch.draftValue;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'draftAttachments') && patch.draftAttachments) {
+        this.draftAttachments = [...patch.draftAttachments];
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'pendingAttachments') && patch.pendingAttachments) {
+        this.pendingAttachments = [...patch.pendingAttachments];
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'isStreaming') && typeof patch.isStreaming === 'boolean') {
+        this.isStreaming = patch.isStreaming;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'abortController')) {
+        this.abortController = patch.abortController ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'agentLoopState') && patch.agentLoopState) {
+        this.agentLoopState = patch.agentLoopState;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'agentLoopMeta') && patch.agentLoopMeta) {
+        this.agentLoopMeta = { ...patch.agentLoopMeta };
+      }
       this.currentConversation = {
         ...this.currentConversation,
         mode: nextRuntime.currentMode,
@@ -804,7 +945,11 @@ class AssistantStore {
   }
 
   private bumpChatScrollRevision(): void {
-    this.chatScrollRevision += 1;
+    if (this.chatScrollRevisionTimer) return;
+    this.chatScrollRevisionTimer = setTimeout(() => {
+      this.chatScrollRevisionTimer = null;
+      this.chatScrollRevision += 1;
+    }, 32);
   }
 
   private updateConversationMessages(
@@ -909,6 +1054,59 @@ class AssistantStore {
       : (this.conversationRuntimeState[conversationId]?.messages ?? []);
   }
 
+  getRuntimeSnapshot(conversationId?: string): AssistantRuntimeSnapshot | null {
+    const resolvedConversationId = conversationId ?? this.currentConversation?.id ?? null;
+    if (!resolvedConversationId) return null;
+
+    const runtime = this.conversationRuntimeState[resolvedConversationId];
+    const messages =
+      this.currentConversation?.id === resolvedConversationId
+        ? this.messages
+        : (runtime?.messages ?? []);
+    const runState = this.runStates[resolvedConversationId];
+    const activeMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    const inlineToolCalls = activeMessage?.inlineToolCalls ?? [];
+    const activeToolCall =
+      inlineToolCalls.find((toolCall) => toolCall.status === 'running') ??
+      inlineToolCalls.find(
+        (toolCall) =>
+          toolCall.status === 'pending' &&
+          toolCall.reviewStatus !== 'rejected',
+      ) ??
+      null;
+
+    return {
+      conversationId: resolvedConversationId,
+      mode:
+        (this.currentConversation?.id === resolvedConversationId
+          ? this.currentMode
+          : runtime?.currentMode) ?? 'agent',
+      isStreaming: runState?.isStreaming ?? runtime?.isStreaming ?? false,
+      agentLoopState:
+        runState?.agentLoopState ?? runtime?.agentLoopState ?? 'completed',
+      agentLoopMeta: {
+        ...(runtime?.agentLoopMeta ?? {}),
+      },
+      runUpdatedAt: runState?.updatedAt ?? null,
+      activeMessageId: activeMessage?.id ?? null,
+      activeToolCallId: activeToolCall?.id ?? null,
+      activeToolCallName: activeToolCall?.name ?? null,
+      activeToolStatus: activeToolCall?.status ?? null,
+      activeToolRequiresApproval: Boolean(activeToolCall?.requiresApproval),
+      pendingApprovalCount: inlineToolCalls.filter(
+        (toolCall) =>
+          toolCall.status === 'pending' &&
+          toolCall.reviewStatus !== 'rejected',
+      ).length,
+      runningToolCount: inlineToolCalls.filter(
+        (toolCall) => toolCall.status === 'running',
+      ).length,
+      messageCount: messages.length,
+    };
+  }
+
   private findConversationIdByMessageId(messageId: string): string | null {
     return resolveConversationIdByMessageId(
       messageId,
@@ -974,7 +1172,7 @@ class AssistantStore {
 
   markConversationRunState(
     conversationId: string,
-    patch: Partial<{ isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null }>,
+    patch: Partial<ConversationRunStateRecord>,
   ): void {
     if (!conversationId) return;
     const previous = this.runStates[conversationId] ?? {
@@ -982,6 +1180,8 @@ class AssistantStore {
       agentLoopState: 'completed' as AgentLoopState,
       updatedAt: Date.now(),
       lastError: null,
+      nativeRunId: null,
+      nativeOwned: false,
     };
     this.runStates = {
       ...this.runStates,
@@ -1332,9 +1532,187 @@ class AssistantStore {
 
   getConversationRunState(
     conversationId: string,
-  ): { isStreaming: boolean; agentLoopState: AgentLoopState; updatedAt: number; lastError?: string | null } | null {
+  ): ConversationRunStateRecord | null {
     return this.runStates[conversationId] ?? null;
   }
+
+  applyNativeRuntimeSnapshot(snapshot: AssistantRunSnapshot): void {
+    const loopState = normalizeAssistantLoopState(snapshot.loopState);
+    if (!loopState) return;
+
+    this.markConversationRunState(snapshot.conversationId, {
+      isStreaming:
+        loopState === 'running' ||
+        loopState === 'waiting_tool' ||
+        loopState === 'waiting_approval' ||
+        loopState === 'completing',
+      agentLoopState: loopState,
+      updatedAt: snapshot.updatedAtMs,
+      lastError: snapshot.lastError ?? null,
+      nativeRunId: snapshot.runId,
+      nativeOwned: true,
+    });
+
+    if (this.currentConversation?.id === snapshot.conversationId) {
+      this.agentLoopState = loopState;
+      this.agentLoopMeta = {
+        ...(snapshot.lastEvent?.payload?.loopMeta ?? {}),
+        nativeRunId: snapshot.runId,
+        nativeEventCount: snapshot.eventCount,
+        at: snapshot.updatedAtMs,
+      };
+      this.applyConversationStatePatch(snapshot.conversationId, {
+        isStreaming:
+          loopState === 'running' ||
+          loopState === 'waiting_tool' ||
+          loopState === 'waiting_approval' ||
+          loopState === 'completing',
+        agentLoopState: loopState,
+        agentLoopMeta: this.agentLoopMeta,
+      });
+    }
+  }
+
+  applyNativeRuntimeEvent(event: AssistantRuntimeEvent): void {
+    const loopState = normalizeAssistantLoopState(event.loopState);
+    if (loopState) {
+      this.markConversationRunState(event.conversationId, {
+        isStreaming:
+          loopState === 'running' ||
+          loopState === 'waiting_tool' ||
+          loopState === 'waiting_approval' ||
+          loopState === 'completing',
+        agentLoopState: loopState,
+        updatedAt: event.timestampMs,
+        lastError:
+          event.payload?.messagePatch?.streamIssue ??
+          event.payload?.toolPatch?.error ??
+          this.runStates[event.conversationId]?.lastError ??
+          null,
+        nativeRunId: event.runId,
+        nativeOwned: true,
+      });
+
+      if (this.currentConversation?.id === event.conversationId) {
+        this.agentLoopState = loopState;
+        this.agentLoopMeta = {
+          ...(event.payload?.loopMeta ?? {}),
+          nativeRunId: event.runId,
+          nativeEventId: event.eventId,
+          at: event.timestampMs,
+        };
+        this.applyConversationStatePatch(event.conversationId, {
+          isStreaming:
+            loopState === 'running' ||
+            loopState === 'waiting_tool' ||
+            loopState === 'waiting_approval' ||
+            loopState === 'completing',
+          agentLoopState: loopState,
+          agentLoopMeta: this.agentLoopMeta,
+        });
+      }
+    }
+
+    const messagePatch = event.payload?.messagePatch;
+    if (messagePatch?.messageId) {
+      if (typeof messagePatch.content === 'string') {
+        this.setMessageContent(
+          messagePatch.messageId,
+          messagePatch.content,
+          messagePatch.streamState === 'active',
+        );
+      }
+      if (messagePatch.contentDelta) {
+        this.appendTextToMessage(
+          messagePatch.messageId,
+          messagePatch.contentDelta,
+          messagePatch.streamState === 'active',
+          false,
+        );
+      }
+      if (messagePatch.thinkingDelta) {
+        this.appendThinkingToMessage(messagePatch.messageId, messagePatch.thinkingDelta, false);
+      }
+      if (
+        messagePatch.streamState &&
+        messagePatch.streamState !== 'active'
+      ) {
+        this.markAssistantMessageStreamState(
+          messagePatch.messageId,
+          messagePatch.streamState as 'completed' | 'failed' | 'cancelled' | 'interrupted',
+          messagePatch.streamIssue,
+          false,
+        );
+      }
+    }
+
+    const toolPatch = event.payload?.toolPatch;
+    if (toolPatch?.messageId && toolPatch.toolCallId) {
+      this.updateToolCallInMessage(toolPatch.messageId, toolPatch.toolCallId, {
+        ...(toolPatch.status ? { status: toolPatch.status as ToolCallStatus } : {}),
+        ...(toolPatch.error ? { error: toolPatch.error } : {}),
+        ...(toolPatch.output ? { output: toolPatch.output } : {}),
+        ...(toolPatch.meta ? { meta: toolPatch.meta } : {}),
+      }, false);
+    }
+
+    const toolCallPayload = event.payload?.toolCall;
+    if (toolCallPayload) {
+      const messageId =
+        typeof toolCallPayload.messageId === 'string' ? toolCallPayload.messageId : null;
+      const toolCallId =
+        typeof toolCallPayload.id === 'string' ? toolCallPayload.id : null;
+      const toolName =
+        typeof toolCallPayload.name === 'string' ? toolCallPayload.name : null;
+      const status =
+        typeof toolCallPayload.status === 'string'
+          ? (toolCallPayload.status as ToolCallStatus)
+          : null;
+        if (messageId && toolCallId && toolName && status) {
+          this.addToolCallToMessage(messageId, {
+          id: toolCallId,
+          name: toolName,
+          arguments:
+            toolCallPayload.arguments && typeof toolCallPayload.arguments === 'object'
+              ? (toolCallPayload.arguments as Record<string, unknown>)
+              : {},
+          status,
+          requiresApproval:
+            typeof toolCallPayload.requiresApproval === 'boolean'
+              ? toolCallPayload.requiresApproval
+              : undefined,
+          reviewStatus:
+            typeof toolCallPayload.reviewStatus === 'string'
+              ? (toolCallPayload.reviewStatus as ToolCallReviewStatus)
+              : undefined,
+          thoughtSignature:
+            typeof toolCallPayload.thoughtSignature === 'string'
+              ? toolCallPayload.thoughtSignature
+              : undefined,
+          error:
+            typeof toolCallPayload.error === 'string'
+              ? toolCallPayload.error
+              : undefined,
+          output:
+            typeof toolCallPayload.output === 'string'
+              ? toolCallPayload.output
+              : undefined,
+          meta:
+            toolCallPayload.meta && typeof toolCallPayload.meta === 'object'
+              ? (toolCallPayload.meta as Record<string, unknown>)
+              : undefined,
+          endTime:
+            typeof toolCallPayload.endTime === 'number'
+              ? toolCallPayload.endTime
+              : undefined,
+            startTime:
+              typeof toolCallPayload.startTime === 'number'
+                ? toolCallPayload.startTime
+                : undefined,
+          }, false);
+        }
+      }
+    }
 
   // Message management
   addUserMessage(
@@ -1628,7 +2006,11 @@ class AssistantStore {
   /**
    * Add a tool call to a specific assistant message (for inline display)
    */
-  addToolCallToMessage(messageId: string, toolCall: ToolCall): void {
+  addToolCallToMessage(
+    messageId: string,
+    toolCall: ToolCall,
+    persistToHistory = true,
+  ): void {
     const conversationId = this.currentConversation?.id;
     const addToolCall = (msg: AssistantMessage): AssistantMessage => {
       const ensuredToolCall: ToolCall = {
@@ -1668,13 +2050,20 @@ class AssistantStore {
     }
 
     // Persist to database immediately
-    this.persistMessageToHistory(messageId);
+    if (persistToHistory) {
+      this.persistMessageToHistory(messageId);
+    }
   }
 
   /**
    * Update a tool call within a message
    */
-  updateToolCallInMessage(messageId: string, toolCallId: string, updates: Partial<ToolCall>): void {
+  updateToolCallInMessage(
+    messageId: string,
+    toolCallId: string,
+    updates: Partial<ToolCall>,
+    persistToHistory = true,
+  ): void {
     const conversationId = this.findConversationIdByMessageId(messageId);
     const patchToolCall = (msg: AssistantMessage): AssistantMessage => {
       const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
@@ -1736,13 +2125,18 @@ class AssistantStore {
     }
 
     // Persist to database immediately
-    this.persistMessageToHistory(messageId);
+    if (persistToHistory) {
+      this.persistMessageToHistory(messageId);
+    }
   }
 
   /**
    * Helper to persist a specific message to history database
    */
   private persistDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingPersistFingerprints = new Map<string, string>();
+  private inFlightPersistFingerprints = new Map<string, string>();
+  private persistedMessageFingerprints = new Map<string, string>();
 
   private cancelPendingPersists(messageIds: string[]): void {
     for (const messageId of messageIds) {
@@ -1750,25 +2144,68 @@ class AssistantStore {
       if (!timer) continue;
       clearTimeout(timer);
       this.persistDebounceTimers.delete(messageId);
+      this.pendingPersistFingerprints.delete(messageId);
     }
   }
 
-  private async persistMessageToHistory(messageId: string, immediate = false): Promise<void> {
-    // Debounce rapid persists during streaming (every text chunk triggers this)
-    // Only the final state matters since saveMessage upserts by ID
-    if (!immediate) {
-      const existing = this.persistDebounceTimers.get(messageId);
-      if (existing) clearTimeout(existing);
-      this.persistDebounceTimers.set(messageId, setTimeout(() => {
-        this.persistDebounceTimers.delete(messageId);
-        this.persistMessageToHistory(messageId, true);
-      }, 500));
-      return;
+  private getPersistFingerprint(message: AssistantMessage): string {
+    return generateChecksum(
+      JSON.stringify({
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+        endTime: message.endTime ?? null,
+        isStreaming: message.isStreaming ?? false,
+        thinking: message.thinking ?? null,
+        metadata: serializeMessageMetadata(message),
+      }),
+    );
+  }
+
+  private getPersistDebounceMs(message: AssistantMessage): number {
+    if (message.role === 'assistant' && message.isStreaming) {
+      return 1200;
     }
 
+    if (message.role === 'tool') {
+      return 900;
+    }
+
+    return 350;
+  }
+
+  private async persistMessageToHistory(messageId: string, immediate = false): Promise<void> {
     const persisted = this.getMessageForPersistence(messageId);
     if (!persisted) return;
     const { message: msg, conversationId: convId, mode } = persisted;
+    const fingerprint = this.getPersistFingerprint(msg);
+
+    if (
+      fingerprint === this.persistedMessageFingerprints.get(messageId) ||
+      fingerprint === this.inFlightPersistFingerprints.get(messageId)
+    ) {
+      return;
+    }
+
+    // Debounce rapid persists during streaming so the UI can stay responsive.
+    // Final terminal states still force an immediate save.
+    if (!immediate) {
+      if (fingerprint === this.pendingPersistFingerprints.get(messageId)) {
+        return;
+      }
+
+      const existing = this.persistDebounceTimers.get(messageId);
+      if (existing) clearTimeout(existing);
+      this.pendingPersistFingerprints.set(messageId, fingerprint);
+      this.persistDebounceTimers.set(messageId, setTimeout(() => {
+        this.persistDebounceTimers.delete(messageId);
+        this.pendingPersistFingerprints.delete(messageId);
+        this.persistMessageToHistory(messageId, true);
+      }, this.getPersistDebounceMs(msg)));
+      return;
+    }
+    this.pendingPersistFingerprints.delete(messageId);
+    this.inFlightPersistFingerprints.set(messageId, fingerprint);
 
     try {
       await chatHistoryStore.createConversation(convId, mode);
@@ -1780,12 +2217,22 @@ class AssistantStore {
         timestamp: msg.timestamp,
         metadata: serializeMessageMetadata(msg)
       });
+      this.persistedMessageFingerprints.set(messageId, fingerprint);
     } catch (err) {
       console.error('[AssistantStore] Failed to persist message to history:', err);
+    } finally {
+      if (this.inFlightPersistFingerprints.get(messageId) === fingerprint) {
+        this.inFlightPersistFingerprints.delete(messageId);
+      }
     }
   }
 
-  appendTextToMessage(messageId: string, text: string, isStreaming: boolean): void {
+  appendTextToMessage(
+    messageId: string,
+    text: string,
+    isStreaming: boolean,
+    persistToHistory = true,
+  ): void {
     const conversationId = this.currentConversation?.id;
     const appendText = (msg: AssistantMessage): AssistantMessage => {
       const parts = msg.contentParts ?? [];
@@ -1793,9 +2240,17 @@ class AssistantStore {
 
       let newParts: ContentPart[];
       if (lastPart && lastPart.type === 'text') {
+        const next = computeNovelStreamText(text, lastPart.text);
+        if (!next.novel) {
+          return {
+            ...msg,
+            isStreaming,
+            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+          };
+        }
         newParts = [
           ...parts.slice(0, -1),
-          { type: 'text' as const, text: lastPart.text + text }
+          { type: 'text' as const, text: next.nextAccumulated }
         ];
       } else {
         newParts = [...parts, { type: 'text' as const, text }];
@@ -1833,7 +2288,9 @@ class AssistantStore {
     }
 
     // Persist to database immediately
-    this.persistMessageToHistory(messageId);
+    if (persistToHistory) {
+      this.persistMessageToHistory(messageId);
+    }
   }
 
 
@@ -1843,7 +2300,11 @@ class AssistantStore {
    * Add or update thinking content in a message (for inline thinking like Cursor)
    * Creates a new thinking part if the last part isn't thinking, or appends to it
    */
-  appendThinkingToMessage(messageId: string, thinking: string): void {
+  appendThinkingToMessage(
+    messageId: string,
+    thinking: string,
+    persistToHistory = true,
+  ): void {
     const conversationId = this.currentConversation?.id;
     const appendThinking = (msg: AssistantMessage): AssistantMessage => {
       const parts = msg.contentParts ?? [];
@@ -1851,11 +2312,15 @@ class AssistantStore {
 
       let newParts: ContentPart[];
       if (lastPart && lastPart.type === 'thinking' && lastPart.isActive) {
+        const next = computeNovelStreamText(thinking, lastPart.thinking);
+        if (!next.novel) {
+          return msg;
+        }
         newParts = [
           ...parts.slice(0, -1),
           {
             type: 'thinking' as const,
-            thinking: lastPart.thinking + thinking,
+            thinking: next.nextAccumulated,
             startTime: lastPart.startTime,
             isActive: true
           }
@@ -1888,7 +2353,9 @@ class AssistantStore {
     }
 
     // Persist to database immediately
-    this.persistMessageToHistory(messageId);
+    if (persistToHistory) {
+      this.persistMessageToHistory(messageId);
+    }
   }
 
   /**
@@ -1957,31 +2424,7 @@ class AssistantStore {
       null;
 
     const updateMessage = (msg: AssistantMessage): AssistantMessage => {
-      const parts = msg.contentParts ?? [];
-      const lastTextIndex = [...parts].reverse().findIndex(p => p.type === 'text');
-
-      if (parts.length === 0) {
-        return {
-          ...msg,
-          contentParts: content ? [{ type: 'text' as const, text: content }] : [],
-          content,
-          isStreaming,
-          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
-        };
-      }
-
-      if (lastTextIndex === -1) {
-        return {
-          ...msg,
-          contentParts: content ? [...parts, { type: 'text' as const, text: content }] : parts,
-          content,
-          isStreaming,
-          streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
-        };
-      }
-
-      const idx = parts.length - 1 - lastTextIndex;
-      const newParts = parts.map((p, i) => (i === idx && p.type === 'text') ? { type: 'text' as const, text: content } : p);
+      const newParts = this.collapseTextParts(msg.contentParts, content);
       return {
         ...msg,
         contentParts: newParts,
@@ -2002,6 +2445,7 @@ class AssistantStore {
     messageId: string,
     streamState: 'interrupted' | 'cancelled' | 'failed' | 'completed',
     streamIssue?: string,
+    persistToHistory = true,
   ): void {
     const conversationId =
       this.findConversationIdByMessageId(messageId) ??
@@ -2032,7 +2476,9 @@ class AssistantStore {
     } else {
       this.patchActiveMessages(messageId, applyPatch);
     }
-    this.persistMessageToHistory(messageId, true);
+    if (persistToHistory) {
+      this.persistMessageToHistory(messageId, true);
+    }
   }
 
   /**
@@ -2699,30 +3145,44 @@ class AssistantStore {
     }
   }
 
-  private normalizeContentParts(
+  private collapseTextParts(
     parts: ContentPart[] | undefined,
     content: string,
   ): ContentPart[] | undefined {
     if (!content && (!parts || parts.length === 0)) return parts;
 
-    // If parts already has text, preserve the existing order (critical for history restore)
-    // Only aggregate text from all text parts and update the first one
-    const hasText = parts?.some(p => p.type === 'text');
-    if (hasText && parts && parts.length > 0) {
-      // Update existing text parts to match the content (in case content differs)
-      // but preserve the interleaved order
-      return parts;
-    }
-
-    // No text parts exist - need to add one while preserving chronology.
     const normalized = [...(parts || [])];
-    if (content) {
-      // If tool/thinking parts already exist, append final text so it renders below tools.
-      // This keeps "tool execution first, summary later" visual ordering.
+    const lastTextIndex = normalized.reduce(
+      (index, part, currentIndex) => (part.type === 'text' ? currentIndex : index),
+      -1,
+    );
+
+    if (lastTextIndex === -1) {
+      if (!content) return normalized.length > 0 ? normalized : parts;
       normalized.push({ type: 'text', text: content });
+      return normalized;
     }
 
-    return normalized.length > 0 ? normalized : parts;
+    const before = normalized
+      .slice(0, lastTextIndex)
+      .filter(part => part.type !== 'text');
+    const after = normalized
+      .slice(lastTextIndex + 1)
+      .filter(part => part.type !== 'text');
+
+    if (!content) {
+      const withoutText = [...before, ...after];
+      return withoutText.length > 0 ? withoutText : parts;
+    }
+
+    return [...before, { type: 'text', text: content }, ...after];
+  }
+
+  private normalizeContentParts(
+    parts: ContentPart[] | undefined,
+    content: string,
+  ): ContentPart[] | undefined {
+    return this.collapseTextParts(parts, content);
   }
 
   /**
@@ -3006,7 +3466,7 @@ class AssistantStore {
     if (userMsg.role === 'user') {
       restoredInputValue = userMsg.content;
       restoredContext = userMsg.contextMentions ? [...userMsg.contextMentions] : [];
-      restoredAttachments = userMsg.attachments ? [...userMsg.attachments] : [];
+      restoredAttachments = sanitizeMessageAttachments(userMsg.attachments) ?? [];
     }
 
     // 4. Truncate in-memory history and reset composer/runtime state

@@ -8,7 +8,6 @@
   import { getFileInfo, readFileQuiet } from "$core/services/file-system";
   import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
   import ContextUsage from "./ContextUsage.svelte";
-  import { fade } from "svelte/transition";
 
   const TREE_NODE_MIME = "application/x-volt-tree-node";
 
@@ -51,34 +50,12 @@
   // Get current model from settings store (synced with settings panel)
   const currentModel = $derived(aiSettingsStore.modelPerMode[currentMode]);
 
-  // Context usage tracking (reactive) - use current model
-  const contextUsage = $derived(assistantStore.getContextUsage(currentModel));
-
-  // SVG circle parameters for progress ring
-  const RING_SIZE = 24;
-  const RING_STROKE = 2.5;
-  const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
-  const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-
-  // Calculate stroke dash offset for progress
-  const strokeDashoffset = $derived(
-    RING_CIRCUMFERENCE - (contextUsage.percentage / 100) * RING_CIRCUMFERENCE,
-  );
-
-  // Determine ring color based on usage
-  const ringColor = $derived(
-    contextUsage.isOverLimit
-      ? "var(--color-error)"
-      : contextUsage.isNearLimit
-        ? "var(--color-warning)"
-        : "var(--color-green)",
-  );
-
   let isDraggingOver = $state(false);
 
   let showModeMenu = $state(false);
   let showModelMenu = $state(false);
   let showAttachMenu = $state(false);
+  let showAutoApproveMenu = $state(false);
   let showMentionsMenu = $state(false);
   let mentionQuery = $state("");
 
@@ -170,6 +147,7 @@
       description: "Quick questions and explanations",
     },
     { id: "plan", label: "Plan", description: "Design and plan features" },
+    { id: "spec", label: "Spec", description: "Generate requirements, design, and tasks" },
   ];
 
   const currentModeInfo = $derived(
@@ -370,11 +348,12 @@
               message: result.error || "Failed to attach file",
             });
           }
-        } catch (err: any) {
-          console.error("[Mentions] Failed to read file:", filePath, err);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Unknown error";
+          console.error("[Mentions] Failed to read file:", filePath, error);
           toastStore.show({
             type: "error",
-            message: `Could not read file: ${err.message || "Unknown error"}`,
+            message: `Could not read file: ${errorMessage}`,
             duration: 4000,
           });
         }
@@ -428,16 +407,18 @@
     mentionQuery = "";
   }
 
-  function handleAttachFile(): void {
-    onAttachFile();
-  }
-
-  function handleAttachSelection(): void {
-    onAttachSelection();
-  }
-
   function handleAttachImagePicker(): void {
     onAttachImageFromPicker?.();
+  }
+
+  function enableAutoApproveAll(): void {
+    assistantStore.setAutoApproveAllTools(true);
+    showAutoApproveMenu = false;
+  }
+
+  function disableAutoApproveAll(): void {
+    assistantStore.setAutoApproveAllTools(false);
+    showAutoApproveMenu = false;
   }
 
   // Handle paste for images
@@ -515,10 +496,11 @@
             message: result.error || `Failed to attach ${label}`,
           });
         }
-      } catch (err: any) {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
         toastStore.show({
           type: "error",
-          message: `Could not attach dropped file: ${err?.message || "Unknown error"}`,
+          message: `Could not attach dropped file: ${errorMessage}`,
         });
       }
       return;
@@ -546,10 +528,11 @@
             message: result.error || `Failed to attach ${label}`,
           });
         }
-      } catch (err: any) {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
         toastStore.show({
           type: "error",
-          message: `Could not attach dropped path: ${err?.message || "Unknown error"}`,
+          message: `Could not attach dropped path: ${errorMessage}`,
         });
       }
       return;
@@ -580,28 +563,28 @@
           throw new Error("File not found");
         }
         const attachPath = droppedPath || file.name;
-        const result = assistantStore.attachFile(
-          attachPath,
-          content,
-          file.name,
-        );
+        if (content === null) {
+          throw new Error("File contents unavailable");
+        }
+        const result = assistantStore.attachFile(attachPath, content, file.name);
         if (!result.success) {
           toastStore.show({
             type: "warning",
             message: result.error || `Failed to attach ${file.name}`,
           });
         }
-      } catch (err: any) {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
         toastStore.show({
           type: "error",
-          message: `Could not attach ${file.name}: ${err?.message || "Unknown error"}`,
+          message: `Could not attach ${file.name}: ${errorMessage}`,
         });
       }
     }
   }
 
   function getDroppedFilePath(file: File): string | null {
-    const maybePath = (file as any).path;
+    const maybePath = (file as File & { path?: unknown }).path;
     return typeof maybePath === "string" && maybePath.trim().length > 0
       ? maybePath
       : null;
@@ -685,6 +668,9 @@
     if (!target.closest(".attach-dropdown-container")) {
       showAttachMenu = false;
     }
+    if (!target.closest(".auto-approve-container")) {
+      showAutoApproveMenu = false;
+    }
   }
 
   function selectModel(model: string): void {
@@ -764,6 +750,24 @@
               <div class="menu-title">Add context</div>
               <button
                 class="attach-option"
+                onclick={onAttachFile}
+                role="menuitem"
+                type="button"
+              >
+                <UIIcon name="file" size={14} />
+                <span>File</span>
+              </button>
+              <button
+                class="attach-option"
+                onclick={onAttachSelection}
+                role="menuitem"
+                type="button"
+              >
+                <UIIcon name="target" size={14} />
+                  <span>Selection</span>
+              </button>
+              <button
+                class="attach-option"
                 onclick={handleAttachImagePicker}
                 role="menuitem"
                 type="button"
@@ -789,26 +793,57 @@
                 role="menuitem"
                 type="button"
               >
-                <UIIcon name="code" size={14} />
-                <span>Workflows (/)</span>
+                <UIIcon name="bolt" size={14} />
+                  <span>Workflows (/)</span>
               </button>
             </div>
           {/if}
         </div>
 
-        <button
-          class="browser-tools-btn"
-          class:active={assistantStore.browserToolsEnabled}
-          onclick={() => assistantStore.toggleBrowserToolsEnabled()}
-          title={assistantStore.browserToolsEnabled
-            ? "Browser tools enabled: AI can inspect and automate the browser."
-            : "Browser tools disabled: AI cannot use browser actions until you enable this."}
-          aria-label="Toggle browser tools"
-          aria-pressed={assistantStore.browserToolsEnabled}
-          type="button"
-        >
-          <UIIcon name="globe" size={14} />
-        </button>
+        <div class="auto-approve-container">
+          <button
+            class="auto-approve-btn"
+            class:active={assistantStore.autoApproveAllTools}
+            onclick={() => (showAutoApproveMenu = !showAutoApproveMenu)}
+            aria-expanded={showAutoApproveMenu}
+            aria-haspopup="dialog"
+            title={assistantStore.autoApproveAllTools ? "Auto-Approve is ON" : "Enable Auto-Approve"}
+            type="button"
+          >
+            <UIIcon name="bolt" size={14} />
+            <span>Auto</span>
+          </button>
+
+          {#if showAutoApproveMenu}
+            <div class="auto-approve-menu" role="dialog" aria-label="Auto-approve settings">
+              {#if assistantStore.autoApproveAllTools}
+                <div class="auto-approve-title">Auto-Approve is ON</div>
+                <div class="auto-approve-copy">
+                  Approval prompts are skipped across all chats until you turn this off.
+                </div>
+                <button class="auto-approve-danger" type="button" onclick={disableAutoApproveAll}>
+                  Turn Off
+                </button>
+              {:else}
+                <div class="auto-approve-title">Enable Full Auto-Approve?</div>
+                <div class="auto-approve-copy">
+                  Volt will stop asking for approve/reject on tool actions across all chats until you manually turn it off.
+                </div>
+                <div class="auto-approve-warning">
+                  This is global and sticky. The agent can run tools without waiting for you.
+                </div>
+                <div class="auto-approve-actions">
+                  <button class="auto-approve-secondary" type="button" onclick={() => (showAutoApproveMenu = false)}>
+                    Cancel
+                  </button>
+                  <button class="auto-approve-primary" type="button" onclick={enableAutoApproveAll}>
+                    Enable
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
 
         <!-- Mode Selector Dropdown -->
         <div class="mode-dropdown-container">
@@ -902,7 +937,7 @@
             aria-label="Stop generation"
             type="button"
           >
-            <UIIcon name="stop" size={16} />
+            <span class="stop-icon"></span>
           </button>
         {:else}
           <button
@@ -1000,36 +1035,40 @@
   .unified-input-container {
     background: var(--color-bg-input, var(--color-surface0));
     border: 1px solid var(--color-border);
-    border-radius: 12px;
-    padding: 8px 4px 6px 4px;
-    transition:
-      border-color 0.15s ease,
-      box-shadow 0.15s ease;
-    display: flex;
-    flex-direction: column;
-  }
+      border-radius: 16px;
+      padding: 10px 6px 8px 6px;
+      transition:
+        border-color 0.2s ease,
+        box-shadow 0.2s ease,
+        background 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+    }
 
-  .unified-input-container:focus-within {
-    border-color: var(--color-text-disabled);
-    box-shadow: 0 0 0 1px var(--color-border);
-  }
+    .unified-input-container:focus-within {
+      border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent), 0 8px 30px rgba(0, 0, 0, 0.1);
+      background: var(--color-bg);
+    }
 
-  .input-wrapper {
-    padding: 2px 12px 4px 12px;
-  }
+    .input-wrapper {
+      padding: 2px 14px 6px 14px;
+    }
 
-  .chat-textarea {
-    width: 100%;
-    min-height: 28px;
-    max-height: 200px;
-    padding: 2px 0;
-    background: transparent;
-    border: none;
-    color: var(--color-text);
-    font-size: 13.5px;
-    line-height: 1.5;
-    resize: none;
-    outline: none;
+    .chat-textarea {
+      width: 100%;
+      min-height: 28px;
+      max-height: 200px;
+      padding: 2px 0;
+      background: transparent;
+      border: none;
+      color: var(--color-text);
+      font-size: 14px;
+      line-height: 1.5;
+      font-family: inherit;
+      resize: none;
+      outline: none;
 
     /* Premium smooth interactions */
     transition:
@@ -1088,36 +1127,116 @@
     border-color: var(--color-border);
   }
 
-  .browser-tools-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    color: var(--color-text-secondary);
-    transition: all 0.1s ease;
-    border: 1px solid transparent;
-    background: transparent;
+  /* Dropdowns */
+  .attach-dropdown-container,
+  .auto-approve-container,
+  .mode-dropdown-container,
+  .model-dropdown-container {
+    position: relative;
   }
 
-  .browser-tools-btn:hover {
+  .auto-approve-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: transparent;
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    transition: all 0.1s ease;
+    border: 1px solid transparent;
+  }
+
+  .auto-approve-btn:hover {
     background: var(--color-hover);
     color: var(--color-text);
     border-color: var(--color-border);
   }
 
-  .browser-tools-btn.active {
-    background: var(--color-accent-alpha);
-    color: var(--color-accent);
-    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  .auto-approve-btn.active {
+      color: var(--color-green, #10b981);
+      background: color-mix(in srgb, var(--color-green, #10b981) 15%, transparent);
+    }
+
+  .auto-approve-menu {
+      position: absolute;
+      left: 0;
+      bottom: calc(100% + 8px);
+      z-index: 30;
+      width: 280px;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(15, 15, 15, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      animation: dropdownIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      transform-origin: bottom left;
   }
 
-  /* Dropdowns */
-  .attach-dropdown-container,
-  .mode-dropdown-container,
-  .model-dropdown-container {
-    position: relative;
+  .auto-approve-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .auto-approve-copy {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--color-text-secondary);
+  }
+
+  .auto-approve-warning {
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #ffcf8a;
+    background: color-mix(in srgb, #ffb86b 12%, transparent);
+    border: 1px solid color-mix(in srgb, #ffb86b 30%, transparent);
+  }
+
+  .auto-approve-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .auto-approve-primary,
+  .auto-approve-secondary,
+  .auto-approve-danger {
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    border: 1px solid var(--color-border);
+    transition: all 0.12s ease;
+  }
+
+  .auto-approve-secondary:hover,
+  .auto-approve-danger:hover {
+    background: var(--color-hover);
+  }
+
+  .auto-approve-primary {
+    background: color-mix(in srgb, var(--color-accent) 80%, transparent);
+    color: white;
+    border-color: color-mix(in srgb, var(--color-accent) 70%, var(--color-border) 30%);
+  }
+
+  .auto-approve-primary:hover {
+    filter: brightness(1.06);
+  }
+
+  .auto-approve-danger {
+    align-self: flex-end;
+    color: #ff9b8f;
+    border-color: color-mix(in srgb, #ff7468 45%, var(--color-border) 55%);
+    background: color-mix(in srgb, #ff7468 10%, transparent);
   }
 
   .mode-selector-btn,
@@ -1144,6 +1263,16 @@
     font-weight: 400;
   }
 
+    .menu-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 8px 12px 6px;
+      margin: 0;
+    }
+
   .attach-menu,
   .mode-menu,
   .model-menu {
@@ -1151,15 +1280,18 @@
     bottom: 100%;
     left: 0;
     margin-bottom: 8px;
-    min-width: 210px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
-    box-shadow: var(--shadow-elevated, 0 12px 40px rgba(0, 0, 0, 0.8));
-    padding: 6px 0;
-    z-index: 1000;
-    animation: dropdownIn 0.12s cubic-bezier(0, 0, 0.2, 1);
-    transform-origin: bottom left;
+    min-width: 180px;
+    width: max-content;
+      background: rgba(15, 15, 15, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 6px 0;
+      z-index: 1000;
+      animation: dropdownIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      transform-origin: bottom left;
   }
 
   @keyframes dropdownIn {
@@ -1203,34 +1335,33 @@
   .model-option {
     display: flex;
     align-items: center;
-    gap: 10px;
-    width: calc(100% - 12px);
-    margin: 1px 6px;
-    padding: 6px 10px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-text);
-    text-align: left;
-    transition: all 0.1s ease;
-    border-radius: 6px;
-  }
+      gap: 10px;
+      width: calc(100% - 12px);
+      margin: 2px 6px;
+      padding: 8px 12px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: #e0e0e0;
+      text-align: left;
+      border-radius: 8px;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+      background: transparent;
+    }
 
-  .attach-option:hover,
-  .mode-option:hover,
-  .model-option:hover {
-    background: var(--color-hover);
-  }
+    .attach-option:hover,
+    .mode-option:hover,
+    .model-option:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.05);
+      color: #ffffff;
+    }
 
   .mode-option.active,
   .model-option.active {
-    background: var(--color-accent-alpha);
-    color: var(
-      --color-text
-    ); /* Keep text readable, maybe --color-accent if desired, but text often cleaner */
-  }
-
-  .mode-option.active .option-check {
-    color: var(--color-accent);
+      background: color-mix(in srgb, var(--color-accent, #ffffff) 20%, transparent);
+      border-color: color-mix(in srgb, var(--color-accent, #ffffff) 40%, transparent);
+      color: var(--color-accent, #ffffff);
   }
 
   .option-check {
@@ -1256,9 +1387,9 @@
     justify-content: center;
     width: 32px;
     height: 32px;
-    border-radius: 50%; /* Pure circular like the request */
-    background: #3c3c3c; /* Grey background when no text */
-    color: #1e1e1e; /* Darker icon color for contrast on grey */
+    border-radius: 50%;
+    background: #3c3c3c;
+    color: #1e1e1e;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     border: none;
     cursor: pointer;
@@ -1266,8 +1397,8 @@
 
   /* Active state (when there is text to send) */
   .send-btn:not(:disabled):not(.stop) {
-    background: #ffffff; /* Bright white when active */
-    color: #000000; /* Dark icon when active */
+    background: #ffffff;
+    color: #000000;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
   }
 
@@ -1286,10 +1417,24 @@
   }
 
   .send-btn.stop {
-    background: var(--color-error);
+    background: #2a2a2a;
     color: white;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
-    border-radius: 8px; /* Square with rounded corners for stop */
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .send-btn.stop:hover {
+    background: #363636;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .stop-icon {
+    display: block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: white;
   }
 
   .send-btn:focus-visible {

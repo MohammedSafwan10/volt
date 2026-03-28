@@ -57,6 +57,12 @@ export const MODE_CAPABILITIES: Record<
     canUseTools: true,
     description: 'Planning mode - can analyze but not modify',
   },
+  spec: {
+    canMutateFiles: false,
+    canExecuteCommands: false,
+    canUseTools: true,
+    description: 'Specification mode - creates structured requirements, design, and task plans',
+  },
   agent: {
     canMutateFiles: true,
     canExecuteCommands: true,

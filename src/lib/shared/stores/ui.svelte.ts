@@ -12,7 +12,6 @@ export type SidebarPanel =
   | 'extensions'
   | 'settings'
   | 'mcp'
-  | 'browser'
   | 'prompts'
   | null;
 

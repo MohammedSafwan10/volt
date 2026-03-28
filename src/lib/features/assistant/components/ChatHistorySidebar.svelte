@@ -484,14 +484,15 @@
         position: fixed;
         top: 0;
         right: 0;
-        width: 320px;
+        width: 340px;
         height: 100vh;
-        background: var(--bg-secondary, #1e1e1e);
-        border-left: 1px solid var(--border-color, #333);
+        background: var(--color-bg-panel);
+        border-left: 1px solid var(--color-border);
         z-index: 1000;
         display: flex;
         flex-direction: column;
         animation: slideIn 0.2s ease-out;
+        box-shadow: -18px 0 42px rgba(0, 0, 0, 0.32);
     }
 
     @keyframes slideIn {
@@ -504,8 +505,8 @@
     }
 
     .sidebar-header {
-        padding: 16px;
-        border-bottom: 1px solid var(--border-color, #333);
+        padding: 18px 18px 14px;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .header-main {
@@ -516,8 +517,10 @@
 
     .header-main h2 {
         margin: 0;
-        font-size: 16px;
-        font-weight: 600;
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--color-text);
+        letter-spacing: 0.01em;
     }
 
     .header-actions {
@@ -527,12 +530,12 @@
     }
 
     .icon-btn {
-        background: none;
-        border: none;
-        color: var(--text-secondary, #888);
+        background: color-mix(in srgb, var(--color-surface0) 88%, transparent);
+        border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+        color: var(--color-text-secondary);
         cursor: pointer;
         padding: 6px;
-        border-radius: 4px;
+        border-radius: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -540,8 +543,9 @@
     }
 
     .icon-btn:hover {
-        background: var(--bg-hover, #333);
-        color: var(--text-primary, #fff);
+        background: color-mix(in srgb, var(--color-hover) 86%, transparent);
+        color: var(--color-text);
+        border-color: color-mix(in srgb, var(--color-border) 70%, var(--color-accent) 12%);
     }
 
     .icon-btn.delete-all:hover {
@@ -553,25 +557,36 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--border-color, #333);
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--color-border);
+        color: var(--color-text-secondary);
     }
 
     .search-container input {
         flex: 1;
-        background: var(--bg-tertiary, #2a2a2a);
-        border: 1px solid var(--border-color, #444);
-        border-radius: 6px;
-        padding: 8px 12px;
-        color: var(--text-primary, #fff);
+        background: color-mix(in srgb, var(--color-surface0) 90%, transparent);
+        border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: var(--color-text);
         font-size: 13px;
+    }
+
+    .search-container input::placeholder {
+        color: var(--color-text-secondary);
+    }
+
+    .search-container input:focus {
+        outline: none;
+        border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 12%, transparent);
     }
 
     .sidebar-toolbar {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 12px 16px;
+        padding: 16px 18px 12px;
     }
 
     .new-chat-btn {
@@ -580,41 +595,45 @@
         align-items: center;
         justify-content: center;
         gap: 8px;
-        padding: 10px;
-        background: var(--accent-color, #007acc);
-        color: white;
-        border: none;
-        border-radius: 8px;
+        padding: 11px 14px;
+        background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface0));
+        color: var(--color-text);
+        border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+        border-radius: 12px;
         cursor: pointer;
         font-size: 13px;
-        font-weight: 500;
-        transition: background 0.15s;
+        font-weight: 600;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        transition: all 0.15s;
     }
 
     .new-chat-btn:hover {
-        background: var(--accent-color-hover, #0066b8);
+        background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface0));
+        border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+        transform: translateY(-1px);
     }
 
     .select-mode-btn {
-        padding: 8px 12px;
-        background: var(--bg-tertiary, #2a2a2a);
-        border: 1px solid var(--border-color, #444);
-        color: var(--text-secondary, #aaa);
-        border-radius: 8px;
+        padding: 10px 12px;
+        background: color-mix(in srgb, var(--color-surface0) 90%, transparent);
+        border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+        color: var(--color-text-secondary);
+        border-radius: 12px;
         font-size: 12px;
+        font-weight: 600;
         cursor: pointer;
         transition: all 0.15s;
     }
 
     .select-mode-btn:hover {
-        background: var(--bg-hover, #333);
-        color: var(--text-primary, #fff);
+        background: color-mix(in srgb, var(--color-hover) 86%, transparent);
+        color: var(--color-text);
     }
 
     .select-mode-btn.active {
-        background: var(--accent-color, #007acc);
-        color: white;
-        border-color: var(--accent-color, #007acc);
+        background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface0));
+        color: var(--color-text);
+        border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
     }
 
     .conversation-list {
@@ -633,26 +652,27 @@
         justify-content: center;
         padding: 32px;
         text-align: center;
-        color: var(--text-secondary, #808080);
+        color: var(--color-text-secondary);
     }
 
     .empty-icon {
         width: 80px;
         height: 80px;
-        background: var(--bg-tertiary, #252526);
+        background: color-mix(in srgb, var(--color-surface0) 92%, transparent);
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
         margin-bottom: 20px;
-        color: var(--text-tertiary, #666);
+        color: var(--color-text-disabled);
+        border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
     }
 
     .empty-state h3 {
         margin: 0 0 8px 0;
         font-size: 16px;
         font-weight: 600;
-        color: var(--text-primary, #fff);
+        color: var(--color-text);
     }
 
     .empty-state p {
@@ -666,20 +686,21 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 10px 20px;
-        background: var(--accent-color, #007acc);
-        color: white;
-        border: none;
-        border-radius: 6px;
+        padding: 11px 18px;
+        background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface0));
+        color: var(--color-text);
+        border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+        border-radius: 12px;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 600;
         cursor: pointer;
-        transition: transform 0.2s;
+        transition: transform 0.2s, background 0.15s, border-color 0.15s;
     }
 
     .empty-action-btn:hover {
         transform: translateY(-2px);
-        background: var(--accent-color-hover, #0066b8);
+        background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface0));
+        border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
     }
 
     .loading {
@@ -687,7 +708,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         font-size: 13px;
     }
 
@@ -698,7 +719,7 @@
     }
 
     .conversation-item-wrapper.selected {
-        background: rgba(0, 122, 204, 0.1);
+        background: color-mix(in srgb, var(--color-accent) 8%, transparent);
     }
 
     .selection-checkbox {
@@ -706,7 +727,7 @@
         width: 18px;
         height: 18px;
         margin-left: 16px;
-        border: 2px solid var(--border-color, #555);
+        border: 2px solid color-mix(in srgb, var(--color-border) 78%, var(--color-text-secondary) 22%);
         border-radius: 4px;
         background: transparent;
         cursor: pointer;
@@ -717,8 +738,8 @@
     }
 
     .conversation-item-wrapper.selected .selection-checkbox {
-        background: var(--accent-color, #007acc);
-        border-color: var(--accent-color, #007acc);
+        background: var(--color-accent);
+        border-color: var(--color-accent);
     }
 
     .conversation-item {
@@ -728,9 +749,11 @@
         background: none;
         border: none;
         text-align: left;
-        color: var(--text-primary, #fff);
+        color: var(--color-text);
         transition: background 0.1s;
         min-width: 0;
+        border-radius: 12px;
+        margin: 0 10px;
     }
 
     .conversation-item-main {
@@ -745,21 +768,21 @@
         cursor: pointer;
         color: inherit;
         text-align: left;
+        border-radius: 12px;
     }
 
     .conversation-item:hover {
-        background: var(--bg-hover, #2a2a2a);
+        background: color-mix(in srgb, var(--color-hover) 88%, transparent);
     }
 
     .conversation-item.active {
-        background: var(--bg-active, #333);
-        border-left: 3px solid var(--accent-color, #007acc);
-        padding-left: 13px;
+        background: color-mix(in srgb, var(--color-active) 78%, var(--color-surface0));
+        box-shadow: inset 2px 0 0 var(--color-accent);
     }
 
     .conv-icon {
         flex-shrink: 0;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
     }
 
     .conv-content {
@@ -776,14 +799,14 @@
 
     .conv-meta {
         font-size: 11px;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         margin-top: 2px;
     }
 
     .conv-time {
         flex-shrink: 0;
         font-size: 11px;
-        color: var(--text-tertiary, #666);
+        color: var(--color-text-disabled);
     }
 
     .conv-close {
@@ -792,22 +815,23 @@
         justify-content: center;
         width: 20px;
         height: 20px;
-        border-radius: 4px;
-        color: var(--text-secondary, #888);
+        border-radius: 6px;
+        color: var(--color-text-secondary);
         flex-shrink: 0;
+        margin-right: 10px;
     }
 
     .conv-close:hover {
-        background: var(--bg-hover, #333);
-        color: var(--text-primary, #fff);
+        background: color-mix(in srgb, var(--color-hover) 88%, transparent);
+        color: var(--color-text);
     }
 
     /* Batch Action Bar */
     .batch-action-bar {
         position: sticky;
         bottom: 0;
-        background: var(--bg-secondary, #1e1e1e);
-        border-top: 1px solid var(--border-color, #333);
+        background: var(--color-bg-panel);
+        border-top: 1px solid var(--color-border);
         padding: 12px 16px;
         display: flex;
         align-items: center;
@@ -828,7 +852,7 @@
     .selection-info {
         font-size: 13px;
         font-weight: 500;
-        color: var(--text-primary, #fff);
+        color: var(--color-text);
     }
 
     .batch-actions {
@@ -840,7 +864,7 @@
     .text-btn {
         background: none;
         border: none;
-        color: var(--accent-color, #007acc);
+        color: var(--color-text);
         font-size: 13px;
         font-weight: 500;
         cursor: pointer;
@@ -868,8 +892,8 @@
     /* Context Menu */
     .context-menu {
         position: fixed;
-        background: var(--bg-secondary, #252526);
-        border: 1px solid var(--border-color, #444);
+        background: var(--color-surface0);
+        border: 1px solid var(--color-border);
         border-radius: 8px;
         padding: 4px;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -885,14 +909,14 @@
         padding: 8px 12px;
         background: none;
         border: none;
-        color: var(--text-primary, #fff);
+        color: var(--color-text);
         cursor: pointer;
         border-radius: 4px;
         font-size: 13px;
     }
 
     .context-menu button:hover {
-        background: var(--bg-hover, #333);
+        background: color-mix(in srgb, var(--color-hover) 88%, transparent);
     }
 
     .context-menu button.danger {
@@ -914,7 +938,7 @@
         padding: 8px 16px;
         font-size: 11px;
         font-weight: 600;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }

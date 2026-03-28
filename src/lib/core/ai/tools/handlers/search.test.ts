@@ -151,6 +151,40 @@ describe('handleWorkspaceSearch', () => {
     expect(result.output).not.toContain('broadened search beyond includePattern');
   });
 
+  it('adds a find_files hint when a filename-like workspace search misses', async () => {
+    mocks.invokeMock
+      .mockResolvedValueOnce({
+        files: [],
+        totalMatches: 0,
+        truncated: false,
+        telemetry: {
+          requestedEngine: 'auto',
+          engine: 'rg',
+          fallbackUsed: false,
+          elapsedMs: 10,
+          rgSource: 'bundled',
+        },
+      })
+      .mockResolvedValueOnce({
+        files: ['app/not-found.tsx'],
+        engine: 'rg',
+        fallbackUsed: false,
+        elapsedMs: 6,
+      });
+
+    const result = await handleWorkspaceSearch({
+      query: 'not-found.tsx',
+      includePattern: 'app/**/*',
+    });
+
+    expect(mocks.invokeMock).toHaveBeenCalledTimes(2);
+    expect(mocks.invokeMock.mock.calls[1][0]).toBe('find_files_by_name');
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Hint: This query looks like a filename/path.');
+    expect(result.output).toContain('Possible file/path matches:');
+    expect(result.output).toContain('app/not-found.tsx');
+  });
+
   it('returns a direct failure for find_files when backend search is unavailable', async () => {
     mocks.invokeMock.mockRejectedValueOnce(new Error('find_files_by_name not registered'));
 

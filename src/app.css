@@ -19,9 +19,9 @@
   --color-text-disabled: #616161;
 
   /* Accent colors */
-  --color-accent: #007acc;
-  --color-accent-rgb: 0, 122, 204;
-  --color-accent-alpha: rgba(0, 122, 204, 0.15);
+  --color-accent: #ffffff;
+  --color-accent-rgb: 255, 255, 255;
+  --color-accent-alpha: rgba(255, 255, 255, 0.15);
   --color-success: #4ec9b0;
   --color-warning: #cca700;
   --color-error: #f14c4c;
@@ -246,4 +246,29 @@ textarea:focus {
 
 .fade-in {
   animation: fadeIn 0.2s ease-out;
+}
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(255, 255, 255, 0.9) 45%,
+    rgba(255, 255, 255, 0.35) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  animation: global-shimmer 1.6s linear infinite;
+}
+.shimmer-icon {
+  animation: global-shimmer-pulse 2s ease-in-out infinite;
+  color: var(--color-accent);
+}
+@keyframes global-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes global-shimmer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }

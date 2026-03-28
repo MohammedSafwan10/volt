@@ -14,7 +14,7 @@ export type AIProvider = 'gemini' | 'openrouter' | 'anthropic' | 'openai' | 'mis
 export type OpenAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 // AI operation modes
-export type AIMode = 'ask' | 'plan' | 'agent';
+export type AIMode = 'ask' | 'plan' | 'spec' | 'agent';
 
 // Provider capability flags
 export interface ProviderCapabilities {
@@ -56,14 +56,14 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
       maxContextHint: 1000000
     },
     models: [
-      'gemini-3-pro-preview|thinking',
-      'gemini-3-pro-preview',
+      'gemini-3.1-pro-preview|thinking',
+      'gemini-3.1-pro-preview',
       'gemini-3-flash-preview|thinking',
       'gemini-3-flash-preview',
       'gemini-2.5-flash|thinking',
       'gemini-2.5-flash'
     ],
-    defaultModel: 'gemini-3-pro-preview|thinking'
+    defaultModel: 'gemini-3.1-pro-preview|thinking'
   },
   openrouter: {
     id: 'openrouter',
@@ -158,34 +158,40 @@ class AISettingsStore {
   // Selection per provider to keep choices remembered
   private selectedModels = $state<Record<AIProvider, Record<AIMode, string>>>({
     gemini: {
-      ask: 'gemini-3-pro-preview|thinking',
-      plan: 'gemini-3-pro-preview|thinking',
-      agent: 'gemini-3-pro-preview|thinking'
+      ask: 'gemini-3.1-pro-preview|thinking',
+      plan: 'gemini-3.1-pro-preview|thinking',
+      spec: 'gemini-3.1-pro-preview|thinking',
+      agent: 'gemini-3.1-pro-preview|thinking'
     },
     openrouter: {
       ask: 'qwen/qwen3-coder:free',
       plan: 'qwen/qwen3-coder:free',
+      spec: 'qwen/qwen3-coder:free',
       agent: 'qwen/qwen3-coder:free'
     },
     anthropic: {
       ask: 'claude-sonnet-4-5-20250929',
       plan: 'claude-sonnet-4-5-20250929',
+      spec: 'claude-sonnet-4-5-20250929',
       agent: 'claude-sonnet-4-5-20250929'
     },
     openai: {
       ask: 'gpt-5.4',
       plan: 'gpt-5.4',
+      spec: 'gpt-5.4',
       agent: 'gpt-5.3-codex'
     },
     mistral: {
       ask: 'codestral-latest',
       plan: 'devstral-latest',
+      spec: 'devstral-latest',
       agent: 'devstral-latest'
     }
   });
   private openAIReasoningEffort = $state<Record<AIMode, OpenAIReasoningEffort>>({
     ask: 'medium',
     plan: 'high',
+    spec: 'high',
     agent: 'high'
   });
 
@@ -352,6 +358,7 @@ class AISettingsStore {
             this.selectedModels[provider] = {
               ask: sanitizeModeModel(provider, 'ask', providerModes.ask),
               plan: sanitizeModeModel(provider, 'plan', providerModes.plan),
+              spec: sanitizeModeModel(provider, 'spec', providerModes.spec),
               agent: sanitizeModeModel(provider, 'agent', providerModes.agent)
             };
           }
@@ -364,6 +371,7 @@ class AISettingsStore {
         this.selectedModels[this.selectedProvider] = {
           ask: sanitizeModeModel(this.selectedProvider, 'ask', mpm.ask || currentM.ask),
           plan: sanitizeModeModel(this.selectedProvider, 'plan', mpm.plan || currentM.plan),
+          spec: sanitizeModeModel(this.selectedProvider, 'spec', mpm.spec || currentM.spec),
           agent: sanitizeModeModel(this.selectedProvider, 'agent', mpm.agent || currentM.agent)
         };
       }
@@ -372,6 +380,7 @@ class AISettingsStore {
         this.openAIReasoningEffort = {
           ask: prefs.openAIReasoningEffort.ask ?? 'medium',
           plan: prefs.openAIReasoningEffort.plan ?? 'high',
+          spec: prefs.openAIReasoningEffort.spec ?? 'high',
           agent: prefs.openAIReasoningEffort.agent ?? 'high'
         };
       }

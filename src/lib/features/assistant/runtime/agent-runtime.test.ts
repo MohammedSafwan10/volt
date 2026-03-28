@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createAgentRuntime } from './agent-runtime';
+import type { ToolResult } from '$core/ai/tools';
 
 describe('agent runtime', () => {
   it('attaches structural verification guidance when completion is blocked', () => {
@@ -23,8 +24,8 @@ describe('agent runtime', () => {
         { id: '2', name: 'attempt_completion', arguments: { result: 'done' } },
       ],
       normalizedToolResults: [
-        { id: '1', name: 'read_file', result: { success: true, output: 'ok' } as any },
-        { id: '2', name: 'attempt_completion', result: { success: true, output: 'done' } as any },
+        { id: '1', name: 'read_file', result: { success: true, output: 'ok' } as ToolResult },
+        { id: '2', name: 'attempt_completion', result: { success: true, output: 'done' } as ToolResult },
       ],
       isFileMutatingTool: () => false,
     });
@@ -67,6 +68,24 @@ describe('agent runtime', () => {
     expect(decision.reason).toBe('approval_flow_incomplete');
   });
 
+  it('returns approval resume metadata after approvals complete', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateApprovalFlow(true);
+
+    expect(decision.shouldAbort).toBe(false);
+    expect(decision.resolvedState).toBe('running');
+    expect(decision.resumeState).toBe('running');
+    expect(decision.resumeMeta).toEqual({ resumedAfterApproval: true });
+  });
+
+  it('marks incomplete approvals as failed in the resolved runtime state', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateApprovalFlow(false);
+
+    expect(decision.shouldAbort).toBe(true);
+    expect(decision.resolvedState).toBe('failed');
+  });
+
   it('extends loop budget when recent progress allows it', () => {
     const runtime = createAgentRuntime();
     const decision = runtime.evaluateLoopBudget({
@@ -91,6 +110,40 @@ describe('agent runtime', () => {
 
     expect(decision.action).toBe('extend');
     expect(decision.newMaxIterations).toBe(140);
+  });
+
+  it('uses native tool scheduling policy when provided by the runtime bridge', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateToolScheduling({
+      pendingApprovalCount: 2,
+      hasQueuedFileEdits: true,
+      nativeDecision: {
+        shouldApply: true,
+        operation: 'waiting_tool',
+        conversationId: 'conv-1',
+        control: {
+          toolPolicy: {
+            executeInOrder: true,
+            deferUntilFileEditsComplete: false,
+            approvalRequired: false,
+            executionStages: ['eager_tools', 'deferred_tools', 'file_edits'],
+            fileEditConcurrency: 2,
+            orderedFileQueueKeys: ['src/app.ts', 'src/lib.ts'],
+            pendingApprovalToolIds: ['tool-1'],
+          },
+        },
+      },
+    });
+
+    expect(decision).toEqual({
+      executeInOrder: true,
+      deferUntilFileEditsComplete: false,
+      approvalRequired: false,
+      executionStages: ['eager_tools', 'deferred_tools', 'file_edits'],
+      fileEditConcurrency: 2,
+      orderedFileQueueKeys: ['src/app.ts', 'src/lib.ts'],
+      pendingApprovalToolIds: ['tool-1'],
+    });
   });
 
   it('marks stalled aborts distinctly from normal iteration errors', () => {
@@ -126,6 +179,63 @@ describe('agent runtime', () => {
     expect(decision.retryDelayMs).toBe(1000);
   });
 
+  it('uses native retry policy when provided by the runtime bridge', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateIterationError({
+      message: 'non-standard transient issue',
+      iteration: 8,
+      maxIterations: 10,
+      recoveryRetryCount: 3,
+      maxRecoveryRetries: 4,
+      stalledAbortReason: null,
+      fullContent: '',
+      nativeDecision: {
+        shouldApply: true,
+        operation: 'iteration_error',
+        conversationId: 'conv-1',
+        control: {
+          retry: {
+            allowed: true,
+            delayMs: 2500,
+            maxRetries: 1,
+            reason: 'native_runtime_retry',
+          },
+        },
+      },
+    });
+
+    expect(decision.action).toBe('retry');
+    expect(decision.retryDelayMs).toBe(2500);
+  });
+
+  it('surfaces native cancellation decisions during iteration errors', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateIterationError({
+      message: 'still running',
+      iteration: 3,
+      maxIterations: 10,
+      recoveryRetryCount: 0,
+      maxRecoveryRetries: 4,
+      stalledAbortReason: null,
+      fullContent: '',
+      nativeDecision: {
+        shouldApply: true,
+        operation: 'loop_cancelled',
+        conversationId: 'conv-1',
+        control: {
+          cancellation: {
+            shouldCancel: true,
+            reason: 'cancel_requested',
+          },
+        },
+      },
+    });
+
+    expect(decision.action).toBe('cancelled');
+    expect(decision.reason).toBe('abort_during_iteration');
+    expect(decision.userMessage).toBe('cancel_requested');
+  });
+
   it('keeps session-like evaluations independent across repeated runtime instances', () => {
     const runtimeA = createAgentRuntime();
     const runtimeB = createAgentRuntime();
@@ -157,5 +267,59 @@ describe('agent runtime', () => {
     expect(denied.shouldAbort).toBe(true);
     expect(denied.reason).toBe('approval_flow_incomplete');
     expect(approved.shouldAbort).toBe(false);
+  });
+
+  it('builds a native runtime bridge request when a snapshot is available', async () => {
+    const calls: Array<{
+      operation: string;
+      conversationId: string;
+      payload: Record<string, unknown>;
+    }> = [];
+    const runtime = createAgentRuntime({
+      sendCommand: async (request) => {
+        calls.push(request);
+        return {
+          shouldApply: true,
+          operation: request.operation,
+          conversationId: request.conversationId,
+          loopState: 'running',
+          loopMeta: { echoed: true },
+        };
+      },
+    });
+
+    const result = await runtime.buildRuntimeRequest({
+      operation: 'iteration_start',
+      snapshot: {
+        conversationId: 'conv-1',
+        mode: 'agent',
+        isStreaming: true,
+        agentLoopState: 'running',
+        agentLoopMeta: { previous: true },
+        runUpdatedAt: 123,
+        activeMessageId: 'm1',
+        activeToolCallId: 't1',
+        activeToolCallName: 'read_file',
+        activeToolStatus: 'running',
+        activeToolRequiresApproval: false,
+        pendingApprovalCount: 0,
+        runningToolCount: 1,
+        messageCount: 2,
+      },
+      payload: {
+        requestedLoopState: 'running',
+        requestedLoopMeta: {
+          iteration: 2,
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.conversationId).toBe('conv-1');
+    expect(calls[0]?.payload.iteration).toBeUndefined();
+    expect(calls[0]?.payload.requestedLoopMeta).toEqual({ iteration: 2 });
+    expect(calls[0]?.payload.activeToolCallName).toBe('read_file');
+    expect(result?.loopState).toBe('running');
+    expect(result?.loopMeta).toEqual({ echoed: true });
   });
 });

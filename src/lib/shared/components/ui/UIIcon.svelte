@@ -25,6 +25,7 @@
     "folder-plus": "codicon:new-folder",
     file: "codicon:file",
     "file-plus": "codicon:new-file",
+    "file-search": "codicon:file-code",
     "new-file": "codicon:new-file",
     "new-folder": "codicon:new-folder",
     // Actions
@@ -105,6 +106,7 @@
     record: "codicon:record",
     cloud: "codicon:cloud",
     comment: "codicon:comment",
+    tools: "codicon:tools",
     sparkle: "codicon:sparkle",
     robot: "codicon:robot",
     send: "codicon:send",

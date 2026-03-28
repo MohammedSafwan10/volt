@@ -149,7 +149,9 @@ pub async fn ai_validate_api_key(provider: String) -> Result<bool, String> {
             } else {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
-                Err(format!("Gemini validation failed (Status {status}): {text}"))
+                Err(format!(
+                    "Gemini validation failed (Status {status}): {text}"
+                ))
             }
         }
         "openrouter" => {

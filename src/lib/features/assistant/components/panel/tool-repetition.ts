@@ -16,10 +16,7 @@ type SeenEntry = {
   lastSeenAt: number;
 };
 
-const EXEMPT_THRESHOLDS: Record<string, number> = {
-  browser_wait_for: 6,
-  browser_scroll: 6,
-};
+const EXEMPT_THRESHOLDS: Record<string, number> = {};
 
 export class ToolRepetitionDetector {
   private seen = new Map<string, SeenEntry>();

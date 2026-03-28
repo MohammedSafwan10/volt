@@ -49,6 +49,85 @@ interface WorkspaceSearchAttempt {
   fallbackNote: string | null;
 }
 
+function formatSearchEngineLabel(telemetry: {
+  engine?: string | null;
+  rgSource?: string | null;
+  fallbackUsed?: boolean;
+}): string {
+  const engine = telemetry.engine ?? 'unknown';
+  if (engine === 'rg') {
+    if (telemetry.rgSource === 'bundled') return 'rg-bundled';
+    if (telemetry.rgSource === 'system') return 'rg-system';
+    return 'rg';
+  }
+  if (engine === 'legacy' && telemetry.fallbackUsed) {
+    return 'legacy-fallback';
+  }
+  return engine;
+}
+
+function formatFallbackLabel(telemetry: {
+  engine?: string | null;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+}): string | null {
+  if (!telemetry.fallbackUsed) return null;
+  return telemetry.fallbackReason ?? (telemetry.engine === 'legacy' ? 'legacy-fallback' : 'used');
+}
+
+function looksLikeFileOrPathQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+
+  return (
+    /[\\/]/.test(trimmed) ||
+    /\.[a-z0-9]{1,8}$/i.test(trimmed) ||
+    /^[a-z0-9._-]+\.[a-z0-9]{1,8}$/i.test(trimmed)
+  );
+}
+
+async function probeFindFilesHint(args: {
+  query: string;
+  workspaceRoot: string;
+  includePattern: string;
+  excludePattern: string;
+  includeHidden: boolean;
+}): Promise<{
+  candidates: string[];
+  engineLabel: string | null;
+  fallbackLabel: string | null;
+} | null> {
+  try {
+    const excludePatterns = args.excludePattern
+      ? [args.excludePattern, ...getDefaultExcludePatterns(args.includeHidden)]
+      : getDefaultExcludePatterns(args.includeHidden);
+
+    const result = await invoke<{
+      files: string[];
+      engine: string;
+      fallbackUsed: boolean;
+      fallbackReason?: string | null;
+    }>('find_files_by_name', {
+      options: {
+        query: args.query,
+        rootPath: args.workspaceRoot,
+        includeHidden: args.includeHidden,
+        includePatterns: args.includePattern ? [args.includePattern] : [],
+        excludePatterns,
+        maxResults: 5,
+      }
+    });
+
+    return {
+      candidates: Array.isArray(result.files) ? result.files.slice(0, 5) : [],
+      engineLabel: typeof result.engine === 'string' ? result.engine : null,
+      fallbackLabel: result.fallbackUsed ? (result.fallbackReason ?? 'used') : 'none',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function getDefaultExcludePatterns(includeHidden: boolean): string[] {
   const patterns = ['node_modules/**', 'target/**', 'dist/**', 'build/**', '.svelte-kit/**'];
   if (!includeHidden) {
@@ -200,9 +279,10 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
         msg += `\nInclude pattern: ${includePattern}`;
       }
       if (result.telemetry) {
-        msg += `\nEngine: ${result.telemetry.engine}`;
-        if (result.telemetry.fallbackUsed && result.telemetry.fallbackReason) {
-          msg += `\nFallback: ${result.telemetry.fallbackReason}`;
+        msg += `\nEngine: ${formatSearchEngineLabel(result.telemetry)}`;
+        const fallback = formatFallbackLabel(result.telemetry);
+        if (fallback) {
+          msg += `\nFallback: ${fallback}`;
         }
       }
       msg += '\nThe open workspace changed before this search completed. Retry the search.';
@@ -254,13 +334,38 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
         msg += `\nExclude pattern: ${excludePattern}`;
       }
       if (result.telemetry) {
-        msg += `\nEngine: ${result.telemetry.engine}`;
-        if (result.telemetry.fallbackUsed && result.telemetry.fallbackReason) {
-          msg += `\nFallback: ${result.telemetry.fallbackReason}`;
+        msg += `\nEngine: ${formatSearchEngineLabel(result.telemetry)}`;
+        const fallback = formatFallbackLabel(result.telemetry);
+        if (fallback) {
+          msg += `\nFallback: ${fallback}`;
         }
       }
       if (fallbackNote) {
         msg += `\n${fallbackNote}`;
+      }
+      if (!isRegex && looksLikeFileOrPathQuery(query)) {
+        msg += '\nHint: This query looks like a filename/path. Prefer find_files for path discovery before content search.';
+        const fileHint = await probeFindFilesHint({
+          query,
+          workspaceRoot,
+          includePattern,
+          excludePattern,
+          includeHidden,
+        });
+        if (fileHint) {
+          if (fileHint.engineLabel) {
+            msg += `\nFind-files backend: ${formatSearchEngineLabel({ engine: fileHint.engineLabel, fallbackUsed: fileHint.fallbackLabel !== 'none' })}`;
+          }
+          if (fileHint.fallbackLabel && fileHint.fallbackLabel !== 'none') {
+            msg += `\nFind-files fallback: ${fileHint.fallbackLabel}`;
+          }
+          if (fileHint.candidates.length > 0) {
+            msg += '\nPossible file/path matches:';
+            for (const candidate of fileHint.candidates) {
+              msg += `\n  ${candidate}`;
+            }
+          }
+        }
       }
       return { success: true, output: msg };
     }
@@ -276,13 +381,9 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
       lines.push('Include hidden: true');
     }
     if (result.telemetry) {
-      const fallback = result.telemetry.fallbackUsed && result.telemetry.fallbackReason
-        ? `, fallback: ${result.telemetry.fallbackReason}`
-        : result.telemetry.fallbackUsed
-          ? ', fallback used'
-          : '';
-      const source = result.telemetry.rgSource ? `, source: ${result.telemetry.rgSource}` : '';
-      lines.push(`Engine: ${result.telemetry.engine} (${result.telemetry.elapsedMs}ms${source}${fallback})`);
+      const fallbackLabel = formatFallbackLabel(result.telemetry);
+      const fallback = fallbackLabel ? `, fallback: ${fallbackLabel}` : '';
+      lines.push(`Engine: ${formatSearchEngineLabel(result.telemetry)} (${result.telemetry.elapsedMs}ms${fallback})`);
     }
     if (includePattern) {
       lines.push(`Include pattern: ${includePattern}`);
@@ -503,8 +604,11 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
       if (includePattern) {
         msg += `\nInclude pattern: ${includePattern}`;
       }
-      msg += `\nSearch backend: ${engineLabel}`;
-      msg += `\nFallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`;
+      msg += `\nSearch backend: ${formatSearchEngineLabel({ engine: engineLabel, rgSource, fallbackUsed })}`;
+      const fallback = formatFallbackLabel({ engine: engineLabel, fallbackUsed, fallbackReason });
+      if (fallback) {
+        msg += `\nFallback: ${fallback}`;
+      }
       msg += '\nThe open workspace changed before this search completed. Retry the search.';
       return {
         success: true,
@@ -538,8 +642,11 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
       if (query.length < 3) {
         msg += '\nTip: Try a longer search term';
       }
-      msg += `\nSearch backend: ${engineLabel}`;
-      msg += `\nFallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`;
+      msg += `\nSearch backend: ${formatSearchEngineLabel({ engine: engineLabel, rgSource, fallbackUsed })}`;
+      const fallback = formatFallbackLabel({ engine: engineLabel, fallbackUsed, fallbackReason });
+      if (fallback) {
+        msg += `\nFallback: ${fallback}`;
+      }
       return { success: true, output: msg };
     }
 
@@ -547,8 +654,11 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     const lines: string[] = [];
     lines.push(`Found ${results.length} file${results.length > 1 ? 's' : ''} matching "${query}":`);
     lines.push(`Workspace root: ${workspaceRoot}`);
-    lines.push(`Search backend: ${engineLabel}`);
-    lines.push(`Fallback: ${fallbackUsed ? (fallbackReason ?? 'used') : 'none'}`);
+    lines.push(`Search backend: ${formatSearchEngineLabel({ engine: engineLabel, rgSource, fallbackUsed })}`);
+    const fallback = formatFallbackLabel({ engine: engineLabel, fallbackUsed, fallbackReason });
+    if (fallback) {
+      lines.push(`Fallback: ${fallback}`);
+    }
     if (includePattern) {
       lines.push(`Include pattern: ${includePattern}`);
     }

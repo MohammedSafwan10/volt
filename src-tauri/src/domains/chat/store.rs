@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::observability::DebugScope;
+
 /// Database file name
 const DB_FILE: &str = "chat_history.db";
 
@@ -174,6 +176,7 @@ pub async fn chat_create_conversation<R: Runtime>(
     id: String,
     mode: String,
 ) -> Result<ConversationSummary, String> {
+    let _scope = DebugScope::new("chat", format!("create_conversation id={id} mode={mode}"));
     ensure_db(&app, &state)?;
 
     let now = chrono::Utc::now().timestamp_millis();
@@ -206,6 +209,7 @@ pub async fn chat_list_conversations<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, ChatHistoryState>,
 ) -> Result<Vec<ConversationSummary>, String> {
+    let _scope = DebugScope::new("chat", "list_conversations");
     ensure_db(&app, &state)?;
 
     let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -247,6 +251,7 @@ pub async fn chat_get_conversation<R: Runtime>(
     state: tauri::State<'_, ChatHistoryState>,
     conversation_id: String,
 ) -> Result<Conversation, String> {
+    let _scope = DebugScope::new("chat", format!("get_conversation id={conversation_id}"));
     ensure_db(&app, &state)?;
 
     let db_guard = state.db.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -305,6 +310,13 @@ pub async fn chat_save_message<R: Runtime>(
     conversation_id: String,
     message: ChatMessage,
 ) -> Result<(), String> {
+    let _scope = DebugScope::new(
+        "chat",
+        format!(
+            "save_message conversation={} message={} role={}",
+            conversation_id, message.id, message.role
+        ),
+    );
     ensure_db(&app, &state)?;
 
     let now = chrono::Utc::now().timestamp_millis();

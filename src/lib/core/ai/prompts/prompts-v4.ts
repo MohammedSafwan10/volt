@@ -2,6 +2,7 @@ import type { AIMode } from '$features/assistant/stores/ai.svelte';
 import { buildAgentPrompt } from '$core/ai/prompts/prompt-agent';
 import { buildAskPrompt } from '$core/ai/prompts/prompt-ask';
 import { buildPlanPrompt } from '$core/ai/prompts/prompt-plan';
+import { buildSpecPrompt } from '$core/ai/prompts/prompt-spec';
 import {
   buildMcpSection,
   PROVIDER_GEMINI,
@@ -30,6 +31,9 @@ export function getSystemPrompt(options: SystemPromptOptions): string {
   if (mode === 'plan') {
     return buildPlanPrompt({ provider, workspaceRoot, mcpTools });
   }
+  if (mode === 'spec') {
+    return buildSpecPrompt({ provider, workspaceRoot, mcpTools });
+  }
 
   return buildAgentPrompt({ provider, workspaceRoot, mcpTools });
 }
@@ -40,6 +44,8 @@ export function getModeDescription(mode: AIMode): string {
       return 'Read-only for questions';
     case 'plan':
       return 'Planning mode';
+    case 'spec':
+      return 'Specification mode';
     case 'agent':
       return 'Full agent access';
     default:
@@ -56,13 +62,13 @@ export function isToolAllowedInMode(toolName: string, mode: AIMode): boolean {
     'attempt_completion',
   ];
 
-  if (mode === 'ask' || mode === 'plan') return askAndPlan.includes(toolName);
+  if (mode === 'ask' || mode === 'plan' || mode === 'spec') return askAndPlan.includes(toolName);
   if (mode === 'agent') return agent.includes(toolName) || toolName.startsWith('mcp_');
   return false;
 }
 
 export function toolRequiresApproval(toolName: string, mode: AIMode): boolean {
-  if (mode === 'ask' || mode === 'plan') return false;
+  if (mode === 'ask' || mode === 'plan' || mode === 'spec') return false;
   return toolName === 'run_command';
 }
 

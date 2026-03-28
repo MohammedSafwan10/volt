@@ -202,6 +202,7 @@
   const modeLabels: Record<AIMode, string> = {
     ask: "Ask Mode",
     plan: "Plan Mode",
+    spec: "Spec Mode",
     agent: "Agent Mode",
   };
 
@@ -344,7 +345,7 @@
 
   <div class="section-title model-section">Model Selection</div>
 
-  {#each ["ask", "plan", "agent"] as AIMode[] as mode (mode)}
+  {#each ["ask", "plan", "spec", "agent"] as AIMode[] as mode (mode)}
     {@const selectedModel = aiSettingsStore.modelPerMode[mode]}
     {@const modelConfig = getModelConfig(selectedModel)}
     <div class="setting">

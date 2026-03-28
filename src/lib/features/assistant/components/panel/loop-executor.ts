@@ -71,6 +71,11 @@ interface NonFileExecutorDeps {
     result: { success: boolean; error?: string; output?: string },
   ) => string | null;
   onFailureSignature: (signature: string) => void;
+  publishToolPatch?: (toolId: string, patch: Record<string, unknown>) => void | Promise<void>;
+  getCurrentToolCallState?: (
+    messageId: string,
+    toolId: string,
+  ) => { status?: string; error?: string; meta?: Record<string, unknown> } | undefined;
 }
 
 interface FileEditExecutorDeps extends NonFileExecutorDeps {
@@ -86,17 +91,55 @@ export async function executeQueuedNonFileTools(
   deps: NonFileExecutorDeps,
 ): Promise<ToolExecutionResult[]> {
   for (const queued of toolsToRun) {
+    const existingToolState = deps.getCurrentToolCallState?.(deps.messageId, queued.id);
+    if (
+      existingToolState?.status === 'failed' ||
+      existingToolState?.status === 'completed' ||
+      existingToolState?.status === 'cancelled'
+    ) {
+      continue;
+    }
     deps.updateToolCallInMessage(deps.messageId, queued.id, {
       status: 'running',
       startTime: Date.now(),
       meta: {
+        ...(existingToolState?.meta ?? {}),
+        liveStatus: getInitialToolLiveStatus(queued.name),
+      },
+    });
+    void deps.publishToolPatch?.(queued.id, {
+      status: 'running',
+      meta: {
+        ...(existingToolState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(queued.name),
       },
     });
   }
 
   const promises = toolsToRun.map((queued) =>
-        deps
+    {
+      const existingToolState = deps.getCurrentToolCallState?.(deps.messageId, queued.id);
+      if (
+        existingToolState?.status === 'failed' ||
+        existingToolState?.status === 'completed' ||
+        existingToolState?.status === 'cancelled'
+      ) {
+        return Promise.resolve({
+          id: queued.id,
+          name: queued.name,
+          result: {
+            success: existingToolState.status === 'completed',
+            error:
+              existingToolState.status === 'failed'
+                ? existingToolState.error
+                : existingToolState.status === 'cancelled'
+                  ? 'Tool execution cancelled'
+                  : undefined,
+          } as ToolResult,
+        });
+      }
+
+      return deps
       .executeToolCall(queued.name, queued.args, {
         signal: deps.signal,
         idempotencyKey: deps.getToolIdempotencyKey(
@@ -107,6 +150,7 @@ export async function executeQueuedNonFileTools(
         ),
         runtime: createToolRuntimeContext((patch) => {
           deps.updateToolCallInMessage(deps.messageId, queued.id, patch);
+          void deps.publishToolPatch?.(queued.id, patch);
         }),
       })
       .then((result) => {
@@ -121,14 +165,25 @@ export async function executeQueuedNonFileTools(
         deps.updateToolCallInMessage(deps.messageId, queued.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error,
+          error: result.error ?? existingToolState?.error,
           meta: {
+            ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
             liveStatus: undefined,
           },
           data: result.data,
           endTime: Date.now(),
           streamingProgress: undefined,
+        });
+        void deps.publishToolPatch?.(queued.id, {
+          status: result.success ? 'completed' : 'failed',
+          output: result.output,
+          error: result.error ?? existingToolState?.error,
+          meta: {
+            ...(existingToolState?.meta ?? {}),
+            ...(result.meta ?? {}),
+            liveStatus: undefined,
+          },
         });
         deps.trackToolOutcome(queued.name, queued.args, result);
         const signature = deps.getFailureSignature(queued.name, queued.args, result);
@@ -146,10 +201,19 @@ export async function executeQueuedNonFileTools(
           status: 'failed',
           error,
           meta: {
+            ...(existingToolState?.meta ?? {}),
             liveStatus: undefined,
           },
           endTime: Date.now(),
           streamingProgress: undefined,
+        });
+        void deps.publishToolPatch?.(queued.id, {
+          status: 'failed',
+          error,
+          meta: {
+            ...(existingToolState?.meta ?? {}),
+            liveStatus: undefined,
+          },
         });
         const signature = deps.getFailureSignature(queued.name, queued.args, {
           success: false,
@@ -161,7 +225,8 @@ export async function executeQueuedNonFileTools(
           name: queued.name,
           result: { success: false, error } as ToolResult,
         };
-      }),
+      });
+    },
   );
 
   return Promise.all(promises);
@@ -187,6 +252,11 @@ export async function executeFileEditQueues(
             endTime: Date.now(),
             meta: { editPhase: 'failed', queueIndex: edit.queueIndex },
           });
+          void deps.publishToolPatch?.(edit.id, {
+            status: 'failed',
+            error: 'Skipped: A previous edit to this file failed.',
+            meta: { editPhase: 'failed', queueIndex: edit.queueIndex },
+          });
           results.push({
             id: edit.id,
             name: edit.name,
@@ -201,6 +271,14 @@ export async function executeFileEditQueues(
         deps.updateToolCallInMessage(deps.messageId, edit.id, {
           status: 'running',
           startTime: Date.now(),
+          meta: {
+            editPhase: 'writing',
+            queueIndex: edit.queueIndex,
+            liveStatus: getInitialToolLiveStatus(edit.name),
+          },
+        });
+        void deps.publishToolPatch?.(edit.id, {
+          status: 'running',
           meta: {
             editPhase: 'writing',
             queueIndex: edit.queueIndex,
@@ -223,6 +301,7 @@ export async function executeFileEditQueues(
             ),
             runtime: createToolRuntimeContext((patch) => {
               deps.updateToolCallInMessage(deps.messageId, edit.id, patch);
+              void deps.publishToolPatch?.(edit.id, patch);
             }),
           });
           let retried = false;
@@ -246,6 +325,7 @@ export async function executeFileEditQueues(
               ),
               runtime: createToolRuntimeContext((patch) => {
                 deps.updateToolCallInMessage(deps.messageId, edit.id, patch);
+                void deps.publishToolPatch?.(edit.id, patch);
               }),
             });
             if (!retryResult.success) {
@@ -293,6 +373,18 @@ export async function executeFileEditQueues(
             endTime: Date.now(),
             streamingProgress: undefined,
           });
+          void deps.publishToolPatch?.(edit.id, {
+            status: result.success ? 'completed' : 'failed',
+            output: result.output,
+            error: result.error,
+            meta: {
+              ...(result.meta || {}),
+              editPhase: result.success ? 'done' : 'failed',
+              queueIndex: edit.queueIndex,
+              autoRetried: retried,
+              liveStatus: undefined,
+            },
+          });
           deps.trackToolOutcome(edit.name, edit.args, result);
           const signature = deps.getFailureSignature(edit.name, edit.args, result);
           if (signature) deps.onFailureSignature(signature);
@@ -312,6 +404,11 @@ export async function executeFileEditQueues(
             endTime: Date.now(),
             meta: { editPhase: 'failed', queueIndex: edit.queueIndex, liveStatus: undefined },
             streamingProgress: undefined,
+          });
+          void deps.publishToolPatch?.(edit.id, {
+            status: 'failed',
+            error,
+            meta: { editPhase: 'failed', queueIndex: edit.queueIndex, liveStatus: undefined },
           });
           results.push({
             id: edit.id,

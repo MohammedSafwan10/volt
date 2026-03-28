@@ -18,20 +18,20 @@ export interface ModelConfig {
  */
 export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   // ============ Gemini Models ============
-  'gemini-3-pro-preview|thinking': {
-    id: 'gemini-3-pro-preview|thinking',
-    name: 'Gemini 3 Pro (thinking)',
+  'gemini-3.1-pro-preview|thinking': {
+    id: 'gemini-3.1-pro-preview|thinking',
+    name: 'Gemini 3.1 Pro Preview (thinking)',
     provider: 'gemini',
-    contextWindow: 1000000,
+    contextWindow: 1048576,
     maxOutput: 65536,
     supportsTools: true,
     free: false
   },
-  'gemini-3-pro-preview': {
-    id: 'gemini-3-pro-preview',
-    name: 'Gemini 3 Pro',
+  'gemini-3.1-pro-preview': {
+    id: 'gemini-3.1-pro-preview',
+    name: 'Gemini 3.1 Pro Preview',
     provider: 'gemini',
-    contextWindow: 1000000,
+    contextWindow: 1048576,
     maxOutput: 65536,
     supportsTools: true,
     free: false

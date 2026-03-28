@@ -3,6 +3,8 @@
  * Provides showToast() function for displaying notifications
  */
 
+import { writable, type Writable } from 'svelte/store';
+
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
 export interface ToastAction {
@@ -33,9 +35,22 @@ const RATE_LIMIT_MS = 500;
 const DUPLICATE_WINDOW_MS = 2000;
 
 class ToastStore {
-  toasts = $state<Toast[]>([]);
+  private readonly toastsStore: Writable<Toast[]>;
+  toasts: Toast[] = [];
   private lastToastTime = 0;
   private lastToastMessage = '';
+
+  constructor() {
+    this.toastsStore = writable<Toast[]>([]);
+    this.toastsStore.subscribe((value) => {
+      this.toasts = value;
+    });
+  }
+
+  private setToasts(next: Toast[]): void {
+    this.toasts = next;
+    this.toastsStore.set(next);
+  }
 
   /**
    * Show a toast notification
@@ -63,6 +78,7 @@ class ToastStore {
     if (existingToast) {
       existingToast.count += 1;
       existingToast.createdAt = now; // Reset timer
+      this.setToasts([...this.toasts]);
       this.lastToastTime = now;
       this.lastToastMessage = message;
       return existingToast.id;
@@ -80,11 +96,11 @@ class ToastStore {
     };
 
     // Add new toast at the end (bottom of stack)
-    this.toasts = [...this.toasts, toast];
+    this.setToasts([...this.toasts, toast]);
 
     // Limit visible toasts
     if (this.toasts.length > MAX_VISIBLE_TOASTS) {
-      this.toasts = this.toasts.slice(-MAX_VISIBLE_TOASTS);
+      this.setToasts(this.toasts.slice(-MAX_VISIBLE_TOASTS));
     }
 
     this.lastToastTime = now;
@@ -104,14 +120,14 @@ class ToastStore {
    * Dismiss a toast by ID
    */
   dismiss(id: string): void {
-    this.toasts = this.toasts.filter((t) => t.id !== id);
+    this.setToasts(this.toasts.filter((t) => t.id !== id));
   }
 
   /**
    * Dismiss all toasts
    */
   dismissAll(): void {
-    this.toasts = [];
+    this.setToasts([]);
   }
 }
 

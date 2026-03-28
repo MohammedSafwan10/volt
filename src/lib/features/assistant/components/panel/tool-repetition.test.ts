@@ -14,14 +14,14 @@ describe('ToolRepetitionDetector', () => {
     expect(third.count).toBe(3);
   });
 
-  it('uses higher threshold for exempt polling tools', () => {
+  it('uses the default threshold consistently', () => {
     const detector = new ToolRepetitionDetector(2);
     let blocked = false;
-    for (let i = 0; i < 6; i++) {
-      blocked = detector.recordAndShouldBlock('browser_wait_for', { selector: '#app' }).blocked;
+    for (let i = 0; i < 2; i++) {
+      blocked = detector.recordAndShouldBlock('workspace_search', { query: 'volt' }).blocked;
     }
     expect(blocked).toBe(false);
-    blocked = detector.recordAndShouldBlock('browser_wait_for', { selector: '#app' }).blocked;
+    blocked = detector.recordAndShouldBlock('workspace_search', { query: 'volt' }).blocked;
     expect(blocked).toBe(true);
   });
 });

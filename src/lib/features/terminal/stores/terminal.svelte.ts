@@ -16,7 +16,7 @@ class TerminalStore {
 	sessions = $state<TerminalSession[]>([]);
 	activeTerminalId = $state<string | null>(null);
 	lastError = $state<{ terminalId: string; command: string; output: string } | null>(null);
-	private createPromise: Promise<TerminalSession | null> | null = null;
+	private createPromises = new Map<string, Promise<TerminalSession | null>>();
 	private aiCreatePromise: Promise<TerminalSession | null> | null = null;
 	private sessionLabels = $state<Record<string, string>>({});
 	private aiTerminalId = $state<string | null>(null);
@@ -45,6 +45,7 @@ class TerminalStore {
 	}
 
 	constructor() {
+		if (typeof window === 'undefined') return;
 		void this.syncWithBackendRetry(5, 250);
 		// Start terminal problem matcher (background service)
 		void terminalProblemMatcher.start();
@@ -123,22 +124,22 @@ class TerminalStore {
 	/**
 	 * Create a new terminal session
 	 */
-	async createTerminal(cwd?: string): Promise<TerminalSession | null> {
-		// If a terminal creation is already in-flight, await it.
-		// This prevents races where callers see `null` and assume terminal creation failed.
-		if (this.createPromise) {
-			return await this.createPromise;
+	async createTerminal(cwd?: string, ai = false): Promise<TerminalSession | null> {
+		const workingDir = await this.resolveRequiredCwd(cwd);
+		const key = `${ai ? 'ai' : 'user'}:${this.normalizeCwd(workingDir) ?? workingDir}`;
+		const existingPromise = this.createPromises.get(key);
+		if (existingPromise) {
+			return await existingPromise;
 		}
 
-		this.createPromise = (async () => {
+		const createPromise = (async () => {
 			// Before creating a new session, reconcile with backend in case we are
 			// just after reload and missed rehydration.
 			await this.ensureSynced();
 
-			const workingDir = await this.resolveRequiredCwd(cwd);
 			console.log('[TerminalStore] Creating terminal in:', workingDir);
 
-			const session = await createTerminalSession(workingDir);
+			const session = await createTerminalSession(workingDir, undefined, undefined, ai);
 			if (!session) {
 				console.error('[TerminalStore] createTerminalSession returned null');
 				return null;
@@ -150,10 +151,12 @@ class TerminalStore {
 			return session;
 		})();
 
+		this.createPromises.set(key, createPromise);
+
 		try {
-			return await this.createPromise;
+			return await createPromise;
 		} finally {
-			this.createPromise = null;
+			this.createPromises.delete(key);
 		}
 	}
 
@@ -193,7 +196,7 @@ class TerminalStore {
 					existingCwdNormalized === desiredCwdNormalized;
 				if (cwdMatches) {
 					console.log('[TerminalStore] Reusing existing AI terminal:', existingId);
-					console.log('[TerminalStore] AI terminal output history chars:', existing.getRecentOutput().length);
+					console.log('[TerminalStore] AI terminal output history chars:', existing.getOutputCharCount());
 					this.activeTerminalId = existing.id;
 					return existing;
 				}
@@ -215,7 +218,7 @@ class TerminalStore {
 		// Create new AI terminal with mutex protection
 		this.aiCreatePromise = (async () => {
 			console.log('[TerminalStore] Creating new AI terminal');
-			const session = await this.createTerminal(desiredCwd);
+			const session = await this.createTerminal(desiredCwd, true);
 			if (!session) {
 				console.error('[TerminalStore] Failed to create AI terminal');
 				return null;
@@ -223,9 +226,16 @@ class TerminalStore {
 
 			// Wait for terminal to be ready before enabling shell integration
 			await session.waitForReady(3000);
-			// Extra safety delay for slow shell initialization
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			await session.enableShellIntegration();
+			// Give startup bootstrap a chance to publish shell integration before
+			// we fall back to typing the integration script into the visible shell.
+			await new Promise((resolve) => setTimeout(resolve, 180));
+			const integrationDeadline = Date.now() + 900;
+			while (!session.hasShellIntegration && Date.now() < integrationDeadline) {
+				await new Promise((resolve) => setTimeout(resolve, 60));
+			}
+			if (!session.hasShellIntegration) {
+				await session.enableShellIntegration();
+			}
 
 			this.aiTerminalId = session.id;
 			this.setSessionLabel(session.id, 'Volt AI');
@@ -251,6 +261,20 @@ class TerminalStore {
 		if (label) {
 			this.setSessionLabel(terminalId, label);
 		}
+	}
+
+	async recreateAiTerminal(cwd?: string): Promise<TerminalSession | null> {
+		const desiredCwd = await this.resolveRequiredCwd(cwd);
+		const existingId = this.aiTerminalId;
+		this.aiTerminalId = null;
+		if (existingId) {
+			try {
+				await this.killTerminal(existingId);
+			} catch (error) {
+				console.warn('[TerminalStore] Failed to kill stale AI terminal before recreation:', error);
+			}
+		}
+		return await this.getOrCreateAiTerminal(desiredCwd);
 	}
 
 	/**

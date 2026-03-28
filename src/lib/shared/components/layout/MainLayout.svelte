@@ -18,7 +18,8 @@
   } from "$features/editor/components/command-palette";
   import { BottomPanel } from "$shared/components/panel";
   import { AssistantPanel } from "$features/assistant/components";
-  import { BrowserPanel } from "$features/browser/components";
+  import SpecHeaderBar from "$features/specs/components/SpecHeaderBar.svelte";
+  import { specStore } from "$features/specs/stores/specs.svelte";
   import { loadXterm } from "$features/terminal/services/terminal-loader";
   import {
     getModelLineCount,
@@ -39,7 +40,6 @@
   import { logOutput } from "$features/terminal/stores/output.svelte";
   import { settingsStore } from "$shared/stores/settings.svelte";
   import { assistantStore } from "$features/assistant/stores/assistant.svelte";
-  import { browserStore } from "$features/browser/stores/browser.svelte";
   import { diffStore } from "$features/editor/stores/diff.svelte";
   import { openFolderDialog, writeFile } from "$core/services/file-system";
   import {
@@ -78,6 +78,9 @@
   }
 
   function shouldUseRichPreview(path: string): boolean {
+    if (specStore.isEditableSpecMarkdown(path)) {
+      return false;
+    }
     const ext = getFileExt(path);
     return (
       ext === "md" ||
@@ -224,10 +227,8 @@
 
     // Handle window beforeunload to clean up services
     const handleBeforeUnload = () => {
-      // Best-effort cleanup - browser may not wait for async
       void disposeLspRegistry();
       void mcpStore.cleanup();
-      void browserStore.cleanup();
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
 
@@ -246,10 +247,9 @@
       destroyAutoSave();
       // Do not kill terminals on component unmount/reload.
       // Backend handles terminal cleanup on actual window close.
-      // Stop all LSP servers on unmount
-      void disposeLspRegistry();
-      // Cleanup browser
-      void browserStore.cleanup();
+      // Do not stop all LSP servers on ordinary component unmount/reload.
+      // `beforeunload` handles true window shutdown, and eager teardown here can
+      // kill live sidecars during HMR/layout churn.
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener(
         "volt:open-symbol-picker",
@@ -285,6 +285,7 @@
   function handleEditorChange(content: string): void {
     if (editorStore.activeFilePath) {
       editorStore.updateContent(editorStore.activeFilePath, content);
+      specStore.handleActiveFileDraftChanged(editorStore.activeFilePath, content);
       // Schedule auto-save after typing stops
       scheduleAutoSave();
     }
@@ -321,9 +322,12 @@
       }
     }
 
-    const success = await writeFile(activeFile.path, contentToSave);
+    const success = await writeFile(activeFile.path, contentToSave, {
+      expectedVersion: editorStore.getDocumentVersion(activeFile.path) ?? undefined,
+    });
     if (success) {
       editorStore.markSaved(activeFile.path);
+      await specStore.handleActiveFileSaved(activeFile.path, contentToSave);
     }
   }
 
@@ -352,22 +356,11 @@
     );
   }
 
-  // Hide browser webview when opening command palette (so it appears on top)
-  function openCommandPaletteWithBrowserHide(mode: "command" | "file"): void {
-    if (browserStore.isVisible) {
-      browserStore.hide();
-    }
+  function openCommandPalette(mode: "command" | "file"): void {
     if (mode === "command") {
       commandPalette?.openCommandMode();
     } else {
       commandPalette?.openFileMode();
-    }
-  }
-
-  // Show browser again when command palette closes
-  function handleCommandPaletteClose(): void {
-    if (browserStore.isVisible) {
-      browserStore.show();
     }
   }
 
@@ -379,7 +372,7 @@
     if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       uiStore.closeMenus();
-      openCommandPaletteWithBrowserHide("command");
+      openCommandPalette("command");
       return;
     }
 
@@ -387,7 +380,7 @@
     if (isMod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       uiStore.closeMenus();
-      openCommandPaletteWithBrowserHide("file");
+      openCommandPalette("file");
       return;
     }
 
@@ -446,19 +439,6 @@
       e.preventDefault();
       uiStore.closeMenus();
       uiStore.toggleSidebar();
-    }
-
-    // Ctrl+Shift+B to toggle browser panel visibility
-    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
-      e.preventDefault();
-      uiStore.closeMenus();
-      if (browserStore.isOpen) {
-        // Toggle visibility (hide/show without destroying)
-        browserStore.setVisible(!browserStore.isVisible);
-      } else {
-        // First time - open browser
-        browserStore.open();
-      }
     }
 
     // Ctrl+S to save
@@ -608,6 +588,17 @@
   });
 
   $effect(() => {
+    specStore.setActiveFile(editorStore.activeFilePath);
+  });
+
+  $effect(() => {
+    void assistantStore.isStreaming;
+    void assistantStore.agentLoopState;
+    void assistantStore.currentConversation?.id;
+    specStore.scheduleAssistantRuntimeSync();
+  });
+
+  $effect(() => {
     if (diffStore.isActive || !!editorStore.activeFile) {
       void ensureMonacoFeatureLoaded();
     }
@@ -617,47 +608,32 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="main-layout">
-  <MenuBar
-    onOpenCommandPalette={() => openCommandPaletteWithBrowserHide("command")}
-  />
+  <MenuBar onOpenCommandPalette={() => openCommandPalette("command")} />
 
   <div class="content-area">
     <!-- Activity Bar (always visible) -->
     <ActivityBar />
 
-    <!-- Side Panel (toggleable, hidden when browser is visible) -->
-    {#if !browserStore.isVisible}
-      <SidePanel onFileSelect={handleFileSelect} />
-    {/if}
+    <SidePanel onFileSelect={handleFileSelect} />
 
     <div class="main-content">
       <!-- Editor region (with bottom panel) + Assistant Panel side by side -->
       <div class="editor-with-right-panel">
         <!-- Editor region: tabs, breadcrumb, editor, bottom panel -->
         <div class="editor-region">
-          <!-- Tab Bar (hidden when browser is visible) -->
-          {#if !browserStore.isVisible}
-            <TabBar />
+          <TabBar />
+
+          {#if editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
+            <Breadcrumb filepath={editorStore.activeFile.path} />
           {/if}
 
-          <!-- Breadcrumb navigation (hidden when browser is visible) -->
-          {#if !browserStore.isVisible && editorStore.activeFile && !isVoltVirtualPath(editorStore.activeFile.path)}
-            <Breadcrumb filepath={editorStore.activeFile.path} />
+          {#if editorStore.activeFile && specStore.isSpecPath(editorStore.activeFile.path)}
+            <SpecHeaderBar filepath={editorStore.activeFile.path} />
           {/if}
 
           <!-- Editor area -->
           <div class="editor-area">
-            {#if browserStore.isVisible}
-              <!-- Browser Panel (replaces editor when visible) -->
-              <BrowserPanel
-                onAskAI={(context) => {
-                  assistantStore.setInputValue(
-                    `Help me debug this:\n\n${context}`,
-                  );
-                  assistantStore.openPanel();
-                }}
-              />
-            {:else if children}
+            {#if children}
               {@render children()}
             {:else if diffStore.isActive}
               <!-- Diff Editor Mode -->
@@ -750,10 +726,7 @@
 
   <StatusBar />
   <AboutModal />
-  <CommandPalette
-    bind:this={commandPalette}
-    onClose={handleCommandPaletteClose}
-  />
+  <CommandPalette bind:this={commandPalette} />
   <GoToLineDialog
     open={goToLineOpen}
     maxLine={goToLineMax}

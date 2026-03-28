@@ -89,8 +89,10 @@ export async function buildHybridSemanticSnippets(input: BuildHybridInput): Prom
   const topK = Math.max(defaults.topK, input.maxSelected ?? defaults.maxSelected);
   const laneCap = input.maxSelected ?? defaults.maxSelected;
 
-  const result = await querySemanticIndex(input.rootPath, query, { topK, laneCap });
-  const status = await getSemanticStatus(input.rootPath);
+  const [result, status] = await Promise.all([
+    querySemanticIndex(input.rootPath, query, { topK, laneCap }),
+    getSemanticStatus(input.rootPath),
+  ]);
   if (!result || !result.semanticEnabled) {
     return {
       snippets: [],

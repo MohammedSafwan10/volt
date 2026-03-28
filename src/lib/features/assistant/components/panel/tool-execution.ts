@@ -43,6 +43,7 @@ export async function executeToolWithUpdates(
     status: 'running',
     startTime: Date.now(),
     meta: {
+      ...(toolCall.meta ?? {}),
       liveStatus: getInitialToolLiveStatus(toolCall.name),
     },
   });
@@ -66,6 +67,7 @@ export async function executeToolWithUpdates(
       output: result.output,
       error: result.error,
       meta: {
+        ...(toolCall.meta ?? {}),
         ...(result.meta ?? {}),
         liveStatus: undefined,
       },
@@ -81,6 +83,7 @@ export async function executeToolWithUpdates(
       status: 'failed',
       error,
       meta: {
+        ...(toolCall.meta ?? {}),
         liveStatus: undefined,
       },
       endTime: Date.now(),

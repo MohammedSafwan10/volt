@@ -56,15 +56,32 @@
 {#if hasActivities || isGathering}
   <div class="context-card" class:gathering={isGathering}>
     <div class="card-header">
-      <span class="header-icon" class:spinning={isGathering}>
-        <UIIcon name="search" size={16} />
-      </span>
-      <span class="header-title">
-        {isGathering ? 'Gathering context...' : 'Context gathered'}
+      <span class="header-icon" class:shimmer-icon={isGathering} title={isGathering ? 'Gathering context...' : 'Context'}>
+        {#if isGathering}
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
+            />
+            <path
+              d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
+            />
+          </svg>
+        {:else}
+          <UIIcon name="search" size={14} />
+        {/if}
       </span>
       {#if stats}
-        <span class="header-stats">
-          {stats.filesFound} files · {stats.symbolsIndexed} symbols
+        <span class="header-stats" title="{stats.filesFound} files · {stats.symbolsIndexed} symbols">
+          <UIIcon name="symbol-property" size={12} />
         </span>
       {/if}
     </div>
@@ -72,15 +89,13 @@
     <div class="activities-list">
       {#each [...groupedActivities.entries()] as [type, items]}
         <div class="activity-group">
-          <div class="group-header">
+          <div class="group-header" title={typeLabels[type]}>
             <UIIcon name={typeIcons[type]} size={14} />
-            <span>{typeLabels[type]}</span>
           </div>
           <ul class="activity-items">
             {#each items.slice(-5) as activity}
-              <li class="activity-item" class:active={activity.status === 'active'}>
+              <li class="activity-item" class:active={activity.status === 'active'} title={activity.message}>
                 <span class="bullet">•</span>
-                <span class="activity-message">{activity.message}</span>
               </li>
             {/each}
           </ul>
@@ -98,45 +113,30 @@
 
 <style>
   .context-card {
-    margin: 8px 0;
-    border-radius: 10px;
-    background: var(--color-surface0);
-    border: 1px solid var(--color-border);
+    margin: 4px 0;
+    border-radius: 8px;
+    background: transparent;
+    border: none;
     overflow: hidden;
     font-size: 13px;
   }
 
   .context-card.gathering {
-    border-color: var(--color-accent);
-    background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface0));
+    background: transparent;
+    border: none;
   }
 
   .card-header {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--color-border);
+    padding: 6px 0;
   }
 
   .header-icon {
     display: flex;
     align-items: center;
-    color: var(--color-accent);
-  }
-
-  .header-icon.spinning :global(svg) {
-    animation: spin 1.5s linear infinite;
-  }
-
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
-  .header-title {
-    font-weight: 600;
-    color: var(--color-text);
+    color: var(--color-text-secondary);
   }
 
   .header-stats {
@@ -192,11 +192,6 @@
   .bullet {
     color: var(--color-accent);
     font-weight: bold;
-    line-height: 1.4;
-  }
-
-  .activity-message {
-    flex: 1;
     line-height: 1.4;
   }
 

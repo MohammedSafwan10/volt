@@ -6,6 +6,7 @@ Rules:
 - Prefer \`workspace_search\`, \`list_dir\`, and \`read_file\` before \`run_command\` when investigating code.
 - Prefer one command at a time and inspect output before next action.
 - Use terminal mainly for validators, builds, installs, or commands that file tools cannot express.
+- Do not prepend \`cd\`, \`Set-Location\`, or similar directory-changing shell text inside the command string; pass \`cwd\` instead.
 
 Failure playbook:
 - If command fails, read stderr/stdout fully and correct command before retry.

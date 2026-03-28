@@ -78,6 +78,7 @@ export function waitForToolApprovals(
     const startedAt = Date.now();
     let finished = false;
     let checkTimer: ReturnType<typeof setTimeout> | null = null;
+    const POLL_INTERVAL_MS = 30;
 
     const finish = (ok: boolean): void => {
       if (finished) return;
@@ -132,7 +133,7 @@ export function waitForToolApprovals(
         return;
       }
 
-      checkTimer = setTimeout(check, 120);
+      checkTimer = setTimeout(check, POLL_INTERVAL_MS);
     };
 
     signal.addEventListener('abort', onAbort, { once: true });
@@ -156,6 +157,7 @@ export function waitForToolCompletion(
     const startedAt = Date.now();
     let finished = false;
     let checkTimer: ReturnType<typeof setTimeout> | null = null;
+    const POLL_INTERVAL_MS = 30;
 
     const finish = (ok: boolean): void => {
       if (finished) return;
@@ -194,7 +196,7 @@ export function waitForToolCompletion(
         return;
       }
 
-      checkTimer = setTimeout(check, 120);
+      checkTimer = setTimeout(check, POLL_INTERVAL_MS);
     };
 
     signal.addEventListener('abort', onAbort, { once: true });

@@ -4,7 +4,7 @@ Rules:
 - Run \`get_diagnostics\` after code edits and before final response.
 - Use \`get_tool_metrics\` to debug flaky tools, retries, and latency hotspots.
 - Do not claim success while unresolved diagnostics remain.
-- If diagnostics are clean for touched files, then use \`attempt_completion\` instead of more exploratory tool calls.
+- If diagnostics are clean for touched files, stop exploring and conclude the task. You may use \`attempt_completion\`, or provide the final response directly if the work is already complete.
 
 Failure playbook:
 - If diagnostics tool fails transiently, retry once.

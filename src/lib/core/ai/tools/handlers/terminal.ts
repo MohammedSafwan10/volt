@@ -12,22 +12,69 @@
 
 import { terminalStore } from '$features/terminal/stores/terminal.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
-import { projectDiagnostics } from '$core/services/project-diagnostics';
 import { uiStore } from '$shared/stores/ui.svelte';
-import { logOutput } from '$features/terminal/stores/output.svelte';
 import type { TerminalSession } from '$features/terminal/services/terminal-client';
 import { truncateOutput, extractErrorMessage, type ToolResult } from '$core/ai/tools/utils';
+import { createTerminalToolRunCoordinator } from '$lib/features/assistant/components/panel/terminal-tool-run-coordinator';
+import { createTerminalToolRunStore } from '$lib/features/assistant/components/panel/terminal-tool-run-store';
 
-let aiCommandQueue: Promise<ToolResult> = Promise.resolve({ success: true, output: '' });
-const recentAiCommands = new Map<string, { command: string; timestamp: number }>();
-const AI_QUEUE_WAIT_TIMEOUT_MS = 45_000;
-const AI_COMMAND_HARD_CAP_MS = 120_000;
+const terminalToolRunStore = createTerminalToolRunStore();
+
+const terminalToolRunCoordinator = createTerminalToolRunCoordinator({
+  runStore: terminalToolRunStore,
+  getSession: async (cwd) => {
+    let session = await terminalStore.getOrCreateAiTerminal(cwd);
+    if (!session) {
+      throw new Error('Failed to access AI terminal');
+    }
+
+    await session.waitForReady(3000);
+    if (!session.hasShellIntegration) {
+      await session.enableShellIntegration();
+    }
+
+    if (!session.hasShellIntegration && /powershell|pwsh/i.test(session.info.shell)) {
+      console.warn('[TerminalTool] PowerShell shell integration did not initialize on first attempt; recreating AI terminal.');
+      session = await terminalStore.recreateAiTerminal(cwd);
+      if (!session) {
+        throw new Error('Failed to recreate AI terminal for shell integration');
+      }
+      await session.waitForReady(3000);
+      if (!session.hasShellIntegration) {
+        await session.enableShellIntegration();
+      }
+    }
+
+    terminalStore.setActive(session.id);
+    return session;
+  },
+  classifyLongRunning: (command, transcript) =>
+    isLikelyDevServer(command) && /\b(ready|started|listening|localhost:|0\.0\.0\.0:)\b/i.test(transcript),
+  trackDetachedProcess: async (command, cwd, terminalId) =>
+    trackDetachedProcess(command, cwd, terminalId ?? ''),
+});
 
 function resolveToolCwd(rawCwd: unknown): string | undefined {
-  if (typeof rawCwd === 'string' && rawCwd.trim()) {
-    return rawCwd.trim();
+  const projectRoot = projectStore.rootPath?.trim() || undefined;
+  const explicitCwd =
+    typeof rawCwd === 'string' && rawCwd.trim() ? rawCwd.trim() : undefined;
+
+  if (!projectRoot) {
+    return explicitCwd;
   }
-  return projectStore.rootPath ?? undefined;
+  if (!explicitCwd) {
+    return projectRoot;
+  }
+
+  const normalizedProjectRoot = normalizeCwd(projectRoot);
+  const normalizedExplicit = normalizeCwd(explicitCwd);
+  const cwdWithinProject =
+    normalizedExplicit &&
+    normalizedProjectRoot &&
+    (normalizedExplicit === normalizedProjectRoot ||
+      normalizedExplicit.startsWith(`${normalizedProjectRoot}/`));
+
+  return cwdWithinProject ? explicitCwd : projectRoot;
 }
 
 function requireToolCwd(rawCwd: unknown): string {
@@ -36,19 +83,6 @@ function requireToolCwd(rawCwd: unknown): string {
     return cwd;
   }
   throw new Error('No active project root available for terminal command cwd');
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return Promise.race([
-    promise.finally(() => {
-      if (timer) clearTimeout(timer);
-    }),
-    new Promise<T>((resolve) => {
-      timer = setTimeout(() => resolve(fallback), timeoutMs);
-    })
-  ]);
 }
 
 function isLikelyDevServer(command: string): boolean {
@@ -65,6 +99,38 @@ function isLikelyDevServer(command: string): boolean {
 
 function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function normalizeCwd(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function extractLeadingCwdDirective(
+  command: string,
+  explicitCwd?: string,
+): { command: string; cwd: string | undefined } {
+  const trimmed = command.trim();
+  const patterns: RegExp[] = [
+    /^\s*cd\s+\/d\s+(['"]?)(.+?)\1\s*(?:;|&&)\s*([\s\S]+)$/i,
+    /^\s*cd\s+(['"]?)(.+?)\1\s*(?:;|&&)\s*([\s\S]+)$/i,
+    /^\s*set-location(?:\s+-literalpath|\s+-path)?\s+(['"])(.+?)\1\s*(?:;|&&)\s*([\s\S]+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (!match) continue;
+    const extractedCwd = match[2]?.trim();
+    const remainder = match[3]?.trim();
+    if (!extractedCwd || !remainder) continue;
+    if (explicitCwd && normalizeCwd(explicitCwd) !== normalizeCwd(extractedCwd)) {
+      return { command, cwd: explicitCwd };
+    }
+    return { command: remainder, cwd: extractedCwd };
+  }
+
+  return { command, cwd: explicitCwd };
 }
 
 function getBlockedCommandReason(command: string): string | null {
@@ -392,257 +458,85 @@ async function reconcileTrackedProcesses(): Promise<void> {
 /**
  * Run a shell command and wait for completion using a UUID sentinel
  */
-export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
-  const command = String(args.command).trim();
-  const cwd = requireToolCwd(args.cwd);
-  const timeout = typeof args.timeout === 'number' ? args.timeout : 90_000;
-  const waitForExit = args.waitForExit === true;
-  const allowDetach = args.detached !== false;
-  const isDevServer = isLikelyDevServer(command);
-  const blockedReason = getBlockedCommandReason(command);
-  if (blockedReason) {
-    return {
-      success: false,
-      error: blockedReason,
-      output:
-        'Suggested safe flow:\n1) Scaffold in `./_scaffold_tmp`.\n2) Copy generated app files into workspace (exclude `.volt`).\n3) Delete temp folder.',
-      code: 'COMMAND_BLOCKED',
-      retryable: false
-    };
-  }
+function createTerminalRunId(): string {
+  return `terminal-run:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
 
-  const run = async (): Promise<ToolResult> => {
-    try {
-      if (isDevServer) {
-        const running = findRunningDevServer(command, cwd);
-        if (running?.terminalId) {
-          terminalStore.setActive(running.terminalId);
-          const urlHint = running.detectedUrl ? ` URL: ${running.detectedUrl}.` : '';
-          return {
-            success: true,
-            output: `Dev server already running (process ${running.processId}) in terminal ${running.terminalId}.${urlHint} Reusing existing server.`,
-            meta: {
-              reused: true,
-              processId: running.processId,
-              terminalId: running.terminalId,
-              detectedUrl: running.detectedUrl,
-            }
-          };
-        }
-      }
-
-      if (isDevServer && allowDetach && !waitForExit) {
-        const result = await handleStartProcess({ command, cwd });
-        if (result.success) {
-          result.output = `Detected long-running server command. Started as background process.\n\n${result.output}`;
-          result.meta = { ...(result.meta ?? {}), autoDetached: true };
-        }
-        return result;
-      }
-
-      // Ensure terminal panel is open so user sees progress
-      uiStore.openBottomPanelTab('terminal');
-
-      // Get or create the shared AI terminal
-      const session = await terminalStore.getOrCreateAiTerminal(cwd);
-      if (!session) {
-        return { success: false, error: 'Failed to access AI terminal' };
-      }
-
-      await session.waitForReady(3000);
-      if (!session.hasShellIntegration) {
-        await session.enableShellIntegration();
-      }
-
-      // Switch to this terminal in the UI
-      terminalStore.setActive(session.id);
-
-      const slowListPatterns = [/\bls\s+-R\b/i, /\bdir\s+\/s\b/i, /\bGet-ChildItem\b.*-Recurse/i];
-      if (slowListPatterns.some((pattern) => pattern.test(command))) {
-        return {
-          success: true,
-          output: 'Skipping slow recursive listing. Use list_dir, find_files, or workspace_search for faster structured exploration instead.',
-          meta: { terminalId: session.id, skipped: true }
-        };
-      }
-
-      const now = Date.now();
-      const normalizedCommand = normalizeCommand(command);
-      const recent = recentAiCommands.get(session.id);
-      if (recent && recent.command === normalizedCommand && now - recent.timestamp < 300) {
-        return {
-          success: true,
-          output: `[Volt]: Skipped duplicate command (debounced): ${command}`,
-          meta: { terminalId: session.id, debounced: true }
-        };
-      }
-      recentAiCommands.set(session.id, { command: normalizedCommand, timestamp: now });
-
-      console.log(`[TerminalTool] Executing command: "${command}" in cwd: "${cwd || session.cwd || session.info.cwd}"`);
-
-      // If a different CWD is requested, cd there first
-      const currentCwd = session.cwd || session.info.cwd;
-      if (cwd && currentCwd !== cwd) {
-        const safeCwd = cwd.replace(/'/g, "''");
-        await session.write(`Set-Location -LiteralPath '${safeCwd}'\r`);
-        // Wait a bit for the CWD to update
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-
-      // Heuristic: Warn if running a command that looks like a dev server in run_command
-      if (isDevServer) {
-        logOutput('Volt', `Warning: Running potential long-running command "${command}" in run_command. If this is a server, use start_process instead.`);
-      }
-
-      // 195: Execute the command using smart shell integration (OSC 633)
-      // We add a "smart detach" race: if it looks like a dev server and shows "Ready" output, 
-      // we return early so the AI doesn't get stuck.
-
-      const executionPromise = session.executeCommand(command, timeout);
-
-      // Poller for "Ready" signals in long-running commands
-      const detectionPromise = (async () => {
-        const waitTime = isDevServer ? 8000 : 15000;
-        const startTime = Date.now();
-        const startOffset = session.getRecentOutput().length;
-
-        while (Date.now() - startTime < waitTime) {
-          await new Promise(r => setTimeout(r, 500));
-          const output = session.getCleanOutputSince(startOffset);
-
-          // Typical "Server is ready" patterns
-          const isReady = /\b(ready|started|listening|localhost:|0\.0\.0\.0:)\b/i.test(output);
-
-          if (isReady && Date.now() - startTime > 2000) { // Give it at least 2s to show initial errors
-            return { ready: true, output };
-          }
-        }
-        return { ready: false };
-      })();
-
-      const result = await Promise.race([
-        executionPromise.then(r => ({ type: 'completion' as const, data: r })),
-        detectionPromise.then(r => ({ type: 'detection' as const, data: r }))
-      ]);
-
-      let finalOutput = '';
-      let success = false;
-      let isDetached = false;
-
-      if (result.type === 'completion') {
-        finalOutput = result.data.output;
-        success = result.data.exitCode === 0 && !result.data.timedOut;
-      } else {
-        if (result.data.ready) {
-          finalOutput = result.data.output + '\n\n[Volt AI]: Detected server startup. Detaching to let it run in background.';
-          success = true;
-          isDetached = true;
-        } else {
-          // Detection timed out, wait for actual completion
-          const finalResult = await executionPromise;
-          finalOutput = finalResult.output;
-          success = finalResult.exitCode === 0 && !finalResult.timedOut;
-        }
-      }
-
-      const { text, truncated } = truncateOutput(finalOutput);
-
-      const toolResult: ToolResult = {
-        success,
-        output: text.trim() || (success ? '[Success - no output]' : '[Failed - no output]'),
-        truncated,
-        meta: {
-          exitCode: result.type === 'completion' ? result.data.exitCode : 0,
-          timedOut: result.type === 'completion' ? result.data.timedOut : false,
-          terminalId: session.id,
-          isDevServer,
-          isDetached,
-          hasError: !success || /\b(error|failed|exception)\b/i.test(finalOutput)
-        }
+type TerminalCoordinatorLike = {
+  runForeground: (input: {
+    runId: string;
+    toolCallId: string;
+    command: string;
+    cwd?: string;
+    timeoutMs: number;
+  }) => Promise<{
+    success: boolean;
+    output?: string;
+    error?: string;
+    meta?: {
+      terminalRun?: {
+        state?: string;
+        processId?: number;
+        terminalId?: string;
+        detectedUrl?: string;
       };
+    };
+  }>;
+};
 
-      // Improve timeout message for humans/AI
-      if (toolResult.meta?.timedOut) {
-        toolResult.output = `Command timed out after ${timeout}ms. Output so far:\n\n${toolResult.output}`;
-        if (isDevServer) {
-          toolResult.output += `\n\nNOTE: This looks like a dev server. Please use the 'start_process' tool for long-running processes that don't exit naturally.`;
-        }
+async function runCommandThroughCoordinator(
+  coordinator: TerminalCoordinatorLike,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const normalizedInvocation = extractLeadingCwdDirective(String(args.command), resolveToolCwd(args.cwd));
+  const command = normalizedInvocation.command.trim();
+  const cwd = requireToolCwd(normalizedInvocation.cwd);
+  const timeout = typeof args.timeout === 'number' ? args.timeout : 90_000;
+
+  const result = await coordinator.runForeground({
+    runId: createTerminalRunId(),
+    toolCallId: String(args.toolCallId ?? command),
+    command,
+    cwd,
+    timeoutMs: timeout,
+  });
+
+  const terminalRun = result.meta?.terminalRun;
+  const meta = terminalRun
+    ? {
+        terminalRun,
+        processId: terminalRun.processId,
+        terminalId: terminalRun.terminalId,
+        detectedUrl: terminalRun.detectedUrl,
       }
+    : result.meta;
 
-      // If the command detached (likely a long-running server) or timed out,
-      // detach the AI terminal so the next command gets a fresh shell.
-      if (isDetached || toolResult.meta?.timedOut) {
-        terminalStore.detachAiTerminal(session.id, isDetached ? 'Volt AI (running)' : 'Volt AI (busy)');
-      }
-
-      if (isDetached) {
-        const proc = trackDetachedProcess(command, cwd, session.id);
-        toolResult.meta = { ...(toolResult.meta ?? {}), processId: proc.processId };
-        toolResult.output = `${toolResult.output}\n\n[Volt]: Tracking background process ${proc.processId} in terminal ${session.id}.`;
-      }
-
-      // Notify store of errors for the "Fix with AI" feature
-      if (!toolResult.success && !isDetached) {
-        terminalStore.lastError = {
-          terminalId: session.id,
-          command,
-          output: finalOutput
-        };
-      }
-
-      if (projectStore.rootPath) {
-        void projectDiagnostics.runDiagnostics(projectStore.rootPath);
-      }
-
-      return toolResult;
-    } catch (err) {
-      return { success: false, error: `Command execution failed: ${extractErrorMessage(err)}` };
-    }
+  return {
+    success: result.success,
+    output: result.output ?? '',
+    error: result.error,
+    meta,
   };
+}
 
-  const queueReady = withTimeout(
-    aiCommandQueue,
-    AI_QUEUE_WAIT_TIMEOUT_MS,
-    {
-      success: false,
-      error: `Previous AI terminal command was stuck for over ${AI_QUEUE_WAIT_TIMEOUT_MS}ms; skipping queue wait.`,
-      retryable: true
-    } satisfies ToolResult
-  );
+export async function handleRunCommandThroughCoordinatorForTest(
+  coordinator: TerminalCoordinatorLike,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runCommandThroughCoordinator(coordinator, args);
+}
 
-  aiCommandQueue = queueReady.then(
-    () =>
-      withTimeout(
-        run(),
-        Math.max(timeout + 10_000, AI_COMMAND_HARD_CAP_MS),
-        {
-          success: false,
-          error:
-            'AI terminal command exceeded hard execution cap and was aborted to prevent queue lock.',
-          retryable: true
-        } satisfies ToolResult
-      ),
-    () =>
-      withTimeout(
-        run(),
-        Math.max(timeout + 10_000, AI_COMMAND_HARD_CAP_MS),
-        {
-          success: false,
-          error:
-            'AI terminal command exceeded hard execution cap and was aborted to prevent queue lock.',
-          retryable: true
-        } satisfies ToolResult
-      )
-  );
-  return aiCommandQueue;
+export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
+  return runCommandThroughCoordinator(terminalToolRunCoordinator, args);
 }
 
 /**
  * Start a long-running background process in a dedicated terminal
  */
 export async function handleStartProcess(args: Record<string, unknown>): Promise<ToolResult> {
-  const command = String(args.command);
-  const cwd = requireToolCwd(args.cwd);
+  const normalizedInvocation = extractLeadingCwdDirective(String(args.command), resolveToolCwd(args.cwd));
+  const command = normalizedInvocation.command.trim();
+  const cwd = requireToolCwd(normalizedInvocation.cwd);
   const blockedReason = getBlockedCommandReason(command);
   if (blockedReason) {
     return {
@@ -680,10 +574,8 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
     const terminalId = session.id;
 
     const currentCwd = session.cwd || session.info.cwd;
-    if (currentCwd !== cwd) {
-      const safeCwd = cwd.replace(/'/g, "''");
-      await session.write(`Set-Location -LiteralPath '${safeCwd}'\r`);
-      await new Promise(resolve => setTimeout(resolve, 300));
+    if (normalizeCwd(currentCwd) !== normalizeCwd(cwd)) {
+      throw new Error(`Process terminal cwd mismatch: expected "${cwd}", got "${currentCwd}"`);
     }
 
     // Track it
@@ -707,7 +599,7 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
       }
     });
 
-    const startOffset = session.getRecentOutput().length;
+    const startOffset = session.getOutputCursor();
 
     // Send command
     const writeSuccess = await session.write(command + '\r');

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount } from "svelte";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { UIIcon } from "$shared/components/ui";
   import type {
     AssistantMessage,
@@ -8,6 +9,7 @@
     ContentPart,
   } from "$features/assistant/stores/assistant.svelte";
   import AssistantStreamingMarkdown from "./AssistantStreamingMarkdown.svelte";
+  import Markdown from "$shared/components/ui/Markdown.svelte";
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
   import { getFileEditDiffStats } from "./file-edit-stats";
@@ -16,12 +18,38 @@
   import { showToast } from "$shared/stores/toast.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
+  import { normalizeAssistantMarkdown } from "$features/assistant/utils/assistant-markdown";
+
+  interface FileEditMeta extends Record<string, unknown> {
+    beforeContent?: string;
+    afterContent?: string;
+    relativePath?: string;
+    absolutePath?: string;
+    isNewFile?: boolean;
+    isDirectory?: boolean;
+    revertedContent?: string;
+  }
+
+  interface ToolCallMeta extends Record<string, unknown> {
+    textOffset?: number;
+    fileEdit?: FileEditMeta;
+    terminalRun?: {
+      state?: string;
+      commandPreview?: string;
+      excerpt?: string;
+      detectedUrl?: string;
+      processId?: number;
+    };
+  }
 
   interface Props {
     message: AssistantMessage;
     msgIdx: number;
     showStreamingFallback?: boolean;
     renderMode?: "history" | "active";
+    compactHistory?: boolean;
+    expanded?: boolean;
+    onToggleExpand?: () => void;
     onToolApprove?: (messageId: string, toolCall: ToolCall) => void;
     onToolDeny?: (messageId: string, toolCall: ToolCall) => void;
     elapsedTime?: string | null;
@@ -29,9 +57,12 @@
 
   let {
     message,
-    msgIdx,
+    msgIdx: _msgIdx,
     showStreamingFallback = false,
     renderMode = "history",
+    compactHistory = false,
+    expanded = false,
+    onToggleExpand,
     onToolApprove,
     onToolDeny,
     elapsedTime,
@@ -42,26 +73,31 @@
     Boolean(message.isStreaming || showStreamingFallback),
   );
   const isActiveRow = $derived(renderMode === "active");
+  const isCompactHistory = $derived(
+    Boolean(compactHistory && !isActiveRow && !showStreaming),
+  );
 
   // Track reverted tool calls
-  let revertedIds = $state<Set<string>>(new Set());
+  let revertedIds = new SvelteSet<string>();
   let copyStatus = $state<"idle" | "copied">("idle");
   let turnReviewExpanded = $state(false);
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
+  let lastContentPartsSource: AssistantMessage | null = null;
+  let lastContentPartsValue: ContentPart[] = [];
 
   // Live timer for active thinking - updates every second
   let now = $state(Date.now());
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
   // Check if any thinking part is active
-  const hasActiveThinking = $derived(() => {
+  const hasActiveThinking = $derived.by(() => {
     const parts = message.contentParts ?? [];
     return parts.some((p) => p.type === "thinking" && p.isActive);
   });
 
   // Start/stop timer based on active thinking
   $effect(() => {
-    if (hasActiveThinking()) {
+    if (hasActiveThinking) {
       if (!timerInterval) {
         timerInterval = setInterval(() => {
           now = Date.now();
@@ -89,11 +125,14 @@
   }
 
   function shouldRenderFileEditAsApproval(toolCall: ToolCall): boolean {
-    return Boolean(toolCall.requiresApproval && toolCall.status === "pending");
+    return Boolean(
+      toolCall.requiresApproval &&
+        toolCall.status === "pending" &&
+        toolCall.reviewStatus !== "accepted",
+    );
   }
 
-  function getFirstUnresolvedTerminalId(): string | null {
-    const parts = getContentParts(message);
+  function getFirstUnresolvedTerminalId(parts: ContentPart[]): string | null {
     for (const part of parts) {
       if (part.type !== "tool") continue;
       if (!isTerminalToolName(part.toolCall.name)) continue;
@@ -104,7 +143,8 @@
       if (
         part.toolCall.status === "running" ||
         part.toolCall.status === "pending" ||
-        isApprovedPending
+        isApprovedPending ||
+        Boolean((part.toolCall.meta as ToolCallMeta | undefined)?.terminalRun)
       ) {
         return part.toolCall.id;
       }
@@ -118,7 +158,7 @@
   }
 
   function getToolTextOffset(tc: ToolCall): number | null {
-    const offset = (tc.meta as any)?.textOffset;
+    const offset = (tc.meta as ToolCallMeta | undefined)?.textOffset;
     return typeof offset === "number" && offset >= 0 ? offset : null;
   }
 
@@ -147,7 +187,7 @@
 
     for (const { tc, offset } of toolCallsWithOffsets) {
       const safeOffset = Math.min(Math.max(offset, 0), msg.content.length);
-      const textChunk = msg.content.slice(cursor, safeOffset).trimEnd();
+      const textChunk = msg.content.slice(cursor, safeOffset);
       if (textChunk.trim()) {
         parts.push({ type: "text", text: textChunk });
       }
@@ -155,48 +195,81 @@
       cursor = safeOffset;
     }
 
-    const tail = msg.content.slice(cursor).trim();
-    if (tail) parts.push({ type: "text", text: tail });
+    const tail = msg.content.slice(cursor);
+    if (tail.trim()) parts.push({ type: "text", text: tail });
 
     return parts.length > 0 ? parts : null;
   }
 
   function getContentParts(msg: AssistantMessage): ContentPart[] {
+    if (msg === lastContentPartsSource) {
+      return lastContentPartsValue;
+    }
+
     const sanitizeVisibleText = (text: string): string =>
-      text
-        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
-        .replace(/<system_context>[\s\S]*?<\/system_context>/gi, "")
-        .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, "")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+      normalizeAssistantMarkdown(
+        text
+          .replace(/<volt-spec-verify-json>[\s\S]*?<\/volt-spec-verify-json>/gi, "")
+          .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+          .replace(/<system_context>[\s\S]*?<\/system_context>/gi, "")
+          .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, "")
+          .replace(/\n{3,}/g, "\n\n"),
+      );
 
     // PRIORITY: Use saved contentParts (has correct order from streaming/history)
     // Only rebuild from offsets as a fallback for legacy messages without contentParts
     if (msg.contentParts?.length) {
-      return msg.contentParts
+      const cached = msg.contentParts
         .map((part) =>
           part.type === "text"
             ? { ...part, text: sanitizeVisibleText(part.text) }
             : part,
         )
         .filter((part) => part.type !== "text" || part.text);
+      lastContentPartsSource = msg;
+      lastContentPartsValue = cached;
+      return cached;
     }
     
     // Fallback: try to rebuild from offsets (for old messages without contentParts)
     const rebuilt = buildContentPartsFromOffsets(msg);
-    if (rebuilt) return rebuilt;
+    if (rebuilt) {
+      const cached = rebuilt
+        .map((part) =>
+          part.type === "text"
+            ? { ...part, text: sanitizeVisibleText(part.text) }
+            : part,
+        )
+        .filter((part) => part.type !== "text" || part.text);
+      lastContentPartsSource = msg;
+      lastContentPartsValue = cached;
+      return cached;
+    }
 
     // Last-chance fallback for live turns where contentParts was not yet materialized.
     if (msg.inlineToolCalls?.length) {
-      return msg.inlineToolCalls.map((tc) => ({ type: "tool", toolCall: tc }));
+      const cached: ContentPart[] = msg.inlineToolCalls.map((tc) => ({
+        type: "tool" as const,
+        toolCall: tc,
+      }));
+      lastContentPartsSource = msg;
+      lastContentPartsValue = cached;
+      return cached;
     }
     
     // Last resort: just the text content
     if (msg.content) {
       const cleaned = sanitizeVisibleText(msg.content);
-      if (cleaned) return [{ type: "text", text: cleaned }];
+      if (cleaned) {
+        const cached: ContentPart[] = [{ type: "text" as const, text: cleaned }];
+        lastContentPartsSource = msg;
+        lastContentPartsValue = cached;
+        return cached;
+      }
     }
-    return [];
+    lastContentPartsSource = msg;
+    lastContentPartsValue = [];
+    return lastContentPartsValue;
   }
 
   // Format thinking duration for display (Cursor-style)
@@ -223,14 +296,33 @@
     });
   }
 
+  function getThinkingBody(
+    part: Extract<ContentPart, { type: "thinking" }>,
+  ): string {
+    if (!part.title || part.isActive) return part.thinking;
+    const trimmed = part.thinking.trimStart();
+    if (!trimmed) return part.thinking;
+
+    const lines = trimmed.split("\n");
+    const firstLine = lines[0]?.trim() ?? "";
+    if (!firstLine) return part.thinking;
+
+    const normalizedTitle = part.title.replace(/\.\.\.$/, "").trim();
+    const normalizedFirstLine = firstLine.replace(/\.\.\.$/, "").trim();
+    if (normalizedTitle !== normalizedFirstLine) return part.thinking;
+
+    const body = lines.slice(1).join("\n").trimStart();
+    return body || part.thinking;
+  }
+
   function groupFileEdits(
     parts: ContentPart[],
   ): Map<string, { primary: ToolCall; grouped: ToolCall[] }> {
-    const groups = new Map<
+    const groups = new SvelteMap<
       string,
       { primary: ToolCall; grouped: ToolCall[] }
     >();
-    const processedIds = new Set<string>();
+    const processedIds = new SvelteSet<string>();
 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
@@ -271,84 +363,6 @@
     return false;
   }
 
-  async function handleViewDiff(
-    toolCall: ToolCall,
-    allToolCalls?: ToolCall[],
-  ): Promise<void> {
-    // Always prefer full diff (red/green). If content is missing, show a clear error.
-    if (allToolCalls && allToolCalls.length > 1) {
-      const firstMeta = allToolCalls[0].meta as
-        | Record<string, unknown>
-        | undefined;
-      const firstFileEdit = firstMeta?.fileEdit as
-        | Record<string, unknown>
-        | undefined;
-      const originalContent = firstFileEdit?.beforeContent as
-        | string
-        | undefined;
-
-      const lastMeta = allToolCalls[allToolCalls.length - 1].meta as
-        | Record<string, unknown>
-        | undefined;
-      const lastFileEdit = lastMeta?.fileEdit as
-        | Record<string, unknown>
-        | undefined;
-      const modifiedContent = lastFileEdit?.afterContent as
-        | string
-        | undefined;
-
-      const path =
-        (toolCall.arguments.path as string) ||
-        (firstFileEdit?.relativePath as string) ||
-        "";
-      const absolutePath = firstFileEdit?.absolutePath as string | undefined;
-
-      if (
-        typeof originalContent !== "string" ||
-        typeof modifiedContent !== "string"
-      ) {
-        showToast({
-          message: "Cannot show diff: content not available",
-          type: "error",
-        });
-        return;
-      }
-
-      openFullDiffView({
-        filePath: absolutePath || path,
-        originalContent,
-        modifiedContent,
-        toolCallId: `grouped-${allToolCalls.map((tc) => tc.id).join("-")}`,
-      });
-      return;
-    }
-
-    const meta = toolCall.meta as Record<string, unknown> | undefined;
-    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-    const path =
-      (toolCall.arguments.path as string) ||
-      (fileEdit?.relativePath as string) ||
-      "";
-    const absolutePath = fileEdit?.absolutePath as string | undefined;
-    const originalContent = fileEdit?.beforeContent as string | undefined;
-    const modifiedContent = fileEdit?.afterContent as string | undefined;
-
-    if (
-      typeof originalContent !== "string" ||
-      typeof modifiedContent !== "string"
-    ) {
-      showToast({ message: "Cannot show diff: content not available", type: "error" });
-      return;
-    }
-
-    openFullDiffView({
-      filePath: absolutePath || path,
-      originalContent,
-      modifiedContent,
-      toolCallId: toolCall.id,
-    });
-  }
-
   /**
    * Open full Monaco DiffEditor with proper red/green inline diff
    * This shows deleted lines in RED and added lines in GREEN
@@ -357,30 +371,34 @@
     // Get content for diff
     let originalContent: string | undefined;
     let modifiedContent: string | undefined;
-    let filePath: string = '';
+    let filePath: string;
 
     if (allToolCalls && allToolCalls.length > 1) {
       // Grouped edits - use first beforeContent and last afterContent
-      const firstMeta = allToolCalls[0].meta as Record<string, unknown> | undefined;
-      const firstFileEdit = firstMeta?.fileEdit as Record<string, unknown> | undefined;
-      originalContent = firstFileEdit?.beforeContent as string | undefined;
+      const firstMeta = allToolCalls[0].meta as ToolCallMeta | undefined;
+      const firstFileEdit = firstMeta?.fileEdit;
+      originalContent = firstFileEdit?.beforeContent;
       
-      const lastMeta = allToolCalls[allToolCalls.length - 1].meta as Record<string, unknown> | undefined;
-      const lastFileEdit = lastMeta?.fileEdit as Record<string, unknown> | undefined;
-      modifiedContent = lastFileEdit?.afterContent as string | undefined;
+      const lastMeta = allToolCalls[allToolCalls.length - 1].meta as ToolCallMeta | undefined;
+      const lastFileEdit = lastMeta?.fileEdit;
+      modifiedContent = lastFileEdit?.afterContent;
       
-      filePath = (firstFileEdit?.absolutePath as string) || 
-                 (toolCall.arguments.path as string) || 
-                 (firstFileEdit?.relativePath as string) || '';
+      filePath =
+        firstFileEdit?.absolutePath ||
+        (toolCall.arguments.path as string) ||
+        firstFileEdit?.relativePath ||
+        "";
     } else {
       // Single edit
-      const meta = toolCall.meta as Record<string, unknown> | undefined;
-      const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-      originalContent = fileEdit?.beforeContent as string | undefined;
-      modifiedContent = fileEdit?.afterContent as string | undefined;
-      filePath = (fileEdit?.absolutePath as string) || 
-                 (toolCall.arguments.path as string) || 
-                 (fileEdit?.relativePath as string) || '';
+      const meta = toolCall.meta as ToolCallMeta | undefined;
+      const fileEdit = meta?.fileEdit;
+      originalContent = fileEdit?.beforeContent;
+      modifiedContent = fileEdit?.afterContent;
+      filePath =
+        fileEdit?.absolutePath ||
+        (toolCall.arguments.path as string) ||
+        fileEdit?.relativePath ||
+        "";
     }
 
     if (typeof originalContent !== 'string' || typeof modifiedContent !== 'string') {
@@ -397,10 +415,10 @@
   }
 
   async function handleRevert(toolCall: ToolCall): Promise<void> {
-    const meta = toolCall.meta as Record<string, unknown> | undefined;
-    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-    const beforeContent = fileEdit?.beforeContent as string | undefined;
-    const absolutePath = fileEdit?.absolutePath as string | undefined;
+    const meta = toolCall.meta as ToolCallMeta | undefined;
+    const fileEdit = meta?.fileEdit;
+    const beforeContent = fileEdit?.beforeContent;
+    const absolutePath = fileEdit?.absolutePath;
     const isNewFile = fileEdit?.isNewFile === true;
     const isDirectory = fileEdit?.isDirectory === true;
 
@@ -408,7 +426,7 @@
     if (isNewFile && absolutePath) {
       try {
         await invoke("delete_path", { path: absolutePath });
-        revertedIds = new Set([...revertedIds, toolCall.id]);
+        revertedIds.add(toolCall.id);
         showToast({ message: isDirectory ? "Folder deleted (reverted)" : "File deleted (reverted)", type: "success" });
 
         // Close tab if open
@@ -433,7 +451,7 @@
     }
 
     // Store current content for undo
-    const afterContent = fileEdit?.afterContent as string | undefined;
+    const afterContent = fileEdit?.afterContent;
     if (afterContent !== undefined) {
       // Store in meta for undo
       (fileEdit as Record<string, unknown>).revertedContent = afterContent;
@@ -442,7 +460,7 @@
     // Write the original content back
     const success = await writeFile(absolutePath, beforeContent);
     if (success) {
-      revertedIds = new Set([...revertedIds, toolCall.id]);
+      revertedIds.add(toolCall.id);
       showToast({ message: "Changes reverted", type: "success" });
 
       // Reload file in editor if open
@@ -453,11 +471,11 @@
   }
 
   async function handleUndoRevert(toolCall: ToolCall): Promise<void> {
-    const meta = toolCall.meta as Record<string, unknown> | undefined;
-    const fileEdit = meta?.fileEdit as Record<string, unknown> | undefined;
-    const afterContent = fileEdit?.afterContent as string | undefined;
-    const revertedContent = fileEdit?.revertedContent as string | undefined;
-    const absolutePath = fileEdit?.absolutePath as string | undefined;
+    const meta = toolCall.meta as ToolCallMeta | undefined;
+    const fileEdit = meta?.fileEdit;
+    const afterContent = fileEdit?.afterContent;
+    const revertedContent = fileEdit?.revertedContent;
+    const absolutePath = fileEdit?.absolutePath;
     const isNewFile = fileEdit?.isNewFile === true;
     const isDirectory = fileEdit?.isDirectory === true;
 
@@ -467,7 +485,6 @@
       try {
         await invoke("create_dir", { path: absolutePath });
         revertedIds.delete(toolCall.id);
-        revertedIds = new Set(revertedIds);
         showToast({ message: "Folder restored", type: "success" });
         return;
       } catch (e) {
@@ -489,7 +506,6 @@
     const success = await writeFile(absolutePath, contentToRestore);
     if (success) {
       revertedIds.delete(toolCall.id);
-      revertedIds = new Set(revertedIds);
       showToast({ message: "Changes restored", type: "success" });
 
       // Reload file in editor if open
@@ -499,9 +515,11 @@
     }
   }
 
-  const contentParts = $derived(getContentParts(message));
+  const renderContentParts = $derived.by(() =>
+    isCompactHistory ? [] : getContentParts(message),
+  );
   const completedFileEditCalls = $derived.by(() =>
-    contentParts
+    renderContentParts
       .filter(
         (part): part is Extract<ContentPart, { type: "tool" }> =>
           part.type === "tool" &&
@@ -510,9 +528,9 @@
       )
       .map((part) => part.toolCall),
   );
-  function getFileEditMeta(toolCall: ToolCall): Record<string, unknown> | null {
-    const meta = toolCall.meta as Record<string, unknown> | undefined;
-    return (meta?.fileEdit as Record<string, unknown> | undefined) ?? null;
+  function getFileEditMeta(toolCall: ToolCall): FileEditMeta | null {
+    const meta = toolCall.meta as ToolCallMeta | undefined;
+    return meta?.fileEdit ?? null;
   }
   function isDirectoryEditGroup(group: {
     primary: ToolCall;
@@ -543,7 +561,7 @@
     return fileEdit?.isNewFile === true ? "Created file" : "Edited file";
   }
   const turnFileGroups = $derived.by(() => {
-    const groups = new Map<
+    const groups = new SvelteMap<
       string,
       { primary: ToolCall; calls: ToolCall[]; filename: string; stats: ReturnType<typeof getFileEditDiffStats> }
     >();
@@ -597,21 +615,106 @@
   }
 
   const copyableText = $derived.by(() => {
-    const textChunks = contentParts
+    const textChunks = renderContentParts
       .filter(isTextPart)
-      .map((p) => p.text.trim())
+      .map((p) => p.text)
       .filter(Boolean);
-    if (textChunks.length > 0) return textChunks.join("\n\n");
+    if (textChunks.length > 0) return textChunks.join("\n\n").trim();
     return message.content?.trim() || "";
   });
-  const fileEditGroups = $derived(groupFileEdits(contentParts));
+  const fileEditGroups = $derived(groupFileEdits(renderContentParts));
   const visibleContentParts = $derived(
-    contentParts.filter((part) => {
+    renderContentParts.filter((part) => {
       if (part.type !== "tool") return true;
       return !shouldSkipToolCall(part.toolCall.id, fileEditGroups);
     }),
   );
-  const firstPendingTerminalId = $derived(getFirstUnresolvedTerminalId());
+
+  type ToolContentPart = Extract<ContentPart, { type: "tool" }>;
+  type ThinkingContentPart = Extract<ContentPart, { type: "thinking" }>;
+  type TextContentPart = Extract<ContentPart, { type: "text" }>;
+  type ThinkingDisplayGroup = {
+    parts: ThinkingContentPart[];
+    indices: number[];
+  };
+
+  type DisplayBlock =
+    | { type: "island"; parts: ToolContentPart[] }
+    | { type: "thinking"; group: ThinkingDisplayGroup }
+    | { type: "text"; part: TextContentPart; i: number };
+
+  const displayBlocks = $derived.by(() => {
+    let blocks: DisplayBlock[] = [];
+    let currentIslandParts: ToolContentPart[] | null = null;
+    
+    for (let i = 0; i < visibleContentParts.length; i++) {
+       const part = visibleContentParts[i];
+       
+       if (part.type === "tool") {
+          if (!currentIslandParts) {
+             currentIslandParts = [part];
+             blocks.push({ type: "island", parts: currentIslandParts });
+          } else {
+             currentIslandParts.push(part);
+          }
+       } else {
+          currentIslandParts = null;
+          if (part.type === "thinking") {
+             const previousBlock = blocks[blocks.length - 1];
+             if (previousBlock?.type === "thinking") {
+               previousBlock.group.parts.push(part);
+               previousBlock.group.indices.push(i);
+             } else {
+               blocks.push({
+                 type: "thinking",
+                 group: {
+                   parts: [part],
+                   indices: [i],
+                 },
+               });
+             }
+          } else if (part.type === "text" && part.text.trim()) {
+             blocks.push({ type: "text", part, i });
+          }
+       }
+    }
+    return blocks;
+  });
+
+  const lastVisibleTextPartIndex = $derived.by(() => {
+    for (let index = visibleContentParts.length - 1; index >= 0; index -= 1) {
+      const part = visibleContentParts[index];
+      if (part.type === "text" && part.text.trim()) {
+        return index;
+      }
+    }
+    return -1;
+  });
+  const firstPendingTerminalId = $derived(
+    isCompactHistory ? null : getFirstUnresolvedTerminalId(renderContentParts),
+  );
+  const compactToolCalls = $derived.by(() => {
+    const calls = message.inlineToolCalls ?? message.toolCalls ?? [];
+    return calls;
+  });
+  const compactToolCount = $derived(compactToolCalls.length);
+  const compactFileEditCount = $derived.by(() =>
+    compactToolCalls.filter((toolCall) => isFileEditTool(toolCall)).length,
+  );
+  const compactSummaryText = $derived.by(() => {
+    const cleaned = normalizeAssistantMarkdown(
+      message.content
+        .replace(/<volt-spec-verify-json>[\s\S]*?<\/volt-spec-verify-json>/gi, "")
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+        .replace(/<system_context>[\s\S]*?<\/system_context>/gi, "")
+        .replace(/<smart_context>[\s\S]*?<\/smart_context>/gi, ""),
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cleaned) return "";
+    if (cleaned.length <= 220) return cleaned;
+    return `${cleaned.slice(0, 219).trimEnd()}…`;
+  });
 
   // Track manual toggle state for thinking blocks to avoid auto-reopening during streaming
   let manualThinkingStates = $state<Record<string, boolean>>({});
@@ -647,7 +750,52 @@
     }
   }
 
+  function getDisplayBlockKey(block: DisplayBlock): string {
+    if (block.type === "island") {
+      return `island:${block.parts.map((part) => part.toolCall.id).join(":")}`;
+    }
+    if (block.type === "thinking") {
+      return block.group.parts
+        .map((part, index) => getThinkingKey(part, block.group.indices[index] ?? index))
+        .join("|");
+    }
+    return `text:${block.i}`;
+  }
+
+  function getThinkingGroupSummary(group: ThinkingDisplayGroup): {
+    active: boolean;
+    title: string;
+    startTime: number;
+    endTime?: number;
+    body: string;
+    key: string;
+  } {
+    const first = group.parts[0];
+    const last = group.parts[group.parts.length - 1];
+    const active = group.parts.some((part) => part.isActive);
+    const title =
+      last?.title ||
+      first?.title ||
+      (active ? "Thinking" : "Thought");
+    const body = group.parts
+      .map((part) => getThinkingBody(part))
+      .filter((chunk) => chunk.trim().length > 0)
+      .join("\n\n");
+
+    return {
+      active,
+      title,
+      startTime: first?.startTime ?? Date.now(),
+      endTime: active ? undefined : last?.endTime,
+      body,
+      key: group.parts
+        .map((part, index) => getThinkingKey(part, group.indices[index] ?? index))
+        .join("|"),
+    };
+  }
+
   $effect(() => {
+    if (isCompactHistory) return;
     // Auto-close finished thinking blocks
     const parts = getContentParts(message);
     parts.forEach((part, i) => {
@@ -693,125 +841,182 @@
         <div class="activity-spine"></div>
       {/if}
       <div class="activity-content">
-        {#each visibleContentParts as part, i (part.type === "tool" ? part.toolCall.id : part.type === "thinking" ? getThinkingKey(part, i) : `text-${i}`)}
-          <div class="activity-item">
-            {#if part.type === "thinking"}
-              {@const thinkingKey = getThinkingKey(part, i)}
-              <!-- Inline thinking block (Cursor-style - minimal) -->
-              <details
-                class="inline-thinking"
-                open={manualThinkingStates[thinkingKey] ??
-                  (autoExpandThinking ? part.isActive : false)}
-                ontoggle={(e) => handleThinkingToggle(thinkingKey, e)}
-              >
-                <summary class="thinking-header">
-                  <div class="thinking-header-content" class:active={part.isActive}>
-                    <span class="thinking-icon" class:active={part.isActive}>
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      >
-                        <path
-                          d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
-                        />
-                        <path
-                          d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
-                        />
-                      </svg>
-                    </span>
-                    {#if part.isActive}
-                      <span class="thinking-label">
-                        {part.title || "Thinking"}
-                        <span class="thinking-dots"></span>
-                        <span class="thinking-duration"
-                          >({formatThinkingDuration(
-                            part.startTime,
-                            undefined,
-                            true,
-                          )})</span
+        {#if isCompactHistory}
+          <div class="compact-history-row">
+            <div class="compact-history-main">
+              {#if compactSummaryText}
+                <div class="compact-history-summary">{compactSummaryText}</div>
+              {:else}
+                <div class="compact-history-summary muted">Tool-only assistant turn</div>
+              {/if}
+              <div class="compact-history-badges">
+                {#if compactToolCount > 0}
+                  <span class="meta-pill">
+                    <UIIcon name="tools" size={12} />
+                    <span>{compactToolCount} tool{compactToolCount === 1 ? "" : "s"}</span>
+                  </span>
+                {/if}
+                {#if compactFileEditCount > 0}
+                  <span class="meta-pill">
+                    <UIIcon name="pencil" size={12} />
+                    <span>{compactFileEditCount} edit{compactFileEditCount === 1 ? "" : "s"}</span>
+                  </span>
+                {/if}
+                {#if elapsedTime}
+                  <span class="meta-pill">
+                    <UIIcon name="clock" size={12} />
+                    <span>{elapsedTime}</span>
+                  </span>
+                {/if}
+              </div>
+            </div>
+            <button
+              class="compact-history-expand"
+              type="button"
+              onclick={onToggleExpand}
+            >
+              <span>{expanded ? "Collapse" : "Expand"}</span>
+            </button>
+          </div>
+        {:else}
+          {#each displayBlocks as block (getDisplayBlockKey(block))}
+            <div class="activity-item" class:island-wrapper={block.type === "island"}>
+              {#if block.type === "thinking"}
+                {@const summary = getThinkingGroupSummary(block.group)}
+                <details
+                  class="inline-thinking"
+                  open={manualThinkingStates[summary.key] ??
+                    (autoExpandThinking ? summary.active : false)}
+                  ontoggle={(e) => handleThinkingToggle(summary.key, e)}
+                >
+                  <summary class="thinking-header">
+                    <div class="thinking-header-content" class:active={summary.active}>
+                      <span class="thinking-icon" class:active={summary.active}>
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
                         >
+                          <path
+                            d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
+                          />
+                          <path
+                            d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
+                          />
+                        </svg>
                       </span>
-                    {:else}
-                      <span class="thinking-duration">
-                        {part.title || "Thought"} for {formatThinkingDuration(
-                          part.startTime,
-                          part.endTime,
-                          false,
-                        )}
-                      </span>
+                      {#if summary.active}
+                        <span class="thinking-label">
+                          {summary.title}
+                          <span class="thinking-dots"></span>
+                          <span class="thinking-duration"
+                            >({formatThinkingDuration(
+                              summary.startTime,
+                              undefined,
+                              true,
+                            )})</span
+                          >
+                        </span>
+                      {:else}
+                        <span class="thinking-duration">
+                          {summary.title} for {formatThinkingDuration(
+                            summary.startTime,
+                            summary.endTime,
+                            false,
+                          )}
+                        </span>
+                      {/if}
+                    </div>
+                  </summary>
+                  <div class="thinking-body">
+                    {#if block.group.parts.length === 1 && summary.title && !summary.active}
+                      <div class="thinking-title">{summary.title}</div>
                     {/if}
+                    <div class="thinking-content">{summary.body}</div>
                   </div>
-                </summary>
-                <div class="thinking-body">
-                  {#if part.title && !part.isActive}
-                    <div class="thinking-title">{part.title}</div>
-                  {/if}
-                  <div class="thinking-content">{part.thinking}</div>
+                </details>
+
+              {:else if block.type === "island"}
+                <div class="dynamic-tool-island">
+                  {#each block.parts as part (part.toolCall.id)}
+                    {@const isGroupedChild = shouldSkipToolCall(
+                      part.toolCall.id,
+                      fileEditGroups,
+                    )}
+                    {#if !isGroupedChild}
+                      <div class="inline-tool-wrapper pill-mode">
+                        {#if isFileEditTool(part.toolCall) && !shouldRenderFileEditAsApproval(part.toolCall)}
+                          {@const group = fileEditGroups.get(part.toolCall.id)}
+                          <FileEditCard
+                            toolCall={part.toolCall}
+                            groupedToolCalls={group?.grouped ?? []}
+                            compact={isActiveRow}
+                            onFullDiff={handleFullDiff}
+                            onRevert={handleRevert}
+                            onUndoRevert={handleUndoRevert}
+                            isReverted={revertedIds.has(part.toolCall.id)}
+                            {revertedIds}
+                          />
+                        {:else}
+                          <InlineToolCall
+                            toolCall={part.toolCall}
+                            compact={isActiveRow}
+                            showApprovalInline={true}
+                            onApprove={onToolApprove
+                              ? () => onToolApprove(message.id, part.toolCall)
+                              : undefined}
+                            onDeny={onToolDeny
+                              ? () => onToolDeny(message.id, part.toolCall)
+                              : undefined}
+                            isFirstPendingTerminal={!isTerminalToolName(part.toolCall.name) ||
+                              part.toolCall.id === firstPendingTerminalId}
+                          />
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
                 </div>
-              </details>
-            {:else if part.type === "tool"}
-              {@const isGroupedChild = shouldSkipToolCall(
-                part.toolCall.id,
-                fileEditGroups,
-              )}
-              {#if !isGroupedChild}
-                <div class="inline-tool-wrapper">
-                  {#if isFileEditTool(part.toolCall) && !shouldRenderFileEditAsApproval(part.toolCall)}
-                    {@const group = fileEditGroups.get(part.toolCall.id)}
-                    <FileEditCard
-                      toolCall={part.toolCall}
-                      groupedToolCalls={group?.grouped ?? []}
-                      compact={isActiveRow}
-                      onFullDiff={handleFullDiff}
-                      onRevert={handleRevert}
-                      onUndoRevert={handleUndoRevert}
-                      isReverted={revertedIds.has(part.toolCall.id)}
-                      {revertedIds}
-                    />
+
+              {:else if block.type === "text"}
+                {@const part = block.part}
+                {@const i = block.i}
+                <div class="msg-content">
+                  {#if showStreaming && i === lastVisibleTextPartIndex}
+                    <div class="streaming-tail">
+                      <AssistantStreamingMarkdown
+                        content={part.text}
+                        streaming={true}
+                      />
+                    </div>
                   {:else}
-                    <InlineToolCall
-                      toolCall={part.toolCall}
-                      compact={isActiveRow}
-                      showApprovalInline={true}
-                      onApprove={onToolApprove
-                        ? () => onToolApprove(message.id, part.toolCall)
-                        : undefined}
-                      onDeny={onToolDeny
-                        ? () => onToolDeny(message.id, part.toolCall)
-                        : undefined}
-                      isFirstPendingTerminal={!isTerminalToolName(part.toolCall.name) ||
-                        part.toolCall.id === firstPendingTerminalId}
-                    />
+                    <Markdown content={part.text} profile="chat" />
                   {/if}
                 </div>
               {/if}
-            {:else if part.type === "text" && part.text.trim()}
-              <div class="msg-content">
-                <AssistantStreamingMarkdown
-                  content={part.text}
-                  streaming={showStreaming && i === contentParts.length - 1}
-                />
-                {#if showStreaming && i === contentParts.length - 1}
-                  <span class="cursor"></span>
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {/each}
+            </div>
+          {/each}
 
-        {#if contentParts.length === 0 && showStreaming}
-          <div class="msg-content"><span class="cursor"></span></div>
+          {#if showStreaming}
+            <div class="msg-content">
+              <div
+                class="streaming-indicator-row"
+                class:only-indicator={renderContentParts.length === 0}
+                aria-hidden="true"
+              >
+                <span class="snake-grid"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+              </div>
+            </div>
+          {/if}
         {/if}
       </div>
     </div>
 
-    {#if !showStreaming}
+    {#if !showStreaming && !isCompactHistory}
       {#if turnEditSummary}
         <div class="turn-summary">
           <span class="turn-summary-label">{turnEditSummary.label}</span>
@@ -953,8 +1158,77 @@
     padding-left: 18px;
   }
 
+  .dynamic-tool-island {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    background: transparent;
+    padding: 0 0 6px 0;
+  }
+
+  .dynamic-tool-island > :global(.inline-tool-wrapper) {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .dynamic-tool-island > :global(.inline-tool-wrapper > *) {
+    margin: 0 !important;
+  }
+
   .active-row .activity-thread {
     padding-left: 0;
+  }
+
+  .compact-history-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  }
+
+  .compact-history-main {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
+  }
+
+  .compact-history-summary {
+    color: var(--color-text);
+    line-height: 1.55;
+    word-break: break-word;
+  }
+
+  .compact-history-summary.muted {
+    color: var(--color-text-secondary);
+  }
+
+  .compact-history-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .compact-history-expand {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease,
+      background 0.15s ease;
+  }
+
+  .compact-history-expand:hover {
+    color: var(--color-text);
+    border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-border));
+    background: color-mix(in srgb, var(--color-bg-hover) 80%, transparent);
   }
 
   .activity-spine {
@@ -1016,9 +1290,59 @@
     line-height: 1.55;
   }
 
-  .cursor {
-    display: none;
+  .streaming-tail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
   }
+
+  .streaming-indicator-row {
+    display: flex;
+    align-items: center;
+    min-height: 13px;
+    padding-left: 2px;
+  }
+
+  .streaming-indicator-row.only-indicator {
+    padding-left: 0;
+  }
+
+  .snake-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 3px);
+    grid-template-rows: repeat(3, 3px);
+    gap: 2px;
+  }
+  
+  .snake-grid i {
+    width: 3px;
+    height: 3px;
+    background-color: var(--color-text);
+    border-radius: 50%;
+    opacity: 0.15;
+  }
+  
+  .snake-grid i:nth-child(1) { animation: fill-1 1.35s infinite; }
+  .snake-grid i:nth-child(2) { animation: fill-2 1.35s infinite; }
+  .snake-grid i:nth-child(3) { animation: fill-3 1.35s infinite; }
+  .snake-grid i:nth-child(6) { animation: fill-6 1.35s infinite; }
+  .snake-grid i:nth-child(9) { animation: fill-9 1.35s infinite; }
+  .snake-grid i:nth-child(8) { animation: fill-8 1.35s infinite; }
+  .snake-grid i:nth-child(7) { animation: fill-7 1.35s infinite; }
+  .snake-grid i:nth-child(4) { animation: fill-4 1.35s infinite; }
+  .snake-grid i:nth-child(5) { animation: fill-5 1.35s infinite; }
+  
+  @keyframes fill-1 { 0% { opacity: 0.15; transform: scale(0.95); } 11%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-2 { 0%, 11% { opacity: 0.15; transform: scale(0.95); } 22%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-3 { 0%, 22% { opacity: 0.15; transform: scale(0.95); } 33%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-6 { 0%, 33% { opacity: 0.15; transform: scale(0.95); } 44%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-9 { 0%, 44% { opacity: 0.15; transform: scale(0.95); } 55%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-8 { 0%, 55% { opacity: 0.15; transform: scale(0.95); } 66%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-7 { 0%, 66% { opacity: 0.15; transform: scale(0.95); } 77%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-4 { 0%, 77% { opacity: 0.15; transform: scale(0.95); } 88%, 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
+  @keyframes fill-5 { 0%, 88% { opacity: 0.15; transform: scale(0.95); } 95% { opacity: 0.85; transform: scale(1.15); } 100% { opacity: 0.15; transform: scale(0.95); } }
   @keyframes blink {
     0%,
     100% {

@@ -113,8 +113,53 @@ function looksLikeIncompleteAction(iterationContent: string): boolean {
   return incompleteActionPatterns.some((pattern) => pattern.test(iterationContent));
 }
 
+function looksLikeCompletionIntent(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  const completionPatterns = [
+    /\battempt_completion\b/i,
+    /\bfinalizing (the )?response\b/i,
+    /\bensuring task completion\b/i,
+    /\bready to (call|use) attempt_completion\b/i,
+    /\bneed to (call|use) attempt_completion\b/i,
+    /\bdeclare(?:ing)? completion\b/i,
+    /\bverify(?:ing)? before declaring completion\b/i,
+    /\bwrap(?:ping)? up\b/i,
+    /\bfinish(?:ing)? up\b/i,
+  ];
+
+  return completionPatterns.some((pattern) => pattern.test(trimmed));
+}
+
 function handleNoToolOutcome(input: NoToolOutcomeInput): { decision: Decision; state: NoToolOutcomeState } {
   const next: NoToolOutcomeState = { ...input.state };
+
+  if (input.isAgentMode && !input.iterationContent.trim() && looksLikeCompletionIntent(input.iterationThinking)) {
+    const nextCompletionNudgeCount = input.completionNudgeCount + 1;
+    input.logOutput(
+      `Agent: Model is looping in completion-intent thinking without acting (${nextCompletionNudgeCount}/${input.maxCompletionNudges}).`,
+    );
+
+    if (nextCompletionNudgeCount >= input.maxCompletionNudges) {
+      input.logOutput('Agent: Completion-intent loop exceeded budget, stopping.');
+      input.updateAssistantMessage(
+        next.fullContent ||
+          'The run got stuck while finalizing completion. Review the latest edits and retry the task.',
+      );
+      return { decision: 'return', state: next };
+    }
+
+    input.addToolMessage({
+      id: `completion_reminder_${Date.now()}`,
+      name: '_system_completion_reminder',
+      arguments: {},
+      status: 'completed',
+      output:
+        'You are at the end of the task. Stop narrating your internal completion steps. Either provide the final user-facing response NOW, or call attempt_completion with a concise summary if you want to use the explicit completion signal. If you are genuinely blocked, provide a brief blocker explanation. Do not continue thinking without taking one of those actions.',
+    });
+    return { decision: 'continue', state: next };
+  }
 
   if (input.iterationThinking && !input.iterationContent.trim()) {
     next.consecutiveEmptyResponses++;
@@ -211,7 +256,10 @@ export function resolveNoToolOutcome(input: NoToolOutcomeInput): NoToolOutcomeRe
     return {
       action: 'continue',
       state: next,
-      completionNudgeCount: input.completionNudgeCount,
+      completionNudgeCount:
+        input.isAgentMode && !input.iterationContent.trim() && looksLikeCompletionIntent(input.iterationThinking)
+          ? input.completionNudgeCount + 1
+          : input.completionNudgeCount,
     };
   }
 

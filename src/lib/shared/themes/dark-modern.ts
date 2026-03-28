@@ -18,9 +18,9 @@ export const darkModernThemeVars: Record<string, string> = {
   '--color-text-disabled': '#616161',
   
   /* Accent colors */
-  '--color-accent': '#007acc',
-  '--color-accent-rgb': '0, 122, 204',
-  '--color-accent-alpha': 'rgba(0, 122, 204, 0.15)',
+  '--color-accent': '#ffffff',
+  '--color-accent-rgb': '255, 255, 255',
+  '--color-accent-alpha': 'rgba(255, 255, 255, 0.15)',
   '--color-success': '#4ec9b0',
   '--color-warning:': '#cca700',
   '--color-error': '#f14c4c',

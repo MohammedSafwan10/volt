@@ -98,16 +98,6 @@ export function isVerificationTool(
   if (toolName === 'run_command') {
     return isTerminalVerificationCommand(String(args.command ?? ''), profiles);
   }
-  if (
-    toolName === 'browser_get_errors' ||
-    toolName === 'browser_get_console_logs' ||
-    toolName === 'browser_get_summary' ||
-    toolName === 'browser_get_network_requests' ||
-    toolName === 'browser_get_application_storage' ||
-    toolName === 'browser_get_security_report'
-  ) {
-    return true;
-  }
   return false;
 }
 
@@ -142,6 +132,7 @@ export function getFailureSignature(
 
 export type RecoveryClass =
   | 'stale_file'
+  | 'malformed_patch'
   | 'empty_search'
   | 'broad_search'
   | 'command_timeout'
@@ -159,6 +150,15 @@ export function classifyRecoveryIssue(
   const error = String(result.error ?? '').toLowerCase();
   const output = String(result.output ?? '').toLowerCase();
   const combined = `${error}\n${output}`;
+
+  if (
+    combined.includes('malformed patch') ||
+    combined.includes('expected "*** begin patch"') ||
+    combined.includes('expected "*** end patch"') ||
+    combined.includes('invalid patch line')
+  ) {
+    return 'malformed_patch';
+  }
 
   if (
     combined.includes('content changed on disk') ||
@@ -209,6 +209,8 @@ export function buildRecoveryHint(
   switch (recoveryClass) {
     case 'stale_file':
       return `Previous edit context is stale${pathText}. Re-read the file with a focused slice, rebuild a smaller patch from fresh content, then retry once.`;
+    case 'malformed_patch':
+      return `The previous patch format was invalid${pathText}. Rebuild a Codex patch with "*** Begin Patch", one "*** Update File" or "*** Add File" header, an "@@" line before the first patch body lines, and only " ", "-", "+" line prefixes.`;
     case 'empty_search':
       return 'Search returned nothing. Retry once with alternate casing, a related symbol, or a narrower folder/file pattern.';
     case 'broad_search':

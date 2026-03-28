@@ -36,8 +36,8 @@ describe('tool profile', () => {
       expect(names.has(retired)).toBe(false);
     }
 
-    // Agent mode should have more than just the strict set (16+ core tools)
-    expect(names.size).toBeGreaterThanOrEqual(16);
+    // Agent mode should expose the full current built-in core toolset
+    expect(names.size).toBeGreaterThanOrEqual(15);
   });
 
   it('keeps ask/plan subsets read-only', () => {

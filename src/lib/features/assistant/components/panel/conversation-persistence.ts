@@ -5,6 +5,7 @@ import type {
   Conversation,
   ToolCall,
 } from '$features/assistant/stores/assistant.svelte';
+import { sanitizeMessageAttachments } from '$features/assistant/stores/assistant.svelte';
 
 interface ChatHistoryStoreLike {
   activeConversationId: string | null;
@@ -71,14 +72,16 @@ function sanitizeContentParts(parts?: ContentPart[]): ContentPart[] | undefined 
 }
 
 export function serializeMessageMetadata(msg: AssistantMessage): string {
+  const sanitizedAttachments = sanitizeMessageAttachments(msg.attachments);
   return JSON.stringify({
-    attachments: msg.attachments,
+    attachments: sanitizedAttachments,
     toolCalls: sanitizeToolCalls(msg.toolCalls),
     inlineToolCalls: sanitizeToolCalls(msg.inlineToolCalls),
     contentParts: sanitizeContentParts(msg.contentParts),
     thinking: msg.thinking,
     smartContextBlock: msg.smartContextBlock,
     contextMentions: msg.contextMentions,
+    syntheticPrompt: msg.syntheticPrompt,
     isSummary: msg.isSummary || undefined,
     endTime: msg.endTime,
     streamState: msg.streamState,

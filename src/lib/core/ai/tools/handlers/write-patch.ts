@@ -10,6 +10,7 @@ export interface ParsedPatchHunk {
 export interface ParsedCodexPatch {
   path: string;
   hunks: ParsedPatchHunk[];
+  mode: 'update' | 'add';
 }
 
 export function getCodexPatchLineStats(
@@ -48,17 +49,45 @@ function normalizePatchText(patch: string): string {
       ),
   );
 
+  const maybeInsertMissingInitialHunk = (lines: string[]): string[] => {
+    if (lines.length < 3) return lines;
+
+    const hasWrapper = lines[0] === '*** Begin Patch';
+    const fileHeaderIndex = hasWrapper ? 1 : 0;
+    const bodyStartIndex = hasWrapper ? 2 : 1;
+    const fileHeader = lines[fileHeaderIndex];
+    const firstBodyLine = lines[bodyStartIndex];
+    const looksLikeFilePatch =
+      fileHeader?.startsWith('*** Update File: ') || fileHeader?.startsWith('*** Add File: ');
+    const looksLikeMissingInitialHunk =
+      looksLikeFilePatch &&
+      firstBodyLine !== undefined &&
+      !firstBodyLine.startsWith('@@') &&
+      /^[ +\-]/.test(firstBodyLine);
+
+    if (!looksLikeMissingInitialHunk) return lines;
+
+    const next = [...lines];
+    next.splice(bodyStartIndex, 0, '@@');
+    return next;
+  };
+
   // If body already starts with explicit codex header/footer, keep as-is.
   if (
     linesWithoutVcsHeaders[0] === '*** Begin Patch' &&
     linesWithoutVcsHeaders[linesWithoutVcsHeaders.length - 1] === '*** End Patch'
   ) {
-    return linesWithoutVcsHeaders.join('\n');
+    return maybeInsertMissingInitialHunk(linesWithoutVcsHeaders).join('\n');
   }
 
   // Common near-miss: model emits "*** Update File" + hunks but forgets Begin/End wrapper.
-  if (linesWithoutVcsHeaders[0]?.startsWith('*** Update File: ')) {
-    const wrapped = ['*** Begin Patch', ...linesWithoutVcsHeaders];
+  if (
+    linesWithoutVcsHeaders[0]?.startsWith('*** Update File: ') ||
+    linesWithoutVcsHeaders[0]?.startsWith('*** Add File: ')
+  ) {
+    const bodyLines = maybeInsertMissingInitialHunk(linesWithoutVcsHeaders);
+
+    const wrapped = ['*** Begin Patch', ...bodyLines];
     if (wrapped[wrapped.length - 1] !== '*** End Patch') {
       wrapped.push('*** End Patch');
     }
@@ -67,7 +96,7 @@ function normalizePatchText(patch: string): string {
 
   // Another near-miss: wrapper exists but footer is missing.
   if (linesWithoutVcsHeaders[0] === '*** Begin Patch') {
-    const wrapped = [...linesWithoutVcsHeaders];
+    const wrapped = maybeInsertMissingInitialHunk(linesWithoutVcsHeaders);
     if (wrapped[wrapped.length - 1] !== '*** End Patch') {
       wrapped.push('*** End Patch');
     }
@@ -107,12 +136,16 @@ export function parseCodexPatch(patch: string): ParsedCodexPatch {
   }
 
   const fileLine = lines[1];
-  if (!fileLine.startsWith('*** Update File: ')) {
-    throw new Error('Malformed patch: only "*** Update File: <path>" is supported.');
+  const isUpdate = fileLine.startsWith('*** Update File: ');
+  const isAdd = fileLine.startsWith('*** Add File: ');
+  if (!isUpdate && !isAdd) {
+    throw new Error('Malformed patch: only "*** Update File: <path>" or "*** Add File: <path>" is supported.');
   }
-  const path = fileLine.slice('*** Update File: '.length).trim();
+  const path = fileLine
+    .slice(isUpdate ? '*** Update File: '.length : '*** Add File: '.length)
+    .trim();
   if (!path) {
-    throw new Error('Malformed patch: missing file path in "*** Update File".');
+    throw new Error(`Malformed patch: missing file path in "${isUpdate ? '*** Update File' : '*** Add File'}".`);
   }
 
   const hunks: ParsedPatchHunk[] = [];
@@ -138,7 +171,7 @@ export function parseCodexPatch(patch: string): ParsedCodexPatch {
     throw new Error('Malformed patch: no hunks found.');
   }
 
-  return { path, hunks };
+  return { path, hunks, mode: isAdd ? 'add' : 'update' };
 }
 
 function findSubsequence(

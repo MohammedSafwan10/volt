@@ -11,6 +11,7 @@
   const modes: { id: AIMode; label: string; description: string }[] = [
     { id: 'ask', label: 'Ask', description: 'Quick questions and explanations' },
     { id: 'plan', label: 'Plan', description: 'Design and plan features' },
+    { id: 'spec', label: 'Spec', description: 'Create requirements, design, and tasks' },
     { id: 'agent', label: 'Agent', description: 'Execute tasks with tools' }
   ];
 

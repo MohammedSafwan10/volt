@@ -16,7 +16,6 @@ import {
   isToolAllowed,
   RETIRED_TOOL_NAMES,
 } from '$core/ai/tools/definitions';
-import { isBrowserToolBlocked } from '$core/ai/tools/browser-gate';
 import {
   normalizeToolOutputBudget,
   validatePathInWorkspace,
@@ -42,16 +41,7 @@ const HIDDEN_HANDLER_NAMES = new Set([
   'lsp_get_hover',
   'lsp_rename_symbol',
 ]);
-const TOOL_MAX_ATTEMPTS: Record<string, number> = {
-  browser_get_console_logs: 3,
-  browser_get_errors: 3,
-  browser_get_network_requests: 3,
-  browser_get_network_request_details: 3,
-  browser_get_performance: 3,
-  browser_get_summary: 3,
-  browser_get_application_storage: 3,
-  browser_get_security_report: 3,
-};
+const TOOL_MAX_ATTEMPTS: Record<string, number> = {};
 const TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: 'run_command',
 };
@@ -95,22 +85,13 @@ export function validateToolCall(
   mode: AIMode
 ): ToolValidation {
   const canonicalToolName = normalizeToolName(toolName);
-  if (isBrowserToolBlocked(canonicalToolName, assistantStore.browserToolsEnabled)) {
-    return {
-      valid: false,
-      error:
-        'Browser tools are disabled. Enable Browser tools in chat (globe toggle) to use this tool.',
-      requiresApproval: false,
-    };
-  }
-
   // Check if it's an MCP tool
   if (isMcpTool(canonicalToolName)) {
-    // MCP tools are allowed in agent mode only
-    if (mode !== 'agent') {
+    // MCP tools are allowed in agent and spec mode only
+    if (mode !== 'agent' && mode !== 'spec') {
       return {
         valid: false,
-        error: `MCP tools are only available in agent mode`,
+        error: `MCP tools are only available in agent or spec mode`,
         requiresApproval: false
       };
     }
@@ -279,6 +260,7 @@ export function getToolContractParity(): {
   const definedTools = new Set([
     ...getAllToolsForMode('ask').map((tool) => tool.name),
     ...getAllToolsForMode('plan').map((tool) => tool.name),
+    ...getAllToolsForMode('spec').map((tool) => tool.name),
     ...getAllToolsForMode('agent').map((tool) => tool.name),
   ]);
   const handlerTools = new Set(Object.keys(toolHandlers));
@@ -678,8 +660,7 @@ function shouldRetryTool(toolName: string, toolDef: ReturnType<typeof getToolByN
   const category = toolDef?.category;
   return category === 'workspace_read' ||
     category === 'workspace_search' ||
-    category === 'diagnostics' ||
-    category === 'browser';
+    category === 'diagnostics';
 }
 
 function getToolMaxAttempts(

@@ -19,6 +19,7 @@ export type UIIconName =
     | "folder-plus"
     | "file"
     | "file-plus"
+    | "file-search"
     | "new-file"
     | "new-folder"
     // Actions
@@ -99,6 +100,7 @@ export type UIIconName =
     | "record"
     | "cloud"
     | "comment"
+    | "tools"
     | "sparkle"
     | "robot"
     | "send"

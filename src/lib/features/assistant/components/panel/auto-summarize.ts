@@ -20,7 +20,7 @@ export interface AutoSummarizeOptions {
     getContextUsage: (model: string) => { percentage: number };
     messages: Array<{ role: string; isSummary?: boolean; content: string }>;
     summarizeConversation: (summaryText: string, keepMessages: number) => void;
-    currentMode: "ask" | "plan" | "agent";
+    currentMode: "ask" | "plan" | "spec" | "agent";
   };
   notify: (payload: { message: string; type: "warning" | "info" | "error" | "success" }) => void;
 }

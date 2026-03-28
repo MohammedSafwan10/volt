@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('$core/services/file-service', () => ({
+  fileService: {
+    subscribeAll: vi.fn(() => vi.fn()),
+    isDirty: vi.fn(() => false),
+  },
+}));
+
 import { saveConversationToHistory, serializeMessageMetadata } from './conversation-persistence';
 import type { Conversation } from '$features/assistant/stores/assistant.svelte';
 
@@ -47,6 +54,11 @@ describe('conversation-persistence', () => {
       thinking: 'thinking',
       smartContextBlock: 'ctx',
       contextMentions: [],
+      syntheticPrompt: {
+        kind: 'spec-task',
+        title: 'TASK-1 · Build',
+        subtitle: 'Compact kickoff prompt',
+      },
       isSummary: true,
       endTime: 999,
       streamState: 'completed',
@@ -56,8 +68,33 @@ describe('conversation-persistence', () => {
     expect(metadata.isSummary).toBe(true);
     expect(metadata.endTime).toBe(999);
     expect(metadata.streamState).toBe('completed');
+    expect(metadata.syntheticPrompt).toEqual({
+      kind: 'spec-task',
+      title: 'TASK-1 · Build',
+      subtitle: 'Compact kickoff prompt',
+    });
     expect(metadata.toolCalls[0].meta).toEqual({ exitCode: 0 });
     expect(metadata.contentParts[1].toolCall.name).toBe('workspace_search');
+  });
+
+  it('omits retired legacy element attachments from persisted metadata', () => {
+    const metadata = JSON.parse(serializeMessageMetadata({
+      id: 'm1',
+      role: 'user',
+      content: 'hello',
+      timestamp: 123,
+      attachments: [
+        { id: 'a1', type: 'folder', label: 'src', path: 'src' },
+        {
+          id: 'legacy-element-1',
+          type: 'element',
+          label: '<button.primary>',
+          selector: 'button.primary',
+        },
+      ],
+    } as unknown as import('$features/assistant/stores/assistant.svelte').AssistantMessage));
+
+    expect(metadata.attachments).toEqual([{ id: 'a1', type: 'folder', label: 'src', path: 'src' }]);
   });
 
   it('uses the conversation mode and saves every message', async () => {

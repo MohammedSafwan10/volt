@@ -39,14 +39,14 @@
   let showTooltip = $state(false);
 </script>
 
-<div 
+<div
   class="context-usage-container"
   onmouseenter={() => showTooltip = true}
   onmouseleave={() => showTooltip = false}
   role="status"
   aria-label="Context usage"
 >
-  <div class="progress-ring-wrapper" class:streaming={isStreaming}>
+  <div class="progress-ring-wrapper">
     <svg width={RING_SIZE} height={RING_SIZE}>
       <circle
         class="ring-bg"
@@ -66,10 +66,6 @@
         style="stroke-dashoffset: {strokeDashoffset}"
       />
     </svg>
-    
-    {#if isStreaming}
-      <div class="streaming-dot" style="background-color: {ringColor}"></div>
-    {/if}
   </div>
 
   {#if showTooltip}
@@ -122,28 +118,6 @@
     fill: none;
     stroke-linecap: round;
     transition: stroke-dashoffset 0.3s ease, stroke 0.3s ease;
-  }
-
-  .streaming-dot {
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    animation: pulse 1.5s infinite ease-in-out;
-  }
-
-  @keyframes pulse {
-    0%, 100% { transform: scale(0.8); opacity: 0.5; }
-    50% { transform: scale(1.2); opacity: 1; }
-  }
-
-  .progress-ring-wrapper.streaming {
-    animation: rotate 2s linear infinite;
-  }
-
-  @keyframes rotate {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
   }
 
   .usage-tooltip {

@@ -360,16 +360,22 @@
   >
     <!-- Combined Status & File Info Block -->
     <div class="main-info">
-      <div class="status-indicator">
-        <UIIcon name={statusIcon} size={13} />
-        {#if statusText}
-          <span class="status-label">{statusText}</span>
-        {/if}
-      </div>
+      {#if !isAllRunning}
+        <div class="status-indicator" title={statusText}>
+          {#if statusIcon === 'pencil'}
+            <!-- Custom Sleek Edit Pen -->
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+            </svg>
+          {:else}
+            <UIIcon name={statusIcon} size={13} />
+          {/if}
+        </div>
+      {/if}
 
       <div
         class="file-pill"
-        class:is-loading={isAllRunning}
         role="button"
         tabindex="0"
         onclick={(e) => {
@@ -385,11 +391,28 @@
         title={toolCall.arguments.path as string}
       >
         {#if isAllRunning}
-          <UIIcon name="pencil" size={13} class="shimmer-icon" />
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="shimmer-icon"
+          >
+            <path
+              d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-2 2.5 2.5 0 0 1 .5 0Z"
+            />
+            <path
+              d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-2 2.5 2.5 0 0 0-.5 0Z"
+            />
+          </svg>
         {:else}
           <UIIcon name={fileIcon} size={13} />
+          <span class="filename">{filename}</span>
         {/if}
-        <span class="filename">{filename}</span>
       </div>
 
       <!-- Stats - Always show if available -->
@@ -610,14 +633,18 @@
   }
 
   .card-row {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 6px 0;
+    padding: 6px 12px;
     cursor: default;
     font-size: 13px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 999px;
+    transition: all 0.2s ease;
   }
+  .card-row:hover { background: rgba(255, 255, 255, 0.06); }
 
   .edit-card.compact .card-row {
     gap: 8px;
@@ -650,8 +677,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--color-border);
+    background: transparent;
+    border: none;
     padding: 2px 8px;
     border-radius: 4px;
     max-width: fit-content;
@@ -664,47 +691,10 @@
 
   .file-pill:hover {
     background: rgba(255, 255, 255, 0.08);
-    border-color: var(--color-accent);
   }
 
   .edit-card.compact :global(.file-pill) {
     padding: 1px 6px;
-  }
-
-  .file-pill.is-loading {
-    border-color: var(--color-accent);
-    background:
-      linear-gradient(
-        90deg,
-        rgba(var(--color-accent-rgb), 0.05) 0%,
-        rgba(var(--color-accent-rgb), 0.14) 50%,
-        rgba(var(--color-accent-rgb), 0.05) 100%
-      );
-    background-size: 220% 100%;
-    animation: file-pill-shimmer 1.35s linear infinite;
-  }
-
-  .shimmer-icon {
-    color: var(--color-accent);
-    animation: file-pill-shimmer 1.35s linear infinite;
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  @keyframes file-pill-shimmer {
-    0% {
-      background-position: 200% 0;
-    }
-    100% {
-      background-position: -200% 0;
-    }
   }
 
   .filename {
@@ -729,21 +719,6 @@
     font-weight: 600;
     font-family: "JetBrains Mono", monospace;
     margin-left: 2px;
-  }
-
-  .edit-mode-badge {
-    display: inline-flex;
-    align-items: center;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    color: var(--color-text-secondary);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--color-border);
-    text-transform: uppercase;
   }
 
   .stat-added {

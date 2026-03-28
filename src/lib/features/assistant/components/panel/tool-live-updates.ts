@@ -1,8 +1,19 @@
-import { isFileMutatingTool } from '$core/ai/tools';
 import type {
   ToolRuntimeContext,
   ToolRuntimeUpdate,
 } from '$core/ai/tools/runtime';
+
+const FILE_MUTATING_TOOLS = new Set([
+  'delete_file',
+  'rename_path',
+  'create_dir',
+  'write_file',
+  'append_file',
+  'apply_patch',
+  'replace_lines',
+  'str_replace',
+  'multi_replace',
+]);
 
 export function getInitialToolLiveStatus(toolName: string): string | undefined {
   if (toolName === 'read_file' || toolName === 'read_files' || toolName === 'read_code') {
@@ -38,7 +49,7 @@ export function getInitialToolLiveStatus(toolName: string): string | undefined {
   if (toolName === 'str_replace' || toolName === 'multi_replace') {
     return 'Updating file...';
   }
-  if (isFileMutatingTool(toolName)) {
+  if (FILE_MUTATING_TOOLS.has(toolName)) {
     return 'Applying edit...';
   }
   if (toolName === 'run_command' || toolName === 'start_process') {

@@ -21,6 +21,7 @@ export interface ToolExecutionResult {
 interface MessageToolState {
   id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  reviewStatus?: 'pending' | 'accepted' | 'rejected';
 }
 
 interface MessageState {
@@ -55,6 +56,11 @@ interface ApprovalExecutorDeps {
     ) => void,
     maxWaitMs?: number,
   ) => Promise<boolean>;
+  applyNativeDecision?: (decision: unknown) => void;
+  buildNativeDecision?: (params: {
+    operation: string;
+    payload: Record<string, unknown>;
+  }) => Promise<unknown>;
   getMessages: () => MessageState[];
   updateToolCallInMessage: (
     msgId: string,
@@ -81,6 +87,26 @@ interface ApprovalExecutorDeps {
     result: { success: boolean; error?: string; output?: string },
   ) => string | null;
   onFailureSignature: (signature: string) => void;
+  publishToolPatch?: (toolId: string, patch: Record<string, unknown>) => void | Promise<void>;
+  getCurrentToolCallState?: (
+    messageId: string,
+    toolId: string,
+  ) => {
+    status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+    reviewStatus?: 'pending' | 'accepted' | 'rejected';
+    error?: string;
+    meta?: Record<string, unknown>;
+  } | undefined;
+  resolveApprovalAuthority?: (
+    messageId: string,
+    toolIds: string[],
+  ) => Promise<{
+    shouldAbort: boolean;
+    reason?: string;
+    approvedToolIds: string[];
+    deniedToolIds: string[];
+    unresolvedToolIds: string[];
+  } | null>;
 }
 
 export async function processToolsNeedingApproval(
@@ -101,6 +127,18 @@ export async function processToolsNeedingApproval(
   );
 
   if (otherTools.length > 0) {
+    deps.applyNativeDecision?.(
+      await deps.buildNativeDecision?.({
+        operation: 'waiting_approval',
+        payload: {
+          requestedLoopState: 'waiting_approval',
+          requestedLoopMeta: {
+            pendingApprovals: otherTools.length,
+            toolIds: otherTools.map((toolCall) => toolCall.id),
+          },
+        },
+      }),
+    );
     const approvalsResolved = await deps.waitForToolApprovals(
       messageId,
       otherTools.map((toolCall) => toolCall.id),
@@ -113,6 +151,30 @@ export async function processToolsNeedingApproval(
       ) => void,
     );
     if (deps.signal.aborted || !approvalsResolved) return false;
+    deps.applyNativeDecision?.(
+      await deps.buildNativeDecision?.({
+        operation: 'approval_resumed',
+        payload: {
+          requestedLoopState: 'running',
+          requestedLoopMeta: {
+            resumedAfterApproval: true,
+            toolIds: otherTools.map((toolCall) => toolCall.id),
+          },
+        },
+      }),
+    );
+    const approvalAuthority =
+      (await deps.resolveApprovalAuthority?.(
+        messageId,
+        otherTools.map((toolCall) => toolCall.id),
+      )) ?? null;
+    if (approvalAuthority?.shouldAbort) {
+      return false;
+    }
+    const approvedToolIds = new Set(
+      approvalAuthority?.approvedToolIds ?? otherTools.map((toolCall) => toolCall.id),
+    );
+    const deniedToolIds = new Set(approvalAuthority?.deniedToolIds ?? []);
 
     for (const toolCall of otherTools) {
       let currentMessage = deps.getMessages().find((m) => m.id === messageId);
@@ -143,7 +205,7 @@ export async function processToolsNeedingApproval(
         continue;
       }
 
-      if (currentToolCall?.status === 'cancelled') {
+      if (currentToolCall?.status === 'cancelled' || deniedToolIds.has(toolCall.id)) {
         toolResults.push({
           id: toolCall.id,
           name: toolCall.name,
@@ -152,10 +214,37 @@ export async function processToolsNeedingApproval(
         continue;
       }
 
+      if (!approvedToolIds.has(toolCall.id)) {
+        toolResults.push({
+          id: toolCall.id,
+          name: toolCall.name,
+          result: { success: false, error: 'Tool execution denied by native runtime policy' },
+        });
+        deps.updateToolCallInMessage(messageId, toolCall.id, {
+          status: 'failed',
+          error: 'Tool execution denied by native runtime policy',
+          endTime: Date.now(),
+        });
+        void deps.publishToolPatch?.(toolCall.id, {
+          status: 'failed',
+          error: 'Tool execution denied by native runtime policy',
+        });
+        continue;
+      }
+
+      const existingToolState = deps.getCurrentToolCallState?.(messageId, toolCall.id);
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: 'running',
         startTime: Date.now(),
         meta: {
+          ...(existingToolState?.meta ?? {}),
+          liveStatus: getInitialToolLiveStatus(toolCall.name),
+        },
+      });
+      void deps.publishToolPatch?.(toolCall.id, {
+        status: 'running',
+        meta: {
+          ...(existingToolState?.meta ?? {}),
           liveStatus: getInitialToolLiveStatus(toolCall.name),
         },
       });
@@ -171,20 +260,32 @@ export async function processToolsNeedingApproval(
           ),
           runtime: createToolRuntimeContext((patch) => {
             deps.updateToolCallInMessage(messageId, toolCall.id, patch);
+            void deps.publishToolPatch?.(toolCall.id, patch);
           }),
         });
         toolResults.push({ id: toolCall.id, name: toolCall.name, result });
         deps.updateToolCallInMessage(messageId, toolCall.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error,
+          error: result.error ?? existingToolState?.error,
           meta: {
+            ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
             liveStatus: undefined,
           },
           data: result.data,
           endTime: Date.now(),
           streamingProgress: undefined,
+        });
+        void deps.publishToolPatch?.(toolCall.id, {
+          status: result.success ? 'completed' : 'failed',
+          output: result.output,
+          error: result.error ?? existingToolState?.error,
+          meta: {
+            ...(existingToolState?.meta ?? {}),
+            ...(result.meta ?? {}),
+            liveStatus: undefined,
+          },
         });
         deps.trackToolOutcome(toolCall.name, toolCall.arguments, result);
         const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, result);
@@ -200,10 +301,19 @@ export async function processToolsNeedingApproval(
           status: 'failed',
           error,
           meta: {
+            ...(existingToolState?.meta ?? {}),
             liveStatus: undefined,
           },
           endTime: Date.now(),
           streamingProgress: undefined,
+        });
+        void deps.publishToolPatch?.(toolCall.id, {
+          status: 'failed',
+          error,
+          meta: {
+            ...(existingToolState?.meta ?? {}),
+            liveStatus: undefined,
+          },
         });
         const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, {
           success: false,
@@ -231,6 +341,10 @@ export async function processToolsNeedingApproval(
         error: 'Skipped: A previous command failed.',
         endTime: Date.now(),
       });
+      void deps.publishToolPatch?.(toolCall.id, {
+        status: 'failed',
+        error: 'Skipped: A previous command failed.',
+      });
       toolResults.push({
         id: toolCall.id,
         name: toolCall.name,
@@ -251,6 +365,25 @@ export async function processToolsNeedingApproval(
       ) => void,
     );
     if (deps.signal.aborted || !approvalResolved) return false;
+    const approvalAuthority =
+      (await deps.resolveApprovalAuthority?.(messageId, [toolCall.id])) ?? null;
+    if (approvalAuthority?.shouldAbort) {
+      return false;
+    }
+    const approvedToolIds = new Set(approvalAuthority?.approvedToolIds ?? [toolCall.id]);
+    const deniedToolIds = new Set(approvalAuthority?.deniedToolIds ?? []);
+    deps.applyNativeDecision?.(
+      await deps.buildNativeDecision?.({
+        operation: 'approval_resumed',
+        payload: {
+          requestedLoopState: 'running',
+          requestedLoopMeta: {
+            resumedAfterApproval: true,
+            toolIds: [toolCall.id],
+          },
+        },
+      }),
+    );
 
     currentMessage = deps.getMessages().find((m) => m.id === messageId);
     currentToolCall = currentMessage?.inlineToolCalls?.find(
@@ -280,7 +413,7 @@ export async function processToolsNeedingApproval(
       continue;
     }
 
-    if (currentToolCall?.status === 'cancelled') {
+    if (currentToolCall?.status === 'cancelled' || deniedToolIds.has(toolCall.id)) {
       toolResults.push({
         id: toolCall.id,
         name: toolCall.name,
@@ -290,10 +423,38 @@ export async function processToolsNeedingApproval(
       continue;
     }
 
+    if (!approvedToolIds.has(toolCall.id)) {
+      toolResults.push({
+        id: toolCall.id,
+        name: toolCall.name,
+        result: { success: false, error: 'Tool execution denied by native runtime policy' },
+      });
+      deps.updateToolCallInMessage(messageId, toolCall.id, {
+        status: 'failed',
+        error: 'Tool execution denied by native runtime policy',
+        endTime: Date.now(),
+      });
+      void deps.publishToolPatch?.(toolCall.id, {
+        status: 'failed',
+        error: 'Tool execution denied by native runtime policy',
+      });
+      previousTerminalFailed = true;
+      continue;
+    }
+
+    const existingTerminalState = deps.getCurrentToolCallState?.(messageId, toolCall.id);
     deps.updateToolCallInMessage(messageId, toolCall.id, {
       status: 'running',
       startTime: Date.now(),
       meta: {
+        ...(existingTerminalState?.meta ?? {}),
+        liveStatus: getInitialToolLiveStatus(toolCall.name),
+      },
+    });
+    void deps.publishToolPatch?.(toolCall.id, {
+      status: 'running',
+      meta: {
+        ...(existingTerminalState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(toolCall.name),
       },
     });
@@ -309,20 +470,32 @@ export async function processToolsNeedingApproval(
         ),
         runtime: createToolRuntimeContext((patch) => {
           deps.updateToolCallInMessage(messageId, toolCall.id, patch);
+          void deps.publishToolPatch?.(toolCall.id, patch);
         }),
       });
       toolResults.push({ id: toolCall.id, name: toolCall.name, result });
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: result.success ? 'completed' : 'failed',
         output: result.output,
-        error: result.error,
+        error: result.error ?? existingTerminalState?.error,
         meta: {
+          ...(existingTerminalState?.meta ?? {}),
           ...(result.meta ?? {}),
           liveStatus: undefined,
         },
         data: result.data,
         endTime: Date.now(),
         streamingProgress: undefined,
+      });
+      void deps.publishToolPatch?.(toolCall.id, {
+        status: result.success ? 'completed' : 'failed',
+        output: result.output,
+        error: result.error ?? existingTerminalState?.error,
+        meta: {
+          ...(existingTerminalState?.meta ?? {}),
+          ...(result.meta ?? {}),
+          liveStatus: undefined,
+        },
       });
       deps.trackToolOutcome(toolCall.name, toolCall.arguments, result);
       const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, result);
@@ -339,10 +512,19 @@ export async function processToolsNeedingApproval(
         status: 'failed',
         error,
         meta: {
+          ...(existingTerminalState?.meta ?? {}),
           liveStatus: undefined,
         },
         endTime: Date.now(),
         streamingProgress: undefined,
+      });
+      void deps.publishToolPatch?.(toolCall.id, {
+        status: 'failed',
+        error,
+        meta: {
+          ...(existingTerminalState?.meta ?? {}),
+          liveStatus: undefined,
+        },
       });
       const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, {
         success: false,

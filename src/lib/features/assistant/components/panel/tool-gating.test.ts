@@ -11,28 +11,14 @@ describe('filterToolsForChat', () => {
       parameters: { type: 'object', properties: {} },
     },
     {
-      name: 'browser_get_summary',
-      description: 'Get browser summary',
-      parameters: { type: 'object', properties: {} },
-    },
-    {
-      name: 'browser_click',
-      description: 'Click browser element',
+      name: 'mcp_git_status',
+      description: 'Git status from MCP',
       parameters: { type: 'object', properties: {} },
     },
   ];
 
-  it('removes browser tools when browser tools are disabled', () => {
-    const filtered = filterToolsForChat(tools, false);
+  it('keeps built-in tools in chat', () => {
+    const filtered = filterToolsForChat(tools);
     expect(filtered.map((t) => t.name)).toEqual(['read_file']);
-  });
-
-  it('keeps browser tools when browser tools are enabled', () => {
-    const filtered = filterToolsForChat(tools, true);
-    expect(filtered.map((t) => t.name)).toEqual([
-      'read_file',
-      'browser_get_summary',
-      'browser_click',
-    ]);
   });
 });

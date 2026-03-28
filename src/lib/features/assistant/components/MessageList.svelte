@@ -3,6 +3,7 @@
    * MessageList - Main chat message container
    * Renders user/assistant messages with auto-scroll
    */
+  import { tick } from "svelte";
   import { UIIcon } from "$shared/components/ui";
   import type {
     AssistantMessage,
@@ -10,6 +11,7 @@
     ImageAttachment,
   } from "$features/assistant/stores/assistant.svelte";
   import type { AIMode } from "$features/assistant/stores/ai.svelte";
+  import { specStore } from "$features/specs/stores/specs.svelte";
   import EmptyState from "./EmptyState.svelte";
   import UserMessage from "./UserMessage.svelte";
   import AssistantMessageRow from "./AssistantMessageRow.svelte";
@@ -19,6 +21,7 @@
   interface Props {
     messages: AssistantMessage[];
     currentMode?: AIMode;
+    currentConversationId?: string | null;
     isStreaming?: boolean;
     scrollRevision?: number;
     onQuickPrompt?: (prompt: string) => void;
@@ -30,18 +33,23 @@
       relativePath?: string;
       absolutePath?: string;
     }) => void;
+    onConfirmSpecDraft?: () => void;
+    onDiscardSpecDraft?: () => void;
     onRevert?: (messageId: string) => void;
   }
 
   let {
     messages,
     currentMode = "ask",
+    currentConversationId = null,
     isStreaming = false,
     scrollRevision = 0,
     onQuickPrompt,
     onToolApprove,
     onToolDeny,
     onStartImplementation,
+    onConfirmSpecDraft,
+    onDiscardSpecDraft,
     onRevert,
   }: Props = $props();
 
@@ -56,6 +64,11 @@
   let userNearBottom = $state(true);
   let isFollowing = $state(true);
   let showJumpButton = $state(false);
+  let visibleHistoryCount = $state(60);
+  let lastVisibleConversationId = $state<string | null>(null);
+
+  const HISTORY_PAGE_SIZE = 40;
+  const INITIAL_VISIBLE_HISTORY_COUNT = 60;
 
   function getActiveAssistantIndex(): number {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -74,9 +87,83 @@
   const activeAssistantMessage = $derived(
     activeAssistantIndex >= 0 ? messages[activeAssistantIndex] : null,
   );
-  const historyMessages = $derived(
-    messages.filter((m, index) => m.role !== "tool" && index !== activeAssistantIndex),
+  const latestAssistantIndex = $derived.by(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "assistant") return i;
+    }
+    return -1;
+  });
+  const historyRows = $derived.by(() => {
+    const rows: Array<{
+      message: AssistantMessage;
+      originalIdx: number;
+      elapsedTime: string | null;
+      showStreamingFallback: boolean;
+      assistantDistanceFromEnd: number | null;
+    }> = [];
+
+    let lastUserTimestamp: number | null = null;
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index];
+      if (message.role === "user") {
+        lastUserTimestamp = message.timestamp;
+      }
+      if (message.role === "tool" || index === activeAssistantIndex) {
+        continue;
+      }
+
+      const elapsedTime =
+        message.role === "assistant" && !message.isStreaming && message.endTime
+          ? formatElapsedTime(
+              lastUserTimestamp ?? message.timestamp,
+              message.endTime,
+            )
+          : null;
+
+      rows.push({
+        message,
+        originalIdx: index,
+        elapsedTime,
+        showStreamingFallback: isStreaming && latestAssistantIndex === index,
+        assistantDistanceFromEnd: null,
+      });
+    }
+
+    let assistantDistance = 0;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      if (rows[index].message.role !== "assistant") continue;
+      rows[index].assistantDistanceFromEnd = assistantDistance;
+      assistantDistance += 1;
+    }
+
+    return rows;
+  });
+  const hiddenHistoryCount = $derived(
+    Math.max(0, historyRows.length - visibleHistoryCount),
   );
+  const visibleHistoryRows = $derived(
+    hiddenHistoryCount > 0
+      ? historyRows.slice(historyRows.length - visibleHistoryCount)
+      : historyRows,
+  );
+
+  $effect(() => {
+    const conversationKey = currentConversationId ?? "__no_conversation__";
+    const totalRows = historyRows.length;
+
+    if (lastVisibleConversationId !== conversationKey) {
+      lastVisibleConversationId = conversationKey;
+      visibleHistoryCount = Math.min(
+        Math.max(totalRows, 1),
+        INITIAL_VISIBLE_HISTORY_COUNT,
+      );
+      return;
+    }
+
+    if (totalRows <= visibleHistoryCount) {
+      visibleHistoryCount = Math.max(totalRows, INITIAL_VISIBLE_HISTORY_COUNT);
+    }
+  });
 
   function syncScrollStateFromContainer(): void {
     if (!containerRef) return;
@@ -199,29 +286,6 @@
     return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${seconds}s`;
   }
 
-  function getMessageElapsedTime(
-    message: AssistantMessage,
-    index: number,
-  ): string | null {
-    if (message.role !== "assistant" || message.isStreaming || !message.endTime)
-      return null;
-    for (let i = index - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        return formatElapsedTime(messages[i].timestamp, message.endTime);
-      }
-    }
-    return formatElapsedTime(message.timestamp, message.endTime);
-  }
-
-  function isLatestAssistantMessage(index: number): boolean {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") {
-        return i === index;
-      }
-    }
-    return false;
-  }
-
   // Plan mode: check for plan file
   function findPlanFileCreated(): {
     filename: string;
@@ -264,9 +328,37 @@
     return findPlanFileCreated() !== null;
   });
 
+  const showSpecDraftActions = $derived.by(() => {
+    if (currentMode !== "spec" || isStreaming) return false;
+    return specStore.hasPendingDraftForConversation(currentConversationId);
+  });
+
+  const verificationConversationActions = $derived.by(() =>
+    specStore.getVerificationConversationActionState(currentConversationId),
+  );
+
   function handleStartImplementation(): void {
     const plan = findPlanFileCreated();
     if (plan && onStartImplementation) onStartImplementation(plan);
+  }
+
+  async function showOlderMessages(): Promise<void> {
+    if (!containerRef || hiddenHistoryCount <= 0) return;
+    const previousScrollHeight = containerRef.scrollHeight;
+    const previousScrollTop = containerRef.scrollTop;
+    visibleHistoryCount = Math.min(
+      historyRows.length,
+      visibleHistoryCount + HISTORY_PAGE_SIZE,
+    );
+    await tick();
+    const nextScrollHeight = containerRef.scrollHeight;
+    containerRef.scrollTop =
+      previousScrollTop + (nextScrollHeight - previousScrollHeight);
+    syncScrollStateFromContainer();
+  }
+
+  function showAllMessages(): void {
+    visibleHistoryCount = historyRows.length;
   }
 
 </script>
@@ -283,28 +375,54 @@
     {#if messages.length === 0}
       <EmptyState {currentMode} {onQuickPrompt} />
     {:else}
-      {#each historyMessages as message (message.id)}
-        {@const originalIdx = messages.findIndex((m) => m.id === message.id)}
+      {#if hiddenHistoryCount > 0}
+        <div class="history-window-banner">
+          <button
+            class="history-window-btn"
+            onclick={showOlderMessages}
+            type="button"
+          >
+            <UIIcon name="chevron-up" size={14} />
+            <span>Show {Math.min(HISTORY_PAGE_SIZE, hiddenHistoryCount)} older message{Math.min(HISTORY_PAGE_SIZE, hiddenHistoryCount) === 1 ? "" : "s"}</span>
+          </button>
+          {#if hiddenHistoryCount > HISTORY_PAGE_SIZE}
+            <button
+              class="history-window-btn ghost"
+              onclick={showAllMessages}
+              type="button"
+            >
+              <span>Show all {hiddenHistoryCount} older</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
+
+      {#each visibleHistoryRows as row (row.message.id)}
         <div class="message-row">
-          {#if message.role === "user"}
+          {#if row.message.role === "user"}
             <UserMessage
-              {message}
-              expanded={expandedMessages[message.id]}
-              onToggleExpand={() => toggleMessage(message.id)}
+              message={row.message}
+              expanded={expandedMessages[row.message.id]}
+              onToggleExpand={() => toggleMessage(row.message.id)}
               onImageClick={openImagePreview}
               {onRevert}
             />
-          {:else if message.role === "assistant"}
+          {:else if row.message.role === "assistant"}
             <AssistantMessageRow
-              {message}
-              msgIdx={originalIdx}
-              showStreamingFallback={isStreaming &&
-                isLatestAssistantMessage(originalIdx)}
+              message={row.message}
+              msgIdx={row.originalIdx}
+              showStreamingFallback={row.showStreamingFallback}
               renderMode="history"
-              elapsedTime={getMessageElapsedTime(message, originalIdx)}
+              elapsedTime={row.elapsedTime}
+              expanded={Boolean(expandedMessages[row.message.id])}
+              compactHistory={
+                (row.assistantDistanceFromEnd ?? 0) >= 12 &&
+                !expandedMessages[row.message.id]
+              }
+              onToggleExpand={() => toggleMessage(row.message.id)}
             />
-          {:else if message.role === "system"}
-            <SystemMessage {message} />
+          {:else if row.message.role === "system"}
+            <SystemMessage message={row.message} />
           {/if}
         </div>
       {/each}
@@ -335,6 +453,85 @@
           <span>Start Implementation</span>
           <UIIcon name="arrow-right" size={14} />
         </button>
+      </div>
+    {/if}
+
+    {#if showSpecDraftActions}
+      <div class="spec-draft-wrapper">
+        <div class="spec-draft-copy">
+          <div class="spec-draft-title">Requirements draft ready</div>
+          <div class="spec-draft-subtitle">
+            Write <code>.volt/specs/{specStore.pendingDraft?.slug}/requirements.md</code> into this workspace?
+          </div>
+        </div>
+        <div class="spec-draft-actions">
+          <button
+            class="spec-draft-btn ghost"
+            onclick={() => onDiscardSpecDraft?.()}
+            type="button"
+          >
+            <UIIcon name="close" size={14} />
+            <span>Discard</span>
+          </button>
+          <button
+            class="spec-draft-btn primary"
+            onclick={() => onConfirmSpecDraft?.()}
+            type="button"
+          >
+            <UIIcon name="file" size={14} />
+            <span>Create Requirements</span>
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    {#if verificationConversationActions && !isStreaming}
+      <div class="spec-draft-wrapper verify-followup">
+        <div class="spec-draft-copy">
+          <div class="spec-draft-title">
+            {#if verificationConversationActions.isStale}
+              Review Stale
+            {:else if verificationConversationActions.verdict === "needs-fix" || verificationConversationActions.status === "needs-fix"}
+              Review Found Fixes
+            {:else if verificationConversationActions.verdict === "incomplete" || verificationConversationActions.status === "incomplete"}
+              Review Marked Task Incomplete
+            {:else if verificationConversationActions.hasReviewPayload}
+              Review Ready
+            {:else}
+              Verification Follow-up
+            {/if} · {verificationConversationActions.taskId}
+          </div>
+          <div class="spec-draft-subtitle">
+            {verificationConversationActions.taskTitle}
+            {#if verificationConversationActions.isStale}
+              · run a fresh pass when the fixes settle.
+            {:else}
+              · continue in this chat with the verifier's punch list.
+            {/if}
+          </div>
+        </div>
+        <div class="spec-draft-actions">
+          {#if verificationConversationActions.canApplyFixes}
+            <button
+              class="spec-draft-btn primary"
+              onclick={() => specStore.applyReviewFixesForConversation(currentConversationId)}
+              type="button"
+            >
+              <UIIcon name="robot" size={14} />
+              <span>Apply Review Fixes</span>
+            </button>
+          {/if}
+          {#if verificationConversationActions.canReverify}
+            <button
+              class="spec-draft-btn ghost"
+              onclick={() => specStore.reverifyConversationTask(currentConversationId)}
+              type="button"
+            >
+              <UIIcon name="refresh" size={14} />
+              <span>Re-Verify</span>
+            </button>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -376,10 +573,50 @@
 
   .message-row {
     padding-bottom: 8px;
+    content-visibility: auto;
+    contain-intrinsic-size: 220px;
   }
 
   .active-turn-shell {
     margin-top: 8px;
+  }
+
+  .history-window-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+    content-visibility: auto;
+    contain-intrinsic-size: 48px;
+  }
+
+  .history-window-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-bg-elevated, var(--color-bg-secondary));
+    color: var(--color-text);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .history-window-btn:hover {
+    background: color-mix(in srgb, var(--color-bg-hover) 85%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  }
+
+  .history-window-btn.ghost {
+    background: transparent;
+    color: var(--color-text-secondary);
   }
 
   .jump-to-bottom {
@@ -421,6 +658,98 @@
     margin-top: 4px;
     border-top: 1px solid rgba(255, 255, 255, 0.05);
     animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .spec-draft-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 0;
+    margin-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .spec-draft-wrapper.verify-followup {
+    align-items: flex-start;
+    padding: 10px 12px;
+    margin-top: 8px;
+    border: 1px solid color-mix(in srgb, var(--color-warning, #cca700) 28%, var(--color-border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-surface0) 94%, var(--color-warning, #cca700) 6%);
+  }
+
+  .spec-draft-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .spec-draft-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  .spec-draft-subtitle {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+  }
+
+  .spec-draft-subtitle code {
+    font-family: var(--font-family-mono, monospace);
+    color: var(--color-text);
+  }
+
+  .spec-draft-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .spec-draft-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface0);
+    color: var(--color-text);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+  }
+
+  .spec-draft-btn:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+  }
+
+  .spec-draft-btn.primary {
+    background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface0));
+    border-color: color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+    color: var(--color-text);
+  }
+
+  .spec-draft-btn.ghost {
+    background: transparent;
+  }
+
+  .verify-followup .spec-draft-title {
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
+
+  .verify-followup .spec-draft-subtitle {
+    font-size: 11.5px;
+    line-height: 1.35;
   }
 
   .start-implementation-btn {

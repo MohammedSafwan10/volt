@@ -23,6 +23,10 @@ interface Settings {
   editorTabSize: number;
   /** Use spaces for indentation */
   editorInsertSpaces: boolean;
+  /** Optional Flutter SDK root path */
+  flutterSdkPath: string;
+  /** Optional standalone Dart SDK root path */
+  dartSdkPath: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -33,7 +37,9 @@ const DEFAULT_SETTINGS: Settings = {
   editorLineNumbersEnabled: true,
   editorMinimapEnabled: true,
   editorTabSize: 2,
-  editorInsertSpaces: true
+  editorInsertSpaces: true,
+  flutterSdkPath: '',
+  dartSdkPath: '',
 };
 
 class SettingsStore {
@@ -60,6 +66,12 @@ class SettingsStore {
 
   /** Use spaces for indentation */
   editorInsertSpaces = $state(DEFAULT_SETTINGS.editorInsertSpaces);
+
+  /** Optional Flutter SDK root path */
+  flutterSdkPath = $state(DEFAULT_SETTINGS.flutterSdkPath);
+
+  /** Optional standalone Dart SDK root path */
+  dartSdkPath = $state(DEFAULT_SETTINGS.dartSdkPath);
 
   constructor() {
     this.loadFromStorage();
@@ -132,6 +144,16 @@ class SettingsStore {
     this.saveToStorage();
   }
 
+  setFlutterSdkPath(path: string): void {
+    this.flutterSdkPath = path.trim();
+    this.saveToStorage();
+  }
+
+  setDartSdkPath(path: string): void {
+    this.dartSdkPath = path.trim();
+    this.saveToStorage();
+  }
+
   /** Reset all settings back to defaults */
   resetToDefaults(): void {
     this.autoSaveEnabled = DEFAULT_SETTINGS.autoSaveEnabled;
@@ -142,6 +164,8 @@ class SettingsStore {
     this.editorMinimapEnabled = DEFAULT_SETTINGS.editorMinimapEnabled;
     this.editorTabSize = DEFAULT_SETTINGS.editorTabSize;
     this.editorInsertSpaces = DEFAULT_SETTINGS.editorInsertSpaces;
+    this.flutterSdkPath = DEFAULT_SETTINGS.flutterSdkPath;
+    this.dartSdkPath = DEFAULT_SETTINGS.dartSdkPath;
     this.saveToStorage();
   }
 
@@ -182,6 +206,12 @@ class SettingsStore {
       if (typeof parsed.editorInsertSpaces === 'boolean') {
         this.editorInsertSpaces = parsed.editorInsertSpaces;
       }
+      if (typeof parsed.flutterSdkPath === 'string') {
+        this.flutterSdkPath = parsed.flutterSdkPath.trim();
+      }
+      if (typeof parsed.dartSdkPath === 'string') {
+        this.dartSdkPath = parsed.dartSdkPath.trim();
+      }
     } catch {
       // Ignore parse errors, use defaults
     }
@@ -202,7 +232,9 @@ class SettingsStore {
         editorLineNumbersEnabled: this.editorLineNumbersEnabled,
         editorMinimapEnabled: this.editorMinimapEnabled,
         editorTabSize: this.editorTabSize,
-        editorInsertSpaces: this.editorInsertSpaces
+        editorInsertSpaces: this.editorInsertSpaces,
+        flutterSdkPath: this.flutterSdkPath,
+        dartSdkPath: this.dartSdkPath,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     } catch {
