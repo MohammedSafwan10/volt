@@ -8,6 +8,9 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { WebLinksAddon } from '@xterm/addon-web-links';
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>['theme'];
+type TerminalOptions = ConstructorParameters<typeof Terminal>[0] & {
+	bellStyle?: 'none' | 'sound' | 'visual';
+};
 
 let xtermModule: typeof import('@xterm/xterm') | null = null;
 let fitAddonModule: typeof import('@xterm/addon-fit') | null = null;
@@ -96,14 +99,12 @@ export function getTerminalTheme(): XtermTheme {
 /**
  * Create a new Terminal instance
  */
-export function createTerminal(options?: ConstructorParameters<typeof Terminal>[0]): Terminal {
-	if (!xtermModule) {
-		throw new Error('xterm not loaded. Call loadXterm() first.');
-	}
-
-	const terminalOptions = {
+export function buildTerminalOptions(
+	options?: ConstructorParameters<typeof Terminal>[0]
+): TerminalOptions {
+	return {
 		cursorBlink: true,
-		cursorStyle: 'bar',
+		cursorStyle: 'block',
 		fontSize: 13,
 		fontFamily: 'Consolas, "Courier New", monospace',
 		scrollback: 5000,
@@ -115,9 +116,18 @@ export function createTerminal(options?: ConstructorParameters<typeof Terminal>[
 		theme: getTerminalTheme(),
 		allowProposedApi: true,
 		...options
-	} as ConstructorParameters<typeof Terminal>[0] & {
-		bellStyle?: 'none' | 'sound' | 'visual';
 	};
+}
+
+/**
+ * Create a new Terminal instance
+ */
+export function createTerminal(options?: ConstructorParameters<typeof Terminal>[0]): Terminal {
+	if (!xtermModule) {
+		throw new Error('xterm not loaded. Call loadXterm() first.');
+	}
+
+	const terminalOptions = buildTerminalOptions(options);
 
 	return new xtermModule.Terminal(terminalOptions);
 }
