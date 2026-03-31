@@ -77,6 +77,7 @@ export const PROVIDERS: Record<AIProvider, ProviderConfig> = {
     models: [
       // Best free models with function calling support
       'qwen/qwen3-coder:free',             // Qwen3 Coder - great for code
+      'qwen/qwen3.6-plus-preview:free',    // Qwen 3.6 Plus Preview - 1M context
       'z-ai/glm-4.5-air:free',             // GLM 4.5 Air - fast & capable
       'stepfun/step-3.5-flash:free',       // StepFun 3.5 Flash - 256K context
       'nvidia/nemotron-3-super-120b-a12b:free' // Nemotron 3 Super - strong agentic/reasoning model

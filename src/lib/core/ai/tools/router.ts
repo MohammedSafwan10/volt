@@ -222,9 +222,6 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     case 'get_diagnostics':
       return null;
 
-    case 'attempt_completion':
-      return requireString('result');
-
     default:
       return validateRequiredParamsFromSchema(toolName, args);
   }

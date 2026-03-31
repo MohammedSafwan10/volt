@@ -59,7 +59,6 @@ export function isToolAllowedInMode(toolName: string, mode: AIMode): boolean {
     ...askAndPlan,
     'apply_patch',
     'run_command',
-    'attempt_completion',
   ];
 
   if (mode === 'ask' || mode === 'plan' || mode === 'spec') return askAndPlan.includes(toolName);

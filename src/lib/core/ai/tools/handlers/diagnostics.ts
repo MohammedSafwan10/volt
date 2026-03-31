@@ -5,12 +5,181 @@
  * via the problemsStore which collects from all language servers.
  */
 
+import { fileService } from '$core/services/file-service';
 import { problemsStore } from '$shared/stores/problems.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { toolObservabilityStore } from '$features/assistant/stores/tool-observability.svelte';
-import { truncateOutput, type ToolResult } from '$core/ai/tools/utils';
+import { resolvePath, truncateOutput, type ToolResult } from '$core/ai/tools/utils';
 import { matchesRequestedDiagnosticPath } from './diagnostics-paths';
 import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
+import type { Problem } from '$shared/stores/problems.svelte';
+
+const TS_FALLBACK_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
+const JS_FALLBACK_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs']);
+
+function getFileExtension(path: string): string {
+  const normalized = path.replace(/\\/g, '/').toLowerCase();
+  const lastDot = normalized.lastIndexOf('.');
+  if (lastDot === -1) return '';
+  return normalized.slice(lastDot);
+}
+
+function flattenDiagnosticMessage(messageText: string | { messageText: string; next?: unknown[] }): string {
+  if (typeof messageText === 'string') {
+    return messageText;
+  }
+  const base = messageText.messageText;
+  const next = Array.isArray(messageText.next)
+    ? messageText.next
+        .map((child) =>
+          child && typeof child === 'object' && 'messageText' in child
+            ? flattenDiagnosticMessage(child as { messageText: string; next?: unknown[] })
+            : '',
+        )
+        .filter(Boolean)
+    : [];
+  return next.length > 0 ? `${base} ${next.join(' ')}` : base;
+}
+
+async function collectFallbackDiagnostics(
+  requestedPaths: string[],
+  workspaceRoot: string,
+): Promise<Problem[]> {
+  if (requestedPaths.length === 0) {
+    return [];
+  }
+
+  const ts = await import('typescript');
+  const fallbackProblems: Problem[] = [];
+
+  for (const requestedPath of requestedPaths) {
+    const absolutePath = resolvePath(requestedPath).replace(/\\/g, '/');
+    const extension = getFileExtension(absolutePath);
+    const isTypeScriptFile = TS_FALLBACK_EXTENSIONS.has(extension);
+    const isJavaScriptFile = JS_FALLBACK_EXTENSIONS.has(extension);
+    if (!isTypeScriptFile && !isJavaScriptFile) {
+      continue;
+    }
+
+    const doc = await fileService.read(absolutePath, true);
+    if (!doc) {
+      continue;
+    }
+
+    const compilerOptions: import('typescript').CompilerOptions = {
+      allowJs: isJavaScriptFile,
+      checkJs: false,
+      noLib: true,
+      noEmit: true,
+      noResolve: true,
+      skipLibCheck: true,
+      strict: false,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.ESNext,
+      jsx: extension === '.tsx' || extension === '.jsx' ? ts.JsxEmit.Preserve : undefined,
+    };
+
+    const normalizedTarget = absolutePath.toLowerCase();
+    const sourceFile = ts.createSourceFile(
+      absolutePath,
+      doc.content,
+      ts.ScriptTarget.Latest,
+      true,
+      extension === '.tsx'
+        ? ts.ScriptKind.TSX
+        : extension === '.ts'
+          ? ts.ScriptKind.TS
+          : extension === '.jsx'
+            ? ts.ScriptKind.JSX
+            : ts.ScriptKind.JS,
+    );
+    const system = ts.sys;
+    const useCaseSensitiveFileNames = system?.useCaseSensitiveFileNames ?? true;
+    const getCanonicalFileName = (fileName: string) =>
+      useCaseSensitiveFileNames ? fileName : fileName.toLowerCase();
+
+    const host: import('typescript').CompilerHost = {
+      getSourceFile(fileName, languageVersion) {
+        if (fileName.replace(/\\/g, '/').toLowerCase() === normalizedTarget) {
+          return sourceFile;
+        }
+        const text = system?.readFile?.(fileName);
+        return typeof text === 'string'
+          ? ts.createSourceFile(fileName, text, languageVersion, true)
+          : undefined;
+      },
+      getDefaultLibFileName() {
+        return 'lib.d.ts';
+      },
+      writeFile() {},
+      getCurrentDirectory() {
+        return workspaceRoot || '/';
+      },
+      getDirectories(dirName) {
+        return system?.getDirectories?.(dirName) ?? [];
+      },
+      fileExists(fileName) {
+        if (fileName.replace(/\\/g, '/').toLowerCase() === normalizedTarget) {
+          return true;
+        }
+        return system?.fileExists?.(fileName) ?? false;
+      },
+      readFile(fileName) {
+        if (fileName.replace(/\\/g, '/').toLowerCase() === normalizedTarget) {
+          return doc.content;
+        }
+        return system?.readFile?.(fileName);
+      },
+      getCanonicalFileName,
+      useCaseSensitiveFileNames() {
+        return useCaseSensitiveFileNames;
+      },
+      getNewLine() {
+        return system?.newLine ?? '\n';
+      },
+    };
+
+    const program = ts.createProgram([absolutePath], compilerOptions, host);
+    const diagnostics = isTypeScriptFile
+      ? [
+          ...program.getSyntacticDiagnostics(sourceFile),
+          ...program.getSemanticDiagnostics(sourceFile),
+        ]
+      : program.getSyntacticDiagnostics(sourceFile);
+
+    for (const diagnostic of diagnostics) {
+      if (!diagnostic.file || diagnostic.file.fileName.replace(/\\/g, '/').toLowerCase() !== normalizedTarget) {
+        continue;
+      }
+
+      const start = diagnostic.start ?? 0;
+      const length = diagnostic.length ?? 1;
+      const startPos = diagnostic.file.getLineAndCharacterOfPosition(start);
+      const endPos = diagnostic.file.getLineAndCharacterOfPosition(start + length);
+      const relativePath = requestedPath.replace(/\\/g, '/').replace(/^\/+/, '');
+      fallbackProblems.push({
+        id: `fallback-${relativePath}-${diagnostic.code}-${start}`,
+        file: absolutePath,
+        fileName: relativePath.split('/').pop() || relativePath,
+        line: startPos.line + 1,
+        column: startPos.character + 1,
+        endLine: endPos.line + 1,
+        endColumn: endPos.character + 1,
+        message: flattenDiagnosticMessage(diagnostic.messageText),
+        severity:
+          diagnostic.category === ts.DiagnosticCategory.Error ? 'error' : 'warning',
+        source: isTypeScriptFile ? 'typescript (fallback)' : 'javascript (fallback)',
+        code: `TS${diagnostic.code}`,
+      });
+    }
+  }
+
+  return fallbackProblems.sort((a, b) => {
+    if (a.file !== b.file) return a.file.localeCompare(b.file);
+    if (a.line !== b.line) return a.line - b.line;
+    return a.column - b.column;
+  });
+}
 
 /**
  * Get errors/warnings from IDE
@@ -73,6 +242,12 @@ export async function handleGetDiagnostics(
           );
         })
       : allProblems;
+  const fallbackProblems =
+    relevantProblems.length === 0 && pathsToCheck.length > 0
+      ? await collectFallbackDiagnostics(pathsToCheck, workspaceRoot)
+      : [];
+  const effectiveProblems = fallbackProblems.length > 0 ? fallbackProblems : relevantProblems;
+  const usedFallbackDiagnostics = fallbackProblems.length > 0;
 
   // Format output
   const lines: string[] = [];
@@ -100,9 +275,12 @@ export async function handleGetDiagnostics(
   if (freshness.staleSources.length > 0) {
     lines.push(`Stale sources: ${freshness.staleSources.join(', ')}`);
   }
+  if (usedFallbackDiagnostics) {
+    lines.push('Local fallback analysis was used for the requested file(s).');
+  }
   lines.push('');
 
-  if (relevantProblems.length === 0) {
+  if (effectiveProblems.length === 0) {
     if (freshness.status === 'updating') {
       lines.push('No issues currently reported, but diagnostics are still updating.');
     } else if (freshness.status === 'stale') {
@@ -128,14 +306,14 @@ export async function handleGetDiagnostics(
   }
 
   // Count by severity
-  const errorCount = relevantProblems.filter(p => p.severity === 'error').length;
-  const warnCount = relevantProblems.filter(p => p.severity === 'warning').length;
+  const errorCount = effectiveProblems.filter(p => p.severity === 'error').length;
+  const warnCount = effectiveProblems.filter(p => p.severity === 'warning').length;
 
   lines.push(`${errorCount} error${errorCount !== 1 ? 's' : ''}, ${warnCount} warning${warnCount !== 1 ? 's' : ''}\n`);
 
   // Group by file
-  const byFile = new Map<string, typeof relevantProblems>();
-  for (const problem of relevantProblems) {
+  const byFile = new Map<string, Problem[]>();
+  for (const problem of effectiveProblems) {
     const relativePath = problem.file.replace(workspaceRoot, '').replace(/^[/\\]/, '');
     if (!byFile.has(relativePath)) {
       byFile.set(relativePath, []);
@@ -180,7 +358,8 @@ export async function handleGetDiagnostics(
       checkedFiles,
       freshness,
       diagnosticsBasis: problemsStore.diagnosticsBasis,
-      problems: relevantProblems.slice(0, 50).map(p => ({
+      fallbackDiagnosticsUsed: usedFallbackDiagnostics,
+      problems: effectiveProblems.slice(0, 50).map(p => ({
         ...p,
         relativePath: p.file.replace(workspaceRoot, '').replace(/^[/\\]/, '')
       }))
@@ -256,14 +435,19 @@ export async function handleGetToolMetrics(
  * Normalize path for comparison
  */
 function normalizePath(path: string, workspaceRoot: string): string {
-  let normalized = path.replace(/\\/g, '/');
+  let normalized = path.replace(/\\/g, '/').replace(/^file:\/\/\/?/i, '');
   normalized = normalized.replace(/\/\.\//g, '/');
   normalized = normalized.replace(/\/+/g, '/');
 
   // Remove workspace root prefix if present
   if (workspaceRoot) {
-    const normalizedRoot = workspaceRoot.replace(/\\/g, '/');
-    if (normalized.startsWith(normalizedRoot)) {
+    const normalizedRoot = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+    const normalizedLower = normalized.toLowerCase();
+    const normalizedRootLower = normalizedRoot.toLowerCase();
+    if (
+      normalizedLower === normalizedRootLower ||
+      normalizedLower.startsWith(`${normalizedRootLower}/`)
+    ) {
       normalized = normalized.slice(normalizedRoot.length);
     }
   }

@@ -434,6 +434,20 @@ describe('write tool handlers', () => {
     });
   });
 
+  it('treats existing-directory backend errors as an idempotent success even when the backend returns an error object', async () => {
+    mocks.runMock.mockResolvedValue({
+      success: false,
+      error: { message: 'Directory already exists' } as unknown as string,
+    });
+
+    const result = await handleCreateDir({ path: 'src/new-dir' });
+
+    expect(result).toMatchObject({
+      success: true,
+      output: 'Directory already exists: src/new-dir',
+    });
+  });
+
   it('routes handleDeleteFile through the workspace mutation coordinator without tree removal', async () => {
     mocks.readFileDocumentFreshMock.mockResolvedValue({
       path: 'C:/tauri/volt/src/old.ts',
@@ -468,6 +482,36 @@ describe('write tool handlers', () => {
           absolutePath: 'C:/tauri/volt/src/old.ts',
           beforeContent: 'legacy',
           isDirectory: false,
+        },
+      },
+    });
+  });
+
+  it('preserves directory deletes as directory metadata when the coordinator succeeds', async () => {
+    mocks.readFileDocumentFreshMock.mockResolvedValue(null);
+    mocks.runMock.mockResolvedValue({
+      success: true,
+      record: {
+        path: 'C:/tauri/volt/tool-audit-temp',
+      },
+    });
+
+    const result = await handleDeleteFile({ path: 'tool-audit-temp', explanation: 'cleanup temp dirs' });
+
+    expect(mocks.runMock).toHaveBeenCalledWith({
+      type: 'delete',
+      path: 'C:/tauri/volt/tool-audit-temp',
+      openPaths: [],
+    });
+    expect(result).toMatchObject({
+      success: true,
+      output: 'Deleted: tool-audit-temp\nReason: cleanup temp dirs',
+      meta: {
+        fileDeleted: {
+          relativePath: 'tool-audit-temp',
+          absolutePath: 'C:/tauri/volt/tool-audit-temp',
+          beforeContent: null,
+          isDirectory: true,
         },
       },
     });

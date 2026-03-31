@@ -498,7 +498,11 @@
     return toolCall.output || "";
   });
   const terminalStateLabel = $derived(
-    terminalRunMeta?.state || toolCall.status,
+    toolCall.status === "completed" ||
+      toolCall.status === "failed" ||
+      toolCall.status === "cancelled"
+      ? toolCall.status
+      : (terminalRunMeta?.state || toolCall.status),
   );
 
   // Check if this is a file write tool that supports streaming

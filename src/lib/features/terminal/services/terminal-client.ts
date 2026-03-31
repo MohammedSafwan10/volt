@@ -270,6 +270,8 @@ export interface CommandCompletion {
 	timedOut: boolean;
 }
 
+export const POWERSHELL_SHELL_INTEGRATION_IDENTITY = 'Volt/2';
+
 const OSC_633_REGEX = /\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x07|\x1b\]633;([A-Z])(?:;([^\x07\x1b]*))?\x1b\\/g;
 const OSC_GENERIC_REGEX = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
@@ -352,11 +354,12 @@ export const POWERSHELL_SHELL_INTEGRATION = [
 	'    Write-Host -NoNewline "$e]633;A$a";',
 	'    $p = "PS $c> ";',
 	'    Write-Host -NoNewline "$e]633;B$a";',
-	'    if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline "$e]633;D;$LASTEXITCODE$a" };',
+	'    $voltExit = if ($?) { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 } };',
+	'    Write-Host -NoNewline "$e]633;D;$voltExit$a";',
 	'    return $p;',
 	'  } catch { return "PS > " }',
 	'};',
-	'Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=Volt$([char]7)";',
+	`Write-Host -NoNewline "$([char]27)]633;P;ShellIntegration=${POWERSHELL_SHELL_INTEGRATION_IDENTITY}$([char]7)";`,
 	'Write-Host -NoNewline "$([char]27)]633;P;Cwd=$((Get-Location).Path)$([char]7)"'
 ].join(' ');
 
@@ -391,8 +394,11 @@ export class TerminalSession {
 	private resolveReady: (() => void) | null = null;
 
 	private shellIntegrationEnabled = false;
+	private shellIntegrationIdentityValue: string | null = null;
 	private shellIntegrationBootstrapPending = false;
 	private currentCwd: string | null = null;
+	private lastCommandStartedAt: number | null = null;
+	private lastCommandFinishedAt: number | null = null;
 	private commandCompletionCallbacks: Array<{
 		resolve: (result: CommandCompletion) => void;
 		startTime: number;
@@ -414,8 +420,20 @@ export class TerminalSession {
 		return this.shellIntegrationEnabled;
 	}
 
+	public get shellIntegrationIdentity(): string | null {
+		return this.shellIntegrationIdentityValue;
+	}
+
 	public get cwd(): string | null {
 		return this.currentCwd;
+	}
+
+	public getLastCommandStartedAt(): number | null {
+		return this.lastCommandStartedAt;
+	}
+
+	public getLastCommandFinishedAt(): number | null {
+		return this.lastCommandFinishedAt;
 	}
 
 	public async startListening(): Promise<void> {
@@ -438,7 +456,7 @@ export class TerminalSession {
 		this.markReady();
 		const suppressBootstrapEcho = this.shellIntegrationBootstrapPending;
 		const { events, cleanData } = parseOscSequences(payload.data);
-		for (const ev of events) this.handleShellIntegrationEvent(ev);
+		const batchHasExplicitCommandFinish = events.some((event) => event.type === 'command-finish');
 
 		this.captureToHistory(payload.data);
 		if (cleanData) {
@@ -455,6 +473,12 @@ export class TerminalSession {
 			if (this.onDataCallback) this.onDataCallback(filteredDisplay);
 			else this.bufferData(filteredDisplay);
 		}
+
+		for (const ev of events) {
+			this.handleShellIntegrationEvent(ev, {
+				batchHasExplicitCommandFinish,
+			});
+		}
 	}
 
 	/**
@@ -466,6 +490,9 @@ export class TerminalSession {
 	}
 
 	public handleExitEvent(payload: TerminalExitEvent): void {
+		if (this.commandCompletionCallbacks.length > 0) {
+			this.resolvePendingCommandCompletions(payload.code ?? 1);
+		}
 		if (this.onExitCallback) this.onExitCallback(payload.code);
 	}
 
@@ -511,29 +538,51 @@ export class TerminalSession {
 		this.onExitCallback = callback;
 	}
 
-	private handleShellIntegrationEvent(event: ShellIntegrationEvent): void {
+	private handleShellIntegrationEvent(
+		event: ShellIntegrationEvent,
+		context: { batchHasExplicitCommandFinish: boolean } = { batchHasExplicitCommandFinish: false },
+	): void {
 		switch (event.type) {
 			case 'property':
 				if (event.property?.key === 'ShellIntegration') {
 					this.shellIntegrationEnabled = true;
+					this.shellIntegrationIdentityValue = event.property.value;
 					this.shellIntegrationBootstrapPending = false;
 				} else if (event.property?.key === 'Cwd') {
 					this.currentCwd = event.property.value;
 				}
 				break;
+			case 'command-start':
+				this.lastCommandStartedAt = Date.now();
+				this.lastCommandFinishedAt = null;
+				break;
 			case 'command-finish':
-				const exitCode = event.exitCode ?? 0;
-				const callbacks = [...this.commandCompletionCallbacks];
-				this.commandCompletionCallbacks = [];
-				for (const cb of callbacks) {
-					cb.resolve({
-						exitCode,
-						output: this.cleanCommandOutput(cb.outputBuffer.join('')),
-						cwd: this.currentCwd ?? undefined,
-						timedOut: false
-					});
+				this.resolvePendingCommandCompletions(event.exitCode ?? 0);
+				break;
+			case 'prompt-end':
+				// PowerShell built-ins can complete without publishing an explicit D marker.
+				// When the prompt returns while a command is pending, treat that as completion.
+				if (
+					this.commandCompletionCallbacks.length > 0 &&
+					!context.batchHasExplicitCommandFinish
+				) {
+					this.resolvePendingCommandCompletions(0);
 				}
 				break;
+		}
+	}
+
+	private resolvePendingCommandCompletions(exitCode: number): void {
+		this.lastCommandFinishedAt = Date.now();
+		const callbacks = [...this.commandCompletionCallbacks];
+		this.commandCompletionCallbacks = [];
+		for (const cb of callbacks) {
+			cb.resolve({
+				exitCode,
+				output: this.cleanCommandOutput(cb.outputBuffer.join('')),
+				cwd: this.currentCwd ?? undefined,
+				timedOut: false
+			});
 		}
 	}
 
@@ -541,6 +590,7 @@ export class TerminalSession {
 		const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 		let cleaned = output.replace(ansiRegex, '');
 		cleaned = stripTerminalArtifacts(cleaned).trim();
+		cleaned = cleaned.replace(/\r/g, '');
 		cleaned = cleaned.replace(/\nPS [^\n]+>\s*$/, '');
 		cleaned = cleaned.replace(/\n\$\s*$/, '');
 		return cleaned;
@@ -699,7 +749,12 @@ export class TerminalSession {
 	}
 
 	public async enableShellIntegration(): Promise<boolean> {
-		if (this.shellIntegrationEnabled) return true;
+		if (
+			this.shellIntegrationEnabled &&
+			this.shellIntegrationIdentityValue === POWERSHELL_SHELL_INTEGRATION_IDENTITY
+		) {
+			return true;
+		}
 		if (!this.info.shell.toLowerCase().match(/powershell|pwsh/)) return false;
 
 		// Send the complete integration script in a single line to be safe
@@ -721,10 +776,13 @@ export class TerminalSession {
 		if (!this.shellIntegrationEnabled) return this.executeCommandFallback(normalizedCommand, timeoutMs);
 		return new Promise((resolve) => {
 			const startOffset = this.getCleanOutputCursor();
+			this.lastCommandStartedAt = Date.now();
+			this.lastCommandFinishedAt = null;
 			let tid: ReturnType<typeof setTimeout> | null = null;
 			if (timeoutMs > 0) {
 				tid = setTimeout(() => {
 					this.commandCompletionCallbacks = this.commandCompletionCallbacks.filter(c => c.resolve !== resolve);
+					void this.write('\u0003');
 					resolve({ exitCode: -1, output: this.getCleanOutputSince(startOffset), cwd: this.currentCwd ?? undefined, timedOut: true });
 				}, timeoutMs);
 			}

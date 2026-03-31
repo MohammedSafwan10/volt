@@ -262,21 +262,6 @@ Returns a processId. Use get_process_output to read its output afterward.`,
     allowedModes: ['ask', 'plan', 'spec', 'agent']
   },
   {
-    name: 'attempt_completion',
-    description: 'Signal that the task is complete. Include a result summary. Only call after edits and diagnostics are verified.',
-    parameters: {
-      type: 'object',
-      properties: {
-        result: { type: 'string', description: 'Summary of what was accomplished' },
-        summary: { type: 'string', description: 'Short metadata summary (optional)' }
-      },
-      required: ['result']
-    },
-    category: 'diagnostics',
-    requiresApproval: false,
-    allowedModes: ['agent']
-  },
-  {
     name: 'get_spec_state',
     description: 'Get the current Spec Mode workspace state: active spec, current phase, pending draft, and task summary. Use before deciding whether to ask questions, draft requirements, update a phase, or start a task.',
     parameters: {
@@ -379,7 +364,6 @@ export const STRICT_CANONICAL_TOOL_NAMES = new Set<string>([
   'apply_patch',
   'run_command',
   'get_diagnostics',
-  'attempt_completion',
 ]);
 
 /**
@@ -418,6 +402,7 @@ export const RETIRED_TOOL_NAMES = new Set<string>([
   // Removed diagnostics (moved to internal dashboard or redundant)
   'get_tool_metrics',
   'get_file_info',
+  'attempt_completion',
 
   // Removed browser tools
   'browser_get_console_logs',

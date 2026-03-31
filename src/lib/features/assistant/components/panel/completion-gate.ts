@@ -32,10 +32,10 @@ export function evaluateCompletionGate(params: {
           ? 'Completion blocked because diagnostics are still updating for touched files. Wait for diagnostics to settle, then try again.'
           : `Completion blocked because diagnostics are stale${Array.isArray(freshness.staleSources) && freshness.staleSources.length > 0 ? ` (${freshness.staleSources.join(', ')})` : ''}. Refresh diagnostics and try again.`,
       output: errorCount > 0
-        ? 'Completion is blocked because edited files still have diagnostics errors. Fix errors in touched files, then call attempt_completion again.'
+        ? 'Completion is blocked because edited files still have diagnostics errors. Fix errors in touched files, then provide the final response.'
         : freshness.status === 'updating'
-          ? 'Completion is blocked because diagnostics are still updating. Wait for diagnostics to settle, re-run diagnostics, then call attempt_completion again.'
-          : 'Completion is blocked because diagnostics are stale. Refresh diagnostics or wait for LSP recovery, then call attempt_completion again.',
+          ? 'Completion is blocked because diagnostics are still updating. Wait for diagnostics to settle, re-run diagnostics, then provide the final response.'
+          : 'Completion is blocked because diagnostics are stale. Refresh diagnostics or wait for LSP recovery, then provide the final response.',
     };
   }
 
@@ -43,9 +43,9 @@ export function evaluateCompletionGate(params: {
     return {
       shouldBlock: true,
       code: 'COMPLETION_BLOCKED_BY_STRUCTURAL_MUTATION',
-      message: `Completion blocked because structural changes were made (${structuralMutationPaths.join(', ')}). Re-check affected files and rerun diagnostics before calling attempt_completion again.`,
+      message: `Completion blocked because structural changes were made (${structuralMutationPaths.join(', ')}). Re-check affected files and rerun diagnostics before finishing.`,
       output:
-        'Completion is blocked because the task made structural changes such as rename/delete/create-dir. Re-open affected files or rerun diagnostics/verification, then call attempt_completion again.',
+        'Completion is blocked because the task made structural changes such as rename/delete/create-dir. Re-open affected files or rerun diagnostics/verification, then provide the final response.',
     };
   }
 

@@ -64,6 +64,7 @@ export interface NativeRuntimeCommandResult {
     status?: ToolCallStatus | null;
     error?: string;
     output?: string;
+    // Audit-only payload. Live tool-card state is owned by the local assistant store.
     meta?: Record<string, unknown>;
   };
   control?: {
@@ -329,7 +330,7 @@ export function createAgentRuntime(nativeBridge?: AgentRuntimeNativeBridge) {
         shouldBlock: true,
         message:
           'Completion blocked: unresolved edit failures remain. Fix failed edit tool calls before completing.',
-        output: `Completion blocked because an edit failed (${firstPath}). Re-read the file and apply a corrected patch before calling attempt_completion again.`,
+        output: `Completion blocked because an edit failed (${firstPath}). Re-read the file and apply a corrected patch before finishing.`,
         meta: {
           code: 'COMPLETION_BLOCKED_BY_EDIT_FAILURES',
           unresolvedEditFailures: entries,
@@ -402,8 +403,12 @@ export function createAgentRuntime(nativeBridge?: AgentRuntimeNativeBridge) {
       executionStages: nativePolicy?.executionStages,
       fileEditConcurrency: nativePolicy?.fileEditConcurrency,
       orderedFileQueueKeys: nativePolicy?.orderedFileQueueKeys,
-      orderedEagerToolIds: nativePolicy?.orderedEagerToolIds,
-      orderedDeferredToolIds: nativePolicy?.orderedDeferredToolIds,
+      orderedEagerToolIds:
+        nativePolicy?.orderedEagerToolIds?.length ? nativePolicy.orderedEagerToolIds : undefined,
+      orderedDeferredToolIds:
+        nativePolicy?.orderedDeferredToolIds?.length
+          ? nativePolicy.orderedDeferredToolIds
+          : undefined,
       pendingApprovalToolIds: nativePolicy?.pendingApprovalToolIds,
     };
   };

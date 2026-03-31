@@ -536,6 +536,8 @@ fn build_rg_args(options: &SearchOptions) -> Vec<String> {
 
     if options.include_hidden {
         args.push("--hidden".to_string());
+        args.push("--no-ignore".to_string());
+        args.push("--no-ignore-parent".to_string());
         args.push("--no-ignore-vcs".to_string());
     }
     if !options.case_sensitive {
@@ -581,6 +583,8 @@ fn build_rg_files_args(options: &FindFilesOptions) -> Vec<String> {
     ];
     if options.include_hidden {
         args.push("--hidden".to_string());
+        args.push("--no-ignore".to_string());
+        args.push("--no-ignore-parent".to_string());
         args.push("--no-ignore-vcs".to_string());
     }
     for pattern in &options.include_patterns {
@@ -2213,6 +2217,7 @@ pub async fn replace_in_file(options: ReplaceInFileOptions) -> Result<ReplaceRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn engine_mode_from_input_defaults_to_auto() {
@@ -2250,6 +2255,79 @@ mod tests {
         let args = build_rg_args(&opts);
         assert!(args.iter().any(|a| a == "-F"));
         assert!(args.iter().any(|a| a == "hello.world"));
+    }
+
+    #[test]
+    fn build_rg_args_include_hidden_disables_ignore_filters() {
+        let args = build_rg_args(&SearchOptions {
+            query: "secret-alpha".to_string(),
+            root_path: ".".to_string(),
+            case_sensitive: false,
+            use_regex: false,
+            whole_word: false,
+            include_hidden: true,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            max_results: 50,
+            request_id: 1,
+            engine: None,
+        });
+
+        assert!(args.contains(&"--hidden".to_string()));
+        assert!(args.contains(&"--no-ignore".to_string()));
+        assert!(args.contains(&"--no-ignore-parent".to_string()));
+        assert!(args.contains(&"--no-ignore-vcs".to_string()));
+    }
+
+    #[test]
+    fn build_rg_files_args_include_hidden_disables_ignore_filters() {
+        let args = build_rg_files_args(&FindFilesOptions {
+            query: "hidden-note".to_string(),
+            root_path: ".".to_string(),
+            include_hidden: true,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            max_results: 25,
+            engine: None,
+        });
+
+        assert!(args.contains(&"--hidden".to_string()));
+        assert!(args.contains(&"--no-ignore".to_string()));
+        assert!(args.contains(&"--no-ignore-parent".to_string()));
+        assert!(args.contains(&"--no-ignore-vcs".to_string()));
+    }
+
+    #[test]
+    fn legacy_find_files_respects_include_hidden() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden.txt"), "secret-alpha").unwrap();
+        fs::write(dir.path().join("visible.txt"), "visible").unwrap();
+
+        let hidden_options = FindFilesOptions {
+            query: ".hidden.txt".to_string(),
+            root_path: dir.path().to_string_lossy().to_string(),
+            include_hidden: true,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            max_results: 25,
+            engine: Some("legacy".to_string()),
+        };
+        let visible_only_options = FindFilesOptions {
+            query: ".hidden.txt".to_string(),
+            root_path: dir.path().to_string_lossy().to_string(),
+            include_hidden: false,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            max_results: 25,
+            engine: Some("legacy".to_string()),
+        };
+
+        let with_hidden = legacy_find_files(&hidden_options, &dir.path().to_path_buf()).unwrap();
+        let without_hidden =
+            legacy_find_files(&visible_only_options, &dir.path().to_path_buf()).unwrap();
+
+        assert!(with_hidden.iter().any(|path| path == ".hidden.txt"));
+        assert!(!without_hidden.iter().any(|path| path == ".hidden.txt"));
     }
 
     #[test]

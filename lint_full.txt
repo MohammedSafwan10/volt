@@ -1,0 +1,514 @@
+
+> volt@0.1.0 lint
+> eslint src
+
+
+C:\tauri\volt\src\lib\core\ai\context\context-v2.ts
+    1:10  warning  'activityStore' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  364:35  error    Unnecessary escape character: \"                                                 no-useless-escape
+  364:42  error    Unnecessary escape character: \"                                                 no-useless-escape
+  364:49  error    Unnecessary escape character: \"                                                 no-useless-escape
+
+C:\tauri\volt\src\lib\core\ai\context\context.ts
+    32:30  warning  'Problem' is defined but never used. Allowed unused vars must match /^_/u              @typescript-eslint/no-unused-vars
+  1276:9   warning  'activeName' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\ai\providers\anthropic.ts
+   16:5   warning  'ToolDefinition' is defined but never used. Allowed unused vars must match /^_/u               @typescript-eslint/no-unused-vars
+   18:5   warning  'ProviderCapabilities' is defined but never used. Allowed unused vars must match /^_/u         @typescript-eslint/no-unused-vars
+   22:7   warning  'ANTHROPIC_API_BASE' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  155:35  error    Unexpected any. Specify a different type                                                       @typescript-eslint/no-explicit-any
+  176:37  error    Unexpected any. Specify a different type                                                       @typescript-eslint/no-explicit-any
+  211:58  warning  'signal' is defined but never used. Allowed unused args must match /^_/u                       @typescript-eslint/no-unused-vars
+  231:47  error    Unexpected any. Specify a different type                                                       @typescript-eslint/no-explicit-any
+  276:61  warning  'signal' is defined but never used. Allowed unused args must match /^_/u                       @typescript-eslint/no-unused-vars
+  297:47  error    Unexpected any. Specify a different type                                                       @typescript-eslint/no-explicit-any
+  305:20  error    Unexpected any. Specify a different type                                                       @typescript-eslint/no-explicit-any
+  340:17  error    This assigned value is not used in subsequent statements                                       no-useless-assignment
+  408:38  warning  'e' is defined but never used                                                                  @typescript-eslint/no-unused-vars
+  419:26  warning  'e' is defined but never used                                                                  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\ai\providers\gemini.test.ts
+  8:53  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  9:43  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\providers\gemini.ts
+  218:16  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  352:22  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  352:42  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  446:56  warning  'signal' is defined but never used. Allowed unused args must match /^_/u        @typescript-eslint/no-unused-vars
+  448:11  warning  'url' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  457:12  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  459:32  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  465:12  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  527:19  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  528:7   error    There is no `cause` attached to the symptom error being thrown                  preserve-caught-error
+  532:59  warning  'signal' is defined but never used. Allowed unused args must match /^_/u        @typescript-eslint/no-unused-vars
+  542:12  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  544:32  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  550:12  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  669:36  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  669:56  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+  683:52  error    Unexpected any. Specify a different type                                        @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\providers\openai.test.ts
+  19:12  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  51:12  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\providers\openai.ts
+   13:10  warning  'invoke' is defined but never used. Allowed unused vars must match /^_/u   @typescript-eslint/no-unused-vars
+   13:18  warning  'Channel' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+   24:15  error    Unexpected any. Specify a different type                                   @typescript-eslint/no-explicit-any
+   26:13  error    Unexpected any. Specify a different type                                   @typescript-eslint/no-explicit-any
+  335:41  warning  'apiKey' is defined but never used. Allowed unused args must match /^_/u   @typescript-eslint/no-unused-vars
+  402:17  error    This assigned value is not used in subsequent statements                   no-useless-assignment
+
+C:\tauri\volt\src\lib\core\ai\providers\openrouter.ts
+  174:14  error    Unexpected any. Specify a different type                                           @typescript-eslint/no-explicit-any
+  377:59  warning  'signal' is defined but never used. Allowed unused args must match /^_/u           @typescript-eslint/no-unused-vars
+  378:11  warning  'url' is assigned a value but never used. Allowed unused vars must match /^_/u     @typescript-eslint/no-unused-vars
+  403:16  error    Unexpected any. Specify a different type                                           @typescript-eslint/no-explicit-any
+  427:9   error    'buffer' is never reassigned. Use 'const' instead                                  prefer-const
+  427:9   warning  'buffer' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\ai\retrieval\semantic-index.ts
+  58:5  error  'upsertQueue' is never reassigned. Use 'const' instead  prefer-const
+  59:5  error  'removeQueue' is never reassigned. Use 'const' instead  prefer-const
+
+C:\tauri\volt\src\lib\core\ai\tools\handlers\lsp.ts
+    27:10   warning  'invoke' is defined but never used. Allowed unused vars must match /^_/u                 @typescript-eslint/no-unused-vars
+    92:3    warning  'isDartLspRunning' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+    98:21   warning  'formatDartDocument' is defined but never used. Allowed unused vars must match /^_/u     @typescript-eslint/no-unused-vars
+   109:8    warning  'CodeAction' is defined but never used. Allowed unused vars must match /^_/u             @typescript-eslint/no-unused-vars
+   110:25   warning  'EslintWorkspaceEdit' is defined but never used. Allowed unused vars must match /^_/u    @typescript-eslint/no-unused-vars
+   283:15   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   302:15   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   372:10   warning  'formatLocation' is defined but never used. Allowed unused vars must match /^_/u         @typescript-eslint/no-unused-vars
+  1047:11   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  1173:9    warning  'relativePath' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  1191:88   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  1235:114  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  1272:41   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  1278:47   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  1285:50   error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\tools\handlers\read.ts
+   37:24  error    Unnecessary escape character: \-                                       no-useless-escape
+  186:12  warning  'err' is defined but never used                                        @typescript-eslint/no-unused-vars
+  339:12  warning  'err' is defined but never used                                        @typescript-eslint/no-unused-vars
+  363:12  warning  'err' is defined but never used                                        @typescript-eslint/no-unused-vars
+  607:12  warning  'err' is defined but never used                                        @typescript-eslint/no-unused-vars
+  647:12  warning  'err' is defined but never used                                        @typescript-eslint/no-unused-vars
+  754:48  warning  'ext' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\ai\tools\handlers\search.ts
+   13:26  warning  'resolvePath' is defined but never used. Allowed unused vars must match /^_/u           @typescript-eslint/no-unused-vars
+   14:74  warning  'ensureTsLspStarted' is defined but never used. Allowed unused vars must match /^_/u    @typescript-eslint/no-unused-vars
+  240:9   warning  'explanation' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  544:12  warning  'getErrorMessage' is defined but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+  595:5   error    'results' is never reassigned. Use 'const' instead                                      prefer-const
+  739:18  error    Unexpected any. Specify a different type                                                @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\tools\handlers\write-patch.ts
+  66:12  error  Unnecessary escape character: \-  no-useless-escape
+
+C:\tauri\volt\src\lib\core\ai\tools\result.ts
+   6:25  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   7:10  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  19:9   error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  20:24  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\tools\router.ts
+   12:10  warning  'assistantStore' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+   26:60  warning  'getMcpToolInfo' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  356:40  error    Unexpected any. Specify a different type                                          @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\ai\tools\utils.ts
+  60:9  warning  'afterMap' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\client.ts
+  28:5   error    'activeLanguageServices' is never reassigned. Use 'const' instead                             prefer-const
+  72:10  warning  'getLanguageServiceCategory' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\css-sidecar.ts
+  105:10  warning  'uriToPath' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  127:40  error    Unexpected any. Specify a different type                                     @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\eslint-sidecar.ts
+  177:40  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  259:13  warning  'initResult' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\html-css.ts
+  10:10  warning  'getMonaco' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\html-sidecar.ts
+   99:10  warning  'uriToPath' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  121:40  error    Unexpected any. Specify a different type                                     @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\json-sidecar.ts
+  83:40  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\sidecar\transport.ts
+  469:14  warning  'error' is defined but never used  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\svelte-monaco-providers.ts
+   24:8   warning  'SignatureHelp' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  329:38  warning  'monaco' is defined but never used. Allowed unused args must match /^_/u         @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\svelte-sidecar.ts
+  88:40  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\svelte.ts
+   56:35   error  Unnecessary escape character: \`  no-useless-escape
+   56:37   error  Unnecessary escape character: \~  no-useless-escape
+   56:39   error  Unnecessary escape character: \!  no-useless-escape
+   56:41   error  Unnecessary escape character: \@  no-useless-escape
+   56:43   error  Unnecessary escape character: \#  no-useless-escape
+   56:45   error  Unnecessary escape character: \%  no-useless-escape
+   56:47   error  Unnecessary escape character: \^  no-useless-escape
+   56:49   error  Unnecessary escape character: \&  no-useless-escape
+   56:51   error  Unnecessary escape character: \*  no-useless-escape
+   56:53   error  Unnecessary escape character: \(  no-useless-escape
+   56:55   error  Unnecessary escape character: \)  no-useless-escape
+   56:59   error  Unnecessary escape character: \=  no-useless-escape
+   56:61   error  Unnecessary escape character: \+  no-useless-escape
+   56:63   error  Unnecessary escape character: \[  no-useless-escape
+   56:65   error  Unnecessary escape character: \{  no-useless-escape
+   56:69   error  Unnecessary escape character: \}  no-useless-escape
+   56:73   error  Unnecessary escape character: \|  no-useless-escape
+   56:75   error  Unnecessary escape character: \;  no-useless-escape
+   56:77   error  Unnecessary escape character: \:  no-useless-escape
+   56:79   error  Unnecessary escape character: \'  no-useless-escape
+   56:81   error  Unnecessary escape character: \"  no-useless-escape
+   56:83   error  Unnecessary escape character: \,  no-useless-escape
+   56:85   error  Unnecessary escape character: \.  no-useless-escape
+   56:87   error  Unnecessary escape character: \<  no-useless-escape
+   56:89   error  Unnecessary escape character: \>  no-useless-escape
+   56:91   error  Unnecessary escape character: \/  no-useless-escape
+   56:93   error  Unnecessary escape character: \?  no-useless-escape
+   58:145  error  Unnecessary escape character: \.  no-useless-escape
+   59:40   error  Unnecessary escape character: \.  no-useless-escape
+  121:27   error  Unnecessary escape character: \/  no-useless-escape
+  121:29   error  Unnecessary escape character: \^  no-useless-escape
+  214:23   error  Unnecessary escape character: \-  no-useless-escape
+  236:14   error  Unnecessary escape character: \[  no-useless-escape
+
+C:\tauri\volt\src\lib\core\lsp\tailwind-monaco-providers.ts
+  255:30  warning  'monaco' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\tailwind-sidecar.ts
+  155:40  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  175:11  warning  'Diagnostic' is defined but never used. Allowed unused vars must match /^_/u           @typescript-eslint/no-unused-vars
+  220:13  warning  'initResult' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\typescript-sidecar.ts
+  134:40  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  135:39  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  202:13  warning  'initResult' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  888:67  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  892:56  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\xml-sdk.ts
+  76:9  warning  'binaryName' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\xml-sidecar.ts
+  268:39  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  273:40  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\lsp\yaml-sdk.ts
+  59:9  warning  'cmdName' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\lsp\yaml-sidecar.ts
+  230:39  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  235:40  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\services\diagnostics-freshness-live.test.ts
+  1:32  warning  'vi' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\services\diagnostics-source-utils.test.ts
+  15:14  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  25:14  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\services\monaco-dart-language.ts
+   82:29  error  Unnecessary escape character: \/  no-useless-escape
+   82:31  error  Unnecessary escape character: \^  no-useless-escape
+  104:20  error  Unnecessary escape character: \[  no-useless-escape
+  117:30  error  Unnecessary escape character: \-  no-useless-escape
+  118:41  error  Unnecessary escape character: \-  no-useless-escape
+  143:17  error  Unnecessary escape character: \/  no-useless-escape
+  145:16  error  Unnecessary escape character: \/  no-useless-escape
+  149:17  error  Unnecessary escape character: \/  no-useless-escape
+  151:16  error  Unnecessary escape character: \/  no-useless-escape
+
+C:\tauri\volt\src\lib\core\services\monaco-loader.ts
+  95:7   error    Use "@ts-expect-error" instead of "@ts-ignore", as "@ts-ignore" will do nothing if the following line is error-free  @typescript-eslint/ban-ts-comment
+  98:14  warning  'e' is defined but never used                                                                                        @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\core\services\project-diagnostics.test.ts
+   91:21  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   96:28  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  108:21  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  115:28  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  116:28  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\services\project-diagnostics.ts
+  424:15  warning  'totalProblems' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  533:39  error    Unexpected any. Specify a different type                                                  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\core\services\token-counter.ts
+   89:11  error  Unnecessary escape character: \[                             no-useless-escape
+  109:31  error  Unexpected control character(s) in regular expression: \x00  no-control-regex
+
+C:\tauri\volt\src\lib\features\assistant\components\ChatHistorySidebar.svelte
+   40:33  warning  'e' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+  312:17  error    Each block should have a key                                         svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\assistant\components\ContextGatheringCard.svelte
+  44:20  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+  90:7   error  Each block should have a key                                               svelte/require-each-key
+  96:13  error  Each block should have a key                                               svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\assistant\components\ContextUsage.svelte
+  11:22  warning  'isStreaming' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\assistant\components\FileEditCard.svelte
+   51:45  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+   55:45  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+   58:9   warning  'totalCount' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  137:28  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  138:28  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  141:35  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  199:46  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  200:63  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  201:57  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  280:19  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  281:19  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  316:22  error    svelte-ignore comment is used, but not warned                                          svelte/no-unused-svelte-ignore
+  316:56  error    svelte-ignore comment is used, but not warned                                          svelte/no-unused-svelte-ignore
+  316:92  error    svelte-ignore comment is used, but not warned                                          svelte/no-unused-svelte-ignore
+  450:33  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  452:35  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  458:33  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  460:35  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  463:29  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  465:31  error    Unexpected any. Specify a different type                                               @typescript-eslint/no-explicit-any
+  547:9   error    Each block should have a key                                                           svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\assistant\components\MentionsMenu.svelte
+  217:22  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\assistant\components\MessageList.svelte
+  225:37  error  'ScrollBehavior' is not defined           no-undef
+  304:58  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  305:68  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\features\assistant\components\RevertConfirmationModal.svelte
+  64:21  error  Each block should have a key  svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\assistant\components\UserMessage.svelte
+  164:11  error  Each block should have a key  svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\assistant\components\panel\auto-summarize.ts
+  67:3  error  This assigned value is not used in subsequent statements  no-useless-assignment
+
+C:\tauri\volt\src\lib\features\assistant\components\panel\provider-messages.test.ts
+  29:34  error  Unnecessary escape character: \"  no-useless-escape
+  29:43  error  Unnecessary escape character: \"  no-useless-escape
+
+C:\tauri\volt\src\lib\features\assistant\components\panel\provider-messages.ts
+  46:49  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  47:29  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\features\assistant\components\panel\streaming-text-buffer.ts
+  48:7  error  'queue' is never reassigned. Use 'const' instead  prefer-const
+
+C:\tauri\volt\src\lib\features\assistant\components\panel\terminal-tool-transcript.test.ts
+  9:57  warning  'maxChars' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\assistant\runtime\loop-finalizer.ts
+  23:30  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\features\assistant\stores\assistant.svelte.ts
+    81:3   warning  'StreamingProgress' is defined but never used. Allowed unused vars must match /^_/u      @typescript-eslint/no-unused-vars
+   261:55  error    Unnecessary escape character: \"                                                         no-useless-escape
+   261:61  error    Unnecessary escape character: \"                                                         no-useless-escape
+   266:54  error    Unnecessary escape character: \"                                                         no-useless-escape
+   266:60  error    Unnecessary escape character: \"                                                         no-useless-escape
+   271:65  error    Unnecessary escape character: \"                                                         no-useless-escape
+   271:71  error    Unnecessary escape character: \"                                                         no-useless-escape
+   625:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+   625:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+   639:36  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   640:33  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   647:59  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   665:22  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   682:40  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   683:40  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+   689:40  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2021:38  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2022:35  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2078:41  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2079:38  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2080:33  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2098:45  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2099:42  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2100:48  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  2136:35  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  2137:40  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  2138:41  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  2139:42  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  2883:11  warning  'nextTerminal' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  3205:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3205:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3206:21  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3206:21  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3214:70  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3221:95  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3232:87  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3239:79  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3259:19  error    Empty block statement                                                                    no-empty
+  3277:17  error    Empty block statement                                                                    no-empty
+  3321:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3321:27  error    Found a mutable instance of the built-in Map class. Use SvelteMap instead                svelte/prefer-svelte-reactivity
+  3332:70  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3340:95  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3351:87  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3359:79  error    Unexpected any. Specify a different type                                                 @typescript-eslint/no-explicit-any
+  3369:39  error    Found a mutable instance of the built-in Set class. Use SvelteSet instead                svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\assistant\stores\chat-history.svelte.ts
+  402:15  warning  'now' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  403:23  error    Found a mutable instance of the built-in Date class. Use SvelteDate instead     svelte/prefer-svelte-reactivity
+  407:27  error    Found a mutable instance of the built-in Date class. Use SvelteDate instead     svelte/prefer-svelte-reactivity
+  411:27  error    Found a mutable instance of the built-in Date class. Use SvelteDate instead     svelte/prefer-svelte-reactivity
+  415:28  error    Found a mutable instance of the built-in Date class. Use SvelteDate instead     svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\assistant\stores\prompt-library.svelte.ts
+   46:17  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+   47:7   error  This assigned value is not used in subsequent statements                   no-useless-assignment
+  120:20  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+  153:5   error  Expected an assignment or function call and instead saw an expression      @typescript-eslint/no-unused-expressions
+  183:18  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+  324:18  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+  332:18  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\assistant\stores\tool-observability.svelte.ts
+  117:20  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+  157:25  error  Found a mutable instance of the built-in Map class. Use SvelteMap instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\editor\components\command-palette\CommandPalette.svelte
+  426:7   warning  Unused eslint-disable directive (no problems were reported from '@typescript-eslint/no-unused-vars')
+  528:14  warning  'err' is defined but never used                                                                       @typescript-eslint/no-unused-vars
+  622:22  error    svelte-ignore comment is used, but not warned                                                         svelte/no-unused-svelte-ignore
+  751:25  error    Each block should have a key                                                                          svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\editor\components\command-palette\SymbolPicker.svelte
+  131:14  warning  'err' is defined but never used                @typescript-eslint/no-unused-vars
+  181:14  warning  'err' is defined but never used                @typescript-eslint/no-unused-vars
+  280:22  error    svelte-ignore comment is used, but not warned  svelte/no-unused-svelte-ignore
+
+C:\tauri\volt\src\lib\features\editor\components\editor\GoToLineDialog.svelte
+  48:22  error  svelte-ignore comment is used, but not warned  svelte/no-unused-svelte-ignore
+
+C:\tauri\volt\src\lib\features\editor\components\editor\MonacoDiffEditor.svelte
+   9:12  warning  'themeStore' is defined but never used. Allowed unused vars must match /^_/u                 @typescript-eslint/no-unused-vars
+  38:5   warning  'renderSideBySide' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\editor\components\editor\MonacoEditor.svelte
+   66:12  warning  'themeStore' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  492:35  error    'EventListener' is not defined                                                no-undef
+  500:37  error    'EventListener' is not defined                                                no-undef
+
+C:\tauri\volt\src\lib\features\editor\services\editor-streaming.ts
+  607:21  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  672:18  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\features\editor\stores\editor.svelte.ts
+  134:10  warning  'safelyNotify' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\git\components\GitDiffView.svelte
+  59:5   error    Each block should have a key                                         svelte/require-each-key
+  59:32  warning  'i' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+  64:33  error    Each block should have a key                                         svelte/require-each-key
+
+C:\tauri\volt\src\lib\features\git\components\GitPanel.svelte
+  15:6  warning  'pendingBranch' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\mcp\components\McpPanel.svelte
+  72:23  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\search\components\SearchPanel.svelte
+  506:17  error  `{@html}` can lead to XSS attack  svelte/no-at-html-tags
+
+C:\tauri\volt\src\lib\features\search\stores\search.svelte.ts
+  173:24  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+  307:20  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\features\specs\stores\specs.svelte.ts
+  4:25  warning  'writeFile' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\features\terminal\components\TerminalView.svelte
+  326:3  error  Expected an assignment or function call and instead saw an expression  @typescript-eslint/no-unused-expressions
+
+C:\tauri\volt\src\lib\features\terminal\services\terminal-client.ts
+  138:70  error    Unexpected any. Specify a different type                                                               @typescript-eslint/no-explicit-any
+  273:23  error    Unexpected control character(s) in regular expression: \x1b, \x07, \x1b, \x07, \x1b, \x07, \x1b, \x1b  no-control-regex
+  274:27  error    Unexpected control character(s) in regular expression: \x1b, \x07, \x1b, \x07, \x1b                    no-control-regex
+  293:28  error    Unexpected control character(s) in regular expression: \x1b                                            no-control-regex
+  310:6   error    This assigned value is not used in subsequent statements                                               no-useless-assignment
+  324:5   error    Unexpected lexical declaration in case block                                                           no-case-declarations
+  472:26  warning  'payload' is defined but never used. Allowed unused args must match /^_/u                              @typescript-eslint/no-unused-vars
+  525:5   error    Unexpected lexical declaration in case block                                                           no-case-declarations
+  526:5   error    Unexpected lexical declaration in case block                                                           no-case-declarations
+  541:21  error    Unexpected control character(s) in regular expression: \x1b                                            no-control-regex
+  763:22  error    Unexpected control character(s) in regular expression: \x1b                                            no-control-regex
+
+C:\tauri\volt\src\lib\features\terminal\services\terminal-problem-matcher.test.ts
+  42:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  47:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  58:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  65:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  74:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  79:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\tauri\volt\src\lib\features\terminal\services\terminal-problem-matcher.ts
+   74:39  error  Unexpected any. Specify a different type                     @typescript-eslint/no-explicit-any
+  118:13  error  'currentBuffer' is never reassigned. Use 'const' instead     prefer-const
+  139:40  error  Unexpected control character(s) in regular expression: \x1b  no-control-regex
+
+C:\tauri\volt\src\lib\shared\components\layout\MainLayout.svelte
+   40:12  warning  'terminalStore' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+   69:38  error    Unexpected any. Specify a different type                                         @typescript-eslint/no-explicit-any
+   70:42  error    Unexpected any. Specify a different type                                         @typescript-eslint/no-explicit-any
+  262:33  error    'EventListener' is not defined                                                   no-undef
+  266:29  error    'EventListener' is not defined                                                   no-undef
+  280:35  error    'EventListener' is not defined                                                   no-undef
+  284:31  error    'EventListener' is not defined                                                   no-undef
+
+C:\tauri\volt\src\lib\shared\components\layout\MenuBar.svelte
+  68:12  warning  'handleSetThemeSystem' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\shared\components\panel\BottomPanel.svelte
+  94:40  error  Unexpected control character(s) in regular expression: \x1b  no-control-regex
+
+C:\tauri\volt\src\lib\shared\components\panel\ProblemsView.svelte
+  178:26  error  Found a mutable instance of the built-in Set class. Use SvelteSet instead  svelte/prefer-svelte-reactivity
+
+C:\tauri\volt\src\lib\shared\components\sidebar\AISettingsSection.svelte
+  31:9  warning  'currentModelConfig' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\tauri\volt\src\lib\shared\components\ui\Markdown.svelte
+  68:3  error  `{@html}` can lead to XSS attack  svelte/no-at-html-tags
+
+C:\tauri\volt\src\lib\shared\components\ui\UIIcon.svelte
+  10:17  error  'UIIconName' is read-only  no-import-assign
+
+C:\tauri\volt\src\lib\shared\components\ui\VirtualList.svelte
+   48:12  error  Unexpected any. Specify a different type                  @typescript-eslint/no-explicit-any
+   72:33  error  Unexpected any. Specify a different type                  @typescript-eslint/no-explicit-any
+   94:9   error  This assigned value is not used in subsequent statements  no-useless-assignment
+  176:58  error  'ScrollBehavior' is not defined                           no-undef
+
+✖ 340 problems (262 errors, 78 warnings)
+  6 errors and 1 warning potentially fixable with the `--fix` option.
+

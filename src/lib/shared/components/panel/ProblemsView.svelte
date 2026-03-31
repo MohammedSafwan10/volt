@@ -175,7 +175,7 @@ Source: ${problem.source}${problem.code ? ` (${problem.code})` : ""}`;
   }
 
   function getVisibleFilePaths(): string[] {
-    const visibleFiles = new Set<string>();
+    const visibleFiles = new SvelteSet<string>();
 
     for (const problem of visibleProblems) {
       visibleFiles.add(problem.file);

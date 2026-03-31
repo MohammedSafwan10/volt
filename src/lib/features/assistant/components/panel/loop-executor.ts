@@ -102,6 +102,7 @@ export async function executeQueuedNonFileTools(
     deps.updateToolCallInMessage(deps.messageId, queued.id, {
       status: 'running',
       startTime: Date.now(),
+      error: undefined,
       meta: {
         ...(existingToolState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(queued.name),
@@ -109,6 +110,7 @@ export async function executeQueuedNonFileTools(
     });
     void deps.publishToolPatch?.(queued.id, {
       status: 'running',
+      error: undefined,
       meta: {
         ...(existingToolState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(queued.name),
@@ -165,7 +167,7 @@ export async function executeQueuedNonFileTools(
         deps.updateToolCallInMessage(deps.messageId, queued.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error ?? existingToolState?.error,
+          error: result.success ? undefined : (result.error ?? existingToolState?.error),
           meta: {
             ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
@@ -178,7 +180,7 @@ export async function executeQueuedNonFileTools(
         void deps.publishToolPatch?.(queued.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error ?? existingToolState?.error,
+          error: result.success ? undefined : (result.error ?? existingToolState?.error),
           meta: {
             ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
@@ -271,6 +273,7 @@ export async function executeFileEditQueues(
         deps.updateToolCallInMessage(deps.messageId, edit.id, {
           status: 'running',
           startTime: Date.now(),
+          error: undefined,
           meta: {
             editPhase: 'writing',
             queueIndex: edit.queueIndex,
@@ -279,6 +282,7 @@ export async function executeFileEditQueues(
         });
         void deps.publishToolPatch?.(edit.id, {
           status: 'running',
+          error: undefined,
           meta: {
             editPhase: 'writing',
             queueIndex: edit.queueIndex,
@@ -361,7 +365,7 @@ export async function executeFileEditQueues(
           deps.updateToolCallInMessage(deps.messageId, edit.id, {
             status: result.success ? 'completed' : 'failed',
             output: result.output,
-            error: result.error,
+            error: result.success ? undefined : result.error,
             meta: {
               ...(result.meta || {}),
               editPhase: result.success ? 'done' : 'failed',
@@ -376,7 +380,7 @@ export async function executeFileEditQueues(
           void deps.publishToolPatch?.(edit.id, {
             status: result.success ? 'completed' : 'failed',
             output: result.output,
-            error: result.error,
+            error: result.success ? undefined : result.error,
             meta: {
               ...(result.meta || {}),
               editPhase: result.success ? 'done' : 'failed',

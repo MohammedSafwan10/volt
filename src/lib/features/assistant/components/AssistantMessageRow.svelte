@@ -19,6 +19,7 @@
   import { editorStore } from "$features/editor/stores/editor.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
   import { normalizeAssistantMarkdown } from "$features/assistant/utils/assistant-markdown";
+  import { isUnresolvedTerminalToolCall } from "./assistant-message-row-helpers";
 
   interface FileEditMeta extends Record<string, unknown> {
     beforeContent?: string;
@@ -135,17 +136,7 @@
   function getFirstUnresolvedTerminalId(parts: ContentPart[]): string | null {
     for (const part of parts) {
       if (part.type !== "tool") continue;
-      if (!isTerminalToolName(part.toolCall.name)) continue;
-      if (!part.toolCall.requiresApproval) continue;
-      const isApprovedPending =
-        part.toolCall.status === "pending" &&
-        part.toolCall.reviewStatus === "accepted";
-      if (
-        part.toolCall.status === "running" ||
-        part.toolCall.status === "pending" ||
-        isApprovedPending ||
-        Boolean((part.toolCall.meta as ToolCallMeta | undefined)?.terminalRun)
-      ) {
+      if (isUnresolvedTerminalToolCall(part.toolCall)) {
         return part.toolCall.id;
       }
     }

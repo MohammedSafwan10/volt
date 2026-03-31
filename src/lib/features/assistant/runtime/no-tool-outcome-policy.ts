@@ -96,7 +96,6 @@ function looksLikeIncompleteAction(iterationContent: string): boolean {
     /\bchecking workspace status\b/i,
     /\bprotocol mistake\b/i,
     /\btool result\b/i,
-    /\battempt_completion\b/i,
     /\bi should provide\b/i,
     /\bnow i need to respond\b/i,
   ];
@@ -118,11 +117,8 @@ function looksLikeCompletionIntent(text: string): boolean {
   if (!trimmed) return false;
 
   const completionPatterns = [
-    /\battempt_completion\b/i,
     /\bfinalizing (the )?response\b/i,
     /\bensuring task completion\b/i,
-    /\bready to (call|use) attempt_completion\b/i,
-    /\bneed to (call|use) attempt_completion\b/i,
     /\bdeclare(?:ing)? completion\b/i,
     /\bverify(?:ing)? before declaring completion\b/i,
     /\bwrap(?:ping)? up\b/i,
@@ -156,7 +152,7 @@ function handleNoToolOutcome(input: NoToolOutcomeInput): { decision: Decision; s
       arguments: {},
       status: 'completed',
       output:
-        'You are at the end of the task. Stop narrating your internal completion steps. Either provide the final user-facing response NOW, or call attempt_completion with a concise summary if you want to use the explicit completion signal. If you are genuinely blocked, provide a brief blocker explanation. Do not continue thinking without taking one of those actions.',
+        'You are at the end of the task. Stop narrating your internal completion steps. Provide the final user-facing response NOW. If you are genuinely blocked, provide a brief blocker explanation. Do not continue thinking without taking one of those actions.',
     });
     return { decision: 'continue', state: next };
   }

@@ -137,18 +137,7 @@ export function createAssistantPanelNativeRuntimeBridge(deps: {
       });
     }
 
-    if (decision.toolPatch?.messageId && decision.toolPatch.toolCallId) {
-      deps.assistantStore.updateToolCallInMessage(
-        decision.toolPatch.messageId,
-        decision.toolPatch.toolCallId,
-        {
-          ...(decision.toolPatch.status ? { status: decision.toolPatch.status } : {}),
-          ...(decision.toolPatch.error ? { error: decision.toolPatch.error } : {}),
-          ...(decision.toolPatch.output ? { output: decision.toolPatch.output } : {}),
-          ...(decision.toolPatch.meta ? { meta: decision.toolPatch.meta } : {}),
-        },
-      );
-    }
+    // Native tool patches are audit-only. Live tool card state is owned by the local assistant store.
 
     if (decision.messagePatch?.messageId && decision.messagePatch.streamState) {
       deps.assistantStore.markAssistantMessageStreamState(

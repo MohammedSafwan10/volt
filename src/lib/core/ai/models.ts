@@ -110,6 +110,15 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     supportsTools: true,
     free: true
   },
+  'qwen/qwen3.6-plus-preview:free': {
+    id: 'qwen/qwen3.6-plus-preview:free',
+    name: 'Qwen 3.6 Plus Preview',
+    provider: 'openrouter',
+    contextWindow: 1000000,
+    maxOutput: 65536,
+    supportsTools: true,
+    free: true
+  },
 
   // ============ Mistral Models ============
   'devstral-medium-latest': {

@@ -1,4 +1,5 @@
 import type { FileDocument, WriteOptions, WriteResult } from './file-service';
+import type { FileInfo } from '$core/types/files';
 import type {
   DiagnosticsBasis,
   DiagnosticsFreshness,
@@ -54,6 +55,7 @@ export interface WorkspaceMutationProjectionPort {
 export interface FileBackend {
   read(path: string, forceRefresh?: boolean): Promise<FileDocument | null>;
   write(path: string, content: string, options?: WriteOptions): Promise<WriteResult>;
+  getInfo?(path: string): Promise<FileInfo | null>;
   deletePath?(path: string): Promise<StructuralMutationResult>;
   createDir?(path: string): Promise<StructuralMutationResult>;
   renamePath?(oldPath: string, newPath: string): Promise<StructuralMutationResult>;
@@ -272,7 +274,9 @@ export function createWorkspaceMutationCoordinator(deps: {
 
   async function runDelete(intent: Extract<MutationIntent, { type: 'delete' }>) {
     const current = await deps.fileBackend.read(intent.path, true);
-    if (!current) {
+    const info = current ? null : await deps.fileBackend.getInfo?.(intent.path);
+    const isDirectory = info?.isDirectory === true || info?.isDir === true;
+    if (!current && !isDirectory) {
       deps.stagedDocuments.stageStructuralMutation({
         path: intent.path,
         kind: 'file',
@@ -300,16 +304,28 @@ export function createWorkspaceMutationCoordinator(deps: {
 
     deps.stagedDocuments.stageStructuralMutation({
       path: intent.path,
-      kind: 'file',
+      kind: isDirectory ? 'directory' : 'file',
       mutation: {
         kind: 'delete',
         previousPath: intent.path,
       },
-      beforeState: toStateSnapshot(intent.path, current),
-      afterState: toStateSnapshot(intent.path, current, {
-        exists: false,
-        content: null,
-      }),
+      beforeState: isDirectory
+        ? {
+            path: intent.path,
+            kind: 'directory',
+            exists: true,
+          }
+        : toStateSnapshot(intent.path, current),
+      afterState: isDirectory
+        ? {
+            path: intent.path,
+            kind: 'directory',
+            exists: false,
+          }
+        : toStateSnapshot(intent.path, current, {
+            exists: false,
+            content: null,
+          }),
       meta: {
         intent: 'delete',
       },
@@ -346,17 +362,29 @@ export function createWorkspaceMutationCoordinator(deps: {
 
     deps.stagedDocuments.stage({
       path: intent.path,
-      kind: 'file',
+      kind: isDirectory ? 'directory' : 'file',
       state: 'staged_delete',
       phase: 'project',
       committedContent: null,
       stagedContent: null,
       version: current?.version,
-      beforeState: toStateSnapshot(intent.path, current),
-      afterState: toStateSnapshot(intent.path, current, {
-        exists: false,
-        content: null,
-      }),
+      beforeState: isDirectory
+        ? {
+            path: intent.path,
+            kind: 'directory',
+            exists: true,
+          }
+        : toStateSnapshot(intent.path, current),
+      afterState: isDirectory
+        ? {
+            path: intent.path,
+            kind: 'directory',
+            exists: false,
+          }
+        : toStateSnapshot(intent.path, current, {
+          exists: false,
+          content: null,
+        }),
       structuralMutation: {
         kind: 'delete',
         previousPath: intent.path,

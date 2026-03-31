@@ -8,6 +8,7 @@ const handleFileChangeBatchMock = vi.fn();
 const onFileChangeMock = vi.fn();
 const hasOpenEditorFileMock = vi.fn();
 const reloadEditorFileMock = vi.fn();
+const closeEditorFilesUnderPathMock = vi.fn();
 const listDirectoryDetailedMock = vi.fn();
 
 type WorkspaceArgs = {
@@ -125,6 +126,7 @@ vi.mock('$core/ai/retrieval/semantic-index', () => ({
 vi.mock('./project-bridge', () => ({
   cleanupEditorStore: vi.fn(),
   cleanupMcpStore: vi.fn(),
+  closeEditorFilesUnderPath: closeEditorFilesUnderPathMock,
   closeAllEditorFiles: vi.fn(),
   initGitStore: vi.fn(),
   hasOpenEditorFile: hasOpenEditorFileMock,
@@ -148,6 +150,7 @@ describe('projectStore workspace lifecycle', () => {
     });
     hasOpenEditorFileMock.mockResolvedValue(false);
     reloadEditorFileMock.mockReset();
+    closeEditorFilesUnderPathMock.mockReset();
     listDirectoryMock.mockResolvedValue([{ name: 'src', path: 'C:/workspace/src', isDir: true }]);
     invokeMock.mockImplementation(async (command: string, args?: WorkspaceArgs) => {
       const request = getRequest(args);
@@ -353,6 +356,27 @@ describe('projectStore workspace lifecycle', () => {
     });
 
     expect(reloadEditorFileMock).not.toHaveBeenCalled();
+  });
+
+  it('closes open editor tabs when the watcher reports a deleted path', async () => {
+    const { projectStore } = await import('./project.svelte');
+
+    await projectStore.openProject('C:/workspace');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const handler = (globalThis as { __projectFileChangeHandler?: (batch: unknown) => void }).__projectFileChangeHandler;
+    await handler?.({
+      changes: [
+        {
+          kind: 'delete',
+          absolutePaths: ['C:/workspace/tool-audit-lab'],
+          paths: ['tool-audit-lab'],
+        },
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(closeEditorFilesUnderPathMock).toHaveBeenCalledWith('C:/workspace/tool-audit-lab', true);
   });
 
   it('coalesces rapid create bursts into buffered refresh work instead of immediate tree thrash', async () => {

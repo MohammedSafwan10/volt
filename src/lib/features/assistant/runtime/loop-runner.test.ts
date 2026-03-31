@@ -45,7 +45,7 @@ describe('loop runner helpers', () => {
 
   it('maps completion acceptance into a completed terminal outcome', () => {
     const result = resolveCompletionAction({
-      decision: { shouldComplete: true, completionToolId: 'abc', completionText: 'done', reason: 'attempt_completion' },
+      decision: { shouldComplete: true, completionToolId: 'abc', completionText: 'done', reason: 'natural_completion' },
       iteration: 4,
     });
 

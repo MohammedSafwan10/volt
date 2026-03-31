@@ -8,7 +8,7 @@
    * 
    * Based on VS Code's virtual list implementation pattern.
    */
-  import type { Snippet } from 'svelte';
+  import type { ScrollBehavior, Snippet } from 'svelte';
 
   interface Props<T> {
     /** Array of items to render */
@@ -45,7 +45,7 @@
     onSelect,
     focusedIndex = -1,
     ...rest
-  }: Props<any> & Record<string, unknown> = $props();
+  }: Props<unknown> & Record<string, unknown> = $props();
 
   let scrollEl: HTMLDivElement | null = $state(null);
   let scrollTop = $state(0);
@@ -69,7 +69,7 @@
 
   // Get visible items slice with their indices
   const visibleItems = $derived.by(() => {
-    const result: Array<{ item: any; index: number }> = [];
+    const result: Array<{ item: unknown; index: number }> = [];
     for (let i = startIndex; i < endIndex; i++) {
       if (items[i] !== undefined) {
         result.push({ item: items[i], index: i });
@@ -91,49 +91,43 @@
     if (items.length === 0) return;
 
     const currentIndex = activeFocusIndex;
-    let newIndex = currentIndex;
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        newIndex = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, items.length - 1);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        newIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
-        break;
-      case 'Home':
-        e.preventDefault();
-        newIndex = 0;
-        break;
-      case 'End':
-        e.preventDefault();
-        newIndex = items.length - 1;
-        break;
-      case 'PageDown':
-        e.preventDefault();
-        {
-          const pageSize = Math.floor(viewportHeight / rowHeight);
-          newIndex = Math.min(currentIndex + pageSize, items.length - 1);
-        }
-        break;
-      case 'PageUp':
-        e.preventDefault();
-        {
-          const pageSize = Math.floor(viewportHeight / rowHeight);
-          newIndex = Math.max(currentIndex - pageSize, 0);
-        }
-        break;
-      case 'Enter':
-      case ' ':
-        if (currentIndex >= 0 && currentIndex < items.length) {
+    const resolveNextIndex = (): number => {
+      switch (e.key) {
+        case 'ArrowDown':
           e.preventDefault();
-          onSelect?.(currentIndex, items[currentIndex]);
+          return currentIndex < 0 ? 0 : Math.min(currentIndex + 1, items.length - 1);
+        case 'ArrowUp':
+          e.preventDefault();
+          return currentIndex <= 0 ? 0 : currentIndex - 1;
+        case 'Home':
+          e.preventDefault();
+          return 0;
+        case 'End':
+          e.preventDefault();
+          return items.length - 1;
+        case 'PageDown': {
+          e.preventDefault();
+          const pageSize = Math.floor(viewportHeight / rowHeight);
+          return Math.min(currentIndex + pageSize, items.length - 1);
         }
-        return;
-      default:
-        return;
-    }
+        case 'PageUp': {
+          e.preventDefault();
+          const pageSize = Math.floor(viewportHeight / rowHeight);
+          return Math.max(currentIndex - pageSize, 0);
+        }
+        case 'Enter':
+        case ' ':
+          if (currentIndex >= 0 && currentIndex < items.length) {
+            e.preventDefault();
+            onSelect?.(currentIndex, items[currentIndex]);
+          }
+          return currentIndex;
+        default:
+          return currentIndex;
+      }
+    };
+
+    const newIndex = resolveNextIndex();
 
     if (newIndex !== currentIndex) {
       if (focusedIndex < 0) {

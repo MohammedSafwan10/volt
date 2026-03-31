@@ -100,17 +100,18 @@ export function resolveApprovalAction(params: {
 }
 
 export function resolveCompletionAction(params: {
-  decision: { shouldComplete: boolean; completionToolId?: string; completionText?: string; reason?: 'attempt_completion' };
+  decision: { shouldComplete: boolean; completionToolId?: string; completionText?: string; reason?: 'attempt_completion' | 'natural_completion' };
   iteration: number;
 }): { action: 'continue' } | { action: 'terminal'; terminalOutcome: LoopTerminalOutcome } {
   if (!params.decision.shouldComplete || !params.decision.completionToolId) {
     return { action: 'continue' };
   }
+  const completionReason = params.decision.reason ?? 'natural_completion';
   return {
     action: 'terminal',
     terminalOutcome: {
       status: 'completed',
-      reason: params.decision.reason ?? 'attempt_completion',
+      reason: completionReason,
       assistantMessage: params.decision.completionText || undefined,
       streamState: 'completed',
       loopStateMeta: {
@@ -124,10 +125,10 @@ export function resolveCompletionAction(params: {
       loopLogLevel: 'info',
       loopLogEvent: 'loop_completed',
       loopLogDetails: {
-        reason: params.decision.reason ?? 'attempt_completion',
+        reason: completionReason,
         completionToolId: params.decision.completionToolId,
       },
-      outputLog: `Agent: Completion accepted via attempt_completion at iteration ${params.iteration}.`,
+      outputLog: `Agent: Completion accepted at iteration ${params.iteration}.`,
     },
   };
 }

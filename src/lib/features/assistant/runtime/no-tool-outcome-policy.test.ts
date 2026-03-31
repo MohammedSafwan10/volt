@@ -36,7 +36,7 @@ describe('no-tool outcome policy', () => {
     const addToolMessage = vi.fn();
     const result = resolveNoToolOutcome({
       iteration: 4,
-      iterationThinking: 'I should call attempt_completion now after finalizing the response.',
+      iterationThinking: 'I am finalizing the response now after finishing the verification.',
       iterationContent: '',
       hadPlanModeViolationThisIteration: false,
       maxEmptyResponses: 6,

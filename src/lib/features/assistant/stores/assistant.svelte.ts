@@ -136,6 +136,35 @@ export interface AssistantRuntimeSnapshot {
   messageCount: number;
 }
 
+const FINAL_TOOL_CALL_STATUSES = new Set<ToolCallStatus>(['completed', 'failed', 'cancelled']);
+
+function isToolCallStatusRegression(
+  currentStatus: ToolCallStatus | undefined,
+  nextStatus: ToolCallStatus | undefined,
+): boolean {
+  if (!currentStatus || !nextStatus) return false;
+  if (!FINAL_TOOL_CALL_STATUSES.has(currentStatus)) return false;
+  return !FINAL_TOOL_CALL_STATUSES.has(nextStatus);
+}
+
+function bumpToolCallMetaRevision(
+  currentMeta: Record<string, unknown> | undefined,
+  updateMeta: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!currentMeta && !updateMeta) return undefined;
+
+  const currentRevision =
+    typeof currentMeta?.localRevision === 'number' ? Number(currentMeta.localRevision) : 0;
+  const merged = {
+    ...(currentMeta ?? {}),
+    ...(updateMeta ?? {}),
+    localRevision: currentRevision + 1,
+    localUpdatedAt: Date.now(),
+  };
+
+  return merged;
+}
+
 interface AddUserMessageOptions {
   syntheticPrompt?: SyntheticPromptMeta;
   suppressAutoTitle?: boolean;
@@ -1646,16 +1675,6 @@ class AssistantStore {
       }
     }
 
-    const toolPatch = event.payload?.toolPatch;
-    if (toolPatch?.messageId && toolPatch.toolCallId) {
-      this.updateToolCallInMessage(toolPatch.messageId, toolPatch.toolCallId, {
-        ...(toolPatch.status ? { status: toolPatch.status as ToolCallStatus } : {}),
-        ...(toolPatch.error ? { error: toolPatch.error } : {}),
-        ...(toolPatch.output ? { output: toolPatch.output } : {}),
-        ...(toolPatch.meta ? { meta: toolPatch.meta } : {}),
-      }, false);
-    }
-
     const toolCallPayload = event.payload?.toolCall;
     if (toolCallPayload) {
       const messageId =
@@ -2066,41 +2085,32 @@ class AssistantStore {
   ): void {
     const conversationId = this.findConversationIdByMessageId(messageId);
     const patchToolCall = (msg: AssistantMessage): AssistantMessage => {
-      const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
-        tc.id === toolCallId ? {
-          ...tc,
+      const applyUpdates = (existingToolCall: ToolCall): ToolCall => {
+        if (isToolCallStatusRegression(existingToolCall.status, updates.status)) {
+          return existingToolCall;
+        }
+
+        const nextMeta = bumpToolCallMetaRevision(
+          (existingToolCall.meta as Record<string, unknown> | undefined) ?? undefined,
+          (updates.meta as Record<string, unknown> | undefined) ?? undefined,
+        );
+
+        return {
+          ...existingToolCall,
           ...updates,
-          meta: updates.meta
-            ? {
-              ...(tc.meta || {}),
-              ...updates.meta,
-              textOffset:
-                typeof (updates.meta as any)?.textOffset === 'number'
-                  ? (updates.meta as any).textOffset
-                  : (tc.meta as any)?.textOffset
-            }
-            : tc.meta
-        } : tc,
+          meta: nextMeta,
+        };
+      };
+
+      const inlineToolCalls = (msg.inlineToolCalls || []).map(tc =>
+        tc.id === toolCallId ? applyUpdates(tc) : tc,
       );
 
       const contentParts = (msg.contentParts || []).map(part => {
         if (part.type === "tool" && part.toolCall.id === toolCallId) {
           return {
             ...part,
-            toolCall: {
-              ...part.toolCall,
-              ...updates,
-              meta: updates.meta
-                ? {
-                  ...(part.toolCall.meta || {}),
-                  ...updates.meta,
-                  textOffset:
-                    typeof (updates.meta as any)?.textOffset === 'number'
-                      ? (updates.meta as any).textOffset
-                      : (part.toolCall.meta as any)?.textOffset
-                }
-                : part.toolCall.meta
-            },
+            toolCall: applyUpdates(part.toolCall),
           };
         }
         return part;
@@ -2424,13 +2434,23 @@ class AssistantStore {
       null;
 
     const updateMessage = (msg: AssistantMessage): AssistantMessage => {
-      const newParts = this.collapseTextParts(msg.contentParts, content);
+      const currentText = msg.content ?? '';
+      const nextContent =
+        isStreaming
+          ? (!currentText || content.length >= currentText.length ? content : currentText)
+          : content;
+      const newParts = this.collapseTextParts(msg.contentParts, nextContent);
       return {
         ...msg,
         contentParts: newParts,
-        content,
+        content: nextContent,
         isStreaming,
-        streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+        streamState:
+          isStreaming
+            ? 'active'
+            : msg.streamState === 'interrupted' || msg.streamState === 'cancelled' || msg.streamState === 'failed'
+              ? msg.streamState
+              : 'completed',
       };
     };
 
@@ -3524,6 +3544,10 @@ class AssistantStore {
 
 // Singleton instance
 export { AssistantStore };
+export function createAssistantStoreForTest(): AssistantStore {
+  return new AssistantStore();
+}
+
 export const assistantStore = new AssistantStore();
 chatHistoryStore.setActiveConversationDeletedHandler(() => {
   const activeId = assistantStore.currentConversation?.id;

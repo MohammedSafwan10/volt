@@ -60,11 +60,6 @@ export {
   handleGetToolMetrics
 } from '$core/ai/tools/handlers/diagnostics';
 
-// Workflow tools
-export {
-  handleAttemptCompletion
-} from '$core/ai/tools/handlers/workflow';
-
 // Spec workflow tools
 export {
   handleGetSpecState,
@@ -138,7 +133,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   'write_plan_file': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleWritePlanFile(args)),
 
   // Terminal
-  'run_command': (args) => handleRunCommand(args),
+  'run_command': (args, runtime) => handleRunCommand(args, runtime),
   'start_process': (args) => handleStartProcess(args),
   'stop_process': (args) => handleStopProcess(args),
   'list_processes': () => handleListProcesses(),
@@ -150,7 +145,6 @@ export const toolHandlers: Record<string, ToolHandler> = {
   // Diagnostics
   'get_diagnostics': (args, runtime) => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetDiagnostics(args, runtime)),
   'get_tool_metrics': (_args, runtime) => import('$core/ai/tools/handlers/diagnostics').then(m => m.handleGetToolMetrics(runtime)),
-  'attempt_completion': (args) => import('$core/ai/tools/handlers/workflow').then(m => m.handleAttemptCompletion(args)),
   'get_spec_state': () => import('$core/ai/tools/handlers/spec').then(m => m.handleGetSpecState()),
   'stage_spec_requirements': (args) => import('$core/ai/tools/handlers/spec').then(m => m.handleStageSpecRequirements(args)),
   'write_spec_phase': (args) => import('$core/ai/tools/handlers/spec').then(m => m.handleWriteSpecPhase(args)),

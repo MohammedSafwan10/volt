@@ -72,39 +72,18 @@ describe('handleWorkspaceSearch', () => {
     });
   });
 
-  it('retries once with caseSensitive false when strict literal search misses', async () => {
-    mocks.invokeMock
-      .mockResolvedValueOnce({
-        files: [],
-        totalMatches: 0,
-        truncated: false,
-        telemetry: {
-          requestedEngine: 'auto',
-          engine: 'rg',
-          fallbackUsed: false,
-          elapsedMs: 10,
-          rgSource: 'bundled',
-        },
-      })
-      .mockResolvedValueOnce({
-        files: [
-          {
-            path: 'C:/repo/src/app/page.tsx',
-            matches: [{ line: 3, lineContent: 'export const metadata = {' }],
-          },
-        ],
-        totalMatches: 1,
-        truncated: false,
-        telemetry: {
-          requestedEngine: 'auto',
-          engine: 'rg',
-          fallbackUsed: false,
-          elapsedMs: 9,
-          rgSource: 'bundled',
-        },
-      });
-    mocks.fileReadMock.mockResolvedValue({
-      content: ['line 1', 'line 2', 'export const metadata = {', 'line 4'].join('\n'),
+  it('keeps strict case-sensitive searches strict when the initial search misses', async () => {
+    mocks.invokeMock.mockResolvedValue({
+      files: [],
+      totalMatches: 0,
+      truncated: false,
+      telemetry: {
+        requestedEngine: 'auto',
+        engine: 'rg',
+        fallbackUsed: false,
+        elapsedMs: 10,
+        rgSource: 'bundled',
+      },
     });
 
     const result = await handleWorkspaceSearch({
@@ -113,15 +92,41 @@ describe('handleWorkspaceSearch', () => {
       includePattern: 'src/**/*.tsx',
     });
 
-    expect(mocks.invokeMock).toHaveBeenCalledTimes(2);
+    expect(mocks.invokeMock).toHaveBeenCalledTimes(1);
     expect(mocks.invokeMock.mock.calls[0][1]).toMatchObject({
       options: expect.objectContaining({ caseSensitive: true }),
     });
-    expect(mocks.invokeMock.mock.calls[1][1]).toMatchObject({
-      options: expect.objectContaining({ caseSensitive: false }),
-    });
     expect(result.success).toBe(true);
-    expect(result.output).toContain('Retried with caseSensitive: false after an exact-scope miss');
+    expect(result.output).not.toContain('Retried with caseSensitive: false');
+  });
+
+  it('normalizes backslash include patterns before invoking backend search', async () => {
+    mocks.invokeMock.mockResolvedValue({
+      files: [],
+      totalMatches: 0,
+      truncated: false,
+      telemetry: {
+        requestedEngine: 'auto',
+        engine: 'rg',
+        fallbackUsed: false,
+        elapsedMs: 10,
+        rgSource: 'bundled',
+      },
+    });
+
+    await handleWorkspaceSearch({
+      query: 'Nested content',
+      includePattern: 'volt_audit_tmp\\subdir\\**',
+    });
+
+    expect(mocks.invokeMock).toHaveBeenCalledWith(
+      'workspace_search',
+      expect.objectContaining({
+        options: expect.objectContaining({
+          includePatterns: ['volt_audit_tmp/subdir/**'],
+        }),
+      }),
+    );
   });
 
   it('does not broaden beyond includePattern when the initial search misses', async () => {
@@ -185,6 +190,93 @@ describe('handleWorkspaceSearch', () => {
     expect(result.output).toContain('app/not-found.tsx');
   });
 
+  it('filters hidden workspace_search results when includeHidden is false', async () => {
+    mocks.invokeMock.mockResolvedValue({
+      files: [
+        {
+          path: 'C:/repo/tool_audit_tmp/.hidden-note.txt',
+          matches: [{ line: 1, lineContent: 'secret-alpha' }],
+        },
+        {
+          path: 'C:/repo/tool_audit_tmp/visible.txt',
+          matches: [{ line: 1, lineContent: 'secret-alpha' }],
+        },
+      ],
+      totalMatches: 2,
+      truncated: false,
+      telemetry: {
+        requestedEngine: 'auto',
+        engine: 'rg',
+        fallbackUsed: false,
+        elapsedMs: 11,
+        rgSource: 'bundled',
+      },
+    });
+    mocks.fileReadMock.mockResolvedValue({ content: 'secret-alpha\n' });
+
+    const result = await handleWorkspaceSearch({
+      query: 'secret-alpha',
+      includeHidden: false,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('visible.txt');
+    expect(result.output).not.toContain('.hidden-note.txt');
+  });
+
+  it('falls back to legacy workspace search when includeHidden is true and the primary search misses', async () => {
+    mocks.invokeMock
+      .mockResolvedValueOnce({
+        files: [],
+        totalMatches: 0,
+        truncated: false,
+        telemetry: {
+          requestedEngine: 'auto',
+          engine: 'rg',
+          fallbackUsed: false,
+          elapsedMs: 11,
+          rgSource: 'bundled',
+        },
+      })
+      .mockResolvedValueOnce({
+        files: [
+          {
+            path: 'C:/repo/tool_audit_tmp/.hidden-note.txt',
+            matches: [{ line: 1, lineContent: 'secret-alpha' }],
+          },
+        ],
+        totalMatches: 1,
+        truncated: false,
+        telemetry: {
+          requestedEngine: 'legacy',
+          engine: 'legacy',
+          fallbackUsed: true,
+          fallbackReason: 'includeHidden legacy fallback',
+          elapsedMs: 16,
+          rgSource: 'none',
+        },
+      });
+    mocks.fileReadMock.mockResolvedValue({ content: 'secret-alpha\n' });
+
+    const result = await handleWorkspaceSearch({
+      query: 'secret-alpha',
+      includeHidden: true,
+    });
+
+    expect(mocks.invokeMock).toHaveBeenNthCalledWith(
+      2,
+      'workspace_search',
+      expect.objectContaining({
+        options: expect.objectContaining({
+          includeHidden: true,
+          engine: 'legacy',
+        }),
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('.hidden-note.txt');
+  });
+
   it('returns a direct failure for find_files when backend search is unavailable', async () => {
     mocks.invokeMock.mockRejectedValueOnce(new Error('find_files_by_name not registered'));
 
@@ -192,5 +284,61 @@ describe('handleWorkspaceSearch', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('find_files_by_name not registered');
+  });
+
+  it('filters hidden find_files results when includeHidden is false', async () => {
+    mocks.invokeMock.mockResolvedValue({
+      files: ['tool_audit_tmp/.hidden-note.txt', 'tool_audit_tmp/visible.txt'],
+      totalFiles: 2,
+      truncated: false,
+      engine: 'rg',
+      fallbackUsed: false,
+      elapsedMs: 8,
+      rgSource: 'bundled',
+    });
+
+    const result = await handleFindFiles({ query: 'note', includeHidden: false });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('tool_audit_tmp/visible.txt');
+    expect(result.output).not.toContain('.hidden-note.txt');
+  });
+
+  it('falls back to legacy file discovery when includeHidden is true and the primary search misses', async () => {
+    mocks.invokeMock
+      .mockResolvedValueOnce({
+        files: [],
+        totalFiles: 0,
+        truncated: false,
+        engine: 'rg',
+        fallbackUsed: false,
+        elapsedMs: 8,
+        rgSource: 'bundled',
+      })
+      .mockResolvedValueOnce({
+        files: ['tool_audit_tmp/.hidden-note.txt'],
+        totalFiles: 1,
+        truncated: false,
+        engine: 'legacy',
+        fallbackUsed: true,
+        fallbackReason: 'includeHidden legacy fallback',
+        elapsedMs: 9,
+        rgSource: 'none',
+      });
+
+    const result = await handleFindFiles({ query: 'hidden-note', includeHidden: true });
+
+    expect(mocks.invokeMock).toHaveBeenNthCalledWith(
+      2,
+      'find_files_by_name',
+      expect.objectContaining({
+        options: expect.objectContaining({
+          includeHidden: true,
+          engine: 'legacy',
+        }),
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('tool_audit_tmp/.hidden-note.txt');
   });
 });

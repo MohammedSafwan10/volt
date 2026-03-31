@@ -141,12 +141,126 @@ describe('loop-executor retry policy', () => {
         getFailureSignature: () => null,
         onFailureSignature: () => undefined,
         publishToolPatch: () => undefined,
+        getCurrentToolCallState: () => ({
+          status: 'failed',
+          error: 'Validation failed',
+          meta: { existing: true },
+        }),
+      },
+    );
+
+    expect(results[0].result.success).toBe(false);
+    expect(results[0].result.error).toBe('Validation failed');
+    expect(patches).toEqual([]);
+  });
+
+  it('clears stale validation errors for successful non-file tool executions', async () => {
+    const toolState = new Map<string, Record<string, unknown>>([
+      [
+        't-run',
+        {
+          id: 't-run',
+          status: 'pending',
+          error: 'Invalid tool call',
+          meta: {
+            terminalRun: {
+              state: 'running',
+              commandPreview: 'echo hi',
+              terminalId: 'term-1',
+            },
+          },
+        },
+      ],
+    ]);
+    const patches: Array<Record<string, unknown>> = [];
+
+    const results = await executeQueuedNonFileTools(
+      [{ id: 't-run', name: 'run_command', args: { command: 'echo hi' }, runAfterFileEdits: false }],
+      {
+        executeToolCall: async () => ({
+          success: true,
+          output: 'hi',
+          meta: {
+            terminalRun: {
+              state: 'completed',
+              commandPreview: 'echo hi',
+              terminalId: 'term-1',
+            },
+          },
+        }),
+        signal: new AbortController().signal,
+        toolRunScope: 'scope',
+        getToolIdempotencyKey: () => 'id',
+        updateToolCallInMessage: (_messageId, toolId, patch) => {
+          patches.push(patch);
+          const current = toolState.get(toolId) ?? {};
+          toolState.set(toolId, {
+            ...current,
+            ...patch,
+            meta: {
+              ...((current.meta as Record<string, unknown> | undefined) ?? {}),
+              ...((patch.meta as Record<string, unknown> | undefined) ?? {}),
+            },
+          });
+        },
+        messageId: 'm1',
+        trackToolOutcome: () => undefined,
+        getFailureSignature: () => null,
+        onFailureSignature: () => undefined,
+        publishToolPatch: () => undefined,
+        getCurrentToolCallState: (_messageId, toolId) =>
+          toolState.get(toolId) as
+            | { status?: string; error?: string; meta?: Record<string, unknown> }
+            | undefined,
       },
     );
 
     expect(results[0].result.success).toBe(true);
     expect(patches[0]).toMatchObject({
       status: 'running',
+      error: undefined,
     });
+    expect(toolState.get('t-run')).toMatchObject({
+      status: 'completed',
+      error: undefined,
+      meta: {
+        terminalRun: {
+          state: 'completed',
+          commandPreview: 'echo hi',
+          terminalId: 'term-1',
+        },
+      },
+    });
+  });
+
+  it('keeps local eager ordering when native policy omits explicit tool ids', async () => {
+    const { executeNativeDispatchPlan } = await import('./native-dispatch-plan');
+    const stageOrder: string[] = [];
+
+    const results = await executeNativeDispatchPlan({
+      schedulingDecision: {
+        executionStages: ['eager_tools'],
+        deferUntilFileEditsComplete: false,
+        orderedEagerToolIds: [],
+      },
+      eagerTools: [
+        { id: 'discover', name: 'workspace_search', args: {}, runAfterFileEdits: false },
+        { id: 'read', name: 'read_file', args: {}, runAfterFileEdits: false },
+      ],
+      deferredTools: [],
+      fileEditTasks: [],
+      runQueuedNonFileStage: async (tools) => {
+        stageOrder.push(...tools.map((tool) => tool.id));
+        return tools.map((tool) => ({
+          id: tool.id,
+          name: tool.name,
+          result: { success: true },
+        }));
+      },
+      runFileEditStage: async () => [],
+    });
+
+    expect(stageOrder).toEqual(['discover', 'read']);
+    expect(results.map((entry) => entry.id)).toEqual(['discover', 'read']);
   });
 });

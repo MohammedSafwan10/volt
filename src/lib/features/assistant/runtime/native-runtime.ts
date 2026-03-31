@@ -19,6 +19,7 @@ export interface AssistantRuntimeToolPatch {
   status?: string | null;
   error?: string;
   output?: string;
+  // Audit-only payload. Live tool-card state is owned by the local assistant store.
   meta?: Record<string, unknown> | null;
 }
 

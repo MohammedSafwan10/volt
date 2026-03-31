@@ -60,6 +60,7 @@ import { WorkspaceLifecycleManager } from '$core/workspace/workspace-lifecycle';
 import {
   cleanupEditorStore,
   cleanupMcpStore,
+  closeEditorFilesUnderPath,
   closeAllEditorFiles,
   initGitStore,
   hasOpenEditorFile,
@@ -710,7 +711,7 @@ class ProjectStore {
         const newAbs = change.absolutePaths[1];
         const newRel = change.paths[1];
 
-        this.handleFileDeleted(oldAbs);
+        await this.handleFileDeleted(oldAbs);
         this.handleFileCreated(newAbs, newRel);
         if (this.rootPath) {
           queueSemanticRemove(this.rootPath, oldAbs);
@@ -729,7 +730,7 @@ class ProjectStore {
             if (this.rootPath) queueSemanticUpsert(this.rootPath, absPath);
             break;
           case 'delete':
-            this.handleFileDeleted(absPath);
+            await this.handleFileDeleted(absPath);
             if (this.rootPath) queueSemanticRemove(this.rootPath, absPath);
             break;
           case 'rename':
@@ -815,9 +816,10 @@ class ProjectStore {
   /**
    * Handle a file being deleted
    */
-  private handleFileDeleted(absolutePath: string): void {
+  private async handleFileDeleted(absolutePath: string): Promise<void> {
     // Remove from tree if present
     this.removeNode(absolutePath);
+    await closeEditorFilesUnderPath(absolutePath, true);
   }
 
   private shouldTriggerProjectDiagnostics(batch: FileChangeBatchEvent): boolean {

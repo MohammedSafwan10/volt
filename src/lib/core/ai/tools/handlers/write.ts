@@ -1142,8 +1142,8 @@ export async function handleCreateDir(args: Record<string, unknown>): Promise<To
   });
 
   if (!result.success) {
-    const error = result.error ?? "create_dir failed";
-    if (error.includes("already exists")) {
+    const error = extractErrorMessage(result.error);
+    if (error.toLowerCase().includes("already exists")) {
       return { success: true, output: `Directory already exists: ${relativePath}` };
     }
     return { success: false, error: `Failed to create: ${error}` };

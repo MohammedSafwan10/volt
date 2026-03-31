@@ -13,6 +13,21 @@ export async function closeAllEditorFiles(force = false): Promise<void> {
   editorStore.closeAllFiles(force);
 }
 
+export async function closeEditorFilesUnderPath(path: string, force = true): Promise<void> {
+  const { editorStore } = await import('$features/editor/stores/editor.svelte');
+  const normalizedTarget = path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+
+  for (const openFile of [...editorStore.openFiles]) {
+    const normalizedOpenPath = openFile.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (
+      normalizedOpenPath === normalizedTarget ||
+      normalizedOpenPath.startsWith(`${normalizedTarget}/`)
+    ) {
+      editorStore.closeFile(openFile.path, force);
+    }
+  }
+}
+
 export async function cleanupEditorStore(): Promise<void> {
   const { disposeEditorStore } = await import('$features/editor/stores/editor.svelte');
   disposeEditorStore();

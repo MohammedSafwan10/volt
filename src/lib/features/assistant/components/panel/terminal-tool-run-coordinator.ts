@@ -4,6 +4,7 @@ import {
   type TerminalTranscriptReader,
 } from "./terminal-tool-transcript";
 import { inferTerminalCommandFailure } from "$features/terminal/services/terminal-command-safety";
+import type { ToolRuntimeContext } from "$core/ai/tools/runtime";
 import type {
   TerminalToolExecutionMode,
   TerminalToolRunStore,
@@ -47,6 +48,7 @@ export interface RunForegroundInput {
   command: string;
   cwd?: string;
   timeoutMs: number;
+  runtime?: ToolRuntimeContext;
 }
 
 export interface RunForegroundResult {
@@ -67,6 +69,7 @@ export interface RunForegroundResult {
 
 const MAX_TRANSCRIPT_CHARS = 16_000;
 const MAX_EXCERPT_LINES = 12;
+const LIVE_TRANSCRIPT_POLL_MS = 120;
 
 function getFailureReason(exitCode: number, timedOut: boolean): string | undefined {
   if (timedOut) {
@@ -85,6 +88,24 @@ function getCompletedState(exitCode: number, timedOut: boolean) {
 export function createTerminalToolRunCoordinator(
   deps: TerminalToolRunCoordinatorDeps,
 ) {
+  const publishLiveTerminalUpdate = (
+    input: RunForegroundInput,
+    session: TerminalCoordinatorSession,
+    excerpt: string,
+  ) => {
+    input.runtime?.onUpdate?.({
+      liveStatus: "Running command...",
+      meta: {
+        terminalRun: {
+          state: "running",
+          commandPreview: input.command,
+          terminalId: session.id,
+          excerpt,
+        },
+      },
+    });
+  };
+
   return {
     async runForeground(input: RunForegroundInput): Promise<RunForegroundResult> {
       deps.runStore.upsert({
@@ -115,6 +136,60 @@ export function createTerminalToolRunCoordinator(
           captureStartOffset,
           MAX_TRANSCRIPT_CHARS,
         );
+        publishLiveTerminalUpdate(
+          input,
+          session,
+          buildTerminalToolExcerpt(initialSlice.text, MAX_EXCERPT_LINES),
+        );
+
+        let stopPolling = false;
+        let lastPublishedOffset = initialSlice.nextOffset;
+        let lastPublishedExcerpt = buildTerminalToolExcerpt(
+          initialSlice.text,
+          MAX_EXCERPT_LINES,
+        );
+        let lastPublishedTruncation = initialSlice.truncatedBeforeOffset;
+
+        const pollPromise = session.executeCommand
+          ? (async () => {
+              while (!stopPolling) {
+                await new Promise((resolve) =>
+                  setTimeout(resolve, LIVE_TRANSCRIPT_POLL_MS),
+                );
+                if (stopPolling) break;
+
+                const slice = readTerminalTranscriptSlice(
+                  session,
+                  captureStartOffset,
+                  MAX_TRANSCRIPT_CHARS,
+                );
+                const excerpt = buildTerminalToolExcerpt(
+                  slice.text,
+                  MAX_EXCERPT_LINES,
+                );
+
+                if (
+                  slice.nextOffset === lastPublishedOffset &&
+                  excerpt === lastPublishedExcerpt &&
+                  slice.truncatedBeforeOffset === lastPublishedTruncation
+                ) {
+                  continue;
+                }
+
+                lastPublishedOffset = slice.nextOffset;
+                lastPublishedExcerpt = excerpt;
+                lastPublishedTruncation = slice.truncatedBeforeOffset;
+
+                deps.runStore.patch(input.runId, {
+                  state: excerpt ? "streaming_output" : "running",
+                  captureCurrentOffset: slice.nextOffset,
+                  excerpt,
+                  transcriptTruncated: slice.truncatedBeforeOffset,
+                });
+                publishLiveTerminalUpdate(input, session, excerpt);
+              }
+            })()
+          : Promise.resolve();
 
         const completion = session.executeCommand
           ? await session.executeCommand(input.command, input.timeoutMs)
@@ -123,6 +198,8 @@ export function createTerminalToolRunCoordinator(
               exitCode: 0,
               timedOut: false,
             };
+        stopPolling = true;
+        await pollPromise;
 
         const finalSlice = readTerminalTranscriptSlice(
           session,

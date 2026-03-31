@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { toOpenAIMessages } from './openai';
+import type { ChatMessage } from '$core/ai/types';
 
 describe('openai provider payloads', () => {
   it('preserves text and image parts for multimodal user messages', () => {
@@ -16,8 +17,8 @@ describe('openai provider payloads', () => {
             data: 'abc123base64',
           },
         ],
-      } as any,
-    ]);
+      },
+    ] as ChatMessage[]);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('user');
@@ -48,8 +49,8 @@ describe('openai provider payloads', () => {
             arguments: { path: 'src/app.ts' },
           },
         ],
-      } as any,
-    ]);
+      },
+    ] as ChatMessage[]);
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({

@@ -9,8 +9,9 @@
   import { projectStore } from "$shared/stores/project.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
-  let expandedServers = $state<Set<string>>(new Set());
+  let expandedServers = new SvelteSet<string>();
   let configPath = $state<string>("~/.volt/settings/mcp.json");
 
   // Get actual config path on mount and auto-open the config file
@@ -69,7 +70,7 @@
     } else {
       expandedServers.add(serverId);
     }
-    expandedServers = new Set(expandedServers);
+    expandedServers = new SvelteSet(expandedServers);
   }
 
   function getStatusIcon(

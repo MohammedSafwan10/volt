@@ -13,7 +13,11 @@
 import { terminalStore } from '$features/terminal/stores/terminal.svelte';
 import { projectStore } from '$shared/stores/project.svelte';
 import { uiStore } from '$shared/stores/ui.svelte';
-import type { TerminalSession } from '$features/terminal/services/terminal-client';
+import {
+  POWERSHELL_SHELL_INTEGRATION_IDENTITY,
+  type TerminalSession,
+} from '$features/terminal/services/terminal-client';
+import type { ToolRuntimeContext } from '$core/ai/tools/runtime';
 import { truncateOutput, extractErrorMessage, type ToolResult } from '$core/ai/tools/utils';
 import { createTerminalToolRunCoordinator } from '$lib/features/assistant/components/panel/terminal-tool-run-coordinator';
 import { createTerminalToolRunStore } from '$lib/features/assistant/components/panel/terminal-tool-run-store';
@@ -29,18 +33,29 @@ const terminalToolRunCoordinator = createTerminalToolRunCoordinator({
     }
 
     await session.waitForReady(3000);
-    if (!session.hasShellIntegration) {
+    const needsPowerShellRefresh =
+      /powershell|pwsh/i.test(session.info.shell) &&
+      session.shellIntegrationIdentity !== POWERSHELL_SHELL_INTEGRATION_IDENTITY;
+
+    if (!session.hasShellIntegration || needsPowerShellRefresh) {
       await session.enableShellIntegration();
     }
 
-    if (!session.hasShellIntegration && /powershell|pwsh/i.test(session.info.shell)) {
+    if (
+      /powershell|pwsh/i.test(session.info.shell) &&
+      (!session.hasShellIntegration ||
+        session.shellIntegrationIdentity !== POWERSHELL_SHELL_INTEGRATION_IDENTITY)
+    ) {
       console.warn('[TerminalTool] PowerShell shell integration did not initialize on first attempt; recreating AI terminal.');
       session = await terminalStore.recreateAiTerminal(cwd);
       if (!session) {
         throw new Error('Failed to recreate AI terminal for shell integration');
       }
       await session.waitForReady(3000);
-      if (!session.hasShellIntegration) {
+      if (
+        !session.hasShellIntegration ||
+        session.shellIntegrationIdentity !== POWERSHELL_SHELL_INTEGRATION_IDENTITY
+      ) {
         await session.enableShellIntegration();
       }
     }
@@ -267,6 +282,13 @@ async function getProcessTerminal(processId: number, cwd?: string): Promise<Term
   if (proc?.terminalId) {
     const session = terminalStore.sessions.find(s => s.id === proc.terminalId);
     if (session) {
+      if (
+        /powershell|pwsh/i.test(session.info.shell) &&
+        (!session.hasShellIntegration ||
+          session.shellIntegrationIdentity !== POWERSHELL_SHELL_INTEGRATION_IDENTITY)
+      ) {
+        await session.enableShellIntegration();
+      }
       terminalStore.setActive(session.id);
       return session;
     }
@@ -282,6 +304,13 @@ async function getProcessTerminal(processId: number, cwd?: string): Promise<Term
   terminalStore.setActive(session.id);
 
   await session.waitForReady(3000);
+  if (
+    /powershell|pwsh/i.test(session.info.shell) &&
+    (!session.hasShellIntegration ||
+      session.shellIntegrationIdentity !== POWERSHELL_SHELL_INTEGRATION_IDENTITY)
+  ) {
+    await session.enableShellIntegration();
+  }
   return session;
 }
 
@@ -298,6 +327,37 @@ interface BackgroundProcess {
   terminalId?: string;
   port?: number;
   detectedUrl?: string;
+}
+
+type ProcessLifecycleSession = Pick<
+  TerminalSession,
+  'getLastCommandStartedAt' | 'getLastCommandFinishedAt'
+>;
+
+export function deriveTrackedProcessFromSessionState(
+  process: BackgroundProcess,
+  session: ProcessLifecycleSession,
+): BackgroundProcess {
+  if (process.status !== 'running') {
+    return process;
+  }
+
+  const lastStartedAt = session.getLastCommandStartedAt();
+  const lastFinishedAt = session.getLastCommandFinishedAt();
+  const commandFinishedForThisProcess =
+    typeof lastStartedAt === 'number' &&
+    typeof lastFinishedAt === 'number' &&
+    lastStartedAt >= process.startTime &&
+    lastFinishedAt >= lastStartedAt;
+
+  if (!commandFinishedForThisProcess) {
+    return process;
+  }
+
+  return {
+    ...process,
+    status: 'stopped',
+  };
 }
 
 const STORAGE_KEY = 'volt.ai.processes';
@@ -410,6 +470,17 @@ async function reconcileTrackedProcesses(): Promise<void> {
   for (const proc of all) {
     const hasTerminal = proc.terminalId ? liveTerminalIds.has(proc.terminalId) : false;
     const ageMs = now - proc.startTime;
+    const session = proc.terminalId
+      ? terminalStore.sessions.find((candidate) => candidate.id === proc.terminalId)
+      : null;
+
+    if (proc.status === 'running' && session) {
+      const reconciled = deriveTrackedProcessFromSessionState(proc, session);
+      if (reconciled.status !== proc.status) {
+        processStore.set(proc.processId, reconciled);
+        continue;
+      }
+    }
 
     if (proc.status === 'running' && !hasTerminal) {
       // Orphaned running process: likely stale persisted state after reload/crash.
@@ -469,6 +540,7 @@ type TerminalCoordinatorLike = {
     command: string;
     cwd?: string;
     timeoutMs: number;
+    runtime?: ToolRuntimeContext;
   }) => Promise<{
     success: boolean;
     output?: string;
@@ -487,6 +559,7 @@ type TerminalCoordinatorLike = {
 async function runCommandThroughCoordinator(
   coordinator: TerminalCoordinatorLike,
   args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
 ): Promise<ToolResult> {
   const normalizedInvocation = extractLeadingCwdDirective(String(args.command), resolveToolCwd(args.cwd));
   const command = normalizedInvocation.command.trim();
@@ -499,6 +572,7 @@ async function runCommandThroughCoordinator(
     command,
     cwd,
     timeoutMs: timeout,
+    runtime,
   });
 
   const terminalRun = result.meta?.terminalRun;
@@ -522,12 +596,16 @@ async function runCommandThroughCoordinator(
 export async function handleRunCommandThroughCoordinatorForTest(
   coordinator: TerminalCoordinatorLike,
   args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
 ): Promise<ToolResult> {
-  return runCommandThroughCoordinator(coordinator, args);
+  return runCommandThroughCoordinator(coordinator, args, runtime);
 }
 
-export async function handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
-  return runCommandThroughCoordinator(terminalToolRunCoordinator, args);
+export async function handleRunCommand(
+  args: Record<string, unknown>,
+  runtime?: ToolRuntimeContext,
+): Promise<ToolResult> {
+  return runCommandThroughCoordinator(terminalToolRunCoordinator, args, runtime);
 }
 
 /**
@@ -730,7 +808,11 @@ export async function handleGetProcessOutput(args: Record<string, unknown>): Pro
     const cleaned = session.getRecentCleanOutput(maxLines * 400); // Larger window for URL recovery
     const lines = cleaned.split('\n');
     const recent = lines.slice(-maxLines).join('\n');
-    const updated = updateProcessDetectedUrl(proc, cleaned);
+    const reconciled = deriveTrackedProcessFromSessionState(proc, session);
+    if (reconciled.status !== proc.status) {
+      processStore.set(proc.processId, reconciled);
+    }
+    const updated = updateProcessDetectedUrl(reconciled, cleaned);
 
     const { text, truncated } = truncateOutput(recent);
     const urlHint = updated.detectedUrl ? `\n\nDetected URL: ${updated.detectedUrl}` : '';

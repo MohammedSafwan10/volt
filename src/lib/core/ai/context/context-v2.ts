@@ -361,7 +361,7 @@ export async function buildContextV2(input: BuildContextV2Input): Promise<Contex
   }
 
   if (active) {
-    const importRegex = /from\s+['\"]([^'\"]+)['\"]/g;
+    const importRegex = /from\s+['"]([^'"]+)['"]/g;
     const importTargets: string[] = [];
     for (const match of active.content.matchAll(importRegex)) {
       const spec = match[1] || '';

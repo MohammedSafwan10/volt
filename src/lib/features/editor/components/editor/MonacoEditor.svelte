@@ -489,7 +489,7 @@
     // Listen for navigation events from Problems panel
     window.addEventListener(
       "volt:navigate-to-position",
-      handleNavigateToPosition as EventListener,
+      handleNavigateToPosition as (event: Event) => void,
     );
 
     // Cleanup on unmount
@@ -497,7 +497,7 @@
       disposed = true;
       window.removeEventListener(
         "volt:navigate-to-position",
-        handleNavigateToPosition as EventListener,
+        handleNavigateToPosition as (event: Event) => void,
       );
       if (changeTimer) {
         clearTimeout(changeTimer);

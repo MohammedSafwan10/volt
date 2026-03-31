@@ -55,8 +55,8 @@ const ENABLED_BY_ENV = (() => {
 })();
 
 let queueRoot: string | null = null;
-let upsertQueue = new Set<string>();
-let removeQueue = new Set<string>();
+const upsertQueue = new Set<string>();
+const removeQueue = new Set<string>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let updateCounter = 0;
 let queueFirstQueuedAt = 0;

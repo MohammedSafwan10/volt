@@ -3,7 +3,7 @@
    * MessageList - Main chat message container
    * Renders user/assistant messages with auto-scroll
    */
-  import { tick } from "svelte";
+  import { tick, type ScrollBehavior } from "svelte";
   import { UIIcon } from "$shared/components/ui";
   import type {
     AssistantMessage,
@@ -301,8 +301,8 @@
         if (tc.name === "write_plan_file" && tc.status === "completed") {
           const content = tc.arguments.content as string;
           const filename = tc.arguments.filename as string;
-          const meta = (tc.meta ?? {}) as Record<string, any>;
-          const planMeta = (meta.planFile ?? {}) as Record<string, any>;
+          const meta = (tc.meta ?? {}) as Record<string, unknown>;
+          const planMeta = (meta.planFile ?? {}) as Record<string, unknown>;
           if (content && filename) {
             return {
               filename: String(planMeta.filename || filename),
@@ -432,7 +432,11 @@
           <AssistantMessageRow
             message={activeAssistantMessage}
             msgIdx={activeAssistantIndex}
-            showStreamingFallback={true}
+              showStreamingFallback={Boolean(
+                isStreaming &&
+                  (activeAssistantMessage.isStreaming ||
+                    activeAssistantMessage.streamState === "active"),
+              )}
             renderMode="active"
             {onToolApprove}
             {onToolDeny}

@@ -57,7 +57,7 @@ const STRICT_WORKFLOW = `# WORKFLOW
 2. Inspect structure with file_outline or read_file only when the current context is insufficient.
 3. Edit with str_replace for single changes, apply_patch for multi-hunk edits, write_file for new files.
 4. Verify with get_diagnostics.
-5. When the task is done, respond naturally with the result. You may call attempt_completion as a finalization signal, but a natural final response is also valid once verification is complete.
+5. When the task is done, respond naturally with the result once verification is complete.
 
 Execution priorities:
 - Prefer file_outline before full read_file to understand file structure cheaply.

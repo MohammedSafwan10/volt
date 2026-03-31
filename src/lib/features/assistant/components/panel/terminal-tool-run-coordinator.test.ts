@@ -208,4 +208,84 @@ describe("terminal-tool-run-coordinator", () => {
     });
     expect(result.output).toContain("http://localhost:5173");
   });
+
+  it("publishes live transcript excerpts while a foreground command is still running", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createTerminalToolRunStore();
+      let transcript = "";
+      let resolveCommand:
+        | ((value: { output: string; exitCode: number; timedOut: boolean }) => void)
+        | undefined;
+
+      const session = {
+        id: "term-live",
+        info: { shell: "powershell.exe" },
+        getCleanOutputCursor: () => 0,
+        executeCommand: vi.fn().mockImplementation(
+          () =>
+            new Promise<{ output: string; exitCode: number; timedOut: boolean }>((resolve) => {
+              resolveCommand = resolve;
+            }),
+        ),
+        readCleanOutputSince: vi.fn().mockImplementation(() => ({
+          text: transcript,
+          nextOffset: transcript.length,
+          truncatedBeforeOffset: false,
+        })),
+      };
+
+      const runtime = {
+        onUpdate: vi.fn(),
+      };
+
+      const coordinator = createTerminalToolRunCoordinator({
+        runStore: store,
+        getSession: vi.fn().mockResolvedValue(session),
+        classifyLongRunning: vi.fn().mockReturnValue(false),
+        trackDetachedProcess: vi.fn(),
+      });
+
+      const runPromise = coordinator.runForeground({
+        runId: "run-live",
+        toolCallId: "tool-live",
+        command: 'echo "Terminal test: basic echo works"',
+        cwd: "C:/tauri/volt",
+        timeoutMs: 1000,
+        runtime,
+      });
+
+      await vi.advanceTimersByTimeAsync(150);
+      transcript = "Terminal test: basic echo works\n";
+      await vi.advanceTimersByTimeAsync(150);
+
+      expect(runtime.onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          liveStatus: "Running command...",
+          meta: {
+            terminalRun: expect.objectContaining({
+              terminalId: "term-live",
+              excerpt: "Terminal test: basic echo works\n",
+            }),
+          },
+        }),
+      );
+
+      resolveCommand?.({
+        output: "Terminal test: basic echo works\n",
+        exitCode: 0,
+        timedOut: false,
+      });
+      await vi.advanceTimersByTimeAsync(150);
+
+      const result = await runPromise;
+      expect(result.success).toBe(true);
+      expect(store.get("run-live")).toMatchObject({
+        state: "completed",
+        excerpt: "Terminal test: basic echo works\n",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

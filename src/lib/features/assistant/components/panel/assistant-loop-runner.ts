@@ -805,7 +805,10 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
                     : undefined,
                 meta: isAutoApproved ? { autoApproved: true } : undefined,
                 thoughtSignature: toolCallThoughtSignature,
-                error: effectiveValidationError,
+                error:
+                  validation.valid && !isPlanModeViolation
+                    ? undefined
+                    : effectiveValidationError,
                 endTime: validation.valid && !isPlanModeViolation ? undefined : Date.now(),
               };
 
@@ -1842,17 +1845,17 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
               streamState: "completed",
             },
           });
-          finalizeOutcome("completed", completionDecision.reason ?? "attempt_completion", {
+          finalizeOutcome("completed", completionDecision.reason ?? "natural_completion", {
             iteration,
             completionToolId: completionDecision.completionToolId,
           });
           loopLog("info", "loop_completed", {
-            reason: completionDecision.reason ?? "attempt_completion",
+            reason: completionDecision.reason ?? "natural_completion",
             completionToolId: completionDecision.completionToolId,
           });
           logOutput(
             "Volt",
-            `Agent: Completion accepted via attempt_completion at iteration ${iteration}.`,
+            `Agent: Completion accepted at iteration ${iteration}.`,
           );
           return;
         }

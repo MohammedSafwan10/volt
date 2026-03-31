@@ -17,6 +17,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { FileInfo } from '$core/types/files';
 import {
   isTsLspConnected,
   notifyDocumentChanged as notifyTsDocumentChanged,
@@ -200,6 +201,18 @@ class UnifiedFileService {
       return { success: true };
     } catch (error) {
       return { success: false, error: this.toErrorMessage(error) };
+    }
+  }
+
+  /**
+   * Read filesystem metadata for either files or directories.
+   */
+  async getInfo(path: string): Promise<FileInfo | null> {
+    const normalizedPath = this.normalizePath(path);
+    try {
+      return await invoke<FileInfo>('get_file_info', { path: normalizedPath });
+    } catch {
+      return null;
     }
   }
 

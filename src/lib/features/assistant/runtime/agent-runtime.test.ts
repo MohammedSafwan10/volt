@@ -16,7 +16,7 @@ describe('agent runtime', () => {
     expect(result.verificationPlan?.requiresFollowUp).toBe(true);
   });
 
-  it('analyzes a full tool pass and hides attempt_completion from visible results', () => {
+  it('accepts explicit completion payloads while keeping them out of visible tool rows', () => {
     const runtime = createAgentRuntime();
     const analysis = runtime.analyzeToolPass({
       allToolCalls: [
@@ -321,5 +321,31 @@ describe('agent runtime', () => {
     expect(calls[0]?.payload.activeToolCallName).toBe('read_file');
     expect(result?.loopState).toBe('running');
     expect(result?.loopMeta).toEqual({ echoed: true });
+  });
+
+  it('does not forward empty native tool ordering arrays as scheduling overrides', () => {
+    const runtime = createAgentRuntime();
+    const decision = runtime.evaluateToolScheduling({
+      pendingApprovalCount: 0,
+      hasQueuedFileEdits: false,
+      defaultExecuteInOrder: true,
+      nativeDecision: {
+        shouldApply: true,
+        operation: 'waiting_tool',
+        conversationId: 'conv-1',
+        control: {
+          toolPolicy: {
+            executeInOrder: true,
+            deferUntilFileEditsComplete: false,
+            approvalRequired: false,
+            orderedEagerToolIds: [],
+            orderedDeferredToolIds: [],
+          },
+        },
+      },
+    });
+
+    expect(decision.orderedEagerToolIds).toBeUndefined();
+    expect(decision.orderedDeferredToolIds).toBeUndefined();
   });
 });

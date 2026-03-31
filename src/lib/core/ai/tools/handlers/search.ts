@@ -42,11 +42,68 @@ interface WorkspaceSearchRequest {
   caseSensitive: boolean;
   includePattern: string;
   excludePattern: string;
+  engine?: 'legacy';
 }
 
 interface WorkspaceSearchAttempt {
   result: WorkspaceSearchInvokeResult;
   fallbackNote: string | null;
+}
+
+function toRelativeWorkspacePath(path: string, workspaceRoot: string): string {
+  const normalizedPath = path.replace(/\\/g, '/');
+  const normalizedRoot = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalizedRoot) {
+    return normalizedPath.replace(/^\/+/, '');
+  }
+  if (
+    normalizedPath.toLowerCase() === normalizedRoot.toLowerCase() ||
+    normalizedPath.toLowerCase().startsWith(`${normalizedRoot.toLowerCase()}/`)
+  ) {
+    return normalizedPath.slice(normalizedRoot.length).replace(/^\/+/, '');
+  }
+  return normalizedPath.replace(/^\/+/, '');
+}
+
+function isHiddenRelativePath(relativePath: string): boolean {
+  return relativePath
+    .split('/')
+    .some((segment) => segment.length > 1 && segment.startsWith('.'));
+}
+
+function filterHiddenWorkspaceSearchResult(
+  result: WorkspaceSearchInvokeResult,
+  workspaceRoot: string,
+  includeHidden: boolean,
+): WorkspaceSearchInvokeResult {
+  if (includeHidden) {
+    return result;
+  }
+
+  const files = result.files.filter((file) => {
+    const relativePath = toRelativeWorkspacePath(file.path, workspaceRoot);
+    return !isHiddenRelativePath(relativePath);
+  });
+
+  if (files.length === result.files.length) {
+    return result;
+  }
+
+  return {
+    ...result,
+    files,
+    totalMatches: files.reduce((sum, file) => sum + file.matches.length, 0),
+  };
+}
+
+function filterHiddenFilePaths(
+  filePaths: string[],
+  includeHidden: boolean,
+): string[] {
+  if (includeHidden) {
+    return filePaths;
+  }
+  return filePaths.filter((filePath) => !isHiddenRelativePath(filePath.replace(/\\/g, '/')));
 }
 
 function formatSearchEngineLabel(telemetry: {
@@ -119,7 +176,9 @@ async function probeFindFilesHint(args: {
     });
 
     return {
-      candidates: Array.isArray(result.files) ? result.files.slice(0, 5) : [],
+      candidates: Array.isArray(result.files)
+        ? filterHiddenFilePaths(result.files, args.includeHidden).slice(0, 5)
+        : [],
       engineLabel: typeof result.engine === 'string' ? result.engine : null,
       fallbackLabel: result.fallbackUsed ? (result.fallbackReason ?? 'used') : 'none',
     };
@@ -134,6 +193,10 @@ function getDefaultExcludePatterns(includeHidden: boolean): string[] {
     patterns.push('.git/**', '.next/**');
   }
   return patterns;
+}
+
+function normalizeGlobPattern(pattern: string): string {
+  return pattern.replace(/\\/g, '/');
 }
 
 function normalizeWorkspaceRoot(root: string): string {
@@ -163,21 +226,36 @@ async function delay(ms: number): Promise<void> {
 }
 
 function buildWorkspaceSearchOptions(request: WorkspaceSearchRequest): Record<string, unknown> {
-  const { query, rootPath, isRegex, includeHidden, caseSensitive, includePattern, excludePattern } = request;
-  const excludePatterns = excludePattern
-    ? [excludePattern, ...getDefaultExcludePatterns(includeHidden)]
+  const {
+    query,
+    rootPath,
+    isRegex,
+    includeHidden,
+    caseSensitive,
+    includePattern,
+    excludePattern,
+    engine,
+  } = request;
+  const normalizedIncludePattern = normalizeGlobPattern(includePattern);
+  const normalizedExcludePattern = normalizeGlobPattern(excludePattern);
+  const excludePatterns = normalizedExcludePattern
+    ? [normalizedExcludePattern, ...getDefaultExcludePatterns(includeHidden)]
     : getDefaultExcludePatterns(includeHidden);
-  return {
+  const options: Record<string, unknown> = {
     query,
     rootPath,
     useRegex: isRegex,
     includeHidden,
     caseSensitive,
-    includePatterns: includePattern ? [includePattern] : [],
+    includePatterns: normalizedIncludePattern ? [normalizedIncludePattern] : [],
     excludePatterns,
     maxResults: 50,
     requestId: Date.now(),
   };
+  if (engine) {
+    options.engine = engine;
+  }
+  return options;
 }
 
 async function runWorkspaceSearchAttempt(
@@ -204,20 +282,35 @@ async function runWorkspaceSearchAttempt(
 async function resolveWorkspaceSearch(
   request: WorkspaceSearchRequest,
 ): Promise<WorkspaceSearchAttempt> {
-  const primary = await runWorkspaceSearchAttempt(request);
-  if (primary.totalMatches > 0 || request.isRegex || !request.caseSensitive) {
+  const primary = filterHiddenWorkspaceSearchResult(
+    await runWorkspaceSearchAttempt(request),
+    request.rootPath,
+    request.includeHidden,
+  );
+  if (primary.totalMatches > 0) {
     return { result: primary, fallbackNote: null };
   }
 
-  const relaxed = await runWorkspaceSearchAttempt({
-    ...request,
-    caseSensitive: false,
-  });
-  if (relaxed.totalMatches > 0) {
-    return {
-      result: relaxed,
-      fallbackNote: 'Retried with caseSensitive: false after an exact-scope miss',
-    };
+  if (request.includeHidden) {
+    const hiddenFallback = filterHiddenWorkspaceSearchResult(
+      await runWorkspaceSearchAttempt({
+        ...request,
+        caseSensitive: false,
+        engine: 'legacy',
+      }),
+      request.rootPath,
+      request.includeHidden,
+    );
+    if (hiddenFallback.totalMatches > 0) {
+      return {
+        result: hiddenFallback,
+        fallbackNote: 'Retried with legacy hidden-file search after an empty primary result',
+      };
+    }
+  }
+
+  if (request.isRegex || !request.caseSensitive) {
+    return { result: primary, fallbackNote: null };
   }
 
   return { result: primary, fallbackNote: null };
@@ -234,8 +327,8 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
   const query = String(args.query);
   const isRegex = args.isRegex === true;
   const includeHidden = Boolean(args.includeHidden);
-  const includePattern = args.includePattern ? String(args.includePattern) : '';
-  const excludePattern = args.excludePattern ? String(args.excludePattern) : '';
+  const includePattern = args.includePattern ? normalizeGlobPattern(String(args.includePattern)) : '';
+  const excludePattern = args.excludePattern ? normalizeGlobPattern(String(args.excludePattern)) : '';
   const caseSensitive = Boolean(args.caseSensitive);
   const explanation = args.explanation ? String(args.explanation) : '';
   const workspaceRoot = projectStore.rootPath || '';
@@ -247,9 +340,6 @@ export async function handleWorkspaceSearch(args: Record<string, unknown>): Prom
   if (!workspaceRoot) {
     return { success: false, error: 'No workspace open' };
   }
-
-  // Use the include pattern exactly as the AI specified — don't modify it.
-  // The AI is smart enough to set its own glob patterns.
 
   try {
     const { result, fallbackNote } = await resolveWorkspaceSearch({
@@ -534,8 +624,8 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   }
 
   const workspaceRoot = projectStore.rootPath || '';
-  const includePattern = args.includePattern ? String(args.includePattern) : '';
-  const excludePattern = args.excludePattern ? String(args.excludePattern) : '';
+  const includePattern = args.includePattern ? normalizeGlobPattern(String(args.includePattern)) : '';
+  const excludePattern = args.excludePattern ? normalizeGlobPattern(String(args.excludePattern)) : '';
   const includeHidden = Boolean(args.includeHidden);
   const excludePatterns = excludePattern
     ? [excludePattern, ...getDefaultExcludePatterns(includeHidden)]
@@ -552,7 +642,6 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
   }
 
   try {
-    let results: Array<{ name: string; relativePath: string }>;
     let engineLabel = 'unknown';
     let rgSource: string | null = null;
     let rgPath: string | null = null;
@@ -560,7 +649,7 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     let fallbackUsed = false;
     let fallbackReason: string | null = null;
 
-    const backendResult = await invoke<{
+    const runFindFiles = (engine?: 'legacy') => invoke<{
       files: string[];
       totalFiles: number;
       truncated: boolean;
@@ -575,12 +664,13 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
         query,
         rootPath: workspaceRoot,
         includeHidden,
-        engine: 'rg',
+        engine: engine ?? 'rg',
         includePatterns: includePattern ? [includePattern] : [],
         excludePatterns,
         maxResults: 25,
       }
     });
+    let backendResult = await runFindFiles();
     const currentWorkspaceRoot = projectStore.rootPath || '';
     const workspaceChanged = didWorkspaceRootChange(
       workspaceRoot,
@@ -592,10 +682,24 @@ export async function handleFindFiles(args: Record<string, unknown>): Promise<To
     elapsedMs = backendResult.elapsedMs ?? 0;
     fallbackUsed = backendResult.fallbackUsed;
     fallbackReason = backendResult.fallbackReason ?? null;
-    results = backendResult.files.map((relativePath) => ({
+    let results = filterHiddenFilePaths(backendResult.files, includeHidden).map((relativePath) => ({
       relativePath,
       name: relativePath.split('/').pop() || relativePath,
     }));
+    if (includeHidden && results.length === 0) {
+      const hiddenFallback = await runFindFiles('legacy');
+      backendResult = hiddenFallback;
+      engineLabel = hiddenFallback.engine;
+      rgSource = hiddenFallback.rgSource ?? null;
+      rgPath = hiddenFallback.rgPath ?? null;
+      elapsedMs = hiddenFallback.elapsedMs ?? 0;
+      fallbackUsed = true;
+      fallbackReason = hiddenFallback.fallbackReason ?? 'includeHidden legacy fallback';
+      results = filterHiddenFilePaths(hiddenFallback.files, includeHidden).map((relativePath) => ({
+        relativePath,
+        name: relativePath.split('/').pop() || relativePath,
+      }));
+    }
 
     if (workspaceChanged) {
       let msg = `Find files result is stale for "${query}"`;
@@ -736,7 +840,7 @@ export async function handleSearchSymbols(args: Record<string, unknown>): Promis
 
   try {
     // Use workspace symbol search from LSP - query all active LSPs
-    let symbols: any[] = [];
+    let symbols: unknown[] = [];
 
     // Query TypeScript LSP if connected
     if (isTsLspConnected()) {

@@ -34,7 +34,7 @@ function extractKeywords(explanation: string): string[] {
   ]);
 
   const words = explanation.toLowerCase()
-    .replace(/[^a-z0-9_\-]/g, ' ')
+    .replace(/[^a-z0-9_-]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length > 2 && !stopWords.has(w));
 

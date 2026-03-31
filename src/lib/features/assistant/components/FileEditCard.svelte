@@ -11,6 +11,7 @@
   import type { ToolCall } from "$features/assistant/stores/assistant.svelte";
   import { getFileEditDiffStats } from "./file-edit-stats";
   import { getFilePillPresentation } from "./file-edit-card-presentation";
+  import { getFileEditStatusVisual } from "./file-edit-card-visuals";
 
   interface Props {
     toolCall: ToolCall;
@@ -70,12 +71,14 @@
   );
   const isCreateDirTool = $derived.by(() => toolCall.name === "create_dir");
   const fileIcon = $derived(filePill.icon);
-  const statusIcon = $derived.by(() => {
-    if (isAllFailed) return "error";
-    if (isDeleteTool) return "trash";
-    if (isCreateDirTool) return "folder";
-    return "pencil";
-  });
+  const statusVisual = $derived.by(() =>
+    getFileEditStatusVisual({
+      toolName: toolCall.name,
+      isFailed: isAllFailed,
+    }),
+  );
+  const statusIcon = $derived(statusVisual.statusIcon);
+  const showStatusIndicator = $derived(statusVisual.showStatusIndicator);
   function isNoopEdit(tc: ToolCall): boolean {
     const output = typeof tc.output === "string" ? tc.output.trim() : "";
     if (output.startsWith("No changes:")) return true;
@@ -321,7 +324,7 @@
   >
     <!-- Combined Status & File Info Block -->
     <div class="main-info">
-      {#if !isAllRunning}
+      {#if !isAllRunning && showStatusIndicator}
         <div class="status-indicator" title={statusText}>
           {#if statusIcon === 'pencil'}
             <!-- Custom Sleek Edit Pen -->

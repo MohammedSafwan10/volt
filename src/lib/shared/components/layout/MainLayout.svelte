@@ -66,8 +66,8 @@
 
   // Command palette reference
   let commandPalette: ReturnType<typeof CommandPalette> | undefined = $state();
-  let MonacoEditorComponent = $state<any | null>(null);
-  let MonacoDiffEditorComponent = $state<any | null>(null);
+  let MonacoEditorComponent = $state<unknown | null>(null);
+  let MonacoDiffEditorComponent = $state<unknown | null>(null);
   let monacoFeatureLoading = $state(false);
   let xtermWarmStarted = $state(false);
   let mcpInitStarted = $state(false);
@@ -259,11 +259,11 @@
     // Listen for symbol picker open events from command palette
     window.addEventListener(
       "volt:open-symbol-picker",
-      handleOpenSymbolPicker as EventListener,
+      handleOpenSymbolPicker as (event: Event) => void,
     );
     window.addEventListener(
       "volt:open-go-to-line",
-      handleOpenGoToLine as EventListener,
+      handleOpenGoToLine as (event: Event) => void,
     );
 
     return () => {
@@ -277,11 +277,11 @@
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener(
         "volt:open-symbol-picker",
-        handleOpenSymbolPicker as EventListener,
+        handleOpenSymbolPicker as (event: Event) => void,
       );
       window.removeEventListener(
         "volt:open-go-to-line",
-        handleOpenGoToLine as EventListener,
+        handleOpenGoToLine as (event: Event) => void,
       );
     };
   });

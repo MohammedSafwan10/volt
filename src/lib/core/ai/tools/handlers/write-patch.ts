@@ -63,7 +63,7 @@ function normalizePatchText(patch: string): string {
       looksLikeFilePatch &&
       firstBodyLine !== undefined &&
       !firstBodyLine.startsWith('@@') &&
-      /^[ +\-]/.test(firstBodyLine);
+      /^[ +-]/.test(firstBodyLine);
 
     if (!looksLikeMissingInitialHunk) return lines;
 

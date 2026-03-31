@@ -16,6 +16,7 @@ function createFileBackend(overrides: Partial<FileBackend>): FileBackend {
   return {
     read: vi.fn().mockResolvedValue(null),
     write: vi.fn().mockResolvedValue({ success: true, newVersion: 1 }),
+    getInfo: vi.fn().mockResolvedValue(null),
     ...overrides,
   };
 }
@@ -342,6 +343,48 @@ describe('workspace-mutation-coordinator', () => {
         kind: 'preflight',
         message: 'delete target missing',
         phase: 'prepare',
+      },
+    });
+  });
+
+  it('allows deleting directories even when file reads return null', async () => {
+    const staged = createStagedDocumentService();
+    const backend = createFileBackend({
+      read: vi.fn().mockResolvedValue(null),
+      getInfo: vi.fn().mockResolvedValue({
+        path: 'src/tool-audit-temp',
+        isDir: true,
+      }),
+      deletePath: vi.fn().mockResolvedValue({ success: true }),
+    });
+
+    const coordinator = createWorkspaceMutationCoordinator({
+      stagedDocuments: staged,
+      fileBackend: backend,
+    });
+
+    const result = await coordinator.run({
+      type: 'delete',
+      path: 'src/tool-audit-temp',
+    });
+
+    expect(result.success).toBe(true);
+    expect(backend.deletePath).toHaveBeenCalledWith('src/tool-audit-temp');
+    expect(staged.get('src/tool-audit-temp')).toMatchObject({
+      kind: 'directory',
+      structuralMutation: {
+        kind: 'delete',
+        previousPath: 'src/tool-audit-temp',
+      },
+      beforeState: {
+        path: 'src/tool-audit-temp',
+        kind: 'directory',
+        exists: true,
+      },
+      afterState: {
+        path: 'src/tool-audit-temp',
+        kind: 'directory',
+        exists: false,
       },
     });
   });

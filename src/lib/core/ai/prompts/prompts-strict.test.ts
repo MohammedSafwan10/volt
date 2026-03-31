@@ -20,7 +20,7 @@ describe('strict prompts', () => {
     expect(prompt).toContain('apply_patch');
     expect(prompt).toContain('run_command');
     expect(prompt).toContain('get_diagnostics');
-    expect(prompt).toContain('attempt_completion');
+    expect(prompt).not.toContain('attempt_completion');
   });
 
   it('agent prompt mentions codex patch grammar', () => {

@@ -236,6 +236,7 @@ export async function processToolsNeedingApproval(
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: 'running',
         startTime: Date.now(),
+        error: undefined,
         meta: {
           ...(existingToolState?.meta ?? {}),
           liveStatus: getInitialToolLiveStatus(toolCall.name),
@@ -243,6 +244,7 @@ export async function processToolsNeedingApproval(
       });
       void deps.publishToolPatch?.(toolCall.id, {
         status: 'running',
+        error: undefined,
         meta: {
           ...(existingToolState?.meta ?? {}),
           liveStatus: getInitialToolLiveStatus(toolCall.name),
@@ -267,7 +269,7 @@ export async function processToolsNeedingApproval(
         deps.updateToolCallInMessage(messageId, toolCall.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error ?? existingToolState?.error,
+          error: result.success ? undefined : (result.error ?? existingToolState?.error),
           meta: {
             ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
@@ -280,7 +282,7 @@ export async function processToolsNeedingApproval(
         void deps.publishToolPatch?.(toolCall.id, {
           status: result.success ? 'completed' : 'failed',
           output: result.output,
-          error: result.error ?? existingToolState?.error,
+          error: result.success ? undefined : (result.error ?? existingToolState?.error),
           meta: {
             ...(existingToolState?.meta ?? {}),
             ...(result.meta ?? {}),
@@ -324,7 +326,6 @@ export async function processToolsNeedingApproval(
     }
   }
 
-  let previousTerminalFailed = false;
   for (const toolCall of terminalTools) {
     let currentMessage = deps.getMessages().find((m) => m.id === messageId);
     let currentToolCall = currentMessage?.inlineToolCalls?.find(
@@ -332,24 +333,6 @@ export async function processToolsNeedingApproval(
     );
 
     if (currentToolCall?.status === 'completed' || currentToolCall?.status === 'failed') {
-      continue;
-    }
-
-    if (previousTerminalFailed) {
-      deps.updateToolCallInMessage(messageId, toolCall.id, {
-        status: 'failed',
-        error: 'Skipped: A previous command failed.',
-        endTime: Date.now(),
-      });
-      void deps.publishToolPatch?.(toolCall.id, {
-        status: 'failed',
-        error: 'Skipped: A previous command failed.',
-      });
-      toolResults.push({
-        id: toolCall.id,
-        name: toolCall.name,
-        result: { success: false, error: 'Skipped: A previous command failed.' },
-      });
       continue;
     }
 
@@ -419,7 +402,6 @@ export async function processToolsNeedingApproval(
         name: toolCall.name,
         result: { success: false, error: 'Tool execution denied by user' },
       });
-      previousTerminalFailed = true;
       continue;
     }
 
@@ -438,7 +420,6 @@ export async function processToolsNeedingApproval(
         status: 'failed',
         error: 'Tool execution denied by native runtime policy',
       });
-      previousTerminalFailed = true;
       continue;
     }
 
@@ -446,6 +427,7 @@ export async function processToolsNeedingApproval(
     deps.updateToolCallInMessage(messageId, toolCall.id, {
       status: 'running',
       startTime: Date.now(),
+      error: undefined,
       meta: {
         ...(existingTerminalState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(toolCall.name),
@@ -453,6 +435,7 @@ export async function processToolsNeedingApproval(
     });
     void deps.publishToolPatch?.(toolCall.id, {
       status: 'running',
+      error: undefined,
       meta: {
         ...(existingTerminalState?.meta ?? {}),
         liveStatus: getInitialToolLiveStatus(toolCall.name),
@@ -477,7 +460,7 @@ export async function processToolsNeedingApproval(
       deps.updateToolCallInMessage(messageId, toolCall.id, {
         status: result.success ? 'completed' : 'failed',
         output: result.output,
-        error: result.error ?? existingTerminalState?.error,
+        error: result.success ? undefined : (result.error ?? existingTerminalState?.error),
         meta: {
           ...(existingTerminalState?.meta ?? {}),
           ...(result.meta ?? {}),
@@ -490,7 +473,7 @@ export async function processToolsNeedingApproval(
       void deps.publishToolPatch?.(toolCall.id, {
         status: result.success ? 'completed' : 'failed',
         output: result.output,
-        error: result.error ?? existingTerminalState?.error,
+        error: result.success ? undefined : (result.error ?? existingTerminalState?.error),
         meta: {
           ...(existingTerminalState?.meta ?? {}),
           ...(result.meta ?? {}),
@@ -500,7 +483,6 @@ export async function processToolsNeedingApproval(
       deps.trackToolOutcome(toolCall.name, toolCall.arguments, result);
       const signature = deps.getFailureSignature(toolCall.name, toolCall.arguments, result);
       if (signature) deps.onFailureSignature(signature);
-      if (!result.success) previousTerminalFailed = true;
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       toolResults.push({
@@ -531,7 +513,6 @@ export async function processToolsNeedingApproval(
         error,
       });
       if (signature) deps.onFailureSignature(signature);
-      previousTerminalFailed = true;
     }
   }
 
