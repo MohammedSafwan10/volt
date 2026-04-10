@@ -116,6 +116,7 @@ describe('terminal process lifecycle helpers', () => {
       waitForReady: vi.fn().mockResolvedValue(true),
       enableShellIntegration: vi.fn().mockResolvedValue(true),
       write: vi.fn().mockResolvedValue(true),
+      waitForAnyOutput: vi.fn().mockResolvedValue('BG_OK'),
       waitForOutput: vi.fn().mockResolvedValue('BG_OK'),
       getOutputCursor: vi.fn().mockReturnValue(0),
       getCleanOutputSince: vi.fn().mockReturnValue('BG_OK'),
@@ -134,5 +135,49 @@ describe('terminal process lifecycle helpers', () => {
 
     expect(result.success).toBe(true);
     expect(session.enableShellIntegration).toHaveBeenCalled();
+    expect(session.waitForAnyOutput).toHaveBeenCalledWith(0, 4000);
+    expect(session.waitForOutput).not.toHaveBeenCalled();
+  });
+
+  it('interrupts a tracked process through the native terminal session path before killing the terminal', async () => {
+    const session = {
+      id: 'term-stop',
+      info: { shell: 'powershell.exe', cwd: 'C:/workspace' },
+      cwd: 'C:/workspace',
+      hasShellIntegration: true,
+      shellIntegrationIdentity: 'Volt/2',
+      waitForReady: vi.fn().mockResolvedValue(true),
+      enableShellIntegration: vi.fn().mockResolvedValue(true),
+      write: vi.fn().mockResolvedValue(true),
+      interrupt: vi.fn().mockResolvedValue(true),
+      waitForAnyOutput: vi.fn().mockResolvedValue('BG_OK'),
+      waitForOutput: vi.fn().mockResolvedValue('BG_OK'),
+      getOutputCursor: vi.fn().mockReturnValue(0),
+      getCleanOutputSince: vi.fn().mockReturnValue('BG_OK'),
+      onExit: vi.fn(),
+      getLastCommandStartedAt: vi.fn().mockReturnValue(1200),
+      getLastCommandFinishedAt: vi.fn().mockReturnValue(null),
+    };
+
+    (terminalStore.sessions as unknown as Array<unknown>).length = 0;
+    (terminalStore.sessions as unknown as Array<unknown>).push(session);
+    (terminalStore.createTerminal as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+    (terminalStore.killTerminal as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+
+    const { handleStartProcess, handleStopProcess } = await import('./terminal');
+    const startResult = await handleStartProcess({
+      command: `powershell -NoProfile -Command "Write-Output 'BG_OK'; Start-Sleep -Milliseconds 200"`,
+      cwd: 'C:/workspace',
+    });
+
+    expect(startResult.success).toBe(true);
+    expect(startResult.meta?.processId).toBeTypeOf('number');
+
+    const stopResult = await handleStopProcess({ processId: startResult.meta?.processId });
+
+    expect(stopResult.success).toBe(true);
+    expect(session.interrupt).toHaveBeenCalledTimes(1);
+    expect(session.write).not.toHaveBeenCalledWith('\x03');
+    expect(terminalStore.killTerminal).toHaveBeenCalledWith('term-stop');
   });
 });

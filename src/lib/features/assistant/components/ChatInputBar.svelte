@@ -8,6 +8,7 @@
   import { getFileInfo, readFileQuiet } from "$core/services/file-system";
   import MentionsMenu, { type MentionItem } from "./MentionsMenu.svelte";
   import ContextUsage from "./ContextUsage.svelte";
+  import { formatModelDisplayName } from "./chat-input-status";
 
   const TREE_NODE_MIME = "application/x-volt-tree-node";
 
@@ -65,75 +66,6 @@
   );
 
   // Display-friendly model name
-  function getModelDisplayName(model: string): string {
-    const thinking = model.endsWith("|thinking");
-    const base = thinking ? model.slice(0, -"|thinking".length) : model;
-
-    // OpenRouter models (format: org/model:variant)
-    if (base.includes("/")) {
-      const parts = base.split("/");
-      const modelPart = parts[parts.length - 1];
-      let displayName = modelPart
-        .replace(":free", "")
-        .replace(/-/g, " ")
-        .split(" ")
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(" ");
-
-      if (model.includes(":free")) displayName += " (free)";
-      return thinking ? `${displayName} (thinking)` : displayName;
-    }
-
-    // OpenAI GPT-5
-    if (base.startsWith("gpt-")) {
-      const name = base
-        .replace("gpt-5.4", "GPT 5.4")
-        .replace("gpt-5.2 pro", "GPT 5.2 Pro")
-        .replace("gpt-5.2", "GPT 5.2")
-        .replace("gpt-5.1-chat-latest", "GPT 5.1 (Instant)")
-        .replace("gpt-5.1", "GPT 5.1")
-        .replace("gpt-5.3-codex", "GPT 5.3 Codex")
-        .replace("gpt-5-mini", "GPT 5 Mini")
-        .replace("gpt-5-nano", "GPT 5 Nano")
-        .replace("gpt-4o", "GPT 4o");
-      return thinking ? `${name} (Thinking)` : name;
-    }
-
-    // Anthropic Claude
-    if (base.startsWith("claude-")) {
-      const name = base
-        .replace("claude-", "Claude ")
-        .replace("-4-6", " 4.6")
-        .replace("opus", "Opus")
-        .replace("sonnet-4-5-20250929", "Sonnet 4.5")
-        .replace("sonnet-latest", "3.5 Sonnet")
-        .replace("opus-latest", "3.5 Opus");
-      return thinking ? `${name} (Thinking)` : name;
-    }
-
-    // Gemini
-    if (base.startsWith("gemini-")) {
-      const name = base
-        .replace("gemini-3-flash-preview", "Gemini 3 Flash")
-        .replace("gemini-2.5-flash", "Gemini 2.5 Flash")
-        .replace("gemini-2.0-flash-exp", "Gemini 2.0 Flash")
-        .replace("gemini-1.5-pro-latest", "Gemini 1.5 Pro")
-        .replace("gemini-1.5-flash-latest", "Gemini 1.5 Flash")
-        .replace("gemini-2.0-pro-exp-02-05", "Gemini 2.0 Pro");
-      return thinking ? `${name} (Thinking)` : name;
-    }
-
-    if (base.startsWith("devstral-") || base.startsWith("codestral-")) {
-      const name = base
-        .replace("devstral-latest", "Devstral (latest, v25.12)")
-        .replace("codestral-latest", "Codestral (latest, v25.08)")
-        .replace("devstral-medium-latest", "Devstral Medium (v25.07)");
-      return thinking ? `${name} (Thinking)` : name;
-    }
-
-    return thinking ? `${base} (thinking)` : base;
-  }
-
   const modes: {
     id: AIMode;
     label: string;
@@ -893,7 +825,7 @@
             aria-haspopup="listbox"
           >
             <UIIcon name="chevron-up" size={12} />
-            <span class="model-label">{getModelDisplayName(currentModel)}</span>
+            <span class="model-label">{formatModelDisplayName(currentModel)}</span>
           </button>
 
           {#if showModelMenu}
@@ -912,7 +844,7 @@
                     type="button"
                   >
                     <span class="option-label"
-                      >{getModelDisplayName(model)}</span
+                      >{formatModelDisplayName(model, { showReasoningTag: true })}</span
                     >
                     {#if currentModel === model}
                       <span class="option-check">✓</span>

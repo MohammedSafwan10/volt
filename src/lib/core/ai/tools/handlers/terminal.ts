@@ -687,10 +687,7 @@ export async function handleStartProcess(args: Record<string, unknown>): Promise
 
     // Wait for initial output (more responsive than fixed 2s)
     try {
-      // Use the captured offset to only look for output produced AFTER the write
-      await session.waitForOutput((out) => {
-        return out.trim().length > 0;
-      }, 4000, startOffset);
+      await session.waitForAnyOutput(startOffset, 4000);
     } catch {
       // If no new output, fall back to recent output from that offset onwards
       session.getRecentOutput().slice(startOffset);
@@ -728,7 +725,7 @@ export async function handleStopProcess(args: Record<string, unknown>): Promise<
     if (proc.terminalId) {
       const session = terminalStore.sessions.find(s => s.id === proc.terminalId);
       if (session) {
-        await session.write('\x03'); // Ctrl+C
+        await session.interrupt();
         terminalClosed = true;
       }
       // Kill the terminal entirely

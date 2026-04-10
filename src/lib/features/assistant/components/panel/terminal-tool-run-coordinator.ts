@@ -102,6 +102,7 @@ export function createTerminalToolRunCoordinator(
           terminalId: session.id,
           excerpt,
         },
+        terminalOutput: excerpt,
       },
     });
   };

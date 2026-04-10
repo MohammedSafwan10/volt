@@ -47,6 +47,46 @@ describe("terminal-tool-run-coordinator", () => {
     });
   });
 
+  it("prefers normalized clean transcript output over noisier command completion output", async () => {
+    const store = createTerminalToolRunStore();
+    const session = {
+      id: "term-clean",
+      getCleanOutputCursor: () => 0,
+      executeCommand: vi.fn().mockResolvedValue({
+        output: "PS C:/tauri/volt> npm.cmd -v\n11.8.0\nPS C:/tauri/volt>",
+        exitCode: 0,
+        timedOut: false,
+      }),
+      readCleanOutputSince: vi.fn().mockReturnValue({
+        text: "11.8.0\n",
+        nextOffset: 7,
+        truncatedBeforeOffset: false,
+      }),
+    };
+
+    const coordinator = createTerminalToolRunCoordinator({
+      runStore: store,
+      getSession: vi.fn().mockResolvedValue(session),
+      classifyLongRunning: vi.fn().mockReturnValue(false),
+      trackDetachedProcess: vi.fn(),
+    });
+
+    const result = await coordinator.runForeground({
+      runId: "run-clean",
+      toolCallId: "tool-clean",
+      command: "npm.cmd -v",
+      cwd: "C:/tauri/volt",
+      timeoutMs: 1000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("11.8.0\n");
+    expect(store.get("run-clean")).toMatchObject({
+      state: "completed",
+      excerpt: "11.8.0\n",
+    });
+  });
+
   it("transitions long-running commands to detached instead of leaving them running", async () => {
     const store = createTerminalToolRunStore();
     const session = {
@@ -263,6 +303,7 @@ describe("terminal-tool-run-coordinator", () => {
         expect.objectContaining({
           liveStatus: "Running command...",
           meta: {
+            terminalOutput: "Terminal test: basic echo works\n",
             terminalRun: expect.objectContaining({
               terminalId: "term-live",
               excerpt: "Terminal test: basic echo works\n",

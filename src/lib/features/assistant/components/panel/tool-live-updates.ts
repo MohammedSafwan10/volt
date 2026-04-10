@@ -81,6 +81,9 @@ export function toToolCallPatch(
   const meta: Record<string, unknown> = {
     ...(update.meta ?? {}),
   };
+  if (typeof (update.meta as Record<string, unknown> | undefined)?.terminalOutput === "string") {
+    patch.output = String((update.meta as Record<string, unknown>).terminalOutput);
+  }
   if (update.liveStatus) {
     meta.liveStatus = update.liveStatus;
   }
