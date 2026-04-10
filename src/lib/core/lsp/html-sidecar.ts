@@ -16,24 +16,18 @@
 import {
   getLspRegistry,
   sendDidSaveForTrackedDocument,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 
 // Server instance tracking
 let htmlServerTransport: LspTransport | null = null;
 let htmlServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-const htmlRecovery = createLspRecoveryController({
-  source: 'html',
-  restart: async () => {
-    await recoverHtmlLspAfterExit();
-  },
-});
 
 const PROJECT_ANALYSIS_BATCH_SIZE = 10;
 const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
@@ -163,10 +157,12 @@ async function initializeServer(): Promise<void> {
       });
       htmlServerTransport.onExit(() => {
         console.log('[HTML LSP] Server exited');
-        htmlRecovery.schedule('transport exit');
-        htmlServerTransport = null;
         htmlServerInitialized = false;
         initializationPromise = null;
+      });
+      htmlServerTransport.onRestart(() => {
+        console.log('[HTML LSP] Server restarted');
+        htmlServerInitialized = true;
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -221,7 +217,6 @@ async function initializeServer(): Promise<void> {
 
       await htmlServerTransport.sendNotification('initialized', {});
       htmlServerInitialized = true;
-      htmlRecovery.reset();
       console.log('[HTML LSP] Server initialized');
     } catch (error) {
       console.error('[HTML LSP] Failed to initialize:', error);
@@ -392,13 +387,6 @@ export async function ensureHtmlLspStarted(): Promise<void> {
 /**
  * Stop the HTML LSP server
  */
-async function recoverHtmlLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || htmlServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
-}
-
 export async function stopHtmlLsp(): Promise<void> {
   if (!htmlServerTransport) return;
 
@@ -416,7 +404,6 @@ export async function stopHtmlLsp(): Promise<void> {
   htmlServerTransport = null;
   htmlServerInitialized = false;
   initializationPromise = null;
-  htmlRecovery.reset();
 }
 
 /**
@@ -466,7 +453,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        await waitForProjectDiagnosticsDelay(PROJECT_ANALYSIS_BATCH_DELAY_MS);
         if (runId !== projectAnalysisRunId) {
           return;
         }

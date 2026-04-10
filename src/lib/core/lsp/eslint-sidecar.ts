@@ -17,14 +17,13 @@
 
 import {
   getLspRegistry,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
-import { invoke } from '@tauri-apps/api/core';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 
 /**
  * Get the detected package manager from projectStore
@@ -54,24 +53,6 @@ function prioritizeProjectFiles<T extends { path: string }>(
 let eslintServerTransport: LspTransport | null = null;
 let eslintServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-const eslintRecovery = createLspRecoveryController({
-  source: 'eslint',
-  restart: async () => {
-    await recoverEslintLspAfterExit();
-  },
-});
-
-interface LspStartErrorLike {
-  type?: string;
-}
-
-function isServerAlreadyRunningError(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === 'object' &&
-      (error as LspStartErrorLike).type === 'ServerAlreadyRunning'
-  );
-}
 
 let transportHandlersAttached = false;
 
@@ -87,11 +68,12 @@ function attachTransportHandlers(transport: LspTransport): void {
 
   transport.onExit(() => {
     console.log('[ESLint LSP] Server exited');
-    eslintServerTransport = null;
     eslintServerInitialized = false;
     initializationPromise = null;
-    transportHandlersAttached = false;
-    eslintRecovery.schedule('transport exit');
+  });
+  transport.onRestart(() => {
+    console.log('[ESLint LSP] Server restarted');
+    eslintServerInitialized = true;
   });
 }
 
@@ -216,41 +198,19 @@ async function initializeServer(): Promise<void> {
       const registry = getLspRegistry();
 
       // Start the ESLint server
-      try {
-        eslintServerTransport = await registry.startServer('eslint', {
-          serverId: 'eslint-main',
-          cwd: projectStore.rootPath ?? undefined,
-          restartPolicy: {
-            enabled: true,
-            baseDelayMs: 750,
-            maxDelayMs: 10_000,
-            maxAttempts: 4,
-            windowMs: 120_000,
-          },
-        });
-        eslintServerTransport.configureHealth({ autoRestart: false });
-        attachTransportHandlers(eslintServerTransport);
-      } catch (error) {
-        if (isServerAlreadyRunningError(error)) {
-          console.warn('[ESLint LSP] Recovering from stale server state (ServerAlreadyRunning)');
-          await invoke('lsp_stop_server', { serverId: 'eslint-main' });
-          eslintServerTransport = await registry.startServer('eslint', {
-            serverId: 'eslint-main',
-            cwd: projectStore.rootPath ?? undefined,
-            restartPolicy: {
-              enabled: true,
-              baseDelayMs: 750,
-              maxDelayMs: 10_000,
-              maxAttempts: 4,
-              windowMs: 120_000,
-            },
-          });
-          eslintServerTransport.configureHealth({ autoRestart: false });
-          attachTransportHandlers(eslintServerTransport);
-        } else {
-          throw error;
-        }
-      }
+      eslintServerTransport = await registry.startServer('eslint', {
+        serverId: 'eslint-main',
+        cwd: projectStore.rootPath ?? undefined,
+        restartPolicy: {
+          enabled: true,
+          baseDelayMs: 750,
+          maxDelayMs: 10_000,
+          maxAttempts: 4,
+          windowMs: 120_000,
+        },
+      });
+      eslintServerTransport.configureHealth({ autoRestart: false });
+      attachTransportHandlers(eslintServerTransport);
 
 
       // Send initialize request
@@ -379,7 +339,6 @@ async function initializeServer(): Promise<void> {
       });
 
       eslintServerInitialized = true;
-      eslintRecovery.reset();
     } catch (error) {
       console.error('[ESLint LSP] Failed to initialize server:', error);
       eslintServerTransport = null;
@@ -607,7 +566,7 @@ export async function stopEslintLsp(): Promise<void> {
 
   eslintServerInitialized = false;
   initializationPromise = null;
-  eslintRecovery.reset();
+  transportHandlersAttached = false;
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -626,13 +585,6 @@ export async function restartEslintLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
-}
-
-async function recoverEslintLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || eslintServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
 }
 
 /**
@@ -741,7 +693,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        await waitForProjectDiagnosticsDelay(PROJECT_ANALYSIS_BATCH_DELAY_MS);
         if (runId !== projectAnalysisRunId) {
           return;
         }

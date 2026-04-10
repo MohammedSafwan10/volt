@@ -1,8 +1,8 @@
 use tauri::{AppHandle, Runtime, State};
 
 use super::manager::{
-    DocumentApplyResult, DocumentManagerState, DocumentState, DocumentWriteRequest,
-    DocumentWriteResult,
+    DocumentBatchWriteInput, DocumentBatchWriteResult, DocumentManagerState, DocumentState,
+    DocumentWriteRequest, DocumentWriteResult,
 };
 
 #[tauri::command]
@@ -19,22 +19,13 @@ pub async fn document_read<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn document_get<R: Runtime>(
-    _app: AppHandle<R>,
-    state: State<'_, DocumentManagerState>,
-    path: String,
-) -> Result<Option<DocumentState>, String> {
-    state.get_document(path)
-}
-
-#[tauri::command]
 pub fn document_apply_edit<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DocumentManagerState>,
     path: String,
     content: String,
     source: Option<String>,
-) -> Result<DocumentApplyResult, String> {
+) -> Result<(), String> {
     state.apply_document_edit(&app, path, content, source)
 }
 
@@ -54,6 +45,30 @@ pub async fn document_write<R: Runtime>(
             &app,
             path,
             content,
+            DocumentWriteRequest {
+                expected_version,
+                source,
+                force: force.unwrap_or(false),
+                create_if_missing: create_if_missing.unwrap_or(false),
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn document_batch_write<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DocumentManagerState>,
+    writes: Vec<DocumentBatchWriteInput>,
+    expected_version: Option<u64>,
+    source: Option<String>,
+    force: Option<bool>,
+    create_if_missing: Option<bool>,
+) -> Result<DocumentBatchWriteResult, String> {
+    state
+        .batch_write_documents(
+            &app,
+            writes,
             DocumentWriteRequest {
                 expected_version,
                 source,
@@ -97,4 +112,23 @@ pub fn document_close<R: Runtime>(
     path: String,
 ) -> Result<(), String> {
     state.close_document(&app, path)
+}
+
+#[tauri::command]
+pub async fn document_delete<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DocumentManagerState>,
+    path: String,
+) -> Result<(), String> {
+    state.delete_document(&app, path).await
+}
+
+#[tauri::command]
+pub async fn document_rename<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DocumentManagerState>,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    state.rename_document(&app, old_path, new_path).await
 }

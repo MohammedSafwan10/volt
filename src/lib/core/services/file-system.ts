@@ -174,7 +174,13 @@ export async function listDirectory(
  */
 export async function createFile(path: string): Promise<boolean> {
   try {
-    await invoke('create_file', { path });
+    const result = await fileService.write(path, '', {
+      source: 'editor',
+      createIfMissing: true
+    });
+    if (!result.success) {
+      throw new Error(result.error ?? 'Create file failed');
+    }
     showToast({
       message: 'File created',
       type: 'success'
@@ -191,7 +197,10 @@ export async function createFile(path: string): Promise<boolean> {
  */
 export async function createDirectory(path: string): Promise<boolean> {
   try {
-    await invoke('create_dir', { path });
+    const result = await fileService.createDir(path);
+    if (!result.success) {
+      throw new Error(result.error ?? 'Create folder failed');
+    }
     showToast({
       message: 'Folder created',
       type: 'success'
@@ -208,7 +217,10 @@ export async function createDirectory(path: string): Promise<boolean> {
  */
 export async function deletePath(path: string): Promise<boolean> {
   try {
-    await invoke('delete_path', { path });
+    const result = await fileService.deletePath(path);
+    if (!result.success) {
+      throw new Error(result.error ?? 'Delete failed');
+    }
     showToast({
       message: 'Deleted successfully',
       type: 'success'
@@ -228,8 +240,10 @@ export async function renamePath(
   newPath: string
 ): Promise<boolean> {
   try {
-    // Tauri command args are camelCased (oldPath/newPath)
-    await invoke('rename_path', { oldPath, newPath });
+    const result = await fileService.renamePath(oldPath, newPath);
+    if (!result.success) {
+      throw new Error(result.error ?? 'Rename failed');
+    }
     return true;
   } catch (error) {
     handleError(error, 'Rename', () => renamePath(oldPath, newPath));
@@ -327,7 +341,7 @@ export async function getFileInfoQuiet(path: string): Promise<FileInfo | null> {
  */
 export async function deletePathQuiet(path: string): Promise<boolean> {
   try {
-    await invoke('delete_path', { path });
+    await invoke('document_delete', { path });
     return true;
   } catch (error) {
     if (isFileError(error) && error.type === 'NotFound') {

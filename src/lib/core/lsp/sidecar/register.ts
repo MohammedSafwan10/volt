@@ -14,7 +14,6 @@ import { isExternalServerType } from './types';
 import { detectYamlLsp } from '../yaml-sdk';
 import { getLemminxCommand } from '../xml-sdk';
 import { registerCleanup } from '$core/services/hmr-cleanup';
-import { invoke } from '@tauri-apps/api/core';
 
 /** Sidecar configuration for each LSP type (bundled servers) */
 interface SidecarConfig {
@@ -30,18 +29,6 @@ interface ExternalConfig {
   command: string;
   /** Arguments for the command */
   args: string[];
-}
-
-interface LspStartErrorLike {
-  type?: string;
-}
-
-function isServerAlreadyRunningError(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === 'object' &&
-      (error as LspStartErrorLike).type === 'ServerAlreadyRunning'
-  );
 }
 
 /** We ship a real Node runtime as a single sidecar and execute JS-based language servers via entrypoint scripts. */
@@ -137,25 +124,6 @@ class LspRegistry {
     return this.projectRoot;
   }
 
-
-  private async startWithRecovery(
-    serverId: string,
-    serverType: LspServerType,
-    startFn: () => Promise<void>
-  ): Promise<void> {
-    try {
-      await startFn();
-      return;
-    } catch (error) {
-      if (!isServerAlreadyRunningError(error)) throw error;
-      console.warn(
-        `[LSP Registry] Recovering stale server state for ${serverType} (${serverId})`
-      );
-      await invoke('lsp_stop_server', { serverId });
-      await startFn();
-    }
-  }
-
   /**
    * Start a language server of the given type
    * Automatically chooses between bundled sidecar or external server based on type
@@ -176,7 +144,11 @@ class LspRegistry {
 
     // Check if already running
     if (this.transports.has(serverId)) {
-      return this.transports.get(serverId)!;
+      const existing = this.transports.get(serverId)!;
+      if (existing.connected) {
+        return existing;
+      }
+      this.transports.delete(serverId);
     }
 
     // Create transport with optional health config
@@ -202,13 +174,11 @@ class LspRegistry {
       }
 
       // Start external server
-      await this.startWithRecovery(serverId, serverType, async () => {
-        await transport.startExternal({
-          command: externalConfig!.command,
-          args: externalConfig!.args,
-          cwd: options?.cwd ?? this.projectRoot ?? undefined,
-          env: options?.env,
-        });
+      await transport.startExternal({
+        command: externalConfig!.command,
+        args: externalConfig!.args,
+        cwd: options?.cwd ?? this.projectRoot ?? undefined,
+        env: options?.env,
       });
     } else {
       // Get bundled sidecar config
@@ -218,24 +188,17 @@ class LspRegistry {
       }
 
       // Start the language server using the Node sidecar
-      await this.startWithRecovery(serverId, serverType, async () => {
-        await transport.start({
-          sidecarName: NODE_SIDECAR_NAME,
-          entrypoint: config.entrypoint,
-          args: config.args,
-          cwd: options?.cwd ?? this.projectRoot ?? undefined,
-          env: options?.env,
-        });
+      await transport.start({
+        sidecarName: NODE_SIDECAR_NAME,
+        entrypoint: config.entrypoint,
+        args: config.args,
+        cwd: options?.cwd ?? this.projectRoot ?? undefined,
+        env: options?.env,
       });
     }
 
     // Store transport
     this.transports.set(serverId, transport);
-
-    // Set up exit handler to clean up
-    transport.onExit(() => {
-      this.transports.delete(serverId);
-    });
 
     return transport;
   }

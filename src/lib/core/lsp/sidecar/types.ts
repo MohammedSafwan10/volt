@@ -134,6 +134,9 @@ export type ErrorHandler = (error: string) => void;
 /** Callback for handling server exit */
 export type ExitHandler = () => void;
 
+/** Callback for handling successful server restart/recovery */
+export type RestartHandler = (info: LspServerInfo) => void;
+
 /** Callback for handling health status changes */
 export type HealthHandler = (status: HealthStatus) => void;
 
@@ -174,6 +177,12 @@ export interface HealthStatus {
   avgResponseTimeMs: number | null;
   /** Detailed status message */
   message: string;
+}
+
+export interface LspRecoveryState {
+  scheduled: boolean;
+  restarting: boolean;
+  attemptsInWindow: number;
 }
 
 export interface RestartPolicy {

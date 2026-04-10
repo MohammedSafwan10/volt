@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::path::BaseDirectory;
 use tauri::Manager;
@@ -133,6 +134,13 @@ struct RunningServer {
     pid: u32,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReplayMessages {
+    initialize: Option<String>,
+    initialized: Option<String>,
+    workspace_configuration: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct TrackedDocumentState {
     uri: String,
@@ -221,6 +229,46 @@ struct ProjectDiagnosticsSchedulerState {
     delayed_sources: HashSet<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspRecoveryState {
+    pub scheduled: bool,
+    pub restarting: bool,
+    pub attempts_in_window: usize,
+}
+
+#[derive(Debug, Default)]
+struct RecoverySchedulerState {
+    generation: u64,
+    scheduled: bool,
+    restarting: bool,
+    attempt_timestamps: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspHealthStatus {
+    pub healthy: bool,
+    pub last_response_at: Option<u64>,
+    pub consecutive_failures: u64,
+    pub last_check_at: Option<u64>,
+    pub avg_response_time_ms: Option<u64>,
+    pub message: String,
+}
+
+#[derive(Debug, Default)]
+struct HealthTrackerState {
+    last_response_at: Option<u64>,
+    consecutive_failures: u64,
+    last_check_at: Option<u64>,
+    response_times: Vec<u64>,
+}
+
+#[derive(Debug, Default)]
+struct HealthMonitorState {
+    generation: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct PublishDiagnosticsParams {
     uri: String,
@@ -295,9 +343,29 @@ struct TextDocumentIdentifier {
 pub struct LspManager<R: Runtime> {
     servers: Arc<Mutex<HashMap<String, RunningServer>>>,
     saved_configs: Arc<Mutex<HashMap<String, SavedServerConfig>>>,
+    replay_messages: Arc<Mutex<HashMap<String, ReplayMessages>>>,
+    recovery_state: Arc<Mutex<HashMap<String, RecoverySchedulerState>>>,
+    health_state: Arc<Mutex<HashMap<String, HealthTrackerState>>>,
+    health_monitors: Arc<Mutex<HashMap<String, HealthMonitorState>>>,
     tracked_documents: Arc<Mutex<HashMap<String, HashMap<String, TrackedDocumentState>>>>,
     project_diagnostics: Arc<Mutex<ProjectDiagnosticsSchedulerState>>,
     app_handle: AppHandle<R>,
+}
+
+impl<R: Runtime> Clone for LspManager<R> {
+    fn clone(&self) -> Self {
+        Self {
+            servers: Arc::clone(&self.servers),
+            saved_configs: Arc::clone(&self.saved_configs),
+            replay_messages: Arc::clone(&self.replay_messages),
+            recovery_state: Arc::clone(&self.recovery_state),
+            health_state: Arc::clone(&self.health_state),
+            health_monitors: Arc::clone(&self.health_monitors),
+            tracked_documents: Arc::clone(&self.tracked_documents),
+            project_diagnostics: Arc::clone(&self.project_diagnostics),
+            app_handle: self.app_handle.clone(),
+        }
+    }
 }
 
 impl<R: Runtime> LspManager<R> {
@@ -306,6 +374,10 @@ impl<R: Runtime> LspManager<R> {
         Self {
             servers: Arc::new(Mutex::new(HashMap::new())),
             saved_configs: Arc::new(Mutex::new(HashMap::new())),
+            replay_messages: Arc::new(Mutex::new(HashMap::new())),
+            recovery_state: Arc::new(Mutex::new(HashMap::new())),
+            health_state: Arc::new(Mutex::new(HashMap::new())),
+            health_monitors: Arc::new(Mutex::new(HashMap::new())),
             tracked_documents: Arc::new(Mutex::new(HashMap::new())),
             project_diagnostics: Arc::new(Mutex::new(ProjectDiagnosticsSchedulerState::default())),
             app_handle,
@@ -317,6 +389,76 @@ impl<R: Runtime> LspManager<R> {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0)
+    }
+
+    fn prune_recovery_attempts(
+        scheduler: &mut RecoverySchedulerState,
+        window_ms: u64,
+        now: u64,
+    ) {
+        let cutoff = now.saturating_sub(window_ms);
+        scheduler
+            .attempt_timestamps
+            .retain(|timestamp| *timestamp >= cutoff);
+    }
+
+    fn capture_recovery_snapshot(
+        scheduler: &mut RecoverySchedulerState,
+        window_ms: u64,
+    ) -> LspRecoveryState {
+        Self::prune_recovery_attempts(scheduler, window_ms, Self::current_time_ms());
+        LspRecoveryState {
+            scheduled: scheduler.scheduled,
+            restarting: scheduler.restarting,
+            attempts_in_window: scheduler.attempt_timestamps.len(),
+        }
+    }
+
+    fn default_health_status() -> LspHealthStatus {
+        LspHealthStatus {
+            healthy: true,
+            last_response_at: None,
+            consecutive_failures: 0,
+            last_check_at: None,
+            avg_response_time_ms: None,
+            message: "Not started".to_string(),
+        }
+    }
+
+    fn reset_health_state_internal(&self, server_id: &str) -> LspHealthStatus {
+        if let Ok(mut health_state) = self.health_state.lock() {
+            health_state.insert(server_id.to_string(), HealthTrackerState::default());
+        }
+
+        Self::default_health_status()
+    }
+
+    fn trim_response_times(response_times: &mut Vec<u64>) {
+        const RESPONSE_TIME_WINDOW: usize = 10;
+        if response_times.len() > RESPONSE_TIME_WINDOW {
+            let drain = response_times.len() - RESPONSE_TIME_WINDOW;
+            response_times.drain(..drain);
+        }
+    }
+
+    fn average_response_time_ms(response_times: &[u64]) -> Option<u64> {
+        if response_times.is_empty() {
+            return None;
+        }
+
+        Some(response_times.iter().sum::<u64>() / response_times.len() as u64)
+    }
+
+    fn reset_recovery_state_internal(&self, server_id: &str) -> LspRecoveryState {
+        if let Ok(mut recovery_state) = self.recovery_state.lock() {
+            let scheduler = recovery_state.entry(server_id.to_string()).or_default();
+            scheduler.generation = scheduler.generation.saturating_add(1);
+            scheduler.scheduled = false;
+            scheduler.restarting = false;
+            scheduler.attempt_timestamps.clear();
+        }
+
+        LspRecoveryState::default()
     }
 
     fn is_known_project_diagnostics_sidecar(sidecar: &str) -> bool {
@@ -614,6 +756,12 @@ impl<R: Runtime> LspManager<R> {
     fn clear_tracked_documents(&self, server_id: &str) {
         if let Ok(mut tracked) = self.tracked_documents.lock() {
             tracked.remove(server_id);
+        }
+    }
+
+    fn clear_replay_messages(&self, server_id: &str) {
+        if let Ok(mut replay_messages) = self.replay_messages.lock() {
+            replay_messages.remove(server_id);
         }
     }
 
@@ -932,6 +1080,248 @@ impl<R: Runtime> LspManager<R> {
         Ok(())
     }
 
+    pub fn reset_recovery_state(&self, server_id: &str) -> Result<LspRecoveryState, LspError> {
+        Ok(self.reset_recovery_state_internal(server_id))
+    }
+
+    pub fn check_health(
+        &self,
+        server_id: &str,
+        transport_connected: bool,
+        failure_threshold: u64,
+    ) -> Result<LspHealthStatus, LspError> {
+        let start = Self::current_time_ms();
+        let server_info = self.get_server_info(server_id)?;
+        let now = Self::current_time_ms();
+        let response_time = now.saturating_sub(start);
+
+        let mut health_state = self.health_state.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire health state lock: {}", e),
+        })?;
+        let tracker = health_state.entry(server_id.to_string()).or_default();
+
+        if transport_connected && server_info.status == LspServerStatus::Running {
+            tracker.last_response_at = Some(now);
+            tracker.consecutive_failures = 0;
+            tracker.last_check_at = Some(now);
+            tracker.response_times.push(response_time);
+            Self::trim_response_times(&mut tracker.response_times);
+
+            return Ok(LspHealthStatus {
+                healthy: true,
+                last_response_at: tracker.last_response_at,
+                consecutive_failures: tracker.consecutive_failures,
+                last_check_at: tracker.last_check_at,
+                avg_response_time_ms: Self::average_response_time_ms(&tracker.response_times),
+                message: format!("Healthy ({}ms)", response_time),
+            });
+        }
+
+        tracker.consecutive_failures = tracker.consecutive_failures.saturating_add(1);
+        tracker.last_check_at = Some(now);
+        let healthy = tracker.consecutive_failures < failure_threshold;
+        Ok(LspHealthStatus {
+            healthy,
+            last_response_at: tracker.last_response_at,
+            consecutive_failures: tracker.consecutive_failures,
+            last_check_at: tracker.last_check_at,
+            avg_response_time_ms: Self::average_response_time_ms(&tracker.response_times),
+            message: if healthy {
+                format!("Warning: {}/{} failures", tracker.consecutive_failures, failure_threshold)
+            } else {
+                format!("Unhealthy: {} consecutive failures", tracker.consecutive_failures)
+            },
+        })
+    }
+
+    pub fn start_health_monitoring(
+        &self,
+        server_id: &str,
+        interval_ms: u64,
+        failure_threshold: u64,
+    ) -> Result<(), LspError> {
+        if !self
+            .saved_configs
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire saved config lock: {}", e),
+            })?
+            .contains_key(server_id)
+        {
+            return Err(LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            });
+        }
+
+        let generation = {
+            let mut monitors =
+                self.health_monitors
+                    .lock()
+                    .map_err(|e| LspError::ProcessError {
+                        message: format!("Failed to acquire health monitor lock: {}", e),
+                    })?;
+            let state = monitors.entry(server_id.to_string()).or_default();
+            state.generation = state.generation.saturating_add(1);
+            state.generation
+        };
+
+        let manager = self.clone();
+        let server_id = server_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+
+                let active = manager
+                    .health_monitors
+                    .lock()
+                    .ok()
+                    .and_then(|monitors| monitors.get(&server_id).map(|state| state.generation))
+                    == Some(generation);
+                if !active {
+                    break;
+                }
+
+                match manager.check_health(&server_id, true, failure_threshold) {
+                    Ok(status) => {
+                        let _ = manager
+                            .app_handle
+                            .emit(&format!("lsp://{}//health", server_id), status.clone());
+                        if !status.healthy {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = manager
+                            .app_handle
+                            .emit(&format!("lsp://{}//error", server_id), error.to_string());
+                        break;
+                    }
+                }
+            }
+
+            if let Ok(mut monitors) = manager.health_monitors.lock() {
+                if monitors
+                    .get(&server_id)
+                    .map(|state| state.generation)
+                    == Some(generation)
+                {
+                    monitors.remove(&server_id);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn stop_health_monitoring(&self, server_id: &str) -> Result<(), LspError> {
+        let mut monitors = self
+            .health_monitors
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire health monitor lock: {}", e),
+            })?;
+        monitors.remove(server_id);
+        Ok(())
+    }
+
+    pub fn schedule_recovery(
+        &self,
+        server_id: &str,
+        reason: &str,
+        base_delay_ms: u64,
+        max_delay_ms: u64,
+        max_attempts: usize,
+        window_ms: u64,
+    ) -> Result<LspRecoveryState, LspError> {
+        if !self
+            .saved_configs
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire saved config lock: {}", e),
+            })?
+            .contains_key(server_id)
+        {
+            return Err(LspError::ServerNotFound {
+                server_id: server_id.to_string(),
+            });
+        }
+
+        let mut recovery_state = self.recovery_state.lock().map_err(|e| LspError::ProcessError {
+            message: format!("Failed to acquire recovery state lock: {}", e),
+        })?;
+        let scheduler = recovery_state.entry(server_id.to_string()).or_default();
+        let now = Self::current_time_ms();
+        Self::prune_recovery_attempts(scheduler, window_ms, now);
+
+        if scheduler.scheduled || scheduler.restarting {
+            return Ok(Self::capture_recovery_snapshot(scheduler, window_ms));
+        }
+
+        if scheduler.attempt_timestamps.len() >= max_attempts {
+            println!(
+                "[LSP Recovery] Refusing to restart {}; exceeded {} attempts within {}ms ({})",
+                server_id, max_attempts, window_ms, reason
+            );
+            return Ok(Self::capture_recovery_snapshot(scheduler, window_ms));
+        }
+
+        let exponent = u32::try_from(scheduler.attempt_timestamps.len()).unwrap_or(u32::MAX);
+        let multiplier = 2_u64.saturating_pow(exponent);
+        let delay_ms = base_delay_ms.saturating_mul(multiplier).min(max_delay_ms);
+
+        scheduler.generation = scheduler.generation.saturating_add(1);
+        let generation = scheduler.generation;
+        scheduler.scheduled = true;
+        let snapshot = Self::capture_recovery_snapshot(scheduler, window_ms);
+
+        let manager = self.clone();
+        let server_id = server_id.to_string();
+        let reason = reason.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+            {
+                let Ok(mut recovery_state) = manager.recovery_state.lock() else {
+                    return;
+                };
+                let Some(scheduler) = recovery_state.get_mut(&server_id) else {
+                    return;
+                };
+                Self::prune_recovery_attempts(scheduler, window_ms, Self::current_time_ms());
+                if scheduler.generation != generation || !scheduler.scheduled || scheduler.restarting
+                {
+                    return;
+                }
+                scheduler.scheduled = false;
+                scheduler.restarting = true;
+                scheduler.attempt_timestamps.push(Self::current_time_ms());
+                Self::prune_recovery_attempts(scheduler, window_ms, Self::current_time_ms());
+            }
+
+            println!("[LSP Recovery] Restarting {} ({})", server_id, reason);
+            match manager.restart_server(&server_id) {
+                Ok(_) => {
+                    manager.reset_recovery_state_internal(&server_id);
+                }
+                Err(error) => {
+                    if let Ok(mut recovery_state) = manager.recovery_state.lock() {
+                        if let Some(scheduler) = recovery_state.get_mut(&server_id) {
+                            if scheduler.generation == generation {
+                                scheduler.restarting = false;
+                            }
+                        }
+                    }
+
+                    let _ = manager
+                        .app_handle
+                        .emit(&format!("lsp://{}//error", server_id), error.to_string());
+                }
+            }
+        });
+
+        Ok(snapshot)
+    }
+
     fn write_sidecar_message(sidecar: &mut CommandChild, message: &str) -> Result<(), LspError> {
         let content_length = message.len();
         let full_message = format!("Content-Length: {}\r\n\r\n{}", content_length, message);
@@ -1052,6 +1442,8 @@ impl<R: Runtime> LspManager<R> {
                 SavedServerConfig::Sidecar(config.clone()),
             );
         }
+        self.reset_recovery_state_internal(&server_id);
+        self.reset_health_state_internal(&server_id);
 
         Ok(LspServerInfo {
             server_id,
@@ -1059,6 +1451,17 @@ impl<R: Runtime> LspManager<R> {
             pid: Some(pid),
             status: LspServerStatus::Running,
         })
+    }
+
+    pub fn start_server_managed(&self, config: LspServerConfig) -> Result<LspServerInfo, LspError> {
+        match self.start_server(config.clone()) {
+            Ok(info) => Ok(info),
+            Err(LspError::ServerAlreadyRunning { .. }) => {
+                let _ = self.stop_server(&config.server_id, false);
+                self.start_server(config)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Start an external language server (from user's PATH, e.g., Dart, Rust Analyzer)
@@ -1213,6 +1616,8 @@ impl<R: Runtime> LspManager<R> {
                 SavedServerConfig::External(config.clone()),
             );
         }
+        self.reset_recovery_state_internal(&server_id);
+        self.reset_health_state_internal(&server_id);
 
         Ok(LspServerInfo {
             server_id,
@@ -1220,6 +1625,20 @@ impl<R: Runtime> LspManager<R> {
             pid: Some(pid),
             status: LspServerStatus::Running,
         })
+    }
+
+    pub fn start_external_server_managed(
+        &self,
+        config: ExternalLspConfig,
+    ) -> Result<LspServerInfo, LspError> {
+        match self.start_external_server(config.clone()) {
+            Ok(info) => Ok(info),
+            Err(LspError::ServerAlreadyRunning { .. }) => {
+                let _ = self.stop_server(&config.server_id, false);
+                self.start_external_server(config)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Handle stdout from external LSP server (parse LSP framing)
@@ -1480,13 +1899,33 @@ impl<R: Runtime> LspManager<R> {
 
         let mut emit_fresh_after_send = false;
         let mut replay_messages = Vec::new();
+        let mut replay_workspace_configuration = None;
+        let mut persist_initialize_message = None;
+        let mut persist_initialized_message = None;
+        let mut persist_workspace_configuration = None;
 
         if let Ok(json) = serde_json::from_str::<Value>(message) {
             if let Some(method) = json.get("method").and_then(Value::as_str) {
                 match method {
+                    "initialize" => {
+                        persist_initialize_message = Some(message.to_string());
+                    }
                     "initialized" => {
+                        persist_initialized_message = Some(message.to_string());
                         emit_fresh_after_send = true;
                         replay_messages = self.collect_rehydrate_messages(server_id);
+                        replay_workspace_configuration = self
+                            .replay_messages
+                            .lock()
+                            .ok()
+                            .and_then(|stored_messages| {
+                                stored_messages
+                                    .get(server_id)
+                                    .and_then(|state| state.workspace_configuration.clone())
+                            });
+                    }
+                    "workspace/didChangeConfiguration" => {
+                        persist_workspace_configuration = Some(message.to_string());
                     }
                     "textDocument/didOpen" => {
                         if let Some(params) = json.get("params").cloned() {
@@ -1535,6 +1974,25 @@ impl<R: Runtime> LspManager<R> {
             }
         }
 
+        if persist_initialize_message.is_some() || persist_initialized_message.is_some() {
+            let mut stored_messages =
+                self.replay_messages
+                    .lock()
+                    .map_err(|e| LspError::ProcessError {
+                        message: format!("Failed to acquire replay message lock: {}", e),
+                    })?;
+            let state = stored_messages.entry(server_id.to_string()).or_default();
+            if let Some(message) = persist_initialize_message {
+                state.initialize = Some(message);
+            }
+            if let Some(message) = persist_initialized_message {
+                state.initialized = Some(message);
+            }
+            if let Some(message) = persist_workspace_configuration {
+                state.workspace_configuration = Some(message);
+            }
+        }
+
         // Get child handle and send message
         let child = server.child.as_mut().ok_or_else(|| LspError::SendFailed {
             message: "Server stdin not available".to_string(),
@@ -1543,6 +2001,9 @@ impl<R: Runtime> LspManager<R> {
         match child {
             ServerChild::Sidecar(sidecar) => {
                 Self::write_sidecar_message(sidecar, message)?;
+                if let Some(replay_workspace_configuration) = replay_workspace_configuration {
+                    Self::write_sidecar_message(sidecar, &replay_workspace_configuration)?;
+                }
                 for replay_message in replay_messages {
                     Self::write_sidecar_message(sidecar, &replay_message)?;
                 }
@@ -1553,6 +2014,9 @@ impl<R: Runtime> LspManager<R> {
                 drop(servers);
 
                 Self::send_external_message(&stdin_tx, message.to_string())?;
+                if let Some(replay_workspace_configuration) = replay_workspace_configuration {
+                    Self::send_external_message(&stdin_tx, replay_workspace_configuration)?;
+                }
                 for replay_message in replay_messages {
                     Self::send_external_message(&stdin_tx, replay_message)?;
                 }
@@ -1712,6 +2176,9 @@ impl<R: Runtime> LspManager<R> {
             if let Ok(mut saved_configs) = self.saved_configs.lock() {
                 saved_configs.remove(server_id);
             }
+            self.reset_recovery_state_internal(server_id);
+            self.reset_health_state_internal(server_id);
+            self.clear_replay_messages(server_id);
             self.clear_tracked_documents(server_id);
         }
 
@@ -1748,15 +2215,40 @@ impl<R: Runtime> LspManager<R> {
             .ok_or_else(|| LspError::ServerNotFound {
                 server_id: server_id.to_string(),
             })?;
+        let replay_messages = self
+            .replay_messages
+            .lock()
+            .map_err(|e| LspError::ProcessError {
+                message: format!("Failed to acquire replay message lock: {}", e),
+            })?
+            .get(server_id)
+            .cloned();
 
         if self.is_server_running(server_id) {
             let _ = self.stop_server(server_id, true);
         }
 
-        match saved_config {
-            SavedServerConfig::Sidecar(config) => self.start_server(config),
-            SavedServerConfig::External(config) => self.start_external_server(config),
+        let info = match saved_config {
+            SavedServerConfig::Sidecar(config) => self.start_server(config)?,
+            SavedServerConfig::External(config) => self.start_external_server(config)?,
+        };
+
+        if let Some(replay_messages) = replay_messages {
+            if let Some(initialize) = replay_messages.initialize {
+                self.send_message(server_id, &initialize)?;
+            }
+            if let Some(initialized) = replay_messages.initialized {
+                self.send_message(server_id, &initialized)?;
+            }
         }
+
+        self.reset_recovery_state_internal(server_id);
+        self.reset_health_state_internal(server_id);
+        let _ = self
+            .app_handle
+            .emit(&format!("lsp://{}//restarted", server_id), info.clone());
+
+        Ok(info)
     }
 
     /// Stop all running servers

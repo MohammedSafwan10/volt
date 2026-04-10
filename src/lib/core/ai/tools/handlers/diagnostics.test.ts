@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const setProblemsForFileMock = vi.fn();
+const clearProblemsForFileMock = vi.fn();
+const markSourceFreshMock = vi.fn();
+
 const diagnosticsFreshness = {
-  status: 'fresh',
-  activeSources: ['typescript'],
-  staleSources: [],
-  sourceStatuses: [],
+  status: 'fresh' as string,
+  activeSources: ['typescript'] as string[],
+  staleSources: [] as string[],
+  sourceStatuses: [] as Array<unknown>,
   isUpdating: false,
   hasWarmingSources: false,
 };
@@ -32,6 +36,9 @@ vi.mock('$shared/stores/problems.svelte', () => ({
     diagnosticsBasis: 'staged_tool_output',
     allProblemsUnfiltered: mockedProblems,
     filesWithProblems: ['c:/workspace/src/app.ts'],
+    setProblemsForFile: setProblemsForFileMock,
+    clearProblemsForFile: clearProblemsForFileMock,
+    markSourceFresh: markSourceFreshMock,
   },
 }));
 
@@ -91,6 +98,9 @@ describe('handleGetDiagnostics', () => {
       code: 'TS1000',
     });
     fileReadMock.mockReset();
+    setProblemsForFileMock.mockReset();
+    clearProblemsForFileMock.mockReset();
+    markSourceFreshMock.mockReset();
   });
 
   it('returns diagnostics basis metadata through the diagnostics tool', async () => {
@@ -152,5 +162,58 @@ describe('handleGetDiagnostics', () => {
     expect(result.output).toContain('src/diag_bad.ts');
     expect(result.output).toContain('TS2322');
     expect(result.output).not.toContain('No issues currently reported');
+  });
+
+  it('publishes fallback diagnostics into the shared problems store so the Problems panel can show them', async () => {
+    diagnosticsFreshness.status = 'stale';
+    diagnosticsFreshness.staleSources = ['typescript'];
+    mockedProblems.splice(0, mockedProblems.length);
+    fileReadMock.mockResolvedValue({
+      content: "export const broken: number = 'oops';\n",
+    });
+
+    const { handleGetDiagnostics } = await import('./diagnostics');
+
+    await handleGetDiagnostics({ paths: ['src/diag_bad.ts'] });
+
+    expect(clearProblemsForFileMock).toHaveBeenCalledWith(
+      'C:/workspace/src/diag_bad.ts',
+      'typescript (fallback)',
+    );
+    expect(setProblemsForFileMock).toHaveBeenCalledWith(
+      'C:/workspace/src/diag_bad.ts',
+      expect.arrayContaining([
+        expect.objectContaining({
+          file: 'C:/workspace/src/diag_bad.ts',
+          source: 'typescript (fallback)',
+          code: 'TS2322',
+        }),
+      ]),
+      'typescript (fallback)',
+    );
+    expect(markSourceFreshMock).toHaveBeenCalledWith('typescript (fallback)');
+  });
+
+  it('clears prior fallback diagnostics for requested files when the fallback run finds no issues', async () => {
+    diagnosticsFreshness.status = 'stale';
+    diagnosticsFreshness.staleSources = ['typescript'];
+    mockedProblems.splice(0, mockedProblems.length);
+    fileReadMock.mockResolvedValue({
+      content: 'export const ok: number = 1;\n',
+    });
+
+    const { handleGetDiagnostics } = await import('./diagnostics');
+
+    await handleGetDiagnostics({ paths: ['src/diag_good.ts'] });
+
+    expect(clearProblemsForFileMock).toHaveBeenCalledWith(
+      'C:/workspace/src/diag_good.ts',
+      'typescript (fallback)',
+    );
+    expect(setProblemsForFileMock).not.toHaveBeenCalledWith(
+      'C:/workspace/src/diag_good.ts',
+      expect.anything(),
+      'typescript (fallback)',
+    );
   });
 });

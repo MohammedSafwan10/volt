@@ -16,24 +16,18 @@
 import {
   getLspRegistry,
   sendDidSaveForTrackedDocument,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 
 // Server instance tracking
 let cssServerTransport: LspTransport | null = null;
 let cssServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-const cssRecovery = createLspRecoveryController({
-  source: 'css',
-  restart: async () => {
-    await recoverCssLspAfterExit();
-  },
-});
 
 const PROJECT_ANALYSIS_BATCH_SIZE = 10;
 const PROJECT_ANALYSIS_BATCH_DELAY_MS = 20;
@@ -166,10 +160,12 @@ async function initializeServer(): Promise<void> {
       });
       cssServerTransport.onExit(() => {
         console.log('[CSS LSP] Server exited');
-        cssRecovery.schedule('transport exit');
-        cssServerTransport = null;
         cssServerInitialized = false;
         initializationPromise = null;
+      });
+      cssServerTransport.onRestart(() => {
+        console.log('[CSS LSP] Server restarted');
+        cssServerInitialized = true;
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -227,7 +223,6 @@ async function initializeServer(): Promise<void> {
 
       await cssServerTransport.sendNotification('initialized', {});
       cssServerInitialized = true;
-      cssRecovery.reset();
       console.log('[CSS LSP] Server initialized');
     } catch (error) {
       console.error('[CSS LSP] Failed to initialize:', error);
@@ -398,13 +393,6 @@ export async function ensureCssLspStarted(): Promise<void> {
 /**
  * Stop the CSS LSP server
  */
-async function recoverCssLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || cssServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
-}
-
 export async function stopCssLsp(): Promise<void> {
   if (!cssServerTransport) return;
 
@@ -422,7 +410,6 @@ export async function stopCssLsp(): Promise<void> {
   cssServerTransport = null;
   cssServerInitialized = false;
   initializationPromise = null;
-  cssRecovery.reset();
 }
 
 /**
@@ -472,7 +459,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        await waitForProjectDiagnosticsDelay(PROJECT_ANALYSIS_BATCH_DELAY_MS);
         if (runId !== projectAnalysisRunId) {
           return;
         }

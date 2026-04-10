@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
 import { streamChat } from '$core/ai';
 import { buildSpecPrompt } from '$core/ai/prompts/prompt-spec';
+import { fileService } from '$core/services/file-service';
 import { readFileQuiet, writeFile, writeFileQuiet, getFileInfoQuiet } from '$core/services/file-system';
 import { aiSettingsStore } from '$features/assistant/stores/ai.svelte';
 import { assistantStore, type AttachedContext, type SyntheticPromptMeta } from '$features/assistant/stores/assistant.svelte';
@@ -1105,7 +1105,10 @@ class SpecStore {
 
   private async ensureDirQuiet(path: string): Promise<void> {
     try {
-      await invoke('create_dir', { path });
+      const result = await fileService.createDir(path);
+      if (!result.success) {
+        throw new Error(result.error ?? 'Create folder failed');
+      }
     } catch {
       // Directory may already exist.
     }

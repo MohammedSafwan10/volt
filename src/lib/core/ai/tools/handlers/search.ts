@@ -833,6 +833,19 @@ export async function handleSearchSymbols(args: Record<string, unknown>): Promis
   const query = String(args.query);
   const kindFilter = args.kind ? String(args.kind).toLowerCase() : null;
   const workspaceRoot = projectStore.rootPath || '';
+  type WorkspaceSymbol = {
+    name: string;
+    kind: number;
+    location: {
+      uri: string;
+      range: {
+        start: {
+          line: number;
+        };
+      };
+    };
+    containerName?: string;
+  };
 
   if (!workspaceRoot) {
     return { success: false, error: 'No workspace open' };
@@ -840,18 +853,18 @@ export async function handleSearchSymbols(args: Record<string, unknown>): Promis
 
   try {
     // Use workspace symbol search from LSP - query all active LSPs
-    let symbols: unknown[] = [];
+    let symbols: WorkspaceSymbol[] = [];
 
     // Query TypeScript LSP if connected
     if (isTsLspConnected()) {
       const tsSymbols = await getTsWorkspaceSymbols(query);
-      if (tsSymbols) symbols = symbols.concat(tsSymbols);
+      if (Array.isArray(tsSymbols)) symbols = symbols.concat(tsSymbols as WorkspaceSymbol[]);
     }
 
     // Query Dart LSP if running
     if (isDartLspRunning()) {
       const dartSymbols = await getDartWorkspaceSymbols(query);
-      if (dartSymbols) symbols = symbols.concat(dartSymbols);
+      if (Array.isArray(dartSymbols)) symbols = symbols.concat(dartSymbols as WorkspaceSymbol[]);
     }
 
     // If no symbols from active LSPs, try to start them if they should be there

@@ -3,6 +3,7 @@ pub mod manager {
 }
 
 pub use manager::{
-    ExternalLspConfig, LspError, LspManager, LspProjectDiagnosticsPlan, LspServerConfig,
-    LspServerInfo, LspTrackedDocumentInfo, LspTrackedDocumentSyncResult,
+    ExternalLspConfig, LspError, LspHealthStatus, LspManager, LspProjectDiagnosticsPlan,
+    LspRecoveryState, LspServerConfig, LspServerInfo, LspTrackedDocumentInfo,
+    LspTrackedDocumentSyncResult,
 };

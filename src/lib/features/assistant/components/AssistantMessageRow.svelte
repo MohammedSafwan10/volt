@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { UIIcon } from "$shared/components/ui";
@@ -15,6 +14,7 @@
   import { getFileEditDiffStats } from "./file-edit-stats";
   import { openFullDiffView } from "$features/editor/services/diff-view";
   import { writeFile } from "$core/services/file-system";
+  import { fileService } from "$core/services/file-service";
   import { showToast } from "$shared/stores/toast.svelte";
   import { editorStore } from "$features/editor/stores/editor.svelte";
   import { isFileMutatingTool, isTerminalTool as isTerminalToolName } from "$core/ai/tools";
@@ -416,7 +416,10 @@
     // For new files, we want to delete on revert
     if (isNewFile && absolutePath) {
       try {
-        await invoke("delete_path", { path: absolutePath });
+        const result = await fileService.deletePath(absolutePath);
+        if (!result.success) {
+          throw new Error(result.error ?? "Delete failed");
+        }
         revertedIds.add(toolCall.id);
         showToast({ message: isDirectory ? "Folder deleted (reverted)" : "File deleted (reverted)", type: "success" });
 
@@ -474,7 +477,10 @@
 
     if (isNewFile && isDirectory && absolutePath) {
       try {
-        await invoke("create_dir", { path: absolutePath });
+        const result = await fileService.createDir(absolutePath);
+        if (!result.success) {
+          throw new Error(result.error ?? "Create folder failed");
+        }
         revertedIds.delete(toolCall.id);
         showToast({ message: "Folder restored", type: "success" });
         return;

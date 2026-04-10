@@ -18,6 +18,7 @@ import {
     startProjectWideAnalysis as startDartAnalysis,
 } from '$core/lsp/dart-sidecar';
 import { getStaleSourceFiles } from '$core/services/diagnostics-source-utils';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 
 interface SystemCapabilities {
     os_name?: string;
@@ -57,7 +58,6 @@ async function getSystemInfo(): Promise<SystemCapabilities> {
  */
 export class ProjectDiagnostics {
     private isWindows = false;
-    private scheduledTimer: ReturnType<typeof setTimeout> | null = null;
     private eslintBuildFiles = new Set<string>();
     private activeRunToken: DiagnosticsRunToken | null = null;
     private isRunning = false;
@@ -72,10 +72,6 @@ export class ProjectDiagnostics {
         this.activeRunToken = null;
         this.isRunning = false;
         this.pendingRoot = null;
-        if (this.scheduledTimer) {
-            clearTimeout(this.scheduledTimer);
-            this.scheduledTimer = null;
-        }
         void invoke('lsp_reset_project_diagnostics_scheduler').catch((error) => {
             console.warn('[ProjectDiagnostics] Failed to reset backend scheduler:', error);
         });
@@ -114,14 +110,14 @@ export class ProjectDiagnostics {
 
             const requestedSidecars = await this.getRequestedSidecars(rootPath);
             const plan = await invoke<LspProjectDiagnosticsPlan | null>(
-                'lsp_begin_project_diagnostics',
+                'lsp_begin_project_diagnostics_managed',
                 {
                     rootPath,
                     sidecars: requestedSidecars,
                 },
             );
 
-            if (!plan || this.handleSchedulerPlan(plan, rootPath)) {
+            if (!plan || this.handleSchedulerPlan(plan)) {
                 return;
             }
 
@@ -150,21 +146,27 @@ export class ProjectDiagnostics {
                 console.log('[ProjectDiagnostics] Analysis complete.');
 
                 const followUp = await invoke<LspProjectDiagnosticsPlan | null>(
-                    'lsp_complete_project_diagnostics',
-                    { runId: runToken.id },
+                    'lsp_complete_project_diagnostics_managed',
+                    {
+                        runId: runToken.id,
+                        sidecars: requestedSidecars,
+                    },
                 );
                 if (followUp) {
-                    this.handleSchedulerPlan(followUp, rootPath);
+                    if (followUp.action === 'run' && followUp.runId !== null && followUp.rootPath) {
+                        this.applySchedulerSourceFreshness(followUp);
+                        this.pendingRoot = followUp.rootPath;
+                    } else {
+                        this.handleSchedulerPlan(followUp);
+                    }
                 }
             }
         } finally {
             this.isRunning = false;
-            if (this.pendingRoot && this.pendingRoot !== rootPath) {
+            if (this.pendingRoot) {
                 const nextRoot = this.pendingRoot;
                 this.pendingRoot = null;
                 await this.runDiagnostics(nextRoot);
-            } else if (this.pendingRoot === rootPath) {
-                this.pendingRoot = null;
             }
         }
     }
@@ -181,24 +183,8 @@ export class ProjectDiagnostics {
         return sidecars;
     }
 
-    private handleSchedulerPlan(
-        plan: LspProjectDiagnosticsPlan,
-        fallbackRootPath: string,
-    ): boolean {
+    private handleSchedulerPlan(plan: LspProjectDiagnosticsPlan): boolean {
         this.applySchedulerSourceFreshness(plan);
-
-        if (plan.action === 'delay') {
-            const nextRoot = plan.rootPath ?? fallbackRootPath;
-            if (this.scheduledTimer) {
-                clearTimeout(this.scheduledTimer);
-            }
-            this.scheduledTimer = setTimeout(() => {
-                this.scheduledTimer = null;
-                void this.runDiagnostics(nextRoot);
-            }, plan.delayMs);
-            return true;
-        }
-
         return plan.action !== 'run';
     }
 
@@ -269,7 +255,7 @@ export class ProjectDiagnostics {
                 problemsStore.markSourceFresh(this.getProblemsSourceForSidecar(analysis.key));
                 await this.startSidecarAnalysis(analysis.key, analysis.start, token);
                 if (!this.isRunCurrent(token)) return;
-                await new Promise((resolve) => setTimeout(resolve, plan.staggerMs));
+                await waitForProjectDiagnosticsDelay(plan.staggerMs);
             }
 
             console.log('[ProjectDiagnostics] Background LSP analysis discovery complete.');

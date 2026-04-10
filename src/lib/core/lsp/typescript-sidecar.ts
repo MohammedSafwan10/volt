@@ -19,13 +19,13 @@
 
 import {
   getLspRegistry,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 import { registerTsMonacoProviders, disposeTsMonacoProviders } from './typescript-monaco-providers';
 
 // Server instance tracking
@@ -33,12 +33,6 @@ let tsServerTransport: LspTransport | null = null;
 let tsServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
-const tsRecovery = createLspRecoveryController({
-  source: 'typescript',
-  restart: async () => {
-    await recoverTsLspAfterExit();
-  },
-});
 
 let transportHandlersAttached = false;
 
@@ -54,12 +48,13 @@ function attachTransportHandlers(transport: LspTransport): void {
 
   transport.onExit(() => {
     console.log('[TS LSP] Server exited');
-    tsServerTransport = null;
     tsServerInitialized = false;
     initializationPromise = null;
-    initializedRootPath = null;
-    transportHandlersAttached = false;
-    tsRecovery.schedule('transport exit');
+  });
+  transport.onRestart(() => {
+    console.log('[TS LSP] Server restarted');
+    tsServerInitialized = true;
+    initializedRootPath = projectStore.rootPath ?? initializedRootPath;
   });
 }
 
@@ -330,7 +325,6 @@ async function initializeServer(): Promise<void> {
 
       tsServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      tsRecovery.reset();
 
       // Register Monaco providers to use the sidecar for completions/hover/definition
       registerTsMonacoProviders();
@@ -504,7 +498,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        await waitForProjectDiagnosticsDelay(PROJECT_ANALYSIS_BATCH_DELAY_MS);
         if (runId !== projectAnalysisRunId) {
           return;
         }
@@ -948,7 +942,7 @@ export async function stopTsLsp(): Promise<void> {
   tsServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
-  tsRecovery.reset();
+  transportHandlersAttached = false;
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -967,13 +961,6 @@ export async function restartTsLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
-}
-
-async function recoverTsLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || tsServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
 }
 
 /**

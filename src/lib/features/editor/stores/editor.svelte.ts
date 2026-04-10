@@ -554,14 +554,26 @@ export class EditorStore {
    */
   markSaved(path: string): void {
     const normalizedPath = normalizePath(path);
-    const file = this.openFiles.find(f => f.path === normalizedPath);
-    if (file) {
-      const nativeDoc = fileService.getDocument(normalizedPath);
-      const savedContent = nativeDoc?.content ?? file.content;
-      file.content = savedContent;
-      file.originalContent = savedContent;
-      notifyEditorDidSave(normalizedPath, savedContent, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
-    }
+    const fileIndex = this.openFiles.findIndex((f) => f.path === normalizedPath);
+    if (fileIndex === -1) return;
+
+    const existing = this.openFiles[fileIndex];
+    const nativeDoc = fileService.getDocument(normalizedPath);
+    const savedContent = nativeDoc?.content ?? existing.content;
+    const updatedFile: OpenFile = {
+      ...existing,
+      content: savedContent,
+      originalContent: savedContent,
+      language: nativeDoc?.language ?? existing.language,
+    };
+
+    this.openFiles = [
+      ...this.openFiles.slice(0, fileIndex),
+      updatedFile,
+      ...this.openFiles.slice(fileIndex + 1),
+    ];
+
+    notifyEditorDidSave(normalizedPath, savedContent, LSP_LIFECYCLE_TARGETS, reportLifecycleError);
   }
 
   getDocumentVersion(path: string): number | null {

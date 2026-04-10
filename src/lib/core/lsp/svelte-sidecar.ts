@@ -16,13 +16,13 @@
 
 import {
   getLspRegistry,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 import { registerSvelteMonacoProviders, disposeSvelteMonacoProviders } from './svelte-monaco-providers';
 import {
   getSvelteLanguageId,
@@ -34,12 +34,6 @@ let svelteServerTransport: LspTransport | null = null;
 let svelteServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 let initializedRootPath: string | null = null;
-const svelteRecovery = createLspRecoveryController({
-  source: 'svelte',
-  restart: async () => {
-    await recoverSvelteLspAfterExit();
-  },
-});
 
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -161,11 +155,13 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       svelteServerTransport.onExit(() => {
         console.log('[Svelte LSP] Server exited');
-        svelteRecovery.schedule('transport exit');
-        svelteServerTransport = null;
         svelteServerInitialized = false;
         initializationPromise = null;
-        initializedRootPath = null;
+      });
+      svelteServerTransport.onRestart(() => {
+        console.log('[Svelte LSP] Server restarted');
+        svelteServerInitialized = true;
+        initializedRootPath = projectStore.rootPath ?? initializedRootPath;
       });
 
       // Send initialize request
@@ -307,7 +303,6 @@ async function initializeServer(): Promise<void> {
 
       svelteServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
-      svelteRecovery.reset();
 
       // Register Monaco providers
       registerSvelteMonacoProviders();
@@ -732,7 +727,6 @@ export async function stopSvelteLsp(): Promise<void> {
   svelteServerInitialized = false;
   initializationPromise = null;
   initializedRootPath = null;
-  svelteRecovery.reset();
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -751,13 +745,6 @@ export async function restartSvelteLsp(): Promise<void> {
   if (projectStore.rootPath) {
     await initializeServer();
   }
-}
-
-async function recoverSvelteLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || svelteServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
 }
 
 /**
@@ -814,7 +801,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= PROJECT_ANALYSIS_BATCH_SIZE) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, PROJECT_ANALYSIS_BATCH_DELAY_MS));
+        await waitForProjectDiagnosticsDelay(PROJECT_ANALYSIS_BATCH_DELAY_MS);
         if (runId !== projectAnalysisRunId) {
           return;
         }

@@ -46,6 +46,13 @@ pub struct TerminalInfo {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshot {
+    pub info: TerminalInfo,
+    pub scrollback: String,
+}
+
 /// Event payload for terminal data
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +74,16 @@ struct TerminalExitEvent {
 #[serde(rename_all = "camelCase")]
 struct TerminalReadyEvent {
     terminal_id: String,
+    shell_integration_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCommandCompletion {
+    exit_code: i32,
+    output: String,
+    cwd: Option<String>,
+    timed_out: bool,
 }
 
 /// Internal terminal session state
@@ -78,13 +95,148 @@ struct TerminalSession {
     pid: u32,
     killed: bool,
     output_history: String,
+    active_interrupt_token: Option<u64>,
 }
 
 const MAX_SCROLLBACK_CHARS: usize = 1_000_000;
 const DEFAULT_SCROLLBACK_QUERY_CHARS: usize = 250_000;
+const AI_SHELL_INTEGRATION_MARKER: &str = "ShellIntegration=Volt/2";
 
 fn close_terminal_input(session: &mut TerminalSession) {
     let _ = std::mem::replace(&mut session.writer, Box::new(std::io::sink()));
+}
+
+fn interrupt_terminal_session(session: &mut TerminalSession) -> Result<(), TerminalError> {
+    session
+        .writer
+        .write_all(b"\x03")
+        .map_err(|e| TerminalError::WriteFailed {
+            message: e.to_string(),
+        })?;
+    session
+        .writer
+        .flush()
+        .map_err(|e| TerminalError::WriteFailed {
+            message: e.to_string(),
+        })?;
+    Ok(())
+}
+
+fn terminal_has_output_fragment(
+    manager: &Arc<Mutex<TerminalManager>>,
+    terminal_id: &str,
+    fragment: &str,
+) -> bool {
+    manager
+        .lock()
+        .ok()
+        .and_then(|mgr| {
+            mgr.sessions
+                .get(terminal_id)
+                .map(|session| session.output_history.contains(fragment))
+        })
+        .unwrap_or(false)
+}
+
+fn terminal_shell_integration_identity(
+    manager: &Arc<Mutex<TerminalManager>>,
+    terminal_id: &str,
+) -> Option<String> {
+    let output = manager
+        .lock()
+        .ok()
+        .and_then(|mgr| mgr.sessions.get(terminal_id).map(|session| session.output_history.clone()))?;
+
+    let marker_index = output.find("ShellIntegration=")?;
+    let marker = &output[marker_index + "ShellIntegration=".len()..];
+    let identity = marker
+        .split(['\u{7}', '\u{1b}', '\r', '\n'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+
+    if identity.is_empty() {
+        None
+    } else {
+        Some(identity.to_string())
+    }
+}
+
+fn terminal_wait_for_shell_integration_identity(
+    manager: &Arc<Mutex<TerminalManager>>,
+    terminal_id: &str,
+    timeout_ms: u64,
+    poll_interval_ms: u64,
+) -> Option<String> {
+    let started_at = std::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(poll_interval_ms.max(10));
+
+    loop {
+        if let Some(identity) = terminal_shell_integration_identity(manager, terminal_id) {
+            return Some(identity);
+        }
+
+        let exists = manager
+            .lock()
+            .ok()
+            .map(|mgr| mgr.sessions.contains_key(terminal_id))
+            .unwrap_or(false);
+
+        if !exists || started_at.elapsed() >= timeout {
+            return None;
+        }
+
+        thread::sleep(poll_interval);
+    }
+}
+
+fn get_terminal_output_since(
+    manager: &Arc<Mutex<TerminalManager>>,
+    terminal_id: &str,
+    start_offset: usize,
+) -> Option<String> {
+    let output = manager
+        .lock()
+        .ok()
+        .and_then(|mgr| mgr.sessions.get(terminal_id).map(|session| session.output_history.clone()))?;
+
+    if output.len() <= start_offset {
+        return Some(String::new());
+    }
+
+    let mut start = start_offset.min(output.len());
+    while start > 0 && !output.is_char_boundary(start) {
+        start -= 1;
+    }
+
+    Some(output[start..].to_string())
+}
+
+fn extract_terminal_cwd(output: &str) -> Option<String> {
+    let marker_index = output.rfind("Cwd=")?;
+    let marker = &output[marker_index + "Cwd=".len()..];
+    let cwd = marker
+        .split(['\u{7}', '\u{1b}', '\r', '\n'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+
+    if cwd.is_empty() {
+        None
+    } else {
+        Some(cwd.to_string())
+    }
+}
+
+fn contains_powershell_parser_error(output: &str) -> bool {
+    output.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains("ParserError")
+            || trimmed.contains("FullyQualifiedErrorId : Invalid")
+            || (trimmed.contains("The token '")
+                && trimmed.contains("is not a valid statement separator"))
+    })
 }
 
 /// Global terminal manager state
@@ -143,11 +295,12 @@ fn build_ai_powershell_args() -> Vec<String> {
         "Write-Host -NoNewline \"$e]633;A$a\"; ",
         "$p = \"PS $c> \"; ",
         "Write-Host -NoNewline \"$e]633;B$a\"; ",
-        "if ($null -ne $LASTEXITCODE) { Write-Host -NoNewline \"$e]633;D;$LASTEXITCODE$a\" }; ",
+        "$voltExit = if ($?) { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 } }; ",
+        "Write-Host -NoNewline \"$e]633;D;$voltExit$a\"; ",
         "return $p; ",
         "} catch { return \"PS > \" } ",
         "}; ",
-        "Write-Host -NoNewline \"$([char]27)]633;P;ShellIntegration=Volt$([char]7)\"; ",
+        "Write-Host -NoNewline \"$([char]27)]633;P;ShellIntegration=Volt/2$([char]7)\"; ",
         "Write-Host -NoNewline \"$([char]27)]633;P;Cwd=$((Get-Location).Path)$([char]7)\";"
     );
 
@@ -319,6 +472,7 @@ fn create_terminal_sync(
                 pid,
                 killed: false,
                 output_history: String::new(),
+                active_interrupt_token: None,
             },
         );
     }
@@ -337,6 +491,7 @@ fn create_terminal_sync(
         let manager_ready = manager.clone();
         let initial_cols = cols;
         let initial_rows = rows;
+        let ai_ready = ai;
 
         thread::spawn(move || {
             // ConPTY Quirk Workaround:
@@ -390,11 +545,34 @@ fn create_terminal_sync(
                 }
             }
 
+            if ai_ready {
+                // AI terminals start with native shell integration bootstrap. Wait
+                // briefly for that marker so the frontend can trust ready-state
+                // without layering extra sleep loops on top.
+                for _ in 0..15 {
+                    if terminal_has_output_fragment(
+                        &manager_ready,
+                        &terminal_id_ready,
+                        AI_SHELL_INTEGRATION_MARKER,
+                    ) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+
             // Emit ready event after resize trick completes
+            let shell_integration_identity = if ai_ready {
+                terminal_shell_integration_identity(&manager_ready, &terminal_id_ready)
+            } else {
+                None
+            };
+
             let _ = app_ready.emit(
                 "terminal://ready",
                 TerminalReadyEvent {
                     terminal_id: terminal_id_ready,
+                    shell_integration_identity,
                 },
             );
         });
@@ -507,6 +685,26 @@ pub fn terminal_write(terminal_id: String, data: String) -> Result<(), TerminalE
         })?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn terminal_interrupt(terminal_id: String) -> Result<(), TerminalError> {
+    let manager = get_terminal_manager();
+    let mut mgr = lock_manager(&manager)?;
+
+    let session = mgr
+        .sessions
+        .get_mut(&terminal_id)
+        .ok_or_else(|| TerminalError::NotFound {
+            terminal_id: terminal_id.clone(),
+        })?;
+
+    if session.killed {
+        return Err(TerminalError::AlreadyKilled { terminal_id });
+    }
+
+    session.active_interrupt_token = None;
+    interrupt_terminal_session(session)
 }
 
 /// Resize a terminal
@@ -630,6 +828,42 @@ pub fn terminal_list() -> Result<Vec<TerminalInfo>, TerminalError> {
     Ok(terminals)
 }
 
+#[tauri::command]
+pub fn terminal_list_snapshots(
+    max_chars: Option<usize>,
+) -> Result<Vec<TerminalSnapshot>, TerminalError> {
+    let manager = get_terminal_manager();
+    let mgr = lock_manager(&manager)?;
+    let limit = max_chars
+        .unwrap_or(DEFAULT_SCROLLBACK_QUERY_CHARS)
+        .min(MAX_SCROLLBACK_CHARS);
+
+    let snapshots = mgr
+        .sessions
+        .values()
+        .filter(|s| !s.killed)
+        .map(|session| {
+            let full = &session.output_history;
+            let scrollback = if full.len() <= limit {
+                full.clone()
+            } else {
+                let mut start = full.len() - limit;
+                while start > 0 && !full.is_char_boundary(start) {
+                    start -= 1;
+                }
+                full[start..].to_string()
+            };
+
+            TerminalSnapshot {
+                info: session.info.clone(),
+                scrollback,
+            }
+        })
+        .collect();
+
+    Ok(snapshots)
+}
+
 /// Fetch terminal scrollback for frontend rehydration after reload/HMR.
 #[tauri::command]
 pub fn terminal_get_scrollback(
@@ -662,6 +896,220 @@ pub fn terminal_get_scrollback(
         start -= 1;
     }
     Ok(full[start..].to_string())
+}
+
+#[tauri::command]
+pub async fn terminal_wait_for_shell_integration(
+    terminal_id: String,
+    timeout_ms: Option<u64>,
+) -> Result<Option<String>, TerminalError> {
+    let manager = get_terminal_manager();
+    Ok(terminal_wait_for_shell_integration_identity(
+        &manager,
+        &terminal_id,
+        timeout_ms.unwrap_or(3_000),
+        100,
+    ))
+}
+
+#[tauri::command]
+pub async fn terminal_execute_command_fallback(
+    terminal_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+) -> Result<TerminalCommandCompletion, TerminalError> {
+    let manager = get_terminal_manager();
+    let timeout = timeout_ms.unwrap_or(300_000);
+    let sentinel = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    );
+    let capture = "$voltExit = if ($?) { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 } }";
+
+    let start_offset = {
+        let mut mgr = lock_manager(&manager)?;
+        let session = mgr
+            .sessions
+            .get_mut(&terminal_id)
+            .ok_or_else(|| TerminalError::NotFound {
+                terminal_id: terminal_id.clone(),
+            })?;
+
+        if session.killed {
+            return Err(TerminalError::AlreadyKilled { terminal_id });
+        }
+
+        let start_offset = session.output_history.len();
+        let script = format!(
+            "{command}; {capture}; echo \"__VOLT_EXIT_CODE_$voltExit__\"; echo \"__VOLT_DONE_{sentinel}__\"\r"
+        );
+        session
+            .writer
+            .write_all(script.as_bytes())
+            .map_err(|e| TerminalError::WriteFailed {
+                message: e.to_string(),
+            })?;
+        session
+            .writer
+            .flush()
+            .map_err(|e| TerminalError::WriteFailed {
+                message: e.to_string(),
+            })?;
+
+        start_offset
+    };
+
+    let started_at = std::time::Instant::now();
+    let timeout_duration = Duration::from_millis(timeout);
+
+    loop {
+        let Some(raw_output) = get_terminal_output_since(&manager, &terminal_id, start_offset) else {
+            return Ok(TerminalCommandCompletion {
+                exit_code: 1,
+                output: String::new(),
+                cwd: None,
+                timed_out: false,
+            });
+        };
+
+        if raw_output.contains(&format!("__VOLT_DONE_{sentinel}__")) {
+            let exit_code = raw_output
+                .split("__VOLT_EXIT_CODE_")
+                .nth(1)
+                .and_then(|value| {
+                    value.chars()
+                        .take_while(|char| char.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<i32>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            let cwd = extract_terminal_cwd(&raw_output);
+
+            return Ok(TerminalCommandCompletion {
+                exit_code,
+                output: raw_output,
+                cwd,
+                timed_out: false,
+            });
+        }
+
+        if contains_powershell_parser_error(&raw_output) {
+            let cwd = extract_terminal_cwd(&raw_output);
+            return Ok(TerminalCommandCompletion {
+                exit_code: 1,
+                output: raw_output,
+                cwd,
+                timed_out: false,
+            });
+        }
+
+        if started_at.elapsed() >= timeout_duration {
+            let mut mgr = lock_manager(&manager)?;
+            if let Some(session) = mgr.sessions.get_mut(&terminal_id) {
+                let _ = interrupt_terminal_session(session);
+            }
+
+            return Ok(TerminalCommandCompletion {
+                exit_code: -1,
+                output: get_terminal_output_since(&manager, &terminal_id, start_offset)
+                    .unwrap_or_default(),
+                cwd: None,
+                timed_out: true,
+            });
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[tauri::command]
+pub async fn terminal_schedule_interrupt(
+    terminal_id: String,
+    delay_ms: u64,
+    token: u64,
+) -> Result<bool, TerminalError> {
+    let manager = get_terminal_manager();
+    {
+        let mut mgr = lock_manager(&manager)?;
+        let session = mgr
+            .sessions
+            .get_mut(&terminal_id)
+            .ok_or_else(|| TerminalError::NotFound {
+                terminal_id: terminal_id.clone(),
+            })?;
+
+        if session.killed {
+            return Err(TerminalError::AlreadyKilled { terminal_id });
+        }
+
+        session.active_interrupt_token = Some(token);
+    }
+
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+    let mut mgr = lock_manager(&manager)?;
+    let session = match mgr.sessions.get_mut(&terminal_id) {
+        Some(session) => session,
+        None => return Ok(false),
+    };
+
+    if session.killed || session.active_interrupt_token != Some(token) {
+        return Ok(false);
+    }
+
+    session.active_interrupt_token = None;
+    interrupt_terminal_session(session)?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn terminal_cancel_scheduled_interrupt(
+    terminal_id: String,
+    token: u64,
+) -> Result<bool, TerminalError> {
+    let manager = get_terminal_manager();
+    let mut mgr = lock_manager(&manager)?;
+    let session = match mgr.sessions.get_mut(&terminal_id) {
+        Some(session) => session,
+        None => return Ok(false),
+    };
+
+    if session.active_interrupt_token == Some(token) {
+        session.active_interrupt_token = None;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
+pub async fn terminal_wait_for_output(
+    terminal_id: String,
+    start_offset: usize,
+    timeout_ms: Option<u64>,
+) -> Result<Option<String>, TerminalError> {
+    let manager = get_terminal_manager();
+    let started_at = std::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(10_000));
+
+    loop {
+        match get_terminal_output_since(&manager, &terminal_id, start_offset) {
+            Some(output) if !output.is_empty() => return Ok(Some(output)),
+            Some(_) => {}
+            None => return Ok(None),
+        }
+
+        if started_at.elapsed() >= timeout {
+            return Ok(None);
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Kill all active terminals

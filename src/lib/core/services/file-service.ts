@@ -1,12 +1,12 @@
 /**
  * Unified File Service - Single Source of Truth for ALL file operations
- * 
+ *
  * This is the VS Code-style architecture that eliminates desync issues:
  * - ALL components (Monaco, Editor, LSPs, AI tools) use this service
  * - Version tracking prevents blind overwrites
  * - Event-driven updates keep everything in sync
  * - Optimistic locking for concurrent edit safety
- * 
+ *
  * SaaS-Ready Features:
  * ✅ No cache desync (single source of truth)
  * ✅ Atomic operations with rollback
@@ -15,46 +15,31 @@
  * ✅ Audit trail for all changes
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { FileInfo } from '$core/types/files';
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { FileInfo } from "$core/types/files";
 import {
   isTsLspConnected,
   notifyDocumentChanged as notifyTsDocumentChanged,
-} from '$core/lsp/typescript-sidecar';
-import { notifyEslintDocumentChanged } from '$core/lsp/eslint-sidecar';
-import {
-  isSvelteLspConnected,
-  notifySvelteDocumentChanged,
-} from '$core/lsp/svelte-sidecar';
-import {
-  isHtmlLspConnected,
-  notifyHtmlDocumentChanged,
-} from '$core/lsp/html-sidecar';
-import {
-  isCssLspConnected,
-  notifyCssDocumentChanged,
-} from '$core/lsp/css-sidecar';
-import {
-  isJsonLspConnected,
-  notifyJsonDocumentChanged,
-} from '$core/lsp/json-sidecar';
+} from "$core/lsp/typescript-sidecar";
+import { notifyEslintDocumentChanged } from "$core/lsp/eslint-sidecar";
+import { isSvelteLspConnected, notifySvelteDocumentChanged } from "$core/lsp/svelte-sidecar";
+import { isHtmlLspConnected, notifyHtmlDocumentChanged } from "$core/lsp/html-sidecar";
+import { isCssLspConnected, notifyCssDocumentChanged } from "$core/lsp/css-sidecar";
+import { isJsonLspConnected, notifyJsonDocumentChanged } from "$core/lsp/json-sidecar";
 import {
   isDartLspRunning,
   notifyDocumentChanged as notifyDartDocumentChanged,
-} from '$core/lsp/dart-sidecar';
+} from "$core/lsp/dart-sidecar";
 import {
   isYamlLspRunning,
   notifyDocumentChanged as notifyYamlDocumentChanged,
-} from '$core/lsp/yaml-sidecar';
+} from "$core/lsp/yaml-sidecar";
 import {
   isXmlLspRunning,
   notifyDocumentChanged as notifyXmlDocumentChanged,
-} from '$core/lsp/xml-sidecar';
-import {
-  isTailwindLspConnected,
-  notifyTailwindDocumentChanged,
-} from '$core/lsp/tailwind-sidecar';
+} from "$core/lsp/xml-sidecar";
+import { isTailwindLspConnected, notifyTailwindDocumentChanged } from "$core/lsp/tailwind-sidecar";
 
 // ============================================================================
 // Types
@@ -64,7 +49,7 @@ export interface FileDocument {
   path: string;
   content: string;
   version: number;
-  diskVersion: number;  // Last known disk state version
+  diskVersion: number; // Last known disk state version
   isDirty: boolean;
   lastModified: number;
   language?: string;
@@ -85,25 +70,34 @@ interface NativeDocumentWriteResult {
   newVersion?: number;
   error?: string;
   conflictContent?: string;
+  state?: NativeDocumentState | null;
 }
 
-interface NativeDocumentApplyResult {
-  state: NativeDocumentState;
-  previousContent?: string;
+interface NativeDocumentBatchWriteResult {
+  success: boolean;
+  error?: string;
+  conflictContent?: string;
+  states?: NativeDocumentState[];
+}
+
+interface NativeDocumentRenamedEvent {
+  oldPath: string;
+  newPath: string;
+  state?: NativeDocumentState | null;
 }
 
 export interface FileChangeEvent {
   path: string;
   content: string;
   version: number;
-  source: 'disk' | 'editor' | 'ai' | 'lsp' | 'external';
+  source: "disk" | "editor" | "ai" | "lsp" | "external";
   previousContent?: string;
 }
 
 export interface WriteOptions {
-  expectedVersion?: number;  // Optimistic locking - fail if version mismatch
-  source?: FileChangeEvent['source'];
-  force?: boolean;  // Bypass version check (use sparingly)
+  expectedVersion?: number; // Optimistic locking - fail if version mismatch
+  source?: FileChangeEvent["source"];
+  force?: boolean; // Bypass version check (use sparingly)
   createIfMissing?: boolean;
 }
 
@@ -111,7 +105,7 @@ export interface WriteResult {
   success: boolean;
   newVersion?: number;
   error?: string;
-  conflictContent?: string;  // Current content if version conflict
+  conflictContent?: string; // Current content if version conflict
 }
 
 export interface WorkspaceMutationFileBackend {
@@ -131,13 +125,13 @@ type FileChangeCallback = (event: FileChangeEvent) => void;
 class UnifiedFileService {
   // Single source of truth for all file content
   private documents = new Map<string, FileDocument>();
-  
+
   // Subscribers for file changes (Monaco, LSPs, Editor Store, etc.)
   private subscribers = new Map<string, Set<FileChangeCallback>>();
-  
+
   // Global subscribers (notified of ALL file changes)
   private globalSubscribers = new Set<FileChangeCallback>();
-  
+
   private initialized = false;
   private nativeEventCleanup: (() => void) | null = null;
 
@@ -152,9 +146,9 @@ class UnifiedFileService {
   async read(path: string, forceRefresh = false): Promise<FileDocument | null> {
     const normalizedPath = this.normalizePath(path);
     await this.ensureNativeEvents();
-    const state = await invoke<NativeDocumentState | null>('document_read', {
+    const state = await invoke<NativeDocumentState | null>("document_read", {
       path: normalizedPath,
-      forceRefresh
+      forceRefresh,
     }).catch(() => null);
     if (!state) return null;
     const doc = this.mapNativeState(state);
@@ -169,25 +163,28 @@ class UnifiedFileService {
   async write(path: string, content: string, options: WriteOptions = {}): Promise<WriteResult> {
     const normalizedPath = this.normalizePath(path);
     await this.ensureNativeEvents();
-    const result = await invoke<NativeDocumentWriteResult>('document_write', {
+    const result = await invoke<NativeDocumentWriteResult>("document_write", {
       path: normalizedPath,
       content,
       expectedVersion: options.expectedVersion,
-      source: options.source ?? 'editor',
+      source: options.source ?? "editor",
       force: options.force ?? false,
-      createIfMissing: options.createIfMissing ?? false
-    }).catch((err) => ({
-      success: false,
-      error: String(err)
-    } as NativeDocumentWriteResult));
-    if (result.success) {
-      this.updateCachedPersistedDocument(normalizedPath, content, result.newVersion);
+      createIfMissing: options.createIfMissing ?? false,
+    }).catch(
+      (err) =>
+        ({
+          success: false,
+          error: String(err),
+        }) as NativeDocumentWriteResult,
+    );
+    if (result.success && result.state) {
+      this.documents.set(normalizedPath, this.mapNativeState(result.state));
     }
     return {
       success: result.success,
       newVersion: result.newVersion,
       error: result.error,
-      conflictContent: result.conflictContent
+      conflictContent: result.conflictContent,
     };
   }
 
@@ -197,7 +194,7 @@ class UnifiedFileService {
   async createDir(path: string): Promise<{ success: boolean; error?: string }> {
     const normalizedPath = this.normalizePath(path);
     try {
-      await invoke('create_dir', { path: normalizedPath });
+      await invoke("create_dir", { path: normalizedPath });
       return { success: true };
     } catch (error) {
       return { success: false, error: this.toErrorMessage(error) };
@@ -210,7 +207,7 @@ class UnifiedFileService {
   async getInfo(path: string): Promise<FileInfo | null> {
     const normalizedPath = this.normalizePath(path);
     try {
-      return await invoke<FileInfo>('get_file_info', { path: normalizedPath });
+      return await invoke<FileInfo>("get_file_info", { path: normalizedPath });
     } catch {
       return null;
     }
@@ -221,10 +218,9 @@ class UnifiedFileService {
    */
   async deletePath(path: string): Promise<{ success: boolean; error?: string }> {
     const normalizedPath = this.normalizePath(path);
+    await this.ensureNativeEvents();
     try {
-      await invoke('delete_path', { path: normalizedPath });
-      this.documents.delete(normalizedPath);
-      this.subscribers.delete(normalizedPath);
+      await invoke("document_delete", { path: normalizedPath });
       return { success: true };
     } catch (error) {
       return { success: false, error: this.toErrorMessage(error) };
@@ -234,27 +230,18 @@ class UnifiedFileService {
   /**
    * Rename a file or directory and keep cached document state in sync.
    */
-  async renamePath(oldPath: string, newPath: string): Promise<{ success: boolean; error?: string }> {
+  async renamePath(
+    oldPath: string,
+    newPath: string,
+  ): Promise<{ success: boolean; error?: string }> {
     const normalizedOldPath = this.normalizePath(oldPath);
     const normalizedNewPath = this.normalizePath(newPath);
+    await this.ensureNativeEvents();
     try {
-      await invoke('rename_path', {
+      await invoke("document_rename", {
         oldPath: normalizedOldPath,
         newPath: normalizedNewPath,
       });
-      const existing = this.documents.get(normalizedOldPath);
-      if (existing) {
-        this.documents.delete(normalizedOldPath);
-        this.documents.set(normalizedNewPath, {
-          ...existing,
-          path: normalizedNewPath,
-        });
-      }
-      const subscribers = this.subscribers.get(normalizedOldPath);
-      if (subscribers) {
-        this.subscribers.delete(normalizedOldPath);
-        this.subscribers.set(normalizedNewPath, subscribers);
-      }
       return { success: true };
     } catch (error) {
       return { success: false, error: this.toErrorMessage(error) };
@@ -265,42 +252,22 @@ class UnifiedFileService {
    * Update document content without writing to disk (for editor changes)
    * Marks document as dirty
    */
-  updateContent(path: string, content: string, source: FileChangeEvent['source'] = 'editor'): number {
+  updateContent(
+    path: string,
+    content: string,
+    source: FileChangeEvent["source"] = "editor",
+  ): void {
     const normalizedPath = this.normalizePath(path);
-    const existing = this.documents.get(normalizedPath) ?? null;
-    const fallbackVersion = existing?.version ?? 0;
-    const optimisticVersion = fallbackVersion + 1;
-    const optimisticPreviousContent = existing?.content;
-    const optimisticDoc: FileDocument = {
-      path: normalizedPath,
-      content,
-      version: optimisticVersion,
-      diskVersion: existing?.diskVersion ?? fallbackVersion,
-      isDirty: true,
-      lastModified: Date.now(),
-      language: existing?.language ?? this.detectLanguage(normalizedPath)
-    };
-
-    this.documents.set(normalizedPath, optimisticDoc);
-    this.notifyChange({
-      path: normalizedPath,
-      content,
-      version: optimisticVersion,
-      source,
-      previousContent: optimisticPreviousContent
-    });
-
     void this.ensureNativeEvents().then(async () => {
-      const result = await invoke<NativeDocumentApplyResult>('document_apply_edit', {
+      await invoke("document_apply_edit", {
         path: normalizedPath,
         content,
-        source
-      }).catch(() => null);
-      if (result?.state) {
-        this.documents.set(normalizedPath, this.mapNativeState(result.state));
-      }
+        source,
+      }).catch((error) => {
+        console.warn("[FileService] Failed to apply native edit:", error);
+        return null;
+      });
     });
-    return optimisticVersion;
   }
 
   /**
@@ -309,23 +276,23 @@ class UnifiedFileService {
   async save(path: string): Promise<WriteResult> {
     const normalizedPath = this.normalizePath(path);
     await this.ensureNativeEvents();
-    const result = await invoke<NativeDocumentWriteResult>('document_save', {
-      path: normalizedPath
-    }).catch((err) => ({
-      success: false,
-      error: String(err)
-    } as NativeDocumentWriteResult));
-    if (result.success) {
-      const existing = this.documents.get(normalizedPath);
-      if (existing) {
-        this.updateCachedPersistedDocument(normalizedPath, existing.content, result.newVersion);
-      }
+    const result = await invoke<NativeDocumentWriteResult>("document_save", {
+      path: normalizedPath,
+    }).catch(
+      (err) =>
+        ({
+          success: false,
+          error: String(err),
+        }) as NativeDocumentWriteResult,
+    );
+    if (result.success && result.state) {
+      this.documents.set(normalizedPath, this.mapNativeState(result.state));
     }
     return {
       success: result.success,
       newVersion: result.newVersion,
       error: result.error,
-      conflictContent: result.conflictContent
+      conflictContent: result.conflictContent,
     };
   }
 
@@ -338,13 +305,13 @@ class UnifiedFileService {
    */
   subscribe(path: string, callback: FileChangeCallback): () => void {
     const normalizedPath = this.normalizePath(path);
-    
+
     if (!this.subscribers.has(normalizedPath)) {
       this.subscribers.set(normalizedPath, new Set());
     }
-    
+
     this.subscribers.get(normalizedPath)!.add(callback);
-    
+
     // Return unsubscribe function
     return () => {
       this.subscribers.get(normalizedPath)?.delete(callback);
@@ -372,17 +339,17 @@ class UnifiedFileService {
         try {
           callback(event);
         } catch (err) {
-          console.error('[FileService] Subscriber error:', err);
+          console.error("[FileService] Subscriber error:", err);
         }
       }
     }
-    
+
     // Notify global subscribers
     for (const callback of this.globalSubscribers) {
       try {
         callback(event);
       } catch (err) {
-        console.error('[FileService] Global subscriber error:', err);
+        console.error("[FileService] Global subscriber error:", err);
       }
     }
   }
@@ -422,8 +389,14 @@ class UnifiedFileService {
   /**
    * Get all dirty documents
    */
-  getDirtyDocuments(): FileDocument[] {
-    return Array.from(this.documents.values()).filter(d => d.isDirty);
+  async getDirtyDocuments(): Promise<FileDocument[]> {
+    await this.ensureNativeEvents();
+    const states = await invoke<NativeDocumentState[]>("document_list_dirty").catch(() => []);
+    const documents = states.map((state) => this.mapNativeState(state));
+    for (const document of documents) {
+      this.documents.set(this.normalizePath(document.path), document);
+    }
+    return documents;
   }
 
   /**
@@ -431,33 +404,23 @@ class UnifiedFileService {
    */
   closeDocument(path: string): void {
     const normalizedPath = this.normalizePath(path);
-    this.documents.delete(normalizedPath);
-    this.subscribers.delete(normalizedPath);
-    void invoke('document_close', { path: normalizedPath }).catch(() => {});
-  }
-
-  async getNativeDocument(path: string): Promise<FileDocument | null> {
-    const normalizedPath = this.normalizePath(path);
-    await this.ensureNativeEvents();
-    const state = await invoke<NativeDocumentState | null>('document_get', {
-      path: normalizedPath
-    }).catch(() => null);
-    if (!state) return null;
-    const doc = this.mapNativeState(state);
-    this.documents.set(normalizedPath, doc);
-    return doc;
+    void this.ensureNativeEvents()
+      .then(async () => {
+        await invoke("document_close", { path: normalizedPath });
+      })
+      .catch(() => {});
   }
 
   async syncFromNative(path: string, forceRefresh = false): Promise<FileDocument | null> {
     return this.read(path, forceRefresh);
   }
 
-  async saveAndGetDocument(path: string): Promise<{ result: WriteResult; document: FileDocument | null }> {
+  async saveAndGetDocument(
+    path: string,
+  ): Promise<{ result: WriteResult; document: FileDocument | null }> {
     const normalizedPath = this.normalizePath(path);
     const result = await this.save(normalizedPath);
-    const document = result.success
-      ? (await this.getNativeDocument(normalizedPath)) ?? this.documents.get(normalizedPath) ?? null
-      : this.documents.get(normalizedPath) ?? null;
+    const document = this.documents.get(normalizedPath) ?? null;
     return { result, document };
   }
 
@@ -471,8 +434,8 @@ class UnifiedFileService {
   async reload(path: string): Promise<FileDocument | null> {
     const normalizedPath = this.normalizePath(path);
     await this.ensureNativeEvents();
-    const state = await invoke<NativeDocumentState | null>('document_reload', {
-      path: normalizedPath
+    const state = await invoke<NativeDocumentState | null>("document_reload", {
+      path: normalizedPath,
     }).catch(() => null);
     if (!state) return null;
     const doc = this.mapNativeState(state);
@@ -488,29 +451,8 @@ class UnifiedFileService {
       diskVersion: state.diskVersion,
       isDirty: state.isDirty,
       lastModified: state.lastModified,
-      language: state.language ?? this.detectLanguage(state.path)
+      language: state.language ?? this.detectLanguage(state.path),
     };
-  }
-
-  private updateCachedPersistedDocument(
-    normalizedPath: string,
-    content: string,
-    newVersion?: number,
-  ): void {
-    const existing = this.documents.get(normalizedPath);
-    const version =
-      newVersion ??
-      existing?.version ??
-      1;
-    this.documents.set(normalizedPath, {
-      path: normalizedPath,
-      content,
-      version,
-      diskVersion: version,
-      isDirty: false,
-      lastModified: Date.now(),
-      language: existing?.language ?? this.detectLanguage(normalizedPath),
-    });
   }
 
   private toErrorMessage(error: unknown): string {
@@ -522,37 +464,67 @@ class UnifiedFileService {
     this.initialized = true;
     const unlistenFns: UnlistenFn[] = [];
     try {
-      const unlistenChanged = await listen<FileChangeEvent & { diskVersion?: number; isDirty?: boolean }>(
-        'document://changed',
-        (event) => {
-          const payload = event.payload;
-          const existing = this.documents.get(this.normalizePath(payload.path));
-          const doc: FileDocument = {
-            path: this.normalizePath(payload.path),
-            content: payload.content,
-            version: payload.version,
-            diskVersion: payload.diskVersion ?? existing?.diskVersion ?? payload.version,
-            isDirty: payload.isDirty ?? false,
-            lastModified: Date.now(),
-            language: existing?.language ?? this.detectLanguage(payload.path)
-          };
-          this.documents.set(doc.path, doc);
-          this.notifyChange({
-            path: doc.path,
-            content: doc.content,
-            version: doc.version,
-            source: payload.source,
-            previousContent: payload.previousContent
-          });
-        }
-      );
+      const unlistenChanged = await listen<
+        FileChangeEvent & { diskVersion?: number; isDirty?: boolean }
+      >("document://changed", (event) => {
+        const payload = event.payload;
+        const existing = this.documents.get(this.normalizePath(payload.path));
+        const preserveCleanStateForRedundantEdit =
+          existing &&
+          !existing.isDirty &&
+          (payload.isDirty ?? false) &&
+          existing.content === payload.content;
+        const doc: FileDocument = {
+          path: this.normalizePath(payload.path),
+          content: payload.content,
+          version: payload.version,
+          diskVersion: payload.diskVersion ?? existing?.diskVersion ?? payload.version,
+          isDirty: preserveCleanStateForRedundantEdit ? false : (payload.isDirty ?? false),
+          lastModified: Date.now(),
+          language: existing?.language ?? this.detectLanguage(payload.path),
+        };
+        this.documents.set(doc.path, doc);
+        this.notifyChange({
+          path: doc.path,
+          content: doc.content,
+          version: doc.version,
+          source: payload.source,
+          previousContent: payload.previousContent,
+        });
+      });
       unlistenFns.push(unlistenChanged);
-      const unlistenClosed = await listen<{ path: string }>('document://closed', (event) => {
+      const unlistenClosed = await listen<{ path: string }>("document://closed", (event) => {
         const path = this.normalizePath(event.payload.path);
         this.documents.delete(path);
         this.subscribers.delete(path);
       });
       unlistenFns.push(unlistenClosed);
+      const unlistenRenamed = await listen<NativeDocumentRenamedEvent>(
+        "document://renamed",
+        (event) => {
+          const oldPath = this.normalizePath(event.payload.oldPath);
+          const newPath = this.normalizePath(event.payload.newPath);
+          const existing = this.documents.get(oldPath) ?? null;
+          const nextDocument =
+            event.payload.state ? this.mapNativeState(event.payload.state) : existing;
+
+          this.documents.delete(oldPath);
+          if (nextDocument) {
+            this.documents.set(newPath, {
+              ...nextDocument,
+              path: newPath,
+              language: nextDocument.language ?? this.detectLanguage(newPath),
+            });
+          }
+
+          const subscribers = this.subscribers.get(oldPath);
+          this.subscribers.delete(oldPath);
+          if (subscribers) {
+            this.subscribers.set(newPath, subscribers);
+          }
+        },
+      );
+      unlistenFns.push(unlistenRenamed);
       this.nativeEventCleanup = () => {
         for (const unlisten of unlistenFns) {
           unlisten();
@@ -572,32 +544,32 @@ class UnifiedFileService {
   // ============================================================================
 
   private normalizePath(path: string): string {
-    return path.replace(/\\/g, '/');
+    return path.replace(/\\/g, "/");
   }
 
   private detectLanguage(path: string): string {
-    const ext = path.split('.').pop()?.toLowerCase() ?? '';
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
     const langMap: Record<string, string> = {
-      'ts': 'typescript',
-      'tsx': 'typescriptreact',
-      'js': 'javascript',
-      'jsx': 'javascriptreact',
-      'svelte': 'svelte',
-      'html': 'html',
-      'css': 'css',
-      'scss': 'scss',
-      'less': 'less',
-      'json': 'json',
-      'md': 'markdown',
-      'yaml': 'yaml',
-      'yml': 'yaml',
-      'xml': 'xml',
-      'dart': 'dart',
-      'rs': 'rust',
-      'py': 'python',
-      'go': 'go',
+      ts: "typescript",
+      tsx: "typescriptreact",
+      js: "javascript",
+      jsx: "javascriptreact",
+      svelte: "svelte",
+      html: "html",
+      css: "css",
+      scss: "scss",
+      less: "less",
+      json: "json",
+      md: "markdown",
+      yaml: "yaml",
+      yml: "yaml",
+      xml: "xml",
+      dart: "dart",
+      rs: "rust",
+      py: "python",
+      go: "go",
     };
-    return langMap[ext] ?? 'plaintext';
+    return langMap[ext] ?? "plaintext";
   }
 
   /**
@@ -606,50 +578,37 @@ class UnifiedFileService {
    */
   async batchWrite(
     writes: Array<{ path: string; content: string }>,
-    options: WriteOptions = {}
+    options: WriteOptions = {},
   ): Promise<WriteResult> {
-    // Verify all files first
-    const verifications: Array<{ path: string; existing: FileDocument | null }> = [];
-    
-    for (const { path } of writes) {
-      const normalizedPath = this.normalizePath(path);
-      const existing = this.documents.get(normalizedPath);
-      verifications.push({ path: normalizedPath, existing: existing ?? null });
-    }
-    
-    // If version checking, verify all versions match
-    if (options.expectedVersion !== undefined && !options.force) {
-      for (const { path, existing } of verifications) {
-        if (existing && existing.version !== options.expectedVersion) {
-          return {
-            success: false,
-            error: `Version conflict in ${path}`,
-            conflictContent: existing.content
-          };
-        }
+    await this.ensureNativeEvents();
+    const result = await invoke<NativeDocumentBatchWriteResult>("document_batch_write", {
+      writes: writes.map(({ path, content }) => ({
+        path: this.normalizePath(path),
+        content,
+      })),
+      expectedVersion: options.expectedVersion,
+      source: options.source ?? "editor",
+      force: options.force ?? false,
+      createIfMissing: options.createIfMissing ?? false,
+    }).catch(
+      (err) =>
+        ({
+          success: false,
+          error: String(err),
+        }) as NativeDocumentBatchWriteResult,
+    );
+
+    if (result.success && result.states) {
+      for (const state of result.states) {
+        this.documents.set(this.normalizePath(state.path), this.mapNativeState(state));
       }
     }
-    
-    // Write all files
-    const results: Array<{ path: string; success: boolean }> = [];
-    
-    for (const { path, content } of writes) {
-      const result = await this.write(path, content, { ...options, force: true });
-      results.push({ path, success: result.success });
-      
-      if (!result.success) {
-        // Rollback previous writes (best effort)
-        console.error(`[FileService] Batch write failed at ${path}, attempting rollback`);
-        for (const { path: rollbackPath, existing } of verifications) {
-          if (existing && results.some(r => r.path === rollbackPath && r.success)) {
-            await this.write(rollbackPath, existing.content, { force: true });
-          }
-        }
-        return { success: false, error: `Batch write failed at ${path}` };
-      }
-    }
-    
-    return { success: true };
+
+    return {
+      success: result.success,
+      error: result.error,
+      conflictContent: result.conflictContent,
+    };
   }
 }
 
@@ -665,77 +624,77 @@ export async function initializeFileService(): Promise<void> {
   // Subscribe to all file changes and notify relevant LSPs
   fileService.subscribeAll(async (event) => {
     const { path, content } = event;
-    const ext = path.split('.').pop()?.toLowerCase() ?? '';
-    
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+
     try {
       // TypeScript/JavaScript
-      if (['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)) {
+      if (["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"].includes(ext)) {
         if (isTsLspConnected()) {
           await notifyTsDocumentChanged(path, content);
         }
         await notifyEslintDocumentChanged(path, content);
       }
-      
+
       // Svelte
-      if (ext === 'svelte') {
+      if (ext === "svelte") {
         if (isSvelteLspConnected()) {
           await notifySvelteDocumentChanged(path, content);
         }
       }
-      
+
       // HTML
-      if (['html', 'htm'].includes(ext)) {
+      if (["html", "htm"].includes(ext)) {
         if (isHtmlLspConnected()) {
           await notifyHtmlDocumentChanged(path, content);
         }
       }
-      
+
       // CSS/SCSS/LESS
-      if (['css', 'scss', 'less', 'sass'].includes(ext)) {
+      if (["css", "scss", "less", "sass"].includes(ext)) {
         if (isCssLspConnected()) {
           await notifyCssDocumentChanged(path, content);
         }
       }
-      
+
       // JSON
-      if (ext === 'json') {
+      if (ext === "json") {
         if (isJsonLspConnected()) {
           await notifyJsonDocumentChanged(path, content);
         }
       }
-      
+
       // Dart
-      if (ext === 'dart') {
+      if (ext === "dart") {
         if (isDartLspRunning()) {
           await notifyDartDocumentChanged(path, content);
         }
       }
-      
+
       // YAML
-      if (['yaml', 'yml'].includes(ext)) {
+      if (["yaml", "yml"].includes(ext)) {
         if (isYamlLspRunning()) {
           await notifyYamlDocumentChanged(path, content);
         }
       }
-      
+
       // XML
-      if (['xml', 'plist', 'xsd'].includes(ext)) {
+      if (["xml", "plist", "xsd"].includes(ext)) {
         if (isXmlLspRunning()) {
           await notifyXmlDocumentChanged(path, content);
         }
       }
-      
+
       // Tailwind (for any file that might have Tailwind classes)
       if (isTailwindLspConnected()) {
         await notifyTailwindDocumentChanged(path, content);
       }
     } catch (err) {
       // Non-fatal - LSP notification failed but file was saved
-      console.warn('[FileService] LSP notification error:', err);
+      console.warn("[FileService] LSP notification error:", err);
     }
   });
-  
-  console.log('[FileService] Initialized with LSP integration');
+
+  console.log("[FileService] Initialized with LSP integration");
 }
 
 // Export types

@@ -6,12 +6,14 @@
 //! - Query server status
 
 use crate::lsp::{
-    ExternalLspConfig, LspError, LspManager, LspProjectDiagnosticsPlan, LspServerConfig,
-    LspServerInfo, LspTrackedDocumentInfo, LspTrackedDocumentSyncResult,
+    ExternalLspConfig, LspError, LspHealthStatus, LspManager, LspProjectDiagnosticsPlan,
+    LspRecoveryState, LspServerConfig, LspServerInfo, LspTrackedDocumentInfo,
+    LspTrackedDocumentSyncResult,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Runtime, State};
+use tokio::time::{sleep, Duration};
 
 /// Global LSP manager state
 pub struct LspManagerState<R: Runtime>(pub Mutex<Option<LspManager<R>>>);
@@ -76,6 +78,31 @@ pub async fn lsp_start_server<R: Runtime>(
     state.with_manager(&app_handle, |manager| manager.start_server(config))
 }
 
+#[tauri::command]
+pub async fn lsp_start_server_managed<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    server_type: String,
+    sidecar_name: String,
+    entrypoint: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> Result<LspServerInfo, LspError> {
+    let config = LspServerConfig {
+        server_id,
+        server_type,
+        sidecar_name,
+        entrypoint,
+        args,
+        cwd,
+        env,
+    };
+
+    state.with_manager(&app_handle, |manager| manager.start_server_managed(config))
+}
+
 /// Start an external language server (from user's PATH, e.g., Dart, Rust Analyzer)
 #[tauri::command]
 pub async fn lsp_start_external_server<R: Runtime>(
@@ -98,6 +125,29 @@ pub async fn lsp_start_external_server<R: Runtime>(
     };
 
     state.with_manager(&app_handle, |manager| manager.start_external_server(config))
+}
+
+#[tauri::command]
+pub async fn lsp_start_external_server_managed<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    server_type: String,
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> Result<LspServerInfo, LspError> {
+    let config = ExternalLspConfig {
+        server_id,
+        server_type,
+        command,
+        args,
+        cwd,
+        env,
+    };
+
+    state.with_manager(&app_handle, |manager| manager.start_external_server_managed(config))
 }
 
 /// Stop a language server sidecar
@@ -129,6 +179,73 @@ pub async fn lsp_restart_server<R: Runtime>(
     server_id: String,
 ) -> Result<LspServerInfo, LspError> {
     state.with_manager(&app_handle, |manager| manager.restart_server(&server_id))
+}
+
+#[tauri::command]
+pub async fn lsp_schedule_recovery<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    reason: String,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    max_attempts: usize,
+    window_ms: u64,
+) -> Result<LspRecoveryState, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.schedule_recovery(
+            &server_id,
+            &reason,
+            base_delay_ms,
+            max_delay_ms,
+            max_attempts,
+            window_ms,
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_reset_recovery<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+) -> Result<LspRecoveryState, LspError> {
+    state.with_manager(&app_handle, |manager| manager.reset_recovery_state(&server_id))
+}
+
+#[tauri::command]
+pub async fn lsp_check_health<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    transport_connected: bool,
+    failure_threshold: u64,
+) -> Result<LspHealthStatus, LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.check_health(&server_id, transport_connected, failure_threshold)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_start_health_monitoring<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+    interval_ms: u64,
+    failure_threshold: u64,
+) -> Result<(), LspError> {
+    state.with_manager(&app_handle, |manager| {
+        manager.start_health_monitoring(&server_id, interval_ms, failure_threshold)
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_stop_health_monitoring<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    server_id: String,
+) -> Result<(), LspError> {
+    state.with_manager(&app_handle, |manager| manager.stop_health_monitoring(&server_id))
 }
 
 /// Send a JSON-RPC message to a language server
@@ -194,6 +311,26 @@ pub async fn lsp_begin_project_diagnostics<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn lsp_begin_project_diagnostics_managed<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    root_path: String,
+    sidecars: Vec<String>,
+) -> Result<LspProjectDiagnosticsPlan, LspError> {
+    loop {
+        let plan = state.with_manager(&app_handle, |manager| {
+            manager.begin_project_diagnostics(&root_path, &sidecars)
+        })?;
+
+        if plan.action != "delay" {
+            return Ok(plan);
+        }
+
+        sleep(Duration::from_millis(plan.delay_ms)).await;
+    }
+}
+
+#[tauri::command]
 pub async fn lsp_complete_project_diagnostics<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, LspManagerState<R>>,
@@ -202,6 +339,39 @@ pub async fn lsp_complete_project_diagnostics<R: Runtime>(
     state.with_manager(&app_handle, |manager| {
         manager.complete_project_diagnostics(run_id)
     })
+}
+
+#[tauri::command]
+pub async fn lsp_complete_project_diagnostics_managed<R: Runtime>(
+    app_handle: AppHandle<R>,
+    state: State<'_, LspManagerState<R>>,
+    run_id: u64,
+    sidecars: Vec<String>,
+) -> Result<LspProjectDiagnosticsPlan, LspError> {
+    let mut plan = state.with_manager(&app_handle, |manager| {
+        manager.complete_project_diagnostics(run_id)
+    })?;
+
+    while plan.action == "delay" {
+        let Some(root_path) = plan.root_path.clone() else {
+            return Ok(plan);
+        };
+        sleep(Duration::from_millis(plan.delay_ms)).await;
+        plan = state.with_manager(&app_handle, |manager| {
+            manager.begin_project_diagnostics(&root_path, &sidecars)
+        })?;
+    }
+
+    Ok(plan)
+}
+
+#[tauri::command]
+pub async fn lsp_wait_project_diagnostics_delay(delay_ms: u64) -> Result<(), LspError> {
+    if delay_ms > 0 {
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

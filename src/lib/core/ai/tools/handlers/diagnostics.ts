@@ -16,6 +16,7 @@ import type { Problem } from '$shared/stores/problems.svelte';
 
 const TS_FALLBACK_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 const JS_FALLBACK_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs']);
+const FALLBACK_DIAGNOSTIC_SOURCES = ['typescript (fallback)', 'javascript (fallback)'] as const;
 
 function getFileExtension(path: string): string {
   const normalized = path.replace(/\\/g, '/').toLowerCase();
@@ -181,6 +182,40 @@ async function collectFallbackDiagnostics(
   });
 }
 
+function syncFallbackDiagnosticsToProblemsStore(
+  requestedPaths: string[],
+  fallbackProblems: Problem[],
+): void {
+  const requestedAbsolutePaths = requestedPaths.map((path) => resolvePath(path).replace(/\\/g, '/'));
+
+  for (const absolutePath of requestedAbsolutePaths) {
+    for (const source of FALLBACK_DIAGNOSTIC_SOURCES) {
+      problemsStore.clearProblemsForFile(absolutePath, source);
+    }
+  }
+
+  const grouped = new Map<string, { file: string; source: string; problems: Problem[] }>();
+  for (const problem of fallbackProblems) {
+    const file = problem.file.replace(/\\/g, '/');
+    const key = `${file}::${problem.source}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.problems.push(problem);
+      continue;
+    }
+    grouped.set(key, {
+      file,
+      source: problem.source,
+      problems: [problem],
+    });
+  }
+
+  for (const entry of grouped.values()) {
+    problemsStore.setProblemsForFile(entry.file, entry.problems, entry.source);
+    problemsStore.markSourceFresh(entry.source);
+  }
+}
+
 /**
  * Get errors/warnings from IDE
  * 
@@ -246,6 +281,9 @@ export async function handleGetDiagnostics(
     relevantProblems.length === 0 && pathsToCheck.length > 0
       ? await collectFallbackDiagnostics(pathsToCheck, workspaceRoot)
       : [];
+  if (relevantProblems.length === 0 && pathsToCheck.length > 0) {
+    syncFallbackDiagnosticsToProblemsStore(pathsToCheck, fallbackProblems);
+  }
   const effectiveProblems = fallbackProblems.length > 0 ? fallbackProblems : relevantProblems;
   const usedFallbackDiagnostics = fallbackProblems.length > 0;
 

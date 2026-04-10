@@ -18,20 +18,11 @@
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
 import { sendDidSaveForTrackedDocument } from './sidecar/document-lifecycle';
-import {
-  createLspRecoveryController,
-} from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectYamlLsp, isYamlLspAvailable } from './yaml-sdk';
 
 let yamlServerTransport: LspTransport | null = null;
 let yamlServerInitialized = false;
-const yamlRecovery = createLspRecoveryController({
-  source: 'yaml',
-  restart: async () => {
-    await recoverYamlLspAfterExit();
-  },
-});
 
 // Track open documents
 // Debounce diagnostics
@@ -110,6 +101,7 @@ export async function initializeServer(): Promise<boolean> {
     // Start the server via registry
     const registry = getLspRegistry();
     yamlServerTransport = await registry.startServer('yaml', {
+      serverId: 'yaml-main',
       cwd: rootPath,
       restartPolicy: {
         enabled: true,
@@ -130,9 +122,11 @@ export async function initializeServer(): Promise<boolean> {
     yamlServerTransport.onMessage(handleServerMessage);
     yamlServerTransport.onExit(() => {
       console.log('[YAML LSP] Server exited');
-      yamlRecovery.schedule('transport exit');
-      yamlServerTransport = null;
       yamlServerInitialized = false;
+    });
+    yamlServerTransport.onRestart(() => {
+      console.log('[YAML LSP] Server restarted');
+      yamlServerInitialized = true;
     });
 
     // Send initialize request
@@ -213,7 +207,6 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     yamlServerInitialized = true;
-    yamlRecovery.reset();
     console.log('[YAML LSP] Server initialized successfully');
     return true;
   } catch (error) {
@@ -378,17 +371,6 @@ export async function formatDocument(filepath: string): Promise<unknown> {
 /**
  * Stop the YAML LSP server
  */
-async function recoverYamlLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || yamlServerTransport) {
-    return;
-  }
-
-  const initialized = await initializeServer();
-  if (!initialized) {
-    throw new Error('YAML LSP restart failed');
-  }
-}
-
 export async function stopYamlLsp(): Promise<void> {
   if (!yamlServerTransport) return;
 
@@ -405,10 +387,8 @@ export async function stopYamlLsp(): Promise<void> {
   } catch (error) {
     console.error('[YAML LSP] Shutdown error:', error);
   } finally {
-    const registry = getLspRegistry();
-    void registry.stopServer('yaml');
+    await yamlServerTransport.stop();
     yamlServerTransport = null;
     yamlServerInitialized = false;
-    yamlRecovery.reset();
   }
 }

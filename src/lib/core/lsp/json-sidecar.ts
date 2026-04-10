@@ -16,7 +16,6 @@
 import {
   getLspRegistry,
   sendDidSaveForTrackedDocument,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
@@ -26,12 +25,6 @@ import { projectStore } from '$shared/stores/project.svelte';
 let jsonServerTransport: LspTransport | null = null;
 let jsonServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-const jsonRecovery = createLspRecoveryController({
-  source: 'json',
-  restart: async () => {
-    await recoverJsonLspAfterExit();
-  },
-});
 
 /**
  * Check if a file is a JSON file
@@ -122,10 +115,12 @@ async function initializeServer(): Promise<void> {
       });
       jsonServerTransport.onExit(() => {
         console.log('[JSON LSP] Server exited');
-        jsonRecovery.schedule('transport exit');
-        jsonServerTransport = null;
         jsonServerInitialized = false;
         initializationPromise = null;
+      });
+      jsonServerTransport.onRestart(() => {
+        console.log('[JSON LSP] Server restarted');
+        jsonServerInitialized = true;
       });
 
       const rootUri = pathToUri(projectStore.rootPath!);
@@ -180,7 +175,6 @@ async function initializeServer(): Promise<void> {
 
       await jsonServerTransport.sendNotification('initialized', {});
       jsonServerInitialized = true;
-      jsonRecovery.reset();
       console.log('[JSON LSP] Server initialized');
     } catch (error) {
       console.error('[JSON LSP] Failed to initialize:', error);
@@ -288,13 +282,6 @@ export async function ensureJsonLspStarted(): Promise<void> {
 /**
  * Stop the JSON LSP server
  */
-async function recoverJsonLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || jsonServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
-}
-
 export async function stopJsonLsp(): Promise<void> {
   if (!jsonServerTransport) return;
 
@@ -312,5 +299,4 @@ export async function stopJsonLsp(): Promise<void> {
   jsonServerTransport = null;
   jsonServerInitialized = false;
   initializationPromise = null;
-  jsonRecovery.reset();
 }

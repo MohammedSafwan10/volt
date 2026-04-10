@@ -55,6 +55,7 @@ import { createToolTrackingState } from "./tool-tracking";
 import { executeNativeDispatchPlan, type NativeDispatchAuthority } from "./native-dispatch-plan";
 import { processToolsNeedingApproval } from "./approval-executor";
 import { compileProviderMessages } from "./compile-provider-messages";
+import { buildPartialToolCallPreview } from "./tool-call-previews";
 interface NativeApprovalAuthority {
   shouldAbort: boolean;
   reason?: string;
@@ -708,8 +709,25 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
                 streamedToolIds.set(rawToolCallId, toolCallId);
               }
               const toolCallThoughtSignature = chunk.toolCall.thoughtSignature;
+              const existingInlineToolCall = assistantStore.messages
+                .find((msg) => msg.id === msgId)
+                ?.inlineToolCalls?.find((tc) => tc.id === toolCallId);
               const isPartialToolCall = Boolean(chunk.partial);
+              const isInternalCompletionTool = toolCallName === "attempt_completion";
               if (isPartialToolCall) {
+                if (!isInternalCompletionTool) {
+                  const partialPreview = buildPartialToolCallPreview({
+                    toolCallId,
+                    toolName: toolCallName,
+                    toolArgs: toolCallArgs,
+                    existingToolCall: existingInlineToolCall,
+                  });
+                  if (existingInlineToolCall) {
+                    assistantStore.updateToolCallInMessage(msgId, toolCallId, partialPreview, false);
+                  } else {
+                    assistantStore.addToolCallToMessage(msgId, partialPreview, false);
+                  }
+                }
                 continue;
               }
               await textBuffer.flushNow();
@@ -718,9 +736,6 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
               toolCallSeenThisIteration = true;
               // Keep already-streamed text visible when tools begin.
               // Tool cards are shown inline without retracting prior narration.
-              const existingInlineToolCall = assistantStore.messages
-                .find((msg) => msg.id === msgId)
-                ?.inlineToolCalls?.find((tc) => tc.id === toolCallId);
 
               // DEDUPLICATION: Check if we already have this exact tool call in this iteration
               // This prevents the AI from running the same command twice in one response
@@ -776,7 +791,6 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
                 toolCallArgs,
                 assistantStore.currentMode,
               );
-              const isInternalCompletionTool = toolCallName === "attempt_completion";
               const capabilities = getToolCapabilities(toolCallName);
               const isPlanModeViolation =
                 isPlanMode &&
@@ -803,7 +817,10 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
                   : validation.requiresApproval
                     ? "pending"
                     : undefined,
-                meta: isAutoApproved ? { autoApproved: true } : undefined,
+                meta: {
+                  ...(isAutoApproved ? { autoApproved: true } : {}),
+                  partialToolCall: false,
+                },
                 thoughtSignature: toolCallThoughtSignature,
                 error:
                   validation.valid && !isPlanModeViolation

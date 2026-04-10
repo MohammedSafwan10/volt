@@ -16,6 +16,24 @@ use crate::observability::{debug_log, DebugScope};
 
 const WORKSPACE_EVENT: &str = "workspace://lifecycle";
 const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
+const LARGE_REPO_FILE_THRESHOLD: usize = 12_000;
+const LARGE_REPO_INDEX_MS_THRESHOLD: u64 = 1_500;
+const START_FILE_WATCHING_DELAY_MS: u64 = 80;
+const START_DART_LSP_DELAY_MS: u64 = 120;
+const INIT_GIT_DELAY_MS: u64 = 150;
+const INDEX_PROJECT_DELAY_MS: u64 = 450;
+const VERIFY_DART_LSP_DELAY_MS: u64 = 1_800;
+const LIGHT_DIAGNOSTICS_DELAY_MS: u64 = 1_800;
+const LARGE_DIAGNOSTICS_DELAY_MS: u64 = 4_000;
+const LIGHT_TSC_DELAY_MS: u64 = 2_600;
+const LARGE_TSC_DELAY_MS: u64 = 5_500;
+const LIGHT_MCP_DELAY_MS: u64 = 6_000;
+const LARGE_MCP_DELAY_MS: u64 = 12_000;
+const LIGHT_SEMANTIC_DELAY_MS: u64 = 8_000;
+const LARGE_SEMANTIC_DELAY_MS: u64 = 20_000;
+const LIGHT_FINALIZE_DELAY_MS: u64 = 3_400;
+const LARGE_FINALIZE_DELAY_MS: u64 = 7_800;
+const HEAVY_ROOT_DIRS: &[&str] = &["node_modules", ".next", "dist", "build"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +113,58 @@ pub struct WorkspaceRefreshResult {
     pub active_root_path: Option<String>,
     pub recent_projects: Vec<String>,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceActivationPlanRequest {
+    pub root_path: String,
+    #[serde(default)]
+    pub reuse_existing_workspace: bool,
+    #[serde(default)]
+    pub indexed_count: Option<usize>,
+    #[serde(default)]
+    pub initial_index_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceActivationPlan {
+    pub has_heavy_dirs: bool,
+    pub is_dart_workspace: bool,
+    pub large_repo_mode: bool,
+    pub tasks: Vec<WorkspaceActivationTask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceActivationInspection {
+    root_entries: Vec<String>,
+    has_pubspec: bool,
+    has_analysis_options: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceActivationTaskKind {
+    StartFileWatching,
+    StartDartLsp,
+    InitGit,
+    IndexProject,
+    RunDiagnostics,
+    StartTsc,
+    InitializeMcp,
+    WarmSemanticIndex,
+    FinalizeBackground,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceActivationTask {
+    pub id: String,
+    pub kind: WorkspaceActivationTaskKind,
+    pub delay_ms: u64,
+    pub phase: String,
+    pub serial: bool,
 }
 
 #[derive(Default)]
@@ -252,6 +322,31 @@ impl WorkspaceManagerState {
 
     async fn validate_workspace(path: &str) -> bool {
         get_file_info(Self::normalize_path(path)).await.is_ok()
+    }
+
+    fn inspect_activation(root_path: &str) -> Result<WorkspaceActivationInspection, String> {
+        let normalized_root = Self::normalize_path(root_path);
+        let read_dir = fs::read_dir(&normalized_root)
+            .map_err(|err| format!("Failed to inspect workspace root {normalized_root}: {err}"))?;
+        let mut root_entries = Vec::new();
+
+        for entry in read_dir {
+            let entry = entry.map_err(|err| {
+                format!("Failed to inspect workspace root entry for {normalized_root}: {err}")
+            })?;
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy().trim().to_string();
+            if !name.is_empty() {
+                root_entries.push(name);
+            }
+        }
+
+        let root = PathBuf::from(&normalized_root);
+        Ok(WorkspaceActivationInspection {
+            root_entries,
+            has_pubspec: root.join("pubspec.yaml").exists(),
+            has_analysis_options: root.join("analysis_options.yaml").exists(),
+        })
     }
 
     pub async fn open_workspace<R: Runtime>(
@@ -469,6 +564,139 @@ impl WorkspaceManagerState {
     }
 }
 
+impl WorkspaceActivationPlan {
+    fn root_has_heavy_dirs(entries: &[String]) -> bool {
+        entries.iter().any(|entry| {
+            let normalized = entry.trim().to_ascii_lowercase();
+            HEAVY_ROOT_DIRS.contains(&normalized.as_str())
+        })
+    }
+
+    fn from_inspection(
+        inspection: WorkspaceActivationInspection,
+        request: WorkspaceActivationPlanRequest,
+    ) -> Self {
+        let has_heavy_dirs = Self::root_has_heavy_dirs(&inspection.root_entries);
+        let is_dart_workspace = inspection.has_pubspec || inspection.has_analysis_options;
+        let large_repo_mode = has_heavy_dirs
+            || request.indexed_count.unwrap_or_default() > LARGE_REPO_FILE_THRESHOLD
+            || request.initial_index_duration_ms.unwrap_or_default()
+                > LARGE_REPO_INDEX_MS_THRESHOLD;
+
+        let (
+            run_diagnostics_delay_ms,
+            start_tsc_delay_ms,
+            initialize_mcp_delay_ms,
+            warm_semantic_index_delay_ms,
+            finalize_background_delay_ms,
+        ) = if large_repo_mode {
+            (
+                LARGE_DIAGNOSTICS_DELAY_MS,
+                LARGE_TSC_DELAY_MS,
+                LARGE_MCP_DELAY_MS,
+                LARGE_SEMANTIC_DELAY_MS,
+                LARGE_FINALIZE_DELAY_MS,
+            )
+        } else {
+            (
+                LIGHT_DIAGNOSTICS_DELAY_MS,
+                LIGHT_TSC_DELAY_MS,
+                LIGHT_MCP_DELAY_MS,
+                LIGHT_SEMANTIC_DELAY_MS,
+                LIGHT_FINALIZE_DELAY_MS,
+            )
+        };
+
+        let mut tasks = Vec::new();
+        if request.indexed_count.is_some() || request.initial_index_duration_ms.is_some() {
+            if !request.reuse_existing_workspace {
+                tasks.push(WorkspaceActivationTask {
+                    id: "run-diagnostics".to_string(),
+                    kind: WorkspaceActivationTaskKind::RunDiagnostics,
+                    delay_ms: run_diagnostics_delay_ms,
+                    phase: "heavy-bg".to_string(),
+                    serial: true,
+                });
+                tasks.push(WorkspaceActivationTask {
+                    id: "start-tsc".to_string(),
+                    kind: WorkspaceActivationTaskKind::StartTsc,
+                    delay_ms: start_tsc_delay_ms,
+                    phase: "heavy-bg".to_string(),
+                    serial: true,
+                });
+                if is_dart_workspace {
+                    tasks.push(WorkspaceActivationTask {
+                        id: "verify-dart-lsp".to_string(),
+                        kind: WorkspaceActivationTaskKind::StartDartLsp,
+                        delay_ms: VERIFY_DART_LSP_DELAY_MS,
+                        phase: "heavy-bg".to_string(),
+                        serial: true,
+                    });
+                }
+                tasks.push(WorkspaceActivationTask {
+                    id: "initialize-mcp".to_string(),
+                    kind: WorkspaceActivationTaskKind::InitializeMcp,
+                    delay_ms: initialize_mcp_delay_ms,
+                    phase: "background-ready".to_string(),
+                    serial: true,
+                });
+                tasks.push(WorkspaceActivationTask {
+                    id: "warm-semantic-index".to_string(),
+                    kind: WorkspaceActivationTaskKind::WarmSemanticIndex,
+                    delay_ms: warm_semantic_index_delay_ms,
+                    phase: "background-ready".to_string(),
+                    serial: true,
+                });
+                tasks.push(WorkspaceActivationTask {
+                    id: "finalize-background".to_string(),
+                    kind: WorkspaceActivationTaskKind::FinalizeBackground,
+                    delay_ms: finalize_background_delay_ms,
+                    phase: "background-ready".to_string(),
+                    serial: true,
+                });
+            }
+        } else {
+            if is_dart_workspace {
+                tasks.push(WorkspaceActivationTask {
+                    id: "start-dart-lsp".to_string(),
+                    kind: WorkspaceActivationTaskKind::StartDartLsp,
+                    delay_ms: START_DART_LSP_DELAY_MS,
+                    phase: "light".to_string(),
+                    serial: false,
+                });
+            }
+            tasks.push(WorkspaceActivationTask {
+                id: "start-file-watching".to_string(),
+                kind: WorkspaceActivationTaskKind::StartFileWatching,
+                delay_ms: START_FILE_WATCHING_DELAY_MS,
+                phase: "light".to_string(),
+                serial: false,
+            });
+            tasks.push(WorkspaceActivationTask {
+                id: "init-git".to_string(),
+                kind: WorkspaceActivationTaskKind::InitGit,
+                delay_ms: INIT_GIT_DELAY_MS,
+                phase: "core-bg".to_string(),
+                serial: true,
+            });
+            tasks.push(WorkspaceActivationTask {
+                id: "index-project".to_string(),
+                kind: WorkspaceActivationTaskKind::IndexProject,
+                delay_ms: INDEX_PROJECT_DELAY_MS,
+                phase: "core-bg".to_string(),
+                serial: true,
+            });
+        }
+
+        Self {
+            has_heavy_dirs,
+            is_dart_workspace,
+            large_repo_mode,
+            tasks,
+        }
+    }
+}
+
 #[tauri::command]
 pub fn workspace_get_state(
     app: AppHandle,
@@ -507,10 +735,83 @@ pub async fn workspace_refresh<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn workspace_plan_activation(
+    request: WorkspaceActivationPlanRequest,
+) -> Result<WorkspaceActivationPlan, String> {
+    let inspection = WorkspaceManagerState::inspect_activation(&request.root_path)?;
+    Ok(WorkspaceActivationPlan::from_inspection(
+        inspection, request,
+    ))
+}
+
+#[tauri::command]
+pub async fn workspace_wait_activation_delay(delay_ms: u64) -> Result<(), String> {
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn workspace_close(
     app: AppHandle,
     state: tauri::State<'_, WorkspaceManagerState>,
     request: WorkspaceCloseRequest,
 ) -> Result<WorkspaceCloseResult, String> {
     state.close_workspace(app, request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_plan_marks_large_repo_when_heavy_dirs_are_present() {
+        let plan = WorkspaceActivationPlan::from_inspection(
+            WorkspaceActivationInspection {
+                root_entries: vec!["src".to_string(), "node_modules".to_string()],
+                has_pubspec: false,
+                has_analysis_options: false,
+            },
+            WorkspaceActivationPlanRequest {
+                root_path: "c:/workspace".to_string(),
+                reuse_existing_workspace: false,
+                indexed_count: Some(200),
+                initial_index_duration_ms: Some(200),
+            },
+        );
+
+        assert!(plan.has_heavy_dirs);
+        assert!(plan.large_repo_mode);
+        assert!(plan.tasks.iter().any(|task| {
+            task.kind == WorkspaceActivationTaskKind::RunDiagnostics && task.delay_ms == 4_000
+        }));
+        assert!(plan.tasks.iter().any(|task| {
+            task.kind == WorkspaceActivationTaskKind::InitializeMcp && task.delay_ms == 12_000
+        }));
+        assert!(plan.tasks.iter().any(|task| {
+            task.kind == WorkspaceActivationTaskKind::WarmSemanticIndex && task.delay_ms == 20_000
+        }));
+    }
+
+    #[test]
+    fn activation_plan_returns_no_background_tasks_for_reused_workspace() {
+        let plan = WorkspaceActivationPlan::from_inspection(
+            WorkspaceActivationInspection {
+                root_entries: vec!["src".to_string()],
+                has_pubspec: true,
+                has_analysis_options: false,
+            },
+            WorkspaceActivationPlanRequest {
+                root_path: "c:/workspace".to_string(),
+                reuse_existing_workspace: true,
+                indexed_count: Some(20),
+                initial_index_duration_ms: Some(50),
+            },
+        );
+
+        assert!(plan.is_dart_workspace);
+        assert!(plan.tasks.is_empty());
+    }
 }

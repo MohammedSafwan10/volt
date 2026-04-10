@@ -8,6 +8,13 @@ Rules:
 - Use terminal mainly for validators, builds, installs, or commands that file tools cannot express.
 - Do not prepend \`cd\`, \`Set-Location\`, or similar directory-changing shell text inside the command string; pass \`cwd\` instead.
 
+Output handling (CRITICAL):
+- NEVER declare a command succeeded or failed before the tool result is fully returned.
+- When reporting what a command did, QUOTE the actual output text — do not paraphrase or summarize it into your own words.
+- If the output is empty or truncated, say so explicitly. Do not invent or infer output that was not returned.
+- If multiple tool calls run in parallel, carefully attribute each result to the correct command. Do not merge or confuse them.
+- If a command times out, do NOT claim it succeeded. Report the timeout and suggest alternatives.
+
 Failure playbook:
 - If command fails, read stderr/stdout fully and correct command before retry.
 - Retry transient network/install failures once with backoff; otherwise switch strategy.

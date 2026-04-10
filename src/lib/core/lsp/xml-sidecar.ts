@@ -18,20 +18,11 @@
 import { getLspRegistry } from './sidecar/register';
 import { LspTransport } from './sidecar/transport';
 import { sendDidSaveForTrackedDocument } from './sidecar/document-lifecycle';
-import {
-  createLspRecoveryController,
-} from './sidecar';
 import { projectStore } from '$shared/stores/project.svelte';
 import { detectXmlLsp, isXmlLspAvailable } from './xml-sdk';
 
 let xmlServerTransport: LspTransport | null = null;
 let xmlServerInitialized = false;
-const xmlRecovery = createLspRecoveryController({
-  source: 'xml',
-  restart: async () => {
-    await recoverXmlLspAfterExit();
-  },
-});
 
 // Track open documents
 // Debounce diagnostics
@@ -132,6 +123,7 @@ export async function initializeServer(): Promise<boolean> {
     // Start the server via registry
     const registry = getLspRegistry();
     xmlServerTransport = await registry.startServer('xml', {
+      serverId: 'xml-main',
       cwd: rootPath,
       restartPolicy: {
         enabled: true,
@@ -152,9 +144,11 @@ export async function initializeServer(): Promise<boolean> {
     xmlServerTransport.onMessage(handleServerMessage);
     xmlServerTransport.onExit(() => {
       console.log('[XML LSP] Server exited');
-      xmlRecovery.schedule('transport exit');
-      xmlServerTransport = null;
       xmlServerInitialized = false;
+    });
+    xmlServerTransport.onRestart(() => {
+      console.log('[XML LSP] Server restarted');
+      xmlServerInitialized = true;
     });
 
     // Send initialize request
@@ -251,7 +245,6 @@ export async function initializeServer(): Promise<boolean> {
     });
 
     xmlServerInitialized = true;
-    xmlRecovery.reset();
     console.log('[XML LSP] Server initialized successfully');
     return true;
   } catch (error) {
@@ -430,17 +423,6 @@ export async function renameSymbol(filepath: string, line: number, character: nu
 /**
  * Stop the XML LSP server
  */
-async function recoverXmlLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || xmlServerTransport) {
-    return;
-  }
-
-  const initialized = await initializeServer();
-  if (!initialized) {
-    throw new Error('XML LSP restart failed');
-  }
-}
-
 export async function stopXmlLsp(): Promise<void> {
   if (!xmlServerTransport) return;
 
@@ -455,10 +437,8 @@ export async function stopXmlLsp(): Promise<void> {
   } catch (error) {
     console.error('[XML LSP] Shutdown error:', error);
   } finally {
-    const registry = getLspRegistry();
-    void registry.stopServer('xml');
+    await xmlServerTransport.stop();
     xmlServerTransport = null;
     xmlServerInitialized = false;
-    xmlRecovery.reset();
   }
 }

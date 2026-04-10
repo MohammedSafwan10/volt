@@ -50,9 +50,6 @@ class McpStore {
   // All available tools (server_id, tool)
   tools = $state<Array<{ serverId: string; tool: McpTool }>>([]);
 
-  // Retry tracking for failed servers
-  private retryAttempts = new Map<string, number>();
-  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private startPromises = new Map<string, Promise<void>>();
   private initializePromise: Promise<void> | null = null;
   private reloading = false;
@@ -246,11 +243,6 @@ class McpStore {
 
   /** Clean up on shutdown */
   async cleanup(): Promise<void> {
-    for (const timer of this.retryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.retryTimers.clear();
-    this.retryAttempts.clear();
     this.startPromises.clear();
 
     // Stop all servers
@@ -368,7 +360,7 @@ class McpStore {
     this.servers = new Map(this.servers);
 
     try {
-      const state = await invoke<McpServerState>('start_mcp_server', {
+      const state = await invoke<McpServerState>('start_mcp_server_managed', {
         serverId,
         config: {
           command: config.command,
@@ -377,20 +369,14 @@ class McpStore {
           disabled: config.disabled || false,
           auto_approve: config.autoApprove || [],
         },
+        maxRetries: McpStore.MAX_RETRY_ATTEMPTS,
+        retryDelayMs: McpStore.RETRY_DELAY_MS,
       });
 
       console.log('[MCP] Server started:', serverId, state.status);
       this.servers.set(serverId, state);
       this.servers = new Map(this.servers);
       this.updateTools();
-
-      // Clear retry state on successful connection
-      this.retryAttempts.delete(serverId);
-      const existingTimer = this.retryTimers.get(serverId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        this.retryTimers.delete(serverId);
-      }
 
       logOutput('MCP', `Server '${serverId}' connected with ${state.tools.length} tools`);
       for (const tool of state.tools) {
@@ -399,15 +385,11 @@ class McpStore {
 
     } catch (error) {
       const errorMsg = String(error);
-      const isTimeout = errorMsg.includes('timed out') || errorMsg.includes('timeout');
-      const attempt = (this.retryAttempts.get(serverId) || 0) + 1;
-      
+
       logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${errorMsg}`);
-      
+
       // Only show error in console, not spam user
-      if (attempt === 1) {
-        console.error(`[MCP] Failed to start server '${serverId}':`, error);
-      }
+      console.error(`[MCP] Failed to start server '${serverId}':`, error);
 
       // Update state to show error
       this.servers.set(serverId, {
@@ -415,40 +397,12 @@ class McpStore {
         name: serverId,
         status: 'error',
         tools: [],
-        error: isTimeout ? `Connection timeout (attempt ${attempt}/${McpStore.MAX_RETRY_ATTEMPTS})` : errorMsg,
+        error: errorMsg,
       });
       this.servers = new Map(this.servers);
 
-      // Schedule retry for timeout errors (network issues, slow servers)
-      if (isTimeout && attempt < McpStore.MAX_RETRY_ATTEMPTS) {
-        this.retryAttempts.set(serverId, attempt);
-        
-        // Clear any existing retry timer
-        const existingTimer = this.retryTimers.get(serverId);
-        if (existingTimer) clearTimeout(existingTimer);
-        
-        logOutput('MCP', `  Will retry in ${McpStore.RETRY_DELAY_MS / 1000}s (attempt ${attempt + 1}/${McpStore.MAX_RETRY_ATTEMPTS})`);
-        
-        const timer = setTimeout(() => {
-          this.retryTimers.delete(serverId);
-          logOutput('MCP', `Retrying connection to '${serverId}'...`);
-          this.startServer(serverId, { showErrorToast }).catch(() => {
-            // Error already handled in startServer
-          });
-        }, McpStore.RETRY_DELAY_MS);
-        
-        this.retryTimers.set(serverId, timer);
-      } else if (attempt >= McpStore.MAX_RETRY_ATTEMPTS) {
-        // Max retries reached - show toast once
-        this.retryAttempts.delete(serverId);
-        if (showErrorToast) {
-          showToast({ message: `${serverId} failed after ${attempt} attempts. Check connection.`, type: 'error' });
-        }
-      } else {
-        // Non-timeout error - show immediately
-        if (showErrorToast) {
-          showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
-        }
+      if (showErrorToast) {
+        showToast({ message: `Failed to start ${serverId}: ${errorMsg}`, type: 'error' });
       }
     }
   }
@@ -676,16 +630,28 @@ class McpStore {
     }
 
     logOutput('MCP', `Starting ${enabledServers.length} enabled server(s)...`);
+    const states = await invoke<McpServerState[]>('start_mcp_servers_managed', {
+      servers: Object.fromEntries(
+        enabledServers.map(([serverId, serverConfig]) => [
+          serverId,
+          {
+            command: serverConfig.command,
+            args: serverConfig.args || [],
+            env: serverConfig.env || {},
+            disabled: serverConfig.disabled || false,
+            auto_approve: serverConfig.autoApprove || [],
+          },
+        ]),
+      ),
+      maxRetries: McpStore.MAX_RETRY_ATTEMPTS,
+      retryDelayMs: McpStore.RETRY_DELAY_MS,
+    });
 
-    // Start all servers with a stagger to avoid resource contention
-    for (const [serverId] of enabledServers) {
-      // Fire and forget - don't block initialization
-      this.startServer(serverId, { showErrorToast: false }).catch(err => {
-        logOutput('MCP', `[ERROR] Failed to start '${serverId}': ${err}`);
-      });
-      // Small stagger to prevent CPU spikes
-      await new Promise(resolve => setTimeout(resolve, 200));
+    for (const state of states) {
+      this.servers.set(state.id, state);
     }
+    this.servers = new Map(this.servers);
+    this.updateTools();
   }
 
   private updateTools(): void {

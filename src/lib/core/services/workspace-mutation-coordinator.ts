@@ -275,7 +275,7 @@ export function createWorkspaceMutationCoordinator(deps: {
   async function runDelete(intent: Extract<MutationIntent, { type: 'delete' }>) {
     const current = await deps.fileBackend.read(intent.path, true);
     const info = current ? null : await deps.fileBackend.getInfo?.(intent.path);
-    const isDirectory = info?.isDirectory === true || info?.isDir === true;
+    const isDirectory = info?.isDir === true;
     if (!current && !isDirectory) {
       deps.stagedDocuments.stageStructuralMutation({
         path: intent.path,

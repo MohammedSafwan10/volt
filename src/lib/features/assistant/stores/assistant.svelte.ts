@@ -3422,7 +3422,10 @@ class AssistantStore {
       // De-rename first (reverse order)
       for (const { newPath, oldPath } of filesToRenameBack) {
         try {
-          await invoke('rename_path', { oldPath: newPath, newPath: oldPath });
+          const result = await fileService.renamePath(newPath, oldPath);
+          if (!result.success) {
+            throw new Error(result.error ?? 'Rename failed');
+          }
         } catch (e) {
           console.warn(`[Revert] Failed to rename ${newPath} back to ${oldPath}:`, e);
         }
@@ -3432,7 +3435,10 @@ class AssistantStore {
       for (const [path, entry] of filesToRevert) {
         try {
           if (entry.content === null) {
-            await invoke('delete_path', { path });
+            const result = await fileService.deletePath(path);
+            if (!result.success) {
+              throw new Error(result.error ?? 'Delete failed');
+            }
           } else {
             // Use fileService for consistent writes
             const expectedVersion = fileService.getVersion(path) ?? undefined;

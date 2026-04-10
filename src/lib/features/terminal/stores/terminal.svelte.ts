@@ -1,8 +1,8 @@
 import {
 	createTerminalSession,
-	createTerminalSessionFromInfo,
-	listTerminals,
+	createTerminalSessionFromSnapshot,
 	killAllTerminals,
+	listTerminalSnapshots,
 	TerminalSession
 } from '$features/terminal/services/terminal-client';
 import { terminalProblemMatcher } from '$features/terminal/services/terminal-problem-matcher';
@@ -226,13 +226,6 @@ class TerminalStore {
 
 			// Wait for terminal to be ready before enabling shell integration
 			await session.waitForReady(3000);
-			// Give startup bootstrap a chance to publish shell integration before
-			// we fall back to typing the integration script into the visible shell.
-			await new Promise((resolve) => setTimeout(resolve, 180));
-			const integrationDeadline = Date.now() + 900;
-			while (!session.hasShellIntegration && Date.now() < integrationDeadline) {
-				await new Promise((resolve) => setTimeout(resolve, 60));
-			}
 			if (!session.hasShellIntegration) {
 				await session.enableShellIntegration();
 			}
@@ -372,8 +365,9 @@ class TerminalStore {
 	 * Sync with backend terminal list (useful on app startup)
 	 */
 	async syncWithBackend(): Promise<void> {
-		const backendTerminals = await listTerminals();
-		const backendIds = new Set(backendTerminals.map((t) => t.terminalId));
+		const backendSnapshotsRaw = await listTerminalSnapshots();
+		const backendSnapshots = Array.isArray(backendSnapshotsRaw) ? backendSnapshotsRaw : [];
+		const backendIds = new Set(backendSnapshots.map((snapshot) => snapshot.info.terminalId));
 
 		// Remove sessions that no longer exist in backend
 		for (const session of [...this.sessions]) {
@@ -385,13 +379,13 @@ class TerminalStore {
 
 		// Rehydrate missing backend terminals after reload/HMR.
 		const knownIds = new Set(this.sessions.map((s) => s.id));
-		for (const info of backendTerminals) {
-			if (knownIds.has(info.terminalId)) continue;
+		for (const snapshot of backendSnapshots) {
+			if (knownIds.has(snapshot.info.terminalId)) continue;
 			try {
-				const restored = await createTerminalSessionFromInfo(info);
+				const restored = await createTerminalSessionFromSnapshot(snapshot);
 				this.attachSession(restored, this.sessions.length === 0);
 			} catch (err) {
-				console.warn('[TerminalStore] Failed to rehydrate terminal:', info.terminalId, err);
+				console.warn('[TerminalStore] Failed to rehydrate terminal:', snapshot.info.terminalId, err);
 			}
 		}
 	}

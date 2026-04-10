@@ -21,17 +21,14 @@ import type {
   MessageHandler,
   ErrorHandler,
   ExitHandler,
+  RestartHandler,
   HealthHandler,
   HealthConfig,
   HealthStatus,
+  LspRecoveryState,
   RestartPolicy,
 } from './types';
 import { DEFAULT_HEALTH_CONFIG, DEFAULT_RESTART_POLICY } from './types';
-import {
-  createLspRecoveryController,
-  type LspRecoveryController,
-  type LspRecoveryState,
-} from './recovery';
 import {
   applyBackendDiagnostics,
   applyBackendDiagnosticsSourceState,
@@ -78,6 +75,7 @@ export class LspTransport {
   private messageHandlers: Set<MessageHandler> = new Set();
   private errorHandlers: Set<ErrorHandler> = new Set();
   private exitHandlers: Set<ExitHandler> = new Set();
+  private restartHandlers: Set<RestartHandler> = new Set();
   private healthHandlers: Set<HealthHandler> = new Set();
   private pendingRequests: Map<number | string, PendingRequest> = new Map();
   private nextRequestId = 1;
@@ -86,14 +84,15 @@ export class LspTransport {
   private isRestarting = false;
   private restartCount = 0;
   private restartPolicy: Required<RestartPolicy> = { ...DEFAULT_RESTART_POLICY };
-  private recoveryController: LspRecoveryController;
+  private recoveryState: LspRecoveryState = {
+    scheduled: false,
+    restarting: false,
+    attemptsInWindow: 0,
+  };
   private exitHandled = false;
-  private lastInitializeParams: unknown = null;
-  private lastInitializedParams: unknown = null;
 
   // Health monitoring state
   private healthConfig: Required<HealthConfig>;
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private healthStatus: HealthStatus = {
     healthy: true,
     lastResponseAt: null,
@@ -102,19 +101,11 @@ export class LspTransport {
     avgResponseTimeMs: null,
     message: 'Not started',
   };
-  private responseTimes: number[] = []; // Rolling window for avg calculation
-  private static readonly RESPONSE_TIME_WINDOW = 10; // Keep last 10 response times
 
   constructor(serverId: string, serverType: string, healthConfig?: HealthConfig) {
     this.serverId = serverId;
     this.serverType = serverType;
     this.healthConfig = { ...DEFAULT_HEALTH_CONFIG, ...healthConfig };
-    this.recoveryController = createLspRecoveryController({
-      source: serverId,
-      restart: async () => {
-        await this.restartFromSavedConfig();
-      },
-    });
   }
 
   /** Get the server ID */
@@ -169,7 +160,7 @@ export class LspTransport {
       exitHandlers: this.exitHandlers.size,
       healthHandlers: this.healthHandlers.size,
       restartCount: this.restartCount,
-      recoveryState: this.recoveryController.state,
+      recoveryState: { ...this.recoveryState },
     };
   }
 
@@ -179,7 +170,7 @@ export class LspTransport {
    */
   async start(config: Omit<LspServerConfig, 'serverId' | 'serverType'>): Promise<LspServerInfo> {
     // Start the server via Tauri command
-    const info = await invoke<LspServerInfo>('lsp_start_server', {
+    const info = await invoke<LspServerInfo>('lsp_start_server_managed', {
       serverId: this.serverId,
       serverType: this.serverType,
       sidecarName: config.sidecarName,
@@ -193,6 +184,7 @@ export class LspTransport {
     await this.setupEventListeners();
     this.isConnected = true;
     this.exitHandled = false;
+    await this.resetRecoveryState();
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -205,7 +197,7 @@ export class LspTransport {
    */
   async startExternal(config: Omit<ExternalLspConfig, 'serverId' | 'serverType'>): Promise<LspServerInfo> {
     // Start the external server via Tauri command
-    const info = await invoke<LspServerInfo>('lsp_start_external_server', {
+    const info = await invoke<LspServerInfo>('lsp_start_external_server_managed', {
       serverId: this.serverId,
       serverType: this.serverType,
       command: config.command,
@@ -218,6 +210,7 @@ export class LspTransport {
     await this.setupEventListeners();
     this.isConnected = true;
     this.exitHandled = false;
+    await this.resetRecoveryState();
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -280,6 +273,14 @@ export class LspTransport {
     );
     this.unlisteners.push(stoppedUnlisten);
 
+    const restartedUnlisten = await listen<LspServerInfo>(
+      `lsp://${this.serverId}//restarted`,
+      (event) => {
+        void this.handleServerRestarted(event.payload);
+      }
+    );
+    this.unlisteners.push(restartedUnlisten);
+
     const diagnosticsUnlisten = await listen<BackendLspDiagnosticsEvent>(
       `lsp://${this.serverId}//diagnostics`,
       (event) => {
@@ -303,6 +304,14 @@ export class LspTransport {
       }
     );
     this.unlisteners.push(diagnosticsStateUnlisten);
+
+    const healthUnlisten = await listen<HealthStatus>(
+      `lsp://${this.serverId}//health`,
+      (event) => {
+        void this.handleMonitoredHealthStatus(event.payload);
+      }
+    );
+    this.unlisteners.push(healthUnlisten);
   }
 
   /**
@@ -362,6 +371,10 @@ export class LspTransport {
       return;
     }
 
+    if (this.restartPolicy.enabled) {
+      void this.scheduleRecovery('transport exit');
+    }
+
     // Notify exit handlers
     for (const handler of this.exitHandlers) {
       try {
@@ -386,6 +399,28 @@ export class LspTransport {
     }
   }
 
+  private async handleServerRestarted(info: LspServerInfo): Promise<void> {
+    this.isConnected = true;
+    this.exitHandled = false;
+    this.updateHealthStatus({
+      healthy: true,
+      lastResponseAt: Date.now(),
+      consecutiveFailures: 0,
+      message: 'Server restarted',
+    });
+    await this.resetRecoveryState();
+    this.startHealthMonitoring();
+    this.restartCount += 1;
+
+    for (const handler of this.restartHandlers) {
+      try {
+        handler(info);
+      } catch (e) {
+        console.error('[LSP Transport] Restart handler error:', e);
+      }
+    }
+  }
+
   // ============================================================
   // Health Monitoring Methods
   // ============================================================
@@ -402,7 +437,6 @@ export class LspTransport {
       return;
     }
 
-    // Clear any existing timer
     this.stopHealthMonitoring();
 
     // Update initial status
@@ -412,11 +446,11 @@ export class LspTransport {
       consecutiveFailures: 0,
       message: 'Server started',
     });
-
-    // Start periodic health checks
-    this.healthCheckTimer = setInterval(() => {
-      this.performHealthCheck();
-    }, this.healthConfig.intervalMs);
+    void invoke('lsp_start_health_monitoring', {
+      serverId: this.serverId,
+      intervalMs: this.healthConfig.intervalMs,
+      failureThreshold: this.healthConfig.failureThreshold,
+    });
 
     console.log(`[LSP Health] Started monitoring for ${this.serverId} (interval: ${this.healthConfig.intervalMs}ms)`);
   }
@@ -425,47 +459,47 @@ export class LspTransport {
    * Stop health monitoring
    */
   private stopHealthMonitoring(): void {
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
+    void invoke('lsp_stop_health_monitoring', {
+      serverId: this.serverId,
+    });
   }
 
   /**
    * Perform a single health check
    */
   private async performHealthCheck(): Promise<void> {
-    if (!this.isConnected) {
-      this.updateHealthStatus({
-        healthy: false,
-        consecutiveFailures: this.healthStatus.consecutiveFailures + 1,
-        lastCheckAt: Date.now(),
-        message: 'Server disconnected',
-      });
-      return;
-    }
-
-    const startTime = Date.now();
-
     try {
-      // Use a simple request that most LSP servers support
-      // We use $/cancelRequest with an invalid ID which should return quickly
-      // or textDocument/hover with null params (will error but confirms server is alive)
-      await this.sendHealthPing();
-
-      // Success - record response time
-      const responseTime = Date.now() - startTime;
-      this.recordResponseTime(responseTime);
-
-      this.updateHealthStatus({
-        healthy: true,
-        lastResponseAt: Date.now(),
-        consecutiveFailures: 0,
-        lastCheckAt: Date.now(),
-        avgResponseTimeMs: this.calculateAvgResponseTime(),
-        message: `Healthy (${responseTime}ms)`,
+      const wasHealthy = this.healthStatus.healthy;
+      const nextStatus = await invoke<HealthStatus>('lsp_check_health', {
+        serverId: this.serverId,
+        transportConnected: this.isConnected,
+        failureThreshold: this.healthConfig.failureThreshold,
       });
+      const isUnhealthy =
+        !nextStatus.healthy &&
+        nextStatus.consecutiveFailures >= this.healthConfig.failureThreshold;
 
+      this.updateHealthStatus(nextStatus);
+
+      // Only log on state transition (healthy -> unhealthy) to reduce noise
+      if (wasHealthy && isUnhealthy) {
+        console.warn(
+          `[LSP Health] ${this.serverId} became unhealthy after ${nextStatus.consecutiveFailures} failures`,
+        );
+      }
+
+      // Stop monitoring once threshold is reached (no infinite loop)
+      if (isUnhealthy) {
+        console.log(`[LSP Health] Stopping monitoring for ${this.serverId} (unhealthy)`);
+        this.stopHealthMonitoring();
+
+        // Auto-restart if configured
+        if (this.healthConfig.autoRestart && this.restartPolicy.enabled) {
+          console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
+          this.notifyError(`Server unhealthy, attempting restart...`);
+          await this.scheduleRecovery('health-check failure');
+        }
+      }
     } catch (error) {
       const failures = this.healthStatus.consecutiveFailures + 1;
       const isUnhealthy = failures >= this.healthConfig.failureThreshold;
@@ -494,48 +528,10 @@ export class LspTransport {
         if (this.healthConfig.autoRestart && this.restartPolicy.enabled) {
           console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
           this.notifyError(`Server unhealthy, attempting restart...`);
-          this.recoveryController.schedule('health-check failure');
+          await this.scheduleRecovery('health-check failure');
         }
       }
     }
-  }
-
-  /**
-   * Send a health ping to the server
-   * Uses backend process-level liveness only. Protocol probes caused too many
-   * false negatives across heterogeneous language servers and led to restart churn.
-   */
-  private async sendHealthPing(): Promise<void> {
-    const info = await invoke<LspServerInfo>('lsp_get_server_info', {
-      serverId: this.serverId,
-    });
-    if (info.status !== 'Running') {
-      throw new Error(`LSP server not running: ${this.serverId} (${info.status})`);
-    }
-
-    if (!this.isConnected) {
-      throw new Error(`LSP transport disconnected: ${this.serverId}`);
-    }
-  }
-
-  /**
-   * Record a response time for average calculation
-   */
-  private recordResponseTime(timeMs: number): void {
-    this.responseTimes.push(timeMs);
-    // Keep only the last N response times.
-    if (this.responseTimes.length > LspTransport.RESPONSE_TIME_WINDOW) {
-      this.responseTimes.shift();
-    }
-  }
-
-  /**
-   * Calculate average response time from recorded times
-   */
-  private calculateAvgResponseTime(): number | null {
-    if (this.responseTimes.length === 0) return null;
-    const sum = this.responseTimes.reduce((a, b) => a + b, 0);
-    return Math.round(sum / this.responseTimes.length);
   }
 
   /**
@@ -586,29 +582,14 @@ configureHealth(config: HealthConfig): void {
 
 configureRestartPolicy(policy: RestartPolicy): void {
   this.restartPolicy = { ...this.restartPolicy, ...policy };
-  this.recoveryController.dispose();
-
   if (!this.restartPolicy.enabled) {
-    this.recoveryController = createLspRecoveryController({
-      source: this.serverId,
-      restart: async () => {
-        await this.restartFromSavedConfig();
-      },
-      maxAttempts: 0,
-    });
-    return;
+    this.recoveryState = {
+      scheduled: false,
+      restarting: false,
+      attemptsInWindow: 0,
+    };
+    void this.resetRecoveryState();
   }
-
-  this.recoveryController = createLspRecoveryController({
-    source: this.serverId,
-    restart: async () => {
-      await this.restartFromSavedConfig();
-    },
-    baseDelayMs: this.restartPolicy.baseDelayMs,
-    maxDelayMs: this.restartPolicy.maxDelayMs,
-    maxAttempts: this.restartPolicy.maxAttempts,
-    windowMs: this.restartPolicy.windowMs,
-  });
 }
 
   /**
@@ -634,10 +615,6 @@ configureRestartPolicy(policy: RestartPolicy): void {
       method,
       params,
     };
-
-    if (method === 'initialize') {
-      this.lastInitializeParams = params ?? null;
-    }
 
     // Create promise for the response
     const responsePromise = new Promise<T>((resolve, reject) => {
@@ -689,10 +666,6 @@ configureRestartPolicy(policy: RestartPolicy): void {
   async sendNotification(method: string, params ?: unknown): Promise < void> {
   if(!this.isConnected) {
   throw new Error('Transport not connected');
-}
-
-if (method === 'initialized') {
-  this.lastInitializedParams = params ?? null;
 }
 
 const notification: JsonRpcNotification = {
@@ -787,6 +760,11 @@ onExit(handler: ExitHandler): () => void {
   return() => this.exitHandlers.delete(handler);
 }
 
+  onRestart(handler: RestartHandler): () => void {
+  this.restartHandlers.add(handler);
+  return() => this.restartHandlers.delete(handler);
+}
+
 /**
  * Register a health status change handler
  */
@@ -801,6 +779,7 @@ onExit(handler: ExitHandler): () => void {
   async stop(): Promise < void> {
   // Stop health monitoring first
   this.stopHealthMonitoring();
+  await this.resetRecoveryState();
 
   // Remove all event listeners
   for(const unlisten of this.unlisteners) {
@@ -824,10 +803,14 @@ this.isConnected = false;
 this.messageHandlers.clear();
 this.errorHandlers.clear();
 this.exitHandlers.clear();
+this.restartHandlers.clear();
 this.healthHandlers.clear();
 this.pendingRequests.clear();
-this.responseTimes = [];
-this.recoveryController.reset();
+this.recoveryState = {
+  scheduled: false,
+  restarting: false,
+  attemptsInWindow: 0,
+};
   }
 
   private async restartFromSavedConfig(): Promise<void> {
@@ -846,20 +829,72 @@ this.recoveryController.reset();
       this.exitHandled = false;
       this.startHealthMonitoring();
 
-      if (this.lastInitializeParams !== null) {
-        await this.sendRequest('initialize', this.lastInitializeParams);
-      }
-
-      if (this.lastInitializedParams !== null) {
-        await this.sendNotification('initialized', this.lastInitializedParams);
-      }
-
       this.restartCount += 1;
-      this.recoveryController.reset();
+      this.recoveryState = {
+        scheduled: false,
+        restarting: false,
+        attemptsInWindow: 0,
+      };
     } catch (error) {
       this.notifyError(`Failed to auto-restart server: ${formatTransportError(error)}`);
     } finally {
       this.isRestarting = false;
+    }
+  }
+
+  private async handleMonitoredHealthStatus(status: HealthStatus): Promise<void> {
+    const wasHealthy = this.healthStatus.healthy;
+    const isUnhealthy =
+      !status.healthy &&
+      status.consecutiveFailures >= this.healthConfig.failureThreshold;
+
+    this.updateHealthStatus(status);
+
+    if (wasHealthy && isUnhealthy) {
+      console.warn(
+        `[LSP Health] ${this.serverId} became unhealthy after ${status.consecutiveFailures} failures`,
+      );
+    }
+
+    if (isUnhealthy && this.healthConfig.autoRestart && this.restartPolicy.enabled) {
+      console.log(`[LSP Health] Auto-restarting unhealthy server: ${this.serverId}`);
+      this.notifyError(`Server unhealthy, attempting restart...`);
+      await this.scheduleRecovery('health-check failure');
+    }
+  }
+
+  private async scheduleRecovery(reason: string): Promise<void> {
+    if (!this.restartPolicy.enabled) {
+      return;
+    }
+
+    try {
+      this.recoveryState = await invoke<LspRecoveryState>('lsp_schedule_recovery', {
+        serverId: this.serverId,
+        reason,
+        baseDelayMs: this.restartPolicy.baseDelayMs,
+        maxDelayMs: this.restartPolicy.maxDelayMs,
+        maxAttempts: this.restartPolicy.maxAttempts,
+        windowMs: this.restartPolicy.windowMs,
+      });
+    } catch (error) {
+      this.notifyError(`Failed to schedule backend recovery: ${formatTransportError(error)}`);
+    }
+  }
+
+  private async resetRecoveryState(): Promise<void> {
+    this.recoveryState = {
+      scheduled: false,
+      restarting: false,
+      attemptsInWindow: 0,
+    };
+
+    try {
+      this.recoveryState = await invoke<LspRecoveryState>('lsp_reset_recovery', {
+        serverId: this.serverId,
+      });
+    } catch {
+      // Keep the local transport state cleared even if the backend server never started.
     }
   }
 

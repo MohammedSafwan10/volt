@@ -1414,7 +1414,10 @@ export async function handleWritePlanFile(args: Record<string, unknown>): Promis
   // Ensure .volt/plans directory exists
   const plansDir = resolvePath(".volt/plans");
   try {
-    await invoke("create_dir", { path: plansDir });
+    const result = await fileService.createDir(plansDir);
+    if (!result.success) {
+      throw new Error(result.error ?? "Create folder failed");
+    }
   } catch {
     // Directory might already exist, that's fine
   }

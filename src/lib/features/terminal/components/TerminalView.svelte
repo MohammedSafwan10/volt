@@ -176,6 +176,10 @@
 		terminal.loadAddon(fitAddon);
 		terminal.loadAddon(webLinksAddon);
 		terminal.open(containerRef);
+
+		// Let the session read from xterm's rendered buffer (clean text, no ANSI)
+		session.setXtermRef(terminal);
+
 		containerRef.addEventListener('mousedown', handleContainerMouseDown);
 		containerMouseDownCleanup = () => {
 			containerRef?.removeEventListener('mousedown', handleContainerMouseDown);
@@ -296,6 +300,7 @@
 		containerMouseDownCleanup?.();
 		containerMouseDownCleanup = null;
 		resizeObserver?.disconnect();
+		session.clearXtermRef();
 		terminal?.dispose();
 	});
 

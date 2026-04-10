@@ -18,8 +18,9 @@ use commands::ai::{
     openai_proxy, openai_proxy_stream, openrouter_proxy, openrouter_proxy_stream,
 };
 use commands::document::{
-    document_apply_edit, document_close, document_get, document_list_dirty, document_read,
-    document_reload, document_save, document_write,
+    document_apply_edit, document_batch_write, document_close, document_delete,
+    document_list_dirty, document_read, document_reload, document_rename, document_save,
+    document_write,
 };
 use commands::file_index::{
     cancel_index_workspace, clear_index_cache, get_index_status, index_workspace_stream,
@@ -39,16 +40,20 @@ use commands::git::{
     git_switch_branch, git_unstage_all, git_unstage_file, is_git_repo, GitProcessManager,
 };
 use commands::lsp::{
-    lsp_begin_project_diagnostics, lsp_close_document, lsp_complete_project_diagnostics,
-    lsp_get_server_info, lsp_is_server_running, lsp_list_servers, lsp_list_tracked_documents,
-    lsp_note_project_diagnostics_sidecar_failure, lsp_reset_project_diagnostics_scheduler,
-    lsp_restart_server, lsp_send_message, lsp_start_external_server, lsp_start_server,
-    lsp_stop_all, lsp_stop_server, lsp_sync_document, LspManagerState,
+    lsp_begin_project_diagnostics, lsp_begin_project_diagnostics_managed, lsp_check_health,
+    lsp_close_document, lsp_complete_project_diagnostics,
+    lsp_complete_project_diagnostics_managed, lsp_get_server_info, lsp_is_server_running,
+    lsp_list_servers, lsp_list_tracked_documents, lsp_note_project_diagnostics_sidecar_failure,
+    lsp_reset_project_diagnostics_scheduler, lsp_reset_recovery, lsp_restart_server,
+    lsp_schedule_recovery, lsp_send_message, lsp_start_external_server,
+    lsp_start_external_server_managed, lsp_start_health_monitoring, lsp_start_server,
+    lsp_start_server_managed, lsp_stop_all, lsp_stop_health_monitoring, lsp_stop_server,
+    lsp_sync_document, lsp_wait_project_diagnostics_delay, LspManagerState,
 };
 use commands::mcp::{
     call_mcp_tool, ensure_mcp_config, get_mcp_config_path, get_mcp_servers, get_mcp_tools,
-    read_mcp_config, start_mcp_server, stop_all_mcp_servers, stop_mcp_server, write_mcp_config,
-    McpState,
+    read_mcp_config, start_mcp_server, start_mcp_server_managed, start_mcp_servers_managed,
+    stop_all_mcp_servers, stop_mcp_server, write_mcp_config, McpState,
 };
 use commands::search::{
     cancel_workspace_search, find_files_by_name, replace_in_file, replace_one_in_file,
@@ -64,12 +69,15 @@ use commands::system::{
     start_watch_command, stop_all_watch_commands, stop_watch_command,
 };
 use commands::terminal::{
-    terminal_create, terminal_get_scrollback, terminal_kill, terminal_kill_all, terminal_list,
-    terminal_resize, terminal_write,
+    terminal_cancel_scheduled_interrupt, terminal_create, terminal_execute_command_fallback,
+    terminal_get_scrollback, terminal_interrupt, terminal_kill, terminal_kill_all, terminal_list,
+    terminal_list_snapshots, terminal_resize, terminal_schedule_interrupt,
+    terminal_wait_for_output, terminal_wait_for_shell_integration, terminal_write,
 };
 use commands::workspace::{
-    workspace_close, workspace_get_state, workspace_open, workspace_refresh,
-    workspace_replace_recent_projects, WorkspaceManagerState,
+    workspace_close, workspace_get_state, workspace_open, workspace_plan_activation,
+    workspace_refresh, workspace_replace_recent_projects, workspace_wait_activation_delay,
+    WorkspaceManagerState,
 };
 use domains::agent_runtime::commands::{
     agent_runtime_apply, assistant_run_cancel, assistant_run_claim_dispatch_step,
@@ -140,13 +148,15 @@ pub fn run() {
             chat_clear_all,
             // File operations
             document_read,
-            document_get,
             document_apply_edit,
             document_write,
+            document_batch_write,
             document_save,
             document_list_dirty,
             document_reload,
             document_close,
+            document_delete,
+            document_rename,
             read_file,
             read_binary_file_base64,
             write_file,
@@ -160,20 +170,31 @@ pub fn run() {
             // Terminal
             terminal_create,
             terminal_write,
+            terminal_interrupt,
             terminal_resize,
             terminal_kill,
             terminal_kill_all,
             terminal_list,
+            terminal_list_snapshots,
             terminal_get_scrollback,
+            terminal_execute_command_fallback,
+            terminal_schedule_interrupt,
+            terminal_cancel_scheduled_interrupt,
+            terminal_wait_for_output,
+            terminal_wait_for_shell_integration,
             // Workspace lifecycle
             workspace_get_state,
             workspace_replace_recent_projects,
             workspace_open,
+            workspace_plan_activation,
             workspace_refresh,
+            workspace_wait_activation_delay,
             workspace_close,
             // LSP
             lsp_start_server,
+            lsp_start_server_managed,
             lsp_start_external_server,
+            lsp_start_external_server_managed,
             lsp_stop_server,
             lsp_stop_all,
             lsp_restart_server,
@@ -182,14 +203,24 @@ pub fn run() {
             lsp_close_document,
             lsp_list_tracked_documents,
             lsp_begin_project_diagnostics,
+            lsp_begin_project_diagnostics_managed,
             lsp_complete_project_diagnostics,
+            lsp_complete_project_diagnostics_managed,
+            lsp_wait_project_diagnostics_delay,
             lsp_note_project_diagnostics_sidecar_failure,
             lsp_reset_project_diagnostics_scheduler,
             lsp_list_servers,
             lsp_get_server_info,
             lsp_is_server_running,
+            lsp_check_health,
+            lsp_start_health_monitoring,
+            lsp_stop_health_monitoring,
+            lsp_schedule_recovery,
+            lsp_reset_recovery,
             // MCP
             start_mcp_server,
+            start_mcp_server_managed,
+            start_mcp_servers_managed,
             stop_mcp_server,
             stop_all_mcp_servers,
             call_mcp_tool,

@@ -159,4 +159,26 @@ describe('editor store lifecycle', () => {
     expect(module.editorStore.openFiles[0]?.originalContent).toBe('agent text');
     expect(setModelValueMock).toHaveBeenCalledWith('C:/workspace/file.txt', 'agent text');
   });
+
+  it('replaces the open file entry when a save completes so tab dirtiness can rerender', async () => {
+    subscribeAllMock.mockReturnValue(() => undefined);
+    readMock.mockResolvedValue({ content: 'before' });
+    getDocumentMock.mockReturnValue({
+      content: 'after',
+      isDirty: false,
+      language: 'plaintext',
+    });
+
+    const module = await import('./editor.svelte');
+
+    await module.editorStore.openFile('C:/workspace/file.txt');
+    const beforeSaveEntry = module.editorStore.openFiles[0];
+    module.editorStore.updateContent('C:/workspace/file.txt', 'after');
+
+    module.editorStore.markSaved('C:/workspace/file.txt');
+
+    expect(module.editorStore.openFiles[0]).not.toBe(beforeSaveEntry);
+    expect(module.editorStore.openFiles[0]?.content).toBe('after');
+    expect(module.editorStore.openFiles[0]?.originalContent).toBe('after');
+  });
 });

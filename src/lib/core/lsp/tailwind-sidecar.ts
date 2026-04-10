@@ -14,7 +14,6 @@
 
 import {
   getLspRegistry,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
@@ -25,12 +24,6 @@ import { registerTailwindMonacoProviders, disposeTailwindMonacoProviders } from 
 let tailwindServerTransport: LspTransport | null = null;
 let tailwindServerInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-const tailwindRecovery = createLspRecoveryController({
-  source: 'tailwindcss',
-  restart: async () => {
-    await recoverTailwindLspAfterExit();
-  },
-});
 
 let transportHandlersAttached = false;
 
@@ -46,11 +39,12 @@ function attachTransportHandlers(transport: LspTransport): void {
 
   transport.onExit(() => {
     console.log('[Tailwind LSP] Server exited');
-    tailwindServerTransport = null;
     tailwindServerInitialized = false;
     initializationPromise = null;
-    transportHandlersAttached = false;
-    tailwindRecovery.schedule('transport exit');
+  });
+  transport.onRestart(() => {
+    console.log('[Tailwind LSP] Server restarted');
+    tailwindServerInitialized = true;
   });
 }
 
@@ -298,7 +292,6 @@ async function initializeServer(): Promise<void> {
       });
 
       tailwindServerInitialized = true;
-      tailwindRecovery.reset();
 
       // Register Monaco providers
       registerTailwindMonacoProviders();
@@ -591,7 +584,7 @@ export async function stopTailwindLsp(): Promise<void> {
 
   tailwindServerInitialized = false;
   initializationPromise = null;
-  tailwindRecovery.reset();
+  transportHandlersAttached = false;
 
   // Clear all diagnostic timers
   for (const timer of diagnosticDebounceTimers.values()) {
@@ -612,9 +605,3 @@ export async function restartTailwindLsp(): Promise<void> {
   }
 }
 
-async function recoverTailwindLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || tailwindServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
-}

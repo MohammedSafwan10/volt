@@ -1,9 +1,42 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 export interface WorkspaceActivationContext {
   rootPath: string;
   previousRootPath: string | null;
   reuseExistingWorkspace?: boolean;
+}
+
+export interface WorkspaceActivationPlanRequest {
+  rootPath: string;
+  reuseExistingWorkspace?: boolean;
+  indexedCount?: number;
+  initialIndexDurationMs?: number;
+}
+
+export type WorkspaceActivationTaskKind =
+  | "start_file_watching"
+  | "start_dart_lsp"
+  | "init_git"
+  | "index_project"
+  | "run_diagnostics"
+  | "start_tsc"
+  | "initialize_mcp"
+  | "warm_semantic_index"
+  | "finalize_background";
+
+export interface WorkspaceActivationTask {
+  id: string;
+  kind: WorkspaceActivationTaskKind;
+  delayMs: number;
+  phase: "light" | "core-bg" | "heavy-bg" | "background-ready";
+  serial: boolean;
+}
+
+export interface WorkspaceActivationPlan {
+  hasHeavyDirs: boolean;
+  isDartWorkspace: boolean;
+  largeRepoMode: boolean;
+  tasks: WorkspaceActivationTask[];
 }
 
 export interface WorkspaceTeardownContext {
@@ -57,7 +90,7 @@ export class WorkspaceLifecycleManager {
   }
 
   async getState(): Promise<WorkspaceState> {
-    const state = await invoke<WorkspaceState>('workspace_get_state');
+    const state = await invoke<WorkspaceState>("workspace_get_state");
     this.lastState = state;
     return state;
   }
@@ -67,7 +100,7 @@ export class WorkspaceLifecycleManager {
   }
 
   async open(rootPath: string, currentRootPath: string | null): Promise<WorkspaceOpenResult> {
-    const result = await invoke<WorkspaceOpenResult>('workspace_open', {
+    const result = await invoke<WorkspaceOpenResult>("workspace_open", {
       request: {
         path: rootPath,
         currentRootPath,
@@ -75,14 +108,29 @@ export class WorkspaceLifecycleManager {
     });
     this.lastState = {
       activeRootPath: result.activeRootPath,
-      persistedRootPath: result.opened ? result.activeRootPath : this.lastState?.persistedRootPath ?? null,
+      persistedRootPath: result.opened
+        ? result.activeRootPath
+        : (this.lastState?.persistedRootPath ?? null),
       recentProjects: result.recentProjects,
     };
     return result;
   }
 
+  async planActivation(request: WorkspaceActivationPlanRequest): Promise<WorkspaceActivationPlan> {
+    return invoke<WorkspaceActivationPlan>("workspace_plan_activation", {
+      request,
+    });
+  }
+
+  async waitForActivationDelay(delayMs: number): Promise<void> {
+    if (delayMs <= 0) return;
+    await invoke("workspace_wait_activation_delay", {
+      delayMs,
+    });
+  }
+
   async refresh(currentRootPath: string | null): Promise<WorkspaceRefreshResult> {
-    const result = await invoke<WorkspaceRefreshResult>('workspace_refresh', {
+    const result = await invoke<WorkspaceRefreshResult>("workspace_refresh", {
       request: {
         currentRootPath,
       },
@@ -96,7 +144,7 @@ export class WorkspaceLifecycleManager {
   }
 
   async clearPersistedRootPath(): Promise<void> {
-    await invoke<WorkspaceCloseResult>('workspace_close', {
+    await invoke<WorkspaceCloseResult>("workspace_close", {
       request: {
         currentRootPath: null,
         removePersistence: true,
@@ -115,7 +163,7 @@ export class WorkspaceLifecycleManager {
       await hooks.teardown(context);
     }
 
-    const result = await invoke<WorkspaceCloseResult>('workspace_close', {
+    const result = await invoke<WorkspaceCloseResult>("workspace_close", {
       request: {
         currentRootPath: context.previousRootPath,
         removePersistence: context.removePersistence,
@@ -123,7 +171,9 @@ export class WorkspaceLifecycleManager {
     });
     this.lastState = {
       activeRootPath: result.activeRootPath,
-      persistedRootPath: context.removePersistence ? null : this.lastState?.persistedRootPath ?? null,
+      persistedRootPath: context.removePersistence
+        ? null
+        : (this.lastState?.persistedRootPath ?? null),
       recentProjects: result.recentProjects,
     };
     return result;

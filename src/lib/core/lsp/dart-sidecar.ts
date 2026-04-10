@@ -21,7 +21,6 @@
 
 import {
   getLspRegistry,
-  createLspRecoveryController,
   type LspTransport,
   type JsonRpcMessage,
 } from './sidecar';
@@ -35,6 +34,7 @@ import {
 } from './dart-sdk';
 import { readFileQuiet } from '$core/services/file-system';
 import { getAllFiles } from '$core/services/file-index';
+import { waitForProjectDiagnosticsDelay } from '$core/services/project-diagnostics-timing';
 import { settingsStore } from '$shared/stores/settings.svelte';
 import { showToast } from '$shared/stores/toast.svelte';
 
@@ -46,12 +46,6 @@ let initializedRootPath: string | null = null;
 let dartSdkInfo: DartSdkInfo | null = null;
 let isAnalyzing = false;
 let lastDartStartupIssue: string | null = null;
-const dartRecovery = createLspRecoveryController({
-  source: 'dart',
-  restart: async () => {
-    await recoverDartLspAfterExit();
-  },
-});
 
 // Debounce timers
 const diagnosticDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -268,11 +262,14 @@ async function initializeServer(): Promise<void> {
       // Set up exit handler
       dartServerTransport.onExit(() => {
         console.log('[Dart LSP] Server exited');
-        dartRecovery.schedule('transport exit');
-        dartServerTransport = null;
         dartServerInitialized = false;
         initializationPromise = null;
-        initializedRootPath = null;
+      });
+      dartServerTransport.onRestart(() => {
+        console.log('[Dart LSP] Server restarted');
+        dartServerInitialized = true;
+        initializedRootPath = projectStore.rootPath ?? initializedRootPath;
+        lastDartStartupIssue = null;
       });
 
       // Send initialize request
@@ -413,7 +410,6 @@ async function initializeServer(): Promise<void> {
       dartServerInitialized = true;
       initializedRootPath = projectStore.rootPath ?? null;
       lastDartStartupIssue = null;
-      dartRecovery.reset();
 
       console.log('[Dart LSP] Using Dart SDK:', dartSdkInfo);
     } catch (error) {
@@ -635,7 +631,6 @@ export async function stopDartLsp(): Promise<void> {
   initializationPromise = null;
   initializedRootPath = null;
   lastDartStartupIssue = null;
-  dartRecovery.reset();
 
   for (const timer of diagnosticDebounceTimers.values()) {
     clearTimeout(timer);
@@ -678,13 +673,6 @@ export async function rescanDartSdk(): Promise<void> {
       : (lastDartStartupIssue ?? 'Dart SDK scan completed with no valid SDK found.'),
     type: dartSdkInfo ? 'success' : 'warning',
   });
-}
-
-async function recoverDartLspAfterExit(): Promise<void> {
-  if (!projectStore.rootPath || dartServerTransport || initializationPromise) {
-    return;
-  }
-  await initializeServer();
 }
 
 /**
@@ -775,7 +763,7 @@ export async function startProjectWideAnalysis(): Promise<void> {
 
       if (processedSinceYield >= 10) {
         processedSinceYield = 0;
-        await new Promise(r => setTimeout(r, 20));
+        await waitForProjectDiagnosticsDelay(20);
         if (analysisFn._runId !== runId) {
           return;
         }

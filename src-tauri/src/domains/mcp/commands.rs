@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::time::{sleep, Duration};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -257,6 +258,11 @@ fn emit_state(app: &AppHandle, id: &str, state: &McpServerState) {
             state: state.clone(),
         },
     );
+}
+
+fn should_retry_managed_start(error: &str) -> bool {
+    let normalized = error.trim().to_ascii_lowercase();
+    normalized.contains("timed out") || normalized.contains("timeout")
 }
 
 async fn set_error(app: &AppHandle, mcp: &McpState, id: &str, err: &str) {
@@ -593,6 +599,91 @@ pub async fn start_mcp_server(
     );
 
     Ok(final_state)
+}
+
+#[tauri::command]
+pub async fn start_mcp_server_managed(
+    app: AppHandle,
+    server_id: String,
+    config: McpServerConfig,
+    max_retries: Option<u32>,
+    retry_delay_ms: Option<u64>,
+) -> Result<McpServerState, String> {
+    let max_retries = max_retries.unwrap_or(3).max(1);
+    let retry_delay_ms = retry_delay_ms.unwrap_or(30_000);
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        match start_mcp_server(app.clone(), server_id.clone(), config.clone()).await {
+            Ok(state) => return Ok(state),
+            Err(error) => {
+                if attempt >= max_retries || !should_retry_managed_start(&error) {
+                    return Err(error);
+                }
+
+                log_mcp(
+                    &server_id,
+                    &format!(
+                        "managed retry scheduled in {}ms (attempt {}/{})",
+                        retry_delay_ms,
+                        attempt + 1,
+                        max_retries
+                    ),
+                );
+                sleep(Duration::from_millis(retry_delay_ms)).await;
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn start_mcp_servers_managed(
+    app: AppHandle,
+    servers: HashMap<String, McpServerConfig>,
+    max_retries: Option<u32>,
+    retry_delay_ms: Option<u64>,
+) -> Result<Vec<McpServerState>, String> {
+    let mcp = app.state::<McpState>();
+    let mut server_ids = servers.keys().cloned().collect::<Vec<_>>();
+    server_ids.sort();
+
+    let mut states = Vec::with_capacity(server_ids.len());
+
+    for server_id in server_ids {
+        let Some(config) = servers.get(&server_id).cloned() else {
+            continue;
+        };
+
+        match start_mcp_server_managed(
+            app.clone(),
+            server_id.clone(),
+            config,
+            max_retries,
+            retry_delay_ms,
+        )
+        .await
+        {
+            Ok(state) => states.push(state),
+            Err(error) => {
+                set_error(&app, &mcp, &server_id, &error).await;
+                if let Some(state) = mcp.states.read().await.get(&server_id).cloned() {
+                    states.push(state);
+                } else {
+                    states.push(McpServerState {
+                        id: server_id.clone(),
+                        name: server_id,
+                        status: "error".to_string(),
+                        tools: vec![],
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(states)
 }
 
 #[tauri::command]

@@ -47,9 +47,11 @@ export type {
   MessageHandler,
   ErrorHandler,
   ExitHandler,
+  RestartHandler,
   HealthHandler,
   HealthConfig,
   HealthStatus,
+  LspRecoveryState,
   RestartPolicy,
 } from './types';
 
@@ -86,13 +88,6 @@ export {
   type BackendLspDiagnosticsEvent,
   type BackendLspDiagnosticsSourceStateEvent,
 } from './diagnostics';
-
-export {
-  createLspRecoveryController,
-  LspRecoveryController,
-  type LspRecoveryControllerOptions,
-  type LspRecoveryState,
-} from './recovery';
 
 export {
   dispatchWatchedFileChanges,

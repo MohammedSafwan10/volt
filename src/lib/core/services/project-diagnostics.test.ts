@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invokeMock = vi.fn();
 const clearIndexMock = vi.fn();
@@ -65,9 +65,12 @@ vi.mock('$shared/stores/problems.svelte', () => ({
 }));
 
 describe('ProjectDiagnostics', () => {
+  let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     invokeMock.mockImplementation(async (command: string) => {
       if (command === 'get_system_info') {
         return { os_name: 'windows' };
@@ -83,6 +86,10 @@ describe('ProjectDiagnostics', () => {
 
       return null;
     });
+  });
+
+  afterEach(() => {
+    setTimeoutSpy.mockRestore();
   });
 
   it('queues only the latest pending root while a run is active', async () => {
@@ -127,12 +134,12 @@ describe('ProjectDiagnostics', () => {
         return { os_name: 'windows' };
       }
 
-      if (command === 'lsp_begin_project_diagnostics') {
+      if (command === 'lsp_begin_project_diagnostics_managed') {
         return {
-          action: 'delay',
+          action: 'noop',
           runId: null,
           rootPath: 'c:/repo',
-          delayMs: 2500,
+          delayMs: 0,
           staggerMs: 150,
           sidecars: [],
           staleSources: ['typescript', 'eslint'],
@@ -148,12 +155,13 @@ describe('ProjectDiagnostics', () => {
 
     await diagnostics.runDiagnostics('c:/repo');
 
-    expect(invokeMock).toHaveBeenCalledWith('lsp_begin_project_diagnostics', {
+    expect(invokeMock).toHaveBeenCalledWith('lsp_begin_project_diagnostics_managed', {
       rootPath: 'c:/repo',
       sidecars: ['css', 'html', 'typescript', 'svelte', 'eslint'],
     });
     expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('typescript');
     expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('eslint');
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
   });
 
   it('marks cooldown-blocked sources stale when a resumed scheduler run skips them', async () => {
@@ -162,7 +170,7 @@ describe('ProjectDiagnostics', () => {
         return { os_name: 'windows' };
       }
 
-      if (command === 'lsp_begin_project_diagnostics') {
+      if (command === 'lsp_begin_project_diagnostics_managed') {
         return {
           action: 'run',
           runId: 42,
@@ -175,7 +183,7 @@ describe('ProjectDiagnostics', () => {
         };
       }
 
-      if (command === 'lsp_complete_project_diagnostics') {
+      if (command === 'lsp_complete_project_diagnostics_managed') {
         return {
           action: 'noop',
           runId: null,
@@ -207,5 +215,54 @@ describe('ProjectDiagnostics', () => {
     expect(problemsStoreMock.markSourceFresh).toHaveBeenCalledWith('html');
     expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('typescript');
     expect(problemsStoreMock.markSourceStale).toHaveBeenCalledWith('eslint');
+  });
+
+  it('uses the native diagnostics delay command instead of a frontend timer between sidecars', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'get_system_info') {
+        return { os_name: 'windows' };
+      }
+
+      if (command === 'lsp_begin_project_diagnostics_managed') {
+        return {
+          action: 'run',
+          runId: 7,
+          rootPath: 'c:/repo',
+          delayMs: 0,
+          staggerMs: 150,
+          sidecars: ['css', 'html'],
+          staleSources: [],
+          freshSources: ['css', 'html'],
+        };
+      }
+
+      if (command === 'lsp_complete_project_diagnostics_managed') {
+        return {
+          action: 'noop',
+          runId: null,
+          rootPath: null,
+          delayMs: 0,
+          staggerMs: 150,
+          sidecars: [],
+          staleSources: [],
+          freshSources: [],
+        };
+      }
+
+      return null;
+    });
+    getAllFilesMock.mockImplementation(
+      () => ['c:/repo/src/App.svelte'] as ReturnType<typeof getAllFilesMock>,
+    );
+
+    const { ProjectDiagnostics } = await import('./project-diagnostics');
+    const diagnostics = new ProjectDiagnostics();
+
+    await diagnostics.runDiagnostics('c:/repo');
+
+    expect(invokeMock).toHaveBeenCalledWith('lsp_wait_project_diagnostics_delay', {
+      delayMs: 150,
+    });
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
   });
 });
