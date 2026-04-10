@@ -9,7 +9,6 @@ export type SidebarPanel =
   | 'explorer'
   | 'search'
   | 'git'
-  | 'extensions'
   | 'settings'
   | 'mcp'
   | 'prompts'

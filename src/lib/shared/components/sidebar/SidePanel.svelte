@@ -3,7 +3,6 @@
   import ResizablePanel from '$shared/components/layout/ResizablePanel.svelte';
   import { FileTree } from '$features/editor/components/file-tree';
   import { UIIcon } from '$shared/components/ui';
-  import ExtensionsPanel from './ExtensionsPanel.svelte';
   import { SearchPanel } from '$features/search/components';
   import { GitPanel } from '$features/git/components';
   import SettingsPanel from './SettingsPanel.svelte';
@@ -43,8 +42,6 @@
         return 'SEARCH';
       case 'git':
         return 'SOURCE CONTROL';
-      case 'extensions':
-        return 'EXTENSIONS';
       case 'settings':
         return 'SETTINGS';
       case 'mcp':
@@ -87,8 +84,6 @@
         <SearchPanel />
       {:else if uiStore.activeSidebarPanel === 'git'}
         <GitPanel />
-      {:else if uiStore.activeSidebarPanel === 'extensions'}
-        <ExtensionsPanel />
       {:else if uiStore.activeSidebarPanel === 'settings'}
         <SettingsPanel />
       {:else if uiStore.activeSidebarPanel === 'mcp'}

@@ -17,7 +17,6 @@
     { id: 'search', icon: 'search', label: 'Search', implemented: true },
     { id: 'git', icon: 'git-branch', label: 'Source Control', implemented: true },
     { id: 'prompts', icon: 'code', label: 'Prompt Library', implemented: true },
-    { id: 'extensions', icon: 'extensions', label: 'Extensions', implemented: true },
     { id: 'mcp', icon: 'plug', label: 'MCP Servers', implemented: true }
   ];
 
