@@ -388,36 +388,44 @@ export const openaiProvider: AIProvider = {
             stream: true,
         } satisfies OpenAIRequest;
 
-        const response = await fetch(`${LOCAL_CODEX_PROXY_BASE_URL}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${LOCAL_CODEX_PROXY_API_KEY}`,
-            },
-            body: JSON.stringify(body),
-            signal,
+        // Use Tauri Rust backend to stream from the local codex proxy.
+        // Rust reads SSE directly and forwards each line via IPC Channel.
+        const channel = new Channel<string>();
+        const chunkQueue: string[] = [];
+        let resolveNext: ((v: string | null) => void) | null = null;
+        let isDone = false;
+        let invokeError: string | null = null;
+
+        channel.onmessage = (chunk: string) => {
+            if (resolveNext) {
+                resolveNext(chunk);
+                resolveNext = null;
+            } else {
+                chunkQueue.push(chunk);
+            }
+        };
+
+        const invokePromise = invoke('codex_proxy_stream', {
+            url: `${LOCAL_CODEX_PROXY_BASE_URL}/chat/completions`,
+            body,
+            apiKey: LOCAL_CODEX_PROXY_API_KEY,
+            onEvent: channel,
+        }).then(() => {
+            isDone = true;
+            if (resolveNext) { resolveNext(null); resolveNext = null; }
+        }).catch((err: unknown) => {
+            isDone = true;
+            invokeError = err instanceof Error ? err.message : String(err);
+            if (resolveNext) { resolveNext(null); resolveNext = null; }
         });
 
-        if (!response.ok) {
-            let data: OpenAIResponse | null = null;
-            let raw = '';
-            try {
-                raw = await response.text();
-                data = raw.trim() ? JSON.parse(raw) as OpenAIResponse : null;
-            } catch {
-                data = null;
-            }
-            yield { type: 'error', error: mapOpenAIError(response, data, raw) };
-            return;
+        if (signal) {
+            signal.addEventListener('abort', () => {
+                isDone = true;
+                if (resolveNext) { resolveNext(null); resolveNext = null; }
+            }, { once: true });
         }
 
-        if (!response.body) {
-            yield { type: 'error', error: 'Codex proxy returned no streaming body.' };
-            return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         const pendingToolCalls = new Map<
             number,
             {
@@ -432,111 +440,123 @@ export const openaiProvider: AIProvider = {
         let buffer = '';
         let accumulatedContent = '';
 
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+        while (true) {
+            let sseChunk: string | null = null;
+            if (chunkQueue.length > 0) {
+                sseChunk = chunkQueue.shift()!;
+            } else if (!isDone) {
+                sseChunk = await new Promise<string | null>(r => { resolveNext = r; });
+            } else {
+                break;
+            }
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split(/\r?\n/);
-                buffer = lines.pop() ?? '';
+            if (invokeError) {
+                yield { type: 'error', error: invokeError };
+                return;
+            }
+            if (signal?.aborted) return;
+            if (sseChunk === null) break;
 
-                for (const rawLine of lines) {
-                    const trimmed = rawLine.trim();
-                    if (!trimmed || !trimmed.startsWith('data:')) continue;
+            buffer += sseChunk;
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? '';
 
-                    const jsonStr = trimmed.slice(5).trim();
-                    if (!jsonStr) continue;
-                    if (jsonStr === '[DONE]') continue;
+            for (const rawLine of lines) {
+                const trimmed = rawLine.trim();
+                if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-                    let event: OpenAIResponse;
-                    try {
-                        event = JSON.parse(jsonStr) as OpenAIResponse;
-                    } catch {
-                        yield {
-                            type: 'error',
-                            error: `Codex proxy returned malformed SSE JSON: ${jsonStr.slice(0, 400)}`,
-                        };
-                        return;
+                const jsonStr = trimmed.slice(5).trim();
+                if (!jsonStr) continue;
+                if (jsonStr === '[DONE]') continue;
+
+                let event: OpenAIResponse;
+                try {
+                    event = JSON.parse(jsonStr) as OpenAIResponse;
+                } catch {
+                    yield {
+                        type: 'error',
+                        error: `Codex proxy returned malformed SSE JSON: ${jsonStr.slice(0, 400)}`,
+                    };
+                    return;
+                }
+
+                if (event.error) {
+                    yield {
+                        type: 'error',
+                        error: event.error.message || 'Codex proxy streaming error',
+                    };
+                    return;
+                }
+
+                const choice = event.choices?.[0];
+                if (!choice) continue;
+
+                const streamedContent = extractStreamContent(choice);
+                if (streamedContent) {
+                    const next = computeNovelStreamText(streamedContent, accumulatedContent);
+                    accumulatedContent = next.nextAccumulated;
+                    if (next.novel) {
+                        yield { type: 'content', content: next.novel };
                     }
+                }
 
-                    if (event.error) {
-                        yield {
-                            type: 'error',
-                            error: event.error.message || 'Codex proxy streaming error',
-                        };
-                        return;
-                    }
+                if (reasoningEnabled && choice.delta?.reasoning_content) {
+                    yield { type: 'thinking', thinking: choice.delta.reasoning_content };
+                }
 
-                    const choice = event.choices?.[0];
-                    if (!choice) continue;
-
-                    const streamedContent = extractStreamContent(choice);
-                    if (streamedContent) {
-                        const next = computeNovelStreamText(streamedContent, accumulatedContent);
-                        accumulatedContent = next.nextAccumulated;
-                        if (next.novel) {
-                            yield { type: 'content', content: next.novel };
+                if (Array.isArray(choice.delta?.tool_calls)) {
+                    for (const call of choice.delta.tool_calls) {
+                        const idx = call.index ?? 0;
+                        if (!pendingToolCalls.has(idx)) {
+                            pendingToolCalls.set(idx, {
+                                id: call.id || `call_${Date.now()}_${idx}`,
+                                name: '',
+                                arguments: '',
+                                emittedPartial: false,
+                                emittedArgsKey: null,
+                                emittedFinal: false,
+                            });
                         }
-                    }
 
-                    if (reasoningEnabled && choice.delta?.reasoning_content) {
-                        yield { type: 'thinking', thinking: choice.delta.reasoning_content };
-                    }
+                        const pending = pendingToolCalls.get(idx)!;
+                        if (call.id) pending.id = call.id;
+                        if (call.function?.name) pending.name = call.function.name;
+                        if (call.function?.arguments) pending.arguments += call.function.arguments;
 
-                    if (Array.isArray(choice.delta?.tool_calls)) {
-                        for (const call of choice.delta.tool_calls) {
-                            const idx = call.index ?? 0;
-                            if (!pendingToolCalls.has(idx)) {
-                                pendingToolCalls.set(idx, {
-                                    id: call.id || `call_${Date.now()}_${idx}`,
-                                    name: '',
-                                    arguments: '',
-                                    emittedPartial: false,
-                                    emittedArgsKey: null,
-                                    emittedFinal: false,
-                                });
-                            }
-
-                            const pending = pendingToolCalls.get(idx)!;
-                            if (call.id) pending.id = call.id;
-                            if (call.function?.name) pending.name = call.function.name;
-                            if (call.function?.arguments) pending.arguments += call.function.arguments;
-
-                            if (!pending.name) {
-                                continue;
-                            }
-
-                            const parsed = getStreamedToolArguments(pending.arguments);
-                            const argsKey = JSON.stringify(parsed.arguments);
-                            const shouldEmit =
-                                !pending.emittedPartial ||
-                                argsKey !== pending.emittedArgsKey;
-
-                            if (!shouldEmit) {
-                                continue;
-                            }
-
-                            yield {
-                                type: 'tool_call',
-                                partial: true,
-                                toolCall: {
-                                    id: pending.id,
-                                    name: pending.name,
-                                    arguments: parsed.arguments,
-                                },
-                            };
-
-                            pending.emittedPartial = true;
-                            pending.emittedArgsKey = argsKey;
-                            pending.emittedFinal = false;
+                        if (!pending.name) {
+                            continue;
                         }
+
+                        const parsed = getStreamedToolArguments(pending.arguments);
+                        const argsKey = JSON.stringify(parsed.arguments);
+                        const shouldEmit =
+                            !pending.emittedPartial ||
+                            argsKey !== pending.emittedArgsKey;
+
+                        if (!shouldEmit) {
+                            continue;
+                        }
+
+                        yield {
+                            type: 'tool_call',
+                            partial: true,
+                            toolCall: {
+                                id: pending.id,
+                                name: pending.name,
+                                arguments: parsed.arguments,
+                            },
+                        };
+
+                        pending.emittedPartial = true;
+                        pending.emittedArgsKey = argsKey;
+                        pending.emittedFinal = false;
                     }
                 }
             }
-        } finally {
-            reader.releaseLock();
         }
+
+        // Wait for the invoke to finish
+        await invokePromise.catch(() => {});
 
         for (const [, pending] of pendingToolCalls) {
             if (!pending.name) continue;

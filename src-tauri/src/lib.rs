@@ -14,8 +14,9 @@ use chat_history::{
 };
 use commands::ai::{
     ai_has_api_key, ai_remove_api_key, ai_set_api_key, ai_validate_api_key, anthropic_proxy,
-    anthropic_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy, mistral_proxy_stream,
-    openai_proxy, openai_proxy_stream, openrouter_proxy, openrouter_proxy_stream,
+    anthropic_proxy_stream, codex_proxy_stream, gemini_proxy, gemini_proxy_stream, mistral_proxy,
+    mistral_proxy_stream, openai_proxy, openai_proxy_stream, openrouter_proxy,
+    openrouter_proxy_stream,
 };
 use commands::document::{
     document_apply_edit, document_batch_write, document_close, document_delete,
@@ -116,6 +117,7 @@ pub fn run() {
             anthropic_proxy_stream,
             openai_proxy,
             openai_proxy_stream,
+            codex_proxy_stream,
             openrouter_proxy,
             openrouter_proxy_stream,
             gemini_proxy,

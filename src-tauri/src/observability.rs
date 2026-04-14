@@ -5,6 +5,12 @@ pub fn debug_log(topic: &str, message: impl AsRef<str>) {
     {
         eprintln!("[VoltDebug][{topic}] {}", message.as_ref());
     }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = topic;
+        let _ = message.as_ref();
+    }
 }
 
 #[tauri::command]

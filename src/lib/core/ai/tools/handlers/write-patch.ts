@@ -107,22 +107,28 @@ function normalizePatchText(patch: string): string {
   return text;
 }
 
-function parseHunkLine(raw: string, lineNo: number): PatchHunkLine {
+function parseHunkLine(raw: string, lineNo: number): PatchHunkLine | null {
+  // Empty lines are common in AI-generated patches — treat as empty context line
   if (raw.length === 0) {
-    throw new Error(
-      `Malformed patch: invalid patch line at ${lineNo}. Expected prefix " ", "-" or "+".`,
-    );
+    return { op: 'context', text: '' };
   }
+
+  // Skip "\ No newline at end of file" and similar git noise
+  if (raw.startsWith('\\ ')) {
+    return null;
+  }
+
   const marker = raw[0];
-  if (marker !== ' ' && marker !== '-' && marker !== '+') {
-    throw new Error(
-      `Malformed patch: invalid patch line at ${lineNo}. Expected prefix " ", "-" or "+".`,
-    );
+  if (marker === ' ' || marker === '-' || marker === '+') {
+    return {
+      op: marker === ' ' ? 'context' : marker === '-' ? 'remove' : 'add',
+      text: raw.slice(1),
+    };
   }
-  return {
-    op: marker === ' ' ? 'context' : marker === '-' ? 'remove' : 'add',
-    text: raw.slice(1),
-  };
+
+  // Fallback: model forgot the space prefix — treat the whole line as context.
+  // This is a common AI generation mistake and is almost always a context line.
+  return { op: 'context', text: raw };
 }
 
 export function parseCodexPatch(patch: string): ParsedCodexPatch {
@@ -158,7 +164,8 @@ export function parseCodexPatch(patch: string): ParsedCodexPatch {
     i++;
     const hunkLines: PatchHunkLine[] = [];
     while (i < lines.length - 1 && !lines[i].startsWith('@@')) {
-      hunkLines.push(parseHunkLine(lines[i], i + 1));
+      const parsed = parseHunkLine(lines[i], i + 1);
+      if (parsed) hunkLines.push(parsed);
       i++;
     }
     if (hunkLines.length === 0) {
@@ -183,10 +190,23 @@ function findSubsequence(
     return startAt;
   }
   const max = lines.length - pattern.length;
+  // Exact match first
   for (let i = startAt; i <= max; i++) {
     let match = true;
     for (let j = 0; j < pattern.length; j++) {
       if (lines[i + j] !== pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return i;
+  }
+  // Fuzzy fallback: trim trailing whitespace on both sides.
+  // AI models frequently emit context lines with different trailing spaces.
+  for (let i = startAt; i <= max; i++) {
+    let match = true;
+    for (let j = 0; j < pattern.length; j++) {
+      if (lines[i + j].trimEnd() !== pattern[j].trimEnd()) {
         match = false;
         break;
       }

@@ -24,6 +24,20 @@ fn shared_http_client() -> &'static reqwest::Client {
     })
 }
 
+/// HTTP client for SSE streaming — no total request timeout.
+/// Streaming responses can run for minutes; a total timeout would kill them.
+/// Only a connect timeout is applied to detect unreachable hosts quickly.
+fn shared_streaming_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .pool_max_idle_per_host(5)
+            .build()
+            .expect("Failed to create streaming HTTP client")
+    })
+}
+
 /// Validate model name to prevent URL path injection.
 /// Only allows alphanumeric chars, dots, hyphens, underscores, and colons.
 fn validate_model_name(model: &str) -> Result<(), String> {
@@ -249,7 +263,7 @@ pub async fn anthropic_proxy_stream(
     anthropic_version: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = shared_http_client();
+    let client = shared_streaming_client();
     let api_key = resolve_api_key(&api_key, "anthropic")?;
     let response = client
         .post("https://api.anthropic.com/v1/messages")
@@ -318,7 +332,7 @@ pub async fn openai_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = shared_http_client();
+    let client = shared_streaming_client();
     let api_key = resolve_api_key(&api_key, "openai")?;
 
     let response = client
@@ -367,6 +381,74 @@ pub async fn openai_proxy_stream(
     Ok(())
 }
 
+/// Stream from a local OpenAI-compatible proxy (e.g. cliproxy at localhost:8317).
+/// SSE lines are forwarded immediately through the Tauri Channel — no browser HTTP hop.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn codex_proxy_stream(
+    url: String,
+    body: Value,
+    api_key: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    // Validate the URL is localhost only (safety guard)
+    if !url.starts_with("http://localhost:") && !url.starts_with("http://127.0.0.1:") {
+        return Err("codex_proxy_stream only allows localhost URLs".to_string());
+    }
+
+    let client = shared_streaming_client();
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to reach codex proxy: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        // Send the error as a structured JSON line so frontend can parse it
+        let _ = on_event.send(format!(
+            "{{\"error\":{{\"message\":\"Codex proxy error (Status {status}): {text}\"}}}}"
+        ));
+        return Err(format!("Codex proxy streaming error (Status {status}): {text}"));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|err| format!("Error while reading codex proxy stream: {err}"))?;
+        buffer.extend_from_slice(&chunk);
+
+        // Forward each complete SSE line immediately
+        while let Some(i) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=i).collect();
+            if let Ok(line) = String::from_utf8(line_bytes) {
+                if !line.trim().is_empty() {
+                    on_event
+                        .send(line)
+                        .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+                }
+            }
+        }
+    }
+
+    // Flush remaining bytes
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer).to_string();
+        if !line.trim().is_empty() {
+            on_event
+                .send(line)
+                .map_err(|err| format!("Failed to send line to frontend: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn openrouter_proxy(body: Value, api_key: String) -> Result<Value, String> {
     let client = shared_http_client();
@@ -403,7 +485,7 @@ pub async fn openrouter_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = shared_http_client();
+    let client = shared_streaming_client();
     let api_key = resolve_api_key(&api_key, "openrouter")?;
 
     let response = client
@@ -498,7 +580,7 @@ pub async fn gemini_proxy_stream(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     validate_model_name(&model)?;
-    let client = shared_http_client();
+    let client = shared_streaming_client();
     let api_key = resolve_api_key(&api_key, "gemini")?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
@@ -585,7 +667,7 @@ pub async fn mistral_proxy_stream(
     api_key: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let client = shared_http_client();
+    let client = shared_streaming_client();
     let api_key = resolve_api_key(&api_key, "mistral")?;
 
     let response = client

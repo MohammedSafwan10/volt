@@ -29,9 +29,12 @@ describe('write-patch parser', () => {
     expect(after).not.toContain('const b = 2;');
   });
 
-  it('throws deterministic message on malformed line', () => {
-    const malformed = '*** Begin Patch\n*** Update File: game.js\n@@\n const a = 1;\nthis line has no prefix\n+const b = 2;\n*** End Patch';
-    expect(() => parseCodexPatch(malformed)).toThrow('Malformed patch: invalid patch line');
+  it('treats unprefixed lines as context (model forgot space prefix)', () => {
+    const patch = '*** Begin Patch\n*** Update File: game.js\n@@\n const a = 1;\nthis line has no prefix\n+const b = 2;\n*** End Patch';
+    const parsed = parseCodexPatch(patch);
+    expect(parsed.hunks.length).toBe(1);
+    // The unprefixed line is treated as context
+    expect(parsed.hunks[0].lines[1]).toEqual({ op: 'context', text: 'this line has no prefix' });
   });
 
   it('accepts patch body without begin/end wrapper by auto-wrapping', () => {
