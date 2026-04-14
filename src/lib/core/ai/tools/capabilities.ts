@@ -9,6 +9,10 @@ export interface ToolCapabilities {
 }
 
 const LONG_RUNNING_TERMINAL_TOOLS = new Set([
+  'run_in_terminal',
+  'get_terminal_output',
+  'send_to_terminal',
+  'kill_terminal',
   'run_command',
   'start_process',
   'stop_process',
@@ -39,11 +43,14 @@ const PATH_VALIDATED_TOOLS = new Set([
   'delete_file',
   'rename_path',
   'format_file',
+  'run_in_terminal',
   'run_command',
   'start_process',
 ]);
 
 const MUTATING_TOOL_OVERRIDES = new Set([
+  'run_in_terminal',
+  'send_to_terminal',
   'run_command',
   'start_process',
   'stop_process',

@@ -8,7 +8,6 @@
     ContentPart,
   } from "$features/assistant/stores/assistant.svelte";
   import AssistantStreamingMarkdown from "./AssistantStreamingMarkdown.svelte";
-  import Markdown from "$shared/components/ui/Markdown.svelte";
   import InlineToolCall from "./InlineToolCall.svelte";
   import FileEditCard from "./FileEditCard.svelte";
   import { getFileEditDiffStats } from "./file-edit-stats";
@@ -287,6 +286,16 @@
     });
   }
 
+  function stripInlineMarkdown(text: string): string {
+    return text
+      .replace(/^\s*[-*•]+\s*/, "")
+      .replace(/^\s*#+\s*/, "")
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/\*(.*?)\*/g, "$1")
+      .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
+      .trim();
+  }
+
   function getThinkingBody(
     part: Extract<ContentPart, { type: "thinking" }>,
   ): string {
@@ -299,7 +308,7 @@
     if (!firstLine) return part.thinking;
 
     const normalizedTitle = part.title.replace(/\.\.\.$/, "").trim();
-    const normalizedFirstLine = firstLine.replace(/\.\.\.$/, "").trim();
+    const normalizedFirstLine = stripInlineMarkdown(firstLine).replace(/\.\.\.$/, "").trim();
     if (normalizedTitle !== normalizedFirstLine) return part.thinking;
 
     const body = lines.slice(1).join("\n").trimStart();
@@ -982,8 +991,9 @@
               {:else if block.type === "text"}
                 {@const part = block.part}
                 {@const i = block.i}
+                {@const isStreamingTail = showStreaming && i === lastVisibleTextPartIndex}
                 <div class="msg-content">
-                  {#if showStreaming && i === lastVisibleTextPartIndex}
+                  {#if isStreamingTail}
                     <div class="streaming-tail">
                       <AssistantStreamingMarkdown
                         content={part.text}
@@ -991,7 +1001,10 @@
                       />
                     </div>
                   {:else}
-                    <Markdown content={part.text} profile="chat" />
+                    <AssistantStreamingMarkdown
+                      content={part.text}
+                      streaming={false}
+                    />
                   {/if}
                 </div>
               {/if}

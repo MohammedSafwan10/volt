@@ -42,7 +42,16 @@ export {
   handleFormatFile
 } from '$core/ai/tools/handlers/write';
 
-// Terminal tools
+// Terminal tools (v2 - unified surface)
+export {
+  handleRunInTerminal,
+  handleGetTerminalOutput,
+  handleSendToTerminal,
+  handleKillTerminal,
+  handleRunCommandV2,
+} from '$core/ai/tools/handlers/terminal-v2';
+
+// Terminal tools (v1 - legacy, used by backward compat handler map)
 export {
   handleRunCommand,
   handleStartProcess,
@@ -92,6 +101,13 @@ import {
   handleStartProcess,
   handleStopProcess,
 } from '$core/ai/tools/handlers/terminal';
+import {
+  handleRunInTerminal,
+  handleGetTerminalOutput,
+  handleSendToTerminal,
+  handleKillTerminal,
+  handleRunCommandV2,
+} from '$core/ai/tools/handlers/terminal-v2';
 
 type ToolHandler = (
   args: Record<string, unknown>,
@@ -132,9 +148,15 @@ export const toolHandlers: Record<string, ToolHandler> = {
   // Plan mode
   'write_plan_file': (args) => import('$core/ai/tools/handlers/write').then(m => m.handleWritePlanFile(args)),
 
-  // Terminal
-  'run_command': (args, runtime) => handleRunCommand(args, runtime),
-  'start_process': (args) => handleStartProcess(args),
+  // Terminal (v2 - unified surface)
+  'run_in_terminal': (args, runtime) => handleRunInTerminal(args, runtime),
+  'get_terminal_output': (args) => handleGetTerminalOutput(args),
+  'send_to_terminal': (args) => handleSendToTerminal(args),
+  'kill_terminal': (args) => handleKillTerminal(args),
+
+  // Terminal (v1 backward compat aliases)
+  'run_command': (args, runtime) => handleRunCommandV2(args, runtime),
+  'start_process': (args, runtime) => handleRunInTerminal({ ...args, mode: 'async' }, runtime),
   'stop_process': (args) => handleStopProcess(args),
   'list_processes': () => handleListProcesses(),
   'get_process_output': (args) => handleGetProcessOutput(args),

@@ -195,15 +195,18 @@ Re-read the file first if the previous patch failed or content may be stale.`,
 
   // ── TERMINAL ──────────────────────────────────
   {
-    name: 'run_command',
-    description: `Execute a shell command and wait for completion. Use for short-running tasks: install, build, git, test.
-For long-running processes (dev servers, watchers), use start_process instead.`,
+    name: 'run_in_terminal',
+    description: `Execute a command in a terminal session. Supports two modes:
+- mode "sync" (default): Waits for completion and returns output + exit code. Use for bounded tasks (install, build, git, test).
+- mode "async": Starts the command and returns a terminal ID immediately. Use for long-running processes (dev servers, watchers) or interactive commands.
+After async execution, use get_terminal_output to read output, send_to_terminal to provide input, or kill_terminal to stop.`,
     parameters: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Shell command to execute' },
         cwd: { type: 'string', description: 'Working directory (optional, defaults to workspace root)' },
-        timeout: { type: 'number', description: 'Timeout in ms (default: 60000)' }
+        mode: { type: 'string', enum: ['sync', 'async'], description: 'Execution mode (default: sync)' },
+        timeout: { type: 'number', description: 'Timeout in ms (default: 90000 sync, 30000 async)' }
       },
       required: ['command']
     },
@@ -212,34 +215,64 @@ For long-running processes (dev servers, watchers), use start_process instead.`,
     allowedModes: ['agent']
   },
   {
-    name: 'start_process',
-    description: `Start a long-running background process (dev servers, watchers).
-Returns a processId. Use get_process_output to read its output afterward.`,
+    name: 'get_terminal_output',
+    description: 'Read output from a persistent terminal session started with run_in_terminal in async mode. Returns recent output lines, detected URL, and any waiting-for-input indicators.',
     parameters: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Command to run in background' },
-        cwd: { type: 'string', description: 'Working directory (optional)' }
+        id: { type: 'string', description: 'Terminal ID returned by run_in_terminal in async mode' },
+        maxLines: { type: 'number', description: 'Max output lines to return (default: 200)' }
       },
-      required: ['command']
-    },
-    category: 'terminal',
-    requiresApproval: true,
-    allowedModes: ['agent']
-  },
-  {
-    name: 'get_process_output',
-    description: 'Read output from a background process. Returns recent output lines and detected localhost URL if present.',
-    parameters: {
-      type: 'object',
-      properties: {
-        processId: { type: 'number', description: 'Process ID returned by start_process' },
-        maxLines: { type: 'number', description: 'Lines to return (default: 100)' }
-      },
-      required: ['processId']
+      required: ['id']
     },
     category: 'terminal',
     requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'send_to_terminal',
+    description: 'Send input text to a persistent terminal session. Use to answer interactive prompts (Y/n, selections, passwords) or send follow-up commands. Text is sent followed by Enter.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Terminal ID returned by run_in_terminal in async mode' },
+        input: { type: 'string', description: 'Text to send to the terminal (followed by Enter)' }
+      },
+      required: ['id', 'input']
+    },
+    category: 'terminal',
+    requiresApproval: true,
+    allowedModes: ['agent']
+  },
+  {
+    name: 'kill_terminal',
+    description: 'Kill a persistent terminal session by ID. Use to clean up terminals when done (e.g. after stopping a server). Returns final output before termination.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Terminal ID returned by run_in_terminal in async mode' }
+      },
+      required: ['id']
+    },
+    category: 'terminal',
+    requiresApproval: false,
+    allowedModes: ['agent']
+  },
+  // Backward compat alias — models trained on the old surface can still call run_command
+  {
+    name: 'run_command',
+    description: `[Alias for run_in_terminal mode=sync] Execute a shell command and wait for completion. Prefer run_in_terminal for new usage.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute' },
+        cwd: { type: 'string', description: 'Working directory (optional, defaults to workspace root)' },
+        timeout: { type: 'number', description: 'Timeout in ms (default: 90000)' }
+      },
+      required: ['command']
+    },
+    category: 'terminal',
+    requiresApproval: true,
     allowedModes: ['agent']
   },
 
@@ -362,6 +395,7 @@ export const STRICT_CANONICAL_TOOL_NAMES = new Set<string>([
   'read_file',
   'workspace_search',
   'apply_patch',
+  'run_in_terminal',
   'run_command',
   'get_diagnostics',
 ]);
@@ -392,7 +426,9 @@ export const RETIRED_TOOL_NAMES = new Set<string>([
   'format_file',
   'write_plan_file',
 
-  // Removed terminal tools (use run_command, start_process, get_process_output)
+  // Removed terminal tools (use run_in_terminal, get_terminal_output, send_to_terminal, kill_terminal)
+  'start_process',
+  'get_process_output',
   'stop_process',
   'list_processes',
   'command_status',

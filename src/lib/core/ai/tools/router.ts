@@ -44,6 +44,8 @@ const HIDDEN_HANDLER_NAMES = new Set([
 const TOOL_MAX_ATTEMPTS: Record<string, number> = {};
 const TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: 'run_command',
+  execute_command: 'run_command',
+  terminal_run: 'run_in_terminal',
 };
 
 export function normalizeToolName(toolName: string): string {
@@ -107,7 +109,7 @@ export function validateToolCall(
     if (RETIRED_TOOL_NAMES.has(canonicalToolName)) {
       return {
         valid: false,
-        error: `Tool "${canonicalToolName}" was removed from strict profile. Use read_file/workspace_search/apply_patch/run_command equivalents.`,
+        error: `Tool "${canonicalToolName}" was removed. Use run_in_terminal/get_terminal_output/send_to_terminal/kill_terminal instead.`,
         requiresApproval: false,
       };
     }
@@ -214,6 +216,7 @@ function validateRequiredParams(toolName: string, args: Record<string, unknown>)
     }
 
     // Terminal tools
+    case 'run_in_terminal':
     case 'run_command':
       return requireString('command');
 

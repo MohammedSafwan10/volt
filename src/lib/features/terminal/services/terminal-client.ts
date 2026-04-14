@@ -674,6 +674,9 @@ export class TerminalSession {
 	private onDataCallback: ((data: string) => void) | null = null;
 	private onExitCallback: ((code: number | null) => void) | null = null;
 
+	private dataListeners = new Set<(data: string) => void>();
+	private commandFinishListeners = new Set<(exitCode: number) => void>();
+
 	private dataBuffer: string[] = [];
 	private dataBufferChars = 0;
 	private static readonly MAX_BUFFER_CHARS = 1_000_000;
@@ -848,6 +851,11 @@ export class TerminalSession {
 			else this.bufferData(filteredDisplay);
 		}
 
+		// Notify registered data listeners (used by execute strategies)
+		for (const listener of this.dataListeners) {
+			try { listener(payload.data); } catch { /* ignore listener errors */ }
+		}
+
 		for (const ev of events) {
 			this.handleShellIntegrationEvent(ev, {
 				batchHasExplicitCommandFinish,
@@ -921,6 +929,24 @@ export class TerminalSession {
 		this.onExitCallback = callback;
 	}
 
+	/**
+	 * Register a data listener that receives every data event.
+	 * Returns an unsubscribe function.
+	 */
+	public addDataListener(callback: (data: string) => void): () => void {
+		this.dataListeners.add(callback);
+		return () => { this.dataListeners.delete(callback); };
+	}
+
+	/**
+	 * Register a one-shot or persistent listener for command-finish events.
+	 * Returns an unsubscribe function.
+	 */
+	public onCommandFinish(callback: (exitCode: number) => void): () => void {
+		this.commandFinishListeners.add(callback);
+		return () => { this.commandFinishListeners.delete(callback); };
+	}
+
 	private handleShellIntegrationEvent(
 		event: ShellIntegrationEvent,
 		context: { batchHasExplicitCommandFinish: boolean } = { batchHasExplicitCommandFinish: false },
@@ -939,9 +965,15 @@ export class TerminalSession {
 				this.lastCommandStartedAt = Date.now();
 				this.lastCommandFinishedAt = null;
 				break;
-			case 'command-finish':
-				this.resolvePendingCommandCompletions(event.exitCode ?? 0);
+			case 'command-finish': {
+				const finishCode = event.exitCode ?? 0;
+				this.resolvePendingCommandCompletions(finishCode);
+				// Notify registered command-finish listeners (used by execute strategies)
+				for (const listener of this.commandFinishListeners) {
+					try { listener(finishCode); } catch { /* ignore listener errors */ }
+				}
 				break;
+			}
 			case 'prompt-end':
 				// PowerShell built-ins can complete without publishing an explicit D marker.
 				// When the prompt returns while a command is pending, treat that as completion.
