@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, type Component } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import MenuBar from "./MenuBar.svelte";
   import StatusBar from "./StatusBar.svelte";
@@ -57,6 +57,7 @@
   } from "$core/services/prettier";
   import { runtimeTelemetry } from "$core/services/runtime-telemetry";
   import { mcpStore } from "$features/mcp/stores/mcp.svelte";
+  import { stateSnapshotService } from "$core/services/state-snapshot";
 
   interface Props {
     children?: import("svelte").Snippet;
@@ -66,8 +67,10 @@
 
   // Command palette reference
   let commandPalette: ReturnType<typeof CommandPalette> | undefined = $state();
-  let MonacoEditorComponent = $state<unknown | null>(null);
-  let MonacoDiffEditorComponent = $state<unknown | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let MonacoEditorComponent = $state<Component<any> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let MonacoDiffEditorComponent = $state<Component<any> | null>(null);
   let monacoFeatureLoading = $state(false);
   let xtermWarmStarted = $state(false);
   let mcpInitStarted = $state(false);
@@ -391,6 +394,13 @@
   function handleKeydown(e: KeyboardEvent) {
     // Ctrl+Shift+P / Ctrl+K chords should work even in editable targets
     const isMod = e.ctrlKey || e.metaKey;
+
+    // Ctrl+Shift+R to reload window with state preservation
+    if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "r") {
+      e.preventDefault();
+      stateSnapshotService.reloadWindow();
+      return;
+    }
 
     // Ctrl+Shift+P to open command palette (VS Code)
     if (isMod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {

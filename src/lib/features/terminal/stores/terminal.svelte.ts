@@ -7,12 +7,49 @@ import {
 } from '$features/terminal/services/terminal-client';
 import { terminalProblemMatcher } from '$features/terminal/services/terminal-problem-matcher';
 import { registerCleanup } from '$core/services/hmr-cleanup';
+import { stateSnapshotService, type ISnapshotParticipant } from '$core/services/state-snapshot';
 import { projectStore } from '$shared/stores/project.svelte';
 
 /**
  * Terminal store for managing terminal sessions
  */
-class TerminalStore {
+interface TerminalSnapshot {
+	activeTerminalId: string | null;
+	aiTerminalId: string | null;
+	sessionLabels: Record<string, string>;
+}
+
+class TerminalStore implements ISnapshotParticipant {
+	readonly snapshotPriority = 3;
+
+	getSnapshot(): TerminalSnapshot {
+		return {
+			activeTerminalId: this.activeTerminalId,
+			aiTerminalId: this.aiTerminalId,
+			sessionLabels: { ...this.sessionLabels },
+		};
+	}
+
+	restoreSnapshot(data: unknown): void {
+		const snap = data as TerminalSnapshot;
+		if (!snap) return;
+		// Restore labels eagerly so they are available when sessions appear
+		if (snap.sessionLabels) this.sessionLabels = snap.sessionLabels;
+		// Wait for backend sync to complete, then restore terminal pointers
+		if (snap.aiTerminalId || snap.activeTerminalId) {
+			const savedAiId = snap.aiTerminalId;
+			const savedActiveId = snap.activeTerminalId;
+			void this.ensureSynced().then(() => {
+				if (savedAiId && this.sessions.some(s => s.id === savedAiId)) {
+					this.aiTerminalId = savedAiId;
+				}
+				if (savedActiveId && this.sessions.some(s => s.id === savedActiveId)) {
+					this.activeTerminalId = savedActiveId;
+				}
+			});
+		}
+	}
+
 	sessions = $state<TerminalSession[]>([]);
 	activeTerminalId = $state<string | null>(null);
 	lastError = $state<{ terminalId: string; command: string; output: string } | null>(null);
@@ -392,6 +429,7 @@ class TerminalStore {
 }
 
 export const terminalStore = new TerminalStore();
+stateSnapshotService.registerParticipant('terminal', terminalStore);
 
 // Register HMR cleanup to dispose terminal sessions
 registerCleanup('terminal-store', async () => {

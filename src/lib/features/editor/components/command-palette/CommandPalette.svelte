@@ -30,6 +30,7 @@
     type IndexedFile,
   } from "$core/services/file-index";
   import { exit } from "@tauri-apps/plugin-process";
+  import { stateSnapshotService } from "$core/services/state-snapshot";
   import {
     type Command,
     type CommandWithMeta,
@@ -292,8 +293,9 @@
       id: "developer.reloadWindow",
       label: "Developer: Reload Window",
       category: "View",
+      shortcut: "Ctrl+Shift+R",
       action: () => {
-        if (typeof window !== "undefined") window.location.reload();
+        stateSnapshotService.reloadWindow();
       },
     },
     {

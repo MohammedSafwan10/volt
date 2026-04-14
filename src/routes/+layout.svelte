@@ -6,6 +6,7 @@
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { initializeFileService } from '$core/services/file-service';
   import { cleanupStaleBackendWatchers } from '$core/services/hmr-cleanup';
+  import { stateSnapshotService } from '$core/services/state-snapshot';
   
   let { children } = $props();
 
@@ -15,6 +16,19 @@
       topic: 'frontend',
       message,
     }).catch(() => {});
+  }
+
+  function isBenignMonacoCancellation(reason: unknown): boolean {
+    if (!(reason instanceof Error)) return false;
+    if (reason.name !== 'Canceled' || reason.message !== 'Canceled') return false;
+
+    const stack = reason.stack?.toLowerCase() ?? '';
+    return (
+      stack.includes('delayer.cancel') &&
+      (stack.includes('uniquecontainer.value') ||
+        stack.includes('wordhighlighter') ||
+        stack.includes('codeeditorwidget'))
+    );
   }
 
   if (typeof window !== 'undefined') {
@@ -36,6 +50,10 @@
       });
 
       window.addEventListener('unhandledrejection', (event) => {
+        if (isBenignMonacoCancellation(event.reason)) {
+          event.preventDefault();
+          return;
+        }
         const reason =
           event.reason instanceof Error
             ? `${event.reason.name}: ${event.reason.message}`
@@ -46,6 +64,14 @@
         }
       });
     }
+  }
+
+  // Restore state from a previous reload (HMR or manual)
+  if (typeof window !== 'undefined' && stateSnapshotService.isReload()) {
+    const reason = stateSnapshotService.getReloadReason();
+    emitStartupDebug(`state-snapshot restore start (reason=${reason})`);
+    const restored = stateSnapshotService.restore();
+    emitStartupDebug(`state-snapshot restore done (restored=${restored})`);
   }
 
   // Initialize unified file service with LSP integration

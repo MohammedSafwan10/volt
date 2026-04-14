@@ -9,6 +9,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { stateSnapshotService } from './state-snapshot';
 
 type CleanupFn = () => void | Promise<void>;
 
@@ -115,12 +116,20 @@ function initializeIfNeeded(): void {
 
   // Handle page unload (full reload, navigation away)
   window.addEventListener('beforeunload', () => {
+    // Only set reason if not already set (e.g. reloadWindow already set 'manual')
+    if (!stateSnapshotService.isReload()) {
+      stateSnapshotService.setReloadReason('manual');
+    }
+    stateSnapshotService.snapshot();
     runAllCleanups();
   });
 
   // Handle Vite HMR if available
   if (import.meta.hot) {
     import.meta.hot.dispose(() => {
+      // Snapshot state before HMR teardown
+      stateSnapshotService.setReloadReason('hmr');
+      stateSnapshotService.snapshot();
       runAllCleanups();
     });
   }

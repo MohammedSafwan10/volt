@@ -4,6 +4,7 @@
  */
 
 import { bottomPanelStore, type BottomPanelTab } from './bottom-panel.svelte';
+import { stateSnapshotService, type ISnapshotParticipant } from '$core/services/state-snapshot';
 
 export type SidebarPanel =
   | 'explorer'
@@ -24,7 +25,16 @@ const BOTTOM_PANEL_OPEN_KEY = 'volt.bottomPanelOpen';
 const SIDEBAR_MIN_WIDTH = 150;
 const SIDEBAR_MAX_WIDTH = 900;
 
-class UIStore {
+interface UISnapshot {
+  sidebarOpen: boolean;
+  activeSidebarPanel: SidebarPanel;
+  sidebarWidth: number;
+  bottomPanelOpen: boolean;
+  bottomPanelHeight: number;
+  zoomPercent: number;
+}
+
+class UIStore implements ISnapshotParticipant {
   // Sidebar state
   sidebarOpen = $state(true);
   activeSidebarPanel = $state<SidebarPanel>('explorer');
@@ -43,9 +53,33 @@ class UIStore {
   // Zoom
   zoomPercent = $state(100);
 
+  readonly snapshotPriority = 0;
+
   constructor() {
     this.loadPersistedZoom();
     this.loadPersistedUI();
+  }
+
+  getSnapshot(): UISnapshot {
+    return {
+      sidebarOpen: this.sidebarOpen,
+      activeSidebarPanel: this.activeSidebarPanel,
+      sidebarWidth: this.sidebarWidth,
+      bottomPanelOpen: this.bottomPanelOpen,
+      bottomPanelHeight: this.bottomPanelHeight,
+      zoomPercent: this.zoomPercent,
+    };
+  }
+
+  restoreSnapshot(data: unknown): void {
+    const snap = data as UISnapshot;
+    if (!snap) return;
+    if (typeof snap.sidebarOpen === 'boolean') this.sidebarOpen = snap.sidebarOpen;
+    if (snap.activeSidebarPanel !== undefined) this.activeSidebarPanel = snap.activeSidebarPanel;
+    if (typeof snap.sidebarWidth === 'number') this.sidebarWidth = snap.sidebarWidth;
+    if (typeof snap.bottomPanelOpen === 'boolean') this.bottomPanelOpen = snap.bottomPanelOpen;
+    if (typeof snap.bottomPanelHeight === 'number') this.bottomPanelHeight = snap.bottomPanelHeight;
+    if (typeof snap.zoomPercent === 'number') this.zoomPercent = snap.zoomPercent;
   }
 
   /**
@@ -220,3 +254,4 @@ class UIStore {
 
 // Singleton instance
 export const uiStore = new UIStore();
+stateSnapshotService.registerParticipant('ui', uiStore);

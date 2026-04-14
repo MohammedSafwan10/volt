@@ -4,6 +4,7 @@
  */
 
 import { fileService } from '$core/services/file-service';
+import { stateSnapshotService, type ISnapshotParticipant } from '$core/services/state-snapshot';
 import {
   clearReviewHighlight,
   disposeAllModels,
@@ -199,7 +200,15 @@ const BINARY_LIKE_EXTENSIONS = new Set([
   'ogv',
 ]);
 
-export class EditorStore {
+interface EditorSnapshot {
+  openFilePaths: string[];
+  activeFilePath: string | null;
+  pinnedPaths: string[];
+}
+
+export class EditorStore implements ISnapshotParticipant {
+  readonly snapshotPriority = 2;
+
   /** List of open files */
   openFiles = $state<OpenFile[]>([]);
 
@@ -214,6 +223,52 @@ export class EditorStore {
 
   fileServiceUnsubscribe: (() => void) | null = null;
   private fileServiceInitRetryQueued = false;
+
+  getSnapshot(): EditorSnapshot {
+    const diskFiles = this.openFiles.filter(f => !isVoltVirtualPath(f.path));
+    return {
+      openFilePaths: diskFiles.map(f => f.path),
+      activeFilePath: this.activeFilePath && !isVoltVirtualPath(this.activeFilePath)
+        ? this.activeFilePath
+        : (diskFiles[0]?.path ?? null),
+      pinnedPaths: diskFiles.filter(f => f.pinned).map(f => f.path),
+    };
+  }
+
+  restoreSnapshot(data: unknown): void {
+    const snap = data as EditorSnapshot;
+    if (!snap) return;
+    // Re-open files from disk after reload completes
+    // We defer this to avoid blocking the restore sequence
+    if (Array.isArray(snap.openFilePaths) && snap.openFilePaths.length > 0) {
+      const pathsToOpen = snap.openFilePaths;
+      const activePath = snap.activeFilePath;
+      const pinnedSet = new Set<string>(snap.pinnedPaths ?? []);
+      queueMicrotask(() => {
+        void this.restoreOpenFiles(pathsToOpen, activePath, pinnedSet);
+      });
+    }
+  }
+
+  private async restoreOpenFiles(
+    paths: string[],
+    activePath: string | null,
+    pinnedPaths: Set<string>,
+  ): Promise<void> {
+    for (const path of paths) {
+      try {
+        await this.openFile(path);
+        if (pinnedPaths.has(path)) {
+          this.togglePin(path);
+        }
+      } catch (err) {
+        console.warn(`[EditorStore] Failed to restore file: ${path}`, err);
+      }
+    }
+    if (activePath) {
+      this.setActiveFile(activePath);
+    }
+  }
 
   initialize(): void {
     if (this.fileServiceUnsubscribe || this.fileServiceInitRetryQueued) return;
@@ -826,6 +881,7 @@ export class EditorStore {
 // Singleton instance
 export const editorStore = new EditorStore();
 editorStore.initialize();
+stateSnapshotService.registerParticipant('editor', editorStore);
 
 export function disposeEditorStore(): void {
   editorStore.resetFileServiceSubscription();

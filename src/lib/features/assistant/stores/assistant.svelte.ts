@@ -9,6 +9,7 @@
  */
 
 import type { AIMode } from './ai.svelte';
+import { stateSnapshotService, type ISnapshotParticipant } from '$core/services/state-snapshot';
 import { doesToolRequireApproval, getToolByName } from '$core/ai/tools/definitions';
 import { serializeMessageMetadata } from '../components/panel/conversation-persistence';
 import type { ContentType } from '$core/services/token-counter';
@@ -446,7 +447,16 @@ const DEFAULT_PANEL_WIDTH = 400;
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH = 800;
 
-class AssistantStore {
+interface AssistantSnapshot {
+  currentConversationId: string | null;
+  currentMode: AIMode;
+  openConversationIds: string[];
+  panelOpen: boolean;
+  panelWidth: number;
+  autoApproveAllTools: boolean;
+}
+
+class AssistantStore implements ISnapshotParticipant {
   // Panel state
   panelOpen = $state(false);
   panelWidth = $state(DEFAULT_PANEL_WIDTH);
@@ -482,6 +492,10 @@ class AssistantStore {
   private runStates = $state<Record<string, ConversationRunStateRecord>>({});
   private conversationRuntimeState = $state<Record<string, ConversationRuntimeState>>({});
   private chatScrollRevisionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Message IDs that need persistence once streaming ends */
+  private _pendingStreamPersistIds: Set<string> | null = null;
+
+  readonly snapshotPriority = 1;
 
   constructor() {
     this.loadPanelWidth();
@@ -489,6 +503,35 @@ class AssistantStore {
     this.loadOpenConversationIds();
     this.loadCurrentConversationId();
     this.loadAutoApproveAllTools();
+  }
+
+  getSnapshot(): AssistantSnapshot {
+    return {
+      currentConversationId: this.currentConversation?.id ?? null,
+      currentMode: this.currentMode,
+      openConversationIds: [...this.openConversationIds],
+      panelOpen: this.panelOpen,
+      panelWidth: this.panelWidth,
+      autoApproveAllTools: this.autoApproveAllTools,
+    };
+  }
+
+  restoreSnapshot(data: unknown): void {
+    const snap = data as AssistantSnapshot;
+    if (!snap) return;
+    if (typeof snap.panelOpen === 'boolean') this.panelOpen = snap.panelOpen;
+    if (typeof snap.panelWidth === 'number') this.panelWidth = snap.panelWidth;
+    if (typeof snap.autoApproveAllTools === 'boolean') this.autoApproveAllTools = snap.autoApproveAllTools;
+    if (snap.currentMode) this.currentMode = snap.currentMode;
+    if (Array.isArray(snap.openConversationIds)) {
+      this.openConversationIds = snap.openConversationIds;
+    }
+    // Persist restored IDs to localStorage so the normal startup path picks them up.
+    // (currentConversation is not yet set — the UI will call loadConversation on mount)
+    if (snap.currentConversationId) {
+      try { localStorage.setItem(CURRENT_CONV_ID_KEY, snap.currentConversationId); } catch { /* */ }
+    }
+    this.saveOpenConversationIds();
   }
 
   private enforceInMemoryBudget(): void {
@@ -1006,11 +1049,42 @@ class AssistantStore {
     return cloned;
   }
 
+  /**
+   * In-place mutation of a message in an array — no clone, no allocation.
+   * Returns true if the message was found and mutated.
+   */
+  private patchMessageInPlace(
+    messages: AssistantMessage[],
+    messageId: string,
+    patcher: (message: AssistantMessage) => AssistantMessage,
+  ): boolean {
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index === -1) return false;
+    const current = messages[index];
+    const next = patcher(current);
+    // During streaming the patcher may mutate in-place and return the same ref,
+    // so we always treat it as changed — the patcher already handled no-op internally.
+    messages[index] = next;
+    return true;
+  }
+
   private patchConversationMessage(
     conversationId: string,
     messageId: string,
     patcher: (message: AssistantMessage) => AssistantMessage,
   ): AssistantMessage[] {
+    // During streaming use in-place mutation to avoid array cloning
+    if (this.isStreaming) {
+      const runtime = this.conversationRuntimeState[conversationId];
+      if (runtime) {
+        const changed = this.patchMessageInPlace(runtime.messages, messageId, patcher);
+        if (changed && this.currentConversation?.id === conversationId) {
+          this.patchMessageInPlace(this.messages, messageId, patcher);
+          this.bumpChatScrollRevision();
+        }
+        return runtime.messages;
+      }
+    }
     return this.updateConversationMessages(conversationId, (messages) =>
       this.patchMessageArray(messages, messageId, patcher),
     );
@@ -1020,6 +1094,11 @@ class AssistantStore {
     messageId: string,
     patcher: (message: AssistantMessage) => AssistantMessage,
   ): void {
+    if (this.isStreaming) {
+      const changed = this.patchMessageInPlace(this.messages, messageId, patcher);
+      if (changed) this.bumpChatScrollRevision();
+      return;
+    }
     const nextMessages = this.patchMessageArray(this.messages, messageId, patcher);
     if (nextMessages === this.messages) return;
     this.messages = nextMessages;
@@ -2185,6 +2264,13 @@ class AssistantStore {
   }
 
   private async persistMessageToHistory(messageId: string, immediate = false): Promise<void> {
+    // Fast-path: skip all persistence work during active streaming.
+    // Messages are flushed to DB once streaming completes (see completeStreamingForConversation).
+    if (this.isStreaming && !immediate) {
+      if (!this._pendingStreamPersistIds) this._pendingStreamPersistIds = new Set();
+      this._pendingStreamPersistIds.add(messageId);
+      return;
+    }
     const persisted = this.getMessageForPersistence(messageId);
     if (!persisted) return;
     const { message: msg, conversationId: convId, mode } = persisted;
@@ -2244,9 +2330,35 @@ class AssistantStore {
     persistToHistory = true,
   ): void {
     const conversationId = this.currentConversation?.id;
+    const isStreamingNow = this.isStreaming;
     const appendText = (msg: AssistantMessage): AssistantMessage => {
       const parts = msg.contentParts ?? [];
       const lastPart = parts[parts.length - 1];
+
+      // Fast path during streaming: mutate the text part in place, then
+      // return a shallow clone so Svelte gets a new reference (avoids
+      // state_proxy_equality_mismatch). The array itself is mutated in place
+      // (no slice) — only the message object is cloned (~15 props, cheap).
+      if (isStreamingNow && lastPart && lastPart.type === 'text') {
+        const next = computeNovelStreamText(text, lastPart.text);
+        if (!next.novel) {
+          return {
+            ...msg,
+            isStreaming,
+            streamState: isStreaming ? 'active' : (msg.streamState ?? 'completed'),
+          };
+        }
+        const oldLen = lastPart.text.length;
+        (lastPart as { type: 'text'; text: string }).text = next.nextAccumulated;
+        // Append only the novel portion to content instead of rebuilding from all parts
+        return {
+          ...msg,
+          content: (msg.content ?? '') + next.nextAccumulated.slice(oldLen),
+          contentParts: parts,
+          isStreaming,
+          streamState: 'active' as const,
+        };
+      }
 
       let newParts: ContentPart[];
       if (lastPart && lastPart.type === 'text') {
@@ -2893,6 +3005,15 @@ class AssistantStore {
       this.isStreaming = false;
       this.abortController = null;
       this.agentLoopState = outcome === 'failed' ? 'failed' : 'completed';
+    }
+
+    // Flush all deferred message persists now that streaming is done
+    if (this._pendingStreamPersistIds && this._pendingStreamPersistIds.size > 0) {
+      const ids = [...this._pendingStreamPersistIds];
+      this._pendingStreamPersistIds = null;
+      for (const id of ids) {
+        void this.persistMessageToHistory(id, true);
+      }
     }
   }
 
@@ -3555,6 +3676,7 @@ export function createAssistantStoreForTest(): AssistantStore {
 }
 
 export const assistantStore = new AssistantStore();
+stateSnapshotService.registerParticipant('assistant', assistantStore);
 chatHistoryStore.setActiveConversationDeletedHandler(() => {
   const activeId = assistantStore.currentConversation?.id;
   if (activeId) {
