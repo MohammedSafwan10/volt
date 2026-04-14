@@ -715,6 +715,12 @@ export function createAssistantLoopRunner(deps: AssistantLoopRunnerDeps) {
               const isPartialToolCall = Boolean(chunk.partial);
               const isInternalCompletionTool = toolCallName === "attempt_completion";
               if (isPartialToolCall) {
+                // End thinking as soon as the first tool call delta arrives
+                if (!toolCallSeenThisIteration) {
+                  await textBuffer.flushNow();
+                  assistantStore.endThinkingPart(msgId);
+                  toolCallSeenThisIteration = true;
+                }
                 if (!isInternalCompletionTool) {
                   const partialPreview = buildPartialToolCallPreview({
                     toolCallId,

@@ -12,14 +12,14 @@ export interface StreamingTextBufferOptions {
 
 type ChunkingMode = "smooth" | "catch_up";
 
-const ENTER_QUEUE_DEPTH = 8;
-const ENTER_OLDEST_AGE_MS = 120;
-const EXIT_QUEUE_DEPTH = 2;
-const EXIT_OLDEST_AGE_MS = 40;
-const EXIT_HOLD_MS = 250;
-const REENTER_HOLD_MS = 250;
-const SEVERE_QUEUE_DEPTH = 64;
-const SEVERE_OLDEST_AGE_MS = 300;
+const ENTER_QUEUE_DEPTH = 4;
+const ENTER_OLDEST_AGE_MS = 60;
+const EXIT_QUEUE_DEPTH = 1;
+const EXIT_OLDEST_AGE_MS = 20;
+const EXIT_HOLD_MS = 100;
+const REENTER_HOLD_MS = 80;
+const SEVERE_QUEUE_DEPTH = 32;
+const SEVERE_OLDEST_AGE_MS = 150;
 
 interface QueuedChunk {
   text: string;
@@ -41,8 +41,8 @@ function splitIntoChunks(text: string, sliceChars: number): string[] {
 export function createStreamingTextBuffer(
   options: StreamingTextBufferOptions,
 ): StreamingTextBuffer {
-  const intervalMs = Math.max(10, options.intervalMs ?? 45);
-  const sliceChars = Math.max(20, options.sliceChars ?? 120);
+  const intervalMs = Math.max(8, options.intervalMs ?? 16);
+  const sliceChars = Math.max(20, options.sliceChars ?? 60);
 
   let pendingText = "";
   let queue: QueuedChunk[] = [];

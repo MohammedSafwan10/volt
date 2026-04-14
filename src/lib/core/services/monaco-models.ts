@@ -70,18 +70,26 @@ export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.I
 
   const existing = models.get(normalizedPath);
   if (existing) {
-    monaco.editor.setModelLanguage(existing, spec.language);
-    touchModel(normalizedPath);
-    return existing;
+    if (existing.isDisposed()) {
+      models.delete(normalizedPath);
+    } else {
+      monaco.editor.setModelLanguage(existing, spec.language);
+      touchModel(normalizedPath);
+      return existing;
+    }
   }
 
   const uri = uriForPath(monaco, normalizedPath);
   const already = monaco.editor.getModel(uri);
   if (already) {
-    models.set(normalizedPath, already);
-    touchModel(normalizedPath);
-    monaco.editor.setModelLanguage(already, spec.language);
-    return already;
+    if (already.isDisposed()) {
+      models.delete(normalizedPath);
+    } else {
+      models.set(normalizedPath, already);
+      touchModel(normalizedPath);
+      monaco.editor.setModelLanguage(already, spec.language);
+      return already;
+    }
   }
 
   // Evict old models before creating new one
@@ -94,14 +102,20 @@ export async function getOrCreateModel(spec: ModelSpec): Promise<Monaco.editor.I
 }
 
 export function getModel(path: string): Monaco.editor.ITextModel | null {
-  return models.get(normalizeModelPath(path)) ?? null;
+  const normalizedPath = normalizeModelPath(path);
+  const model = models.get(normalizedPath) ?? null;
+  if (!model) return null;
+  if (!model.isDisposed()) return model;
+
+  models.delete(normalizedPath);
+  return null;
 }
 
 export function getModelValue(path: string): string | null {
   const normalizedPath = normalizeModelPath(path);
   const model = models.get(normalizedPath);
   if (!model || model.isDisposed()) {
-    if (model?.isDisposed()) models.delete(path);
+    if (model?.isDisposed()) models.delete(normalizedPath);
     return null;
   }
   return model.getValue();

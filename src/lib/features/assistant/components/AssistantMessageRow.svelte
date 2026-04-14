@@ -82,8 +82,6 @@
   let copyStatus = $state<"idle" | "copied">("idle");
   let turnReviewExpanded = $state(false);
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
-  let lastContentPartsSource: AssistantMessage | null = null;
-  let lastContentPartsValue: ContentPart[] = [];
 
   // Live timer for active thinking - updates every second
   let now = $state(Date.now());
@@ -192,10 +190,6 @@
   }
 
   function getContentParts(msg: AssistantMessage): ContentPart[] {
-    if (msg === lastContentPartsSource) {
-      return lastContentPartsValue;
-    }
-
     const sanitizeVisibleText = (text: string): string =>
       normalizeAssistantMarkdown(
         text
@@ -209,57 +203,43 @@
     // PRIORITY: Use saved contentParts (has correct order from streaming/history)
     // Only rebuild from offsets as a fallback for legacy messages without contentParts
     if (msg.contentParts?.length) {
-      const cached = msg.contentParts
+      return msg.contentParts
         .map((part) =>
           part.type === "text"
             ? { ...part, text: sanitizeVisibleText(part.text) }
             : part,
         )
         .filter((part) => part.type !== "text" || part.text);
-      lastContentPartsSource = msg;
-      lastContentPartsValue = cached;
-      return cached;
     }
     
     // Fallback: try to rebuild from offsets (for old messages without contentParts)
     const rebuilt = buildContentPartsFromOffsets(msg);
     if (rebuilt) {
-      const cached = rebuilt
+      return rebuilt
         .map((part) =>
           part.type === "text"
             ? { ...part, text: sanitizeVisibleText(part.text) }
             : part,
         )
         .filter((part) => part.type !== "text" || part.text);
-      lastContentPartsSource = msg;
-      lastContentPartsValue = cached;
-      return cached;
     }
 
     // Last-chance fallback for live turns where contentParts was not yet materialized.
     if (msg.inlineToolCalls?.length) {
-      const cached: ContentPart[] = msg.inlineToolCalls.map((tc) => ({
+      return msg.inlineToolCalls.map((tc) => ({
         type: "tool" as const,
         toolCall: tc,
       }));
-      lastContentPartsSource = msg;
-      lastContentPartsValue = cached;
-      return cached;
     }
     
     // Last resort: just the text content
     if (msg.content) {
       const cleaned = sanitizeVisibleText(msg.content);
       if (cleaned) {
-        const cached: ContentPart[] = [{ type: "text" as const, text: cleaned }];
-        lastContentPartsSource = msg;
-        lastContentPartsValue = cached;
-        return cached;
+        return [{ type: "text" as const, text: cleaned }];
       }
     }
-    lastContentPartsSource = msg;
-    lastContentPartsValue = [];
-    return lastContentPartsValue;
+    return [];
   }
 
   // Format thinking duration for display (Cursor-style)

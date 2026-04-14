@@ -5,7 +5,7 @@
    *
    * Integrates with TypeScript LSP sidecar for full-project intelligence
    */
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type * as Monaco from "monaco-editor";
   import { loadMonaco, detectLanguage } from "$core/services/monaco-loader";
   import {
@@ -519,6 +519,7 @@
         selectionDisposable.dispose();
         selectionDisposable = null;
       }
+      setActiveEditor(null);
       if (editor) {
         editor.dispose();
         editor = null;
@@ -533,6 +534,7 @@
 
     const path = filepath;
     const lang = detectedLanguage;
+    const initialValue = untrack(() => value);
     const runId = modelSwapRunId + 1;
     modelSwapRunId = runId;
 
@@ -542,12 +544,14 @@
     void (async () => {
       const model = await getOrCreateModel({
         path,
-        content: value,
+        content: initialValue,
         language: lang,
       });
 
       if (!editor || runId !== modelSwapRunId) return;
-      editor.setModel(model);
+      if (editor.getModel() !== model) {
+        editor.setModel(model);
+      }
 
       applyProblemsMarkersForCurrentModel(model, path);
       syncNativeDiagnosticsForCurrentModel();
@@ -567,52 +571,72 @@
 
       // Notify TypeScript LSP sidecar about the file being opened
       if (isTsJsFile(path)) {
-        await safelyNotifySidecar("typescript", () => notifyDocumentOpened(path, value));
+        await safelyNotifySidecar("typescript", () =>
+          notifyDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify Tailwind LSP sidecar about the file being opened
       if (isTailwindFile(path)) {
-        await safelyNotifySidecar("tailwind", () => notifyTailwindDocumentOpened(path, value));
+        await safelyNotifySidecar("tailwind", () =>
+          notifyTailwindDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify ESLint LSP sidecar about the file being opened
       if (isEslintFile(path)) {
-        await safelyNotifySidecar("eslint", () => notifyEslintDocumentOpened(path, value));
+        await safelyNotifySidecar("eslint", () =>
+          notifyEslintDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify Svelte LSP sidecar about the file being opened
       if (isSvelteFile(path)) {
-        await safelyNotifySidecar("svelte", () => notifySvelteDocumentOpened(path, value));
+        await safelyNotifySidecar("svelte", () =>
+          notifySvelteDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify HTML LSP sidecar about the file being opened
       if (isHtmlFile(path)) {
-        await safelyNotifySidecar("html", () => notifyHtmlDocumentOpened(path, value));
+        await safelyNotifySidecar("html", () =>
+          notifyHtmlDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify CSS LSP sidecar about the file being opened
       if (isCssFile(path)) {
-        await safelyNotifySidecar("css", () => notifyCssDocumentOpened(path, value));
+        await safelyNotifySidecar("css", () =>
+          notifyCssDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify JSON LSP sidecar about the file being opened
       if (isJsonFile(path)) {
-        await safelyNotifySidecar("json", () => notifyJsonDocumentOpened(path, value));
+        await safelyNotifySidecar("json", () =>
+          notifyJsonDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify Dart LSP sidecar about the file being opened
       if (isDartLspFile(path)) {
-        await safelyNotifySidecar("dart", () => notifyDartDocumentOpened(path, value));
+        await safelyNotifySidecar("dart", () =>
+          notifyDartDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify YAML LSP sidecar about the file being opened
       if (isYamlFile(path)) {
-        await safelyNotifySidecar("yaml", () => notifyYamlDocumentOpened(path, value));
+        await safelyNotifySidecar("yaml", () =>
+          notifyYamlDocumentOpened(path, model.getValue()),
+        );
       }
 
       // Notify XML LSP sidecar about the file being opened
       if (isXmlFile(path)) {
-        await safelyNotifySidecar("xml", () => notifyXmlDocumentOpened(path, value));
+        await safelyNotifySidecar("xml", () =>
+          notifyXmlDocumentOpened(path, model.getValue()),
+        );
       }
     })().catch((error) => {
       if (isTransientSidecarOpenError(error)) return;

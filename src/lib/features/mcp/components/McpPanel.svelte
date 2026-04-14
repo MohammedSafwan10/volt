@@ -11,7 +11,7 @@
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
-  let expandedServers = new SvelteSet<string>();
+  const expandedServers = new SvelteSet<string>();
   let configPath = $state<string>("~/.volt/settings/mcp.json");
 
   // Get actual config path on mount and auto-open the config file
@@ -70,7 +70,6 @@
     } else {
       expandedServers.add(serverId);
     }
-    expandedServers = new SvelteSet(expandedServers);
   }
 
   function getStatusIcon(

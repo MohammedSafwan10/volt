@@ -1,4 +1,4 @@
-<script lang="ts">
+<script lang="ts" generics="T">
   /**
    * VirtualList - A high-performance virtualized list component
    * 
@@ -8,7 +8,7 @@
    * 
    * Based on VS Code's virtual list implementation pattern.
    */
-  import type { ScrollBehavior, Snippet } from 'svelte';
+  import type { Snippet } from 'svelte';
 
   interface Props<T> {
     /** Array of items to render */
@@ -45,7 +45,7 @@
     onSelect,
     focusedIndex = -1,
     ...rest
-  }: Props<unknown> & Record<string, unknown> = $props();
+  }: Props<T> & Record<string, unknown> = $props();
 
   let scrollEl: HTMLDivElement | null = $state(null);
   let scrollTop = $state(0);
@@ -69,10 +69,10 @@
 
   // Get visible items slice with their indices
   const visibleItems = $derived.by(() => {
-    const result: Array<{ item: unknown; index: number }> = [];
+    const result: Array<{ item: T; index: number }> = [];
     for (let i = startIndex; i < endIndex; i++) {
       if (items[i] !== undefined) {
-        result.push({ item: items[i], index: i });
+        result.push({ item: items[i] as T, index: i });
       }
     }
     return result;

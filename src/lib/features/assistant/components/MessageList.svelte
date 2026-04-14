@@ -3,7 +3,7 @@
    * MessageList - Main chat message container
    * Renders user/assistant messages with auto-scroll
    */
-  import { tick, type ScrollBehavior } from "svelte";
+  import { tick } from "svelte";
   import { UIIcon } from "$shared/components/ui";
   import type {
     AssistantMessage,
